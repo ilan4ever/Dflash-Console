@@ -1,0 +1,32 @@
+---
+description: Restart DFlash Studio dev server after backend changes
+alwaysApply: true
+---
+
+# DFlash Studio — restart after changes
+
+When you finish a task that changed any of these, **automatically restart the Studio server** before ending your turn:
+
+- `api/**` or `core/**` (Python backend)
+- `config.json`
+- `requirements.txt`
+
+## How to restart
+
+From the repo root:
+
+```powershell
+.\scripts\restart-studio-server.ps1
+```
+
+Use `.\run.ps1` only for a full cold start (first run, dependency install, or llama-server port cleanup).
+
+## Static-only changes
+
+Changes under `static/**` or `static/css/**` do **not** require a server restart. Tell the user to hard-refresh the browser (Ctrl+Shift+R) if they do not see UI updates.
+
+## After restart
+
+Confirm the API is up (HTTP 200 from `http://127.0.0.1:8900/` or the configured `ui_port`). Do not ask the user to restart manually when you can run the script yourself.
+
+The open browser tab auto-refreshes when the API comes back (`server-reload-watch.js` + `/api/health` `boot_id`). No need to tell the user to hard-refresh after a backend restart.
