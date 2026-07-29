@@ -8,7 +8,7 @@
 
   const PRESET_OPTIONS = window.DFlashLibraryTypes?.options || [
     { id: 'dflash', label: 'DFlash' },
-    { id: 'gguf', label: 'GGUF checkpoints' },
+    { id: 'gguf', label: 'GGUF models' },
     { id: 'speech', label: 'Speech-to-text' },
     { id: 'tts', label: 'Text-to-speech' },
     { id: 'ocr', label: 'OCR' },

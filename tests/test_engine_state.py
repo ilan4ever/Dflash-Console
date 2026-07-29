@@ -62,6 +62,26 @@ def test_restore_skips_when_engine_off(config_file: Path, monkeypatch: pytest.Mo
     assert calls == []
 
 
+def test_restore_adopts_loaded_checkpoint(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(engine_state, 'probe_models', lambda api_url: ['demo-model'])
+    monkeypatch.setattr(
+        'core.server_boot.adopt_running_engine',
+        lambda *args, **kwargs: {'success': True, 'adopted': True},
+    )
+    release_calls: list[str] = []
+    monkeypatch.setattr(
+        engine_state,
+        'release_gpu_checkpoints',
+        lambda *args, **kwargs: release_calls.append('release') or {'unloaded': True},
+    )
+
+    results = engine_state.restore_engines()
+    assert results[0]['action'] == 'adopted_loaded'
+    assert results[0]['models'] == ['demo-model']
+    assert release_calls == []
+
+
 def test_restore_never_auto_loads_checkpoint(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     load_calls: list[str] = []
 

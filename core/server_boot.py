@@ -12,7 +12,7 @@ from typing import Any
 
 from core.config import get_dflash_root, normalize_load_settings, normalize_server
 from core.gpu_devices import resolve_role_gpu_launch_params
-from core.model_presets import write_server_preset
+from core.model_presets import infer_profile_from_path, model_id_from_path, preset_path_for, write_server_preset
 
 _started_launch: dict[int, dict[str, Any]] = {}
 _boot_lock = threading.Lock()
@@ -157,7 +157,12 @@ def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[s
     _spawn_detached(cmd, log_path=log_path, cwd=dflash_root, handle_key=str(entry['id']))
 
 
-def start_router_listener(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+def start_router_listener(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    skip_preset_write: bool = False,
+) -> dict[str, Any]:
     """Start llama-server router on the configured port without loading a model."""
     entry = normalize_server(server)
     server_id = entry['id']
@@ -175,7 +180,12 @@ def start_router_listener(server: dict[str, Any], *, cfg: dict[str, Any] | None 
     signature = _launch_signature(entry, launch)
 
     try:
-        preset_path = write_server_preset(entry, cfg=cfg)
+        if skip_preset_write:
+            preset_path = preset_path_for(server_id)
+            if not preset_path.is_file():
+                raise ValueError(f'preset not found: {preset_path}')
+        else:
+            preset_path = write_server_preset(entry, cfg=cfg)
     except ValueError as exc:
         return {'success': False, 'error': str(exc), 'port': port}
 
@@ -228,34 +238,98 @@ def eject_to_router_idle(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     return start_router_listener(entry, cfg=cfg)
 
 
-def load_server_checkpoint(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Ensure router is listening, then load the configured checkpoint."""
-    from core.runtime import load_model, probe_models
+def load_server_checkpoint(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    model_path: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, Any]:
+    """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
+    from core.runtime import _fetch_models_payload, load_model, probe_models, stop_server
 
     entry = normalize_server(server)
     port = int(entry['port'] or 0)
     host = str(entry['host'] or '127.0.0.1')
     api_url = str(entry.get('api_url') or '')
-    model_id = str(entry.get('model_id') or '').strip()
+    custom_path = str(model_path or '').strip()
+    if custom_path:
+        path_obj = Path(custom_path)
+        if not path_obj.is_file():
+            return {'success': False, 'error': f'model file not found: {custom_path}'}
+        load_id = str(model_id or model_id_from_path(path_obj)).strip()
+        load_profile = infer_profile_from_path(path_obj)
+        try:
+            write_server_preset(
+                entry,
+                cfg=cfg,
+                target_path=custom_path,
+                model_id=load_id,
+                profile=load_profile,
+                use_draft=False,
+            )
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc), 'port': port}
+
+        if _tcp_port_open(host, port):
+            loaded = probe_models(api_url)
+            if load_id in loaded:
+                note_boot_cycle_end(port)
+                return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True, 'model': load_id}
+            stop_server(port=port, host=host, api_url=api_url)
+
+        listen = start_router_listener(entry, cfg=cfg, skip_preset_write=True)
+        if not listen.get('success'):
+            return listen
+
+        load_result = load_model(api_url=api_url, model_id=load_id)
+        if load_result.get('success'):
+            note_boot_cycle_end(port)
+            return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': True}
+        return {
+            'success': False,
+            'error': load_result.get('error') or 'model load failed',
+            'port': port,
+        }
+    else:
+        load_id = str(entry.get('model_id') or '').strip()
+        if not load_id:
+            return {'success': False, 'error': 'model_id required'}
+        try:
+            write_server_preset(entry, cfg=cfg)
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc), 'port': port}
+
     if port <= 0:
         return {'success': False, 'error': 'invalid port'}
-    if not model_id:
-        return {'success': False, 'error': 'model_id required'}
+
+    registered_ids = {
+        str(row.get('id') or row.get('model') or '').strip()
+        for row in _fetch_models_payload(api_url)
+    }
+    registered_ids.discard('')
 
     if _tcp_port_open(host, port):
         loaded = probe_models(api_url)
-        if model_id in loaded:
+        if load_id in loaded:
             note_boot_cycle_end(port)
-            return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True}
+            return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True, 'model': load_id}
+        if load_id not in registered_ids:
+            stop_server(port=port, host=host, api_url=api_url)
     else:
         listen = start_router_listener(entry, cfg=cfg)
         if not listen.get('success'):
             return listen
 
-    load_result = load_model(api_url=api_url, model_id=model_id)
+    if not _tcp_port_open(host, port):
+        listen = start_router_listener(entry, cfg=cfg)
+        if not listen.get('success'):
+            return listen
+
+    load_result = load_model(api_url=api_url, model_id=load_id)
     if load_result.get('success'):
         note_boot_cycle_end(port)
-        return {'success': True, 'port': port, 'loaded': True, 'model': model_id}
+        return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': bool(custom_path)}
     return {
         'success': False,
         'error': load_result.get('error') or 'model load failed',

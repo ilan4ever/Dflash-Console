@@ -3,7 +3,7 @@
   window.DFlashLibraryTypes = {
     options: [
       { id: 'dflash', label: 'DFlash' },
-      { id: 'gguf', label: 'GGUF checkpoints' },
+      { id: 'gguf', label: 'GGUF models' },
       { id: 'tts', label: 'Text-to-speech' },
       { id: 'speech', label: 'Speech-to-text' },
       { id: 'ocr', label: 'OCR' },

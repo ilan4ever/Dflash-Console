@@ -13,10 +13,18 @@
       .replace(/"/g, '&quot;');
   }
 
+  function sanitizeHtml(html) {
+    if (!html) return '';
+    if (!window.DOMPurify) return html;
+    return window.DOMPurify.sanitize(html, {
+      ADD_ATTR: ['target', 'rel'],
+    });
+  }
+
   function renderMarkdown(text) {
     if (!text || !window.marked) return escapeHtml(text || '');
-    const raw = window.marked.parse(String(text), { breaks: true });
-    return window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+    const raw = window.marked.parse(String(text), { breaks: true, gfm: true });
+    return sanitizeHtml(raw);
   }
 
   function renderEndpoint(ep) {
@@ -39,12 +47,16 @@
   function renderSection(section) {
     const body = document.getElementById('docsBody');
     if (!body || !section) return;
-    let html = `<h1>${escapeHtml(section.title)}</h1>`;
+    body.className = `df-docs-body df-docs-section--${section.id || 'default'}`;
+    let html = `<h1 class="df-docs-page-title">${escapeHtml(section.title)}</h1>`;
+    if (section.html) {
+      html += `<div class="df-docs-rich">${sanitizeHtml(section.html)}</div>`;
+    }
     if (section.markdown) {
       html += `<div class="df-docs-markdown">${renderMarkdown(section.markdown)}</div>`;
     }
     if (Array.isArray(section.endpoints) && section.endpoints.length) {
-      html += section.endpoints.map(renderEndpoint).join('');
+      html += `<div class="lm-api-endpoint-list">${section.endpoints.map(renderEndpoint).join('')}</div>`;
     }
     body.innerHTML = html;
   }

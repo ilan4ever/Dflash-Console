@@ -6,11 +6,8 @@
   const topTitle = document.querySelector('.lm-topnav-title');
   const bodyEl = document.querySelector('.lm-body');
   const inspector = document.querySelector('.lm-inspector');
-  const searchBtn = document.querySelector('[data-action="open-model-search"]');
   const inspectorToggleBtn = document.querySelector('[data-action="toggle-inspector"]');
   const pageActions = document.querySelector('.df-page-actions');
-  const settingsModal = document.getElementById('settingsModal');
-  const searchModal = document.getElementById('modelSearchModal');
 
   const titles = {
     chat: 'Playground',
@@ -18,20 +15,42 @@
     models: '',
     devices: 'LM Link',
     docs: 'Docs',
+    catalog: 'Hugging Face',
+    settings: 'Preferences',
   };
 
   const pageTitles = {
     chat: 'Playground',
     server: 'Inference engines',
-    models: 'Checkpoint library',
+    models: 'Model library',
     devices: 'Remote nodes',
     docs: 'Documentation',
+    catalog: 'Model catalog',
+    settings: 'Settings',
   };
 
   const inspectorFor = new Set(['server', 'models']);
+  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'settings']);
+
+  function onViewEnter(tab) {
+    if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
+    if (tab === 'server') void window.DFlashServerLive?.refresh?.(true);
+    if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
+    if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
+    if (tab === 'chat') void window.DFlashChatLive?.onViewEnter?.();
+  }
+
+  function onViewLeave(tab) {
+    if (tab === 'settings') window.DFlashSettingsLive?.onViewLeave?.();
+  }
+
+  let activeTab = 'server';
 
   function setView(name, { persist = true } = {}) {
     const tab = String(name || 'server');
+    if (!validTabs.has(tab)) return;
+    if (tab !== activeTab) onViewLeave(activeTab);
+    activeTab = tab;
     views.forEach((v) => v.classList.toggle('active', v.dataset.view === tab));
     tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     const heading = pageTitles[tab] || 'DFlash Console';
@@ -45,8 +64,7 @@
     if (inspector) inspector.classList.toggle('hidden', !inspectorFor.has(tab));
     document.body.dataset.activeView = tab;
     if (persist) localStorage.setItem('dflashConsole.activeTab', tab);
-    if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
-    if (tab === 'server') void window.DFlashServerLive?.refresh?.(true);
+    onViewEnter(tab);
   }
 
   tabs.forEach((tab) => {
@@ -64,7 +82,6 @@
 
   function openModal(el) {
     if (!el) return;
-    if (el.id === 'settingsModal') syncSysbarHeightVar();
     el.classList.add('open');
     el.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
@@ -92,8 +109,6 @@
   document.querySelectorAll('.lm-modal-dialog').forEach((dialog) => {
     dialog.addEventListener('click', (e) => e.stopPropagation());
   });
-
-  if (searchBtn) searchBtn.addEventListener('click', () => openModal(searchModal));
 
   if (inspectorToggleBtn && bodyEl) {
     inspectorToggleBtn.addEventListener('click', () => {
@@ -130,8 +145,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      closeModal(settingsModal);
-      closeModal(searchModal);
+      document.querySelectorAll('.lm-modal.open').forEach((modal) => closeModal(modal));
       document.getElementById('modelMetadataModal')?.classList.remove('open');
       document.querySelectorAll('.lm-dropdown-menu.open').forEach((m) => m.classList.remove('open'));
     }
@@ -156,9 +170,11 @@
   fitLayout();
   syncSysbarHeightVar();
   window.syncSysbarHeightVar = syncSysbarHeightVar;
+
   const savedTab = localStorage.getItem('dflashConsole.activeTab');
-  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs']);
   setView(validTabs.has(savedTab) ? savedTab : 'server', { persist: false });
+
+  window.DFlashShell = { setView, openModal, closeModal };
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));

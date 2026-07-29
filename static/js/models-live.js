@@ -139,6 +139,72 @@
     return '';
   }
 
+  function getActiveDownloadJobs() {
+    return (window.DFlashDownloadQueue?.getActiveJobs?.() || [])
+      .filter((job) => job.status === 'downloading');
+  }
+
+  function downloadProgressWidth(job) {
+    return window.DFlashDownloadQueue?.progressWidth?.(job);
+  }
+
+  function downloadProgressLabel(job) {
+    return window.DFlashDownloadQueue?.progressLabel?.(job) || 'Starting…';
+  }
+
+  function downloadJobTitle(job) {
+    return window.DFlashDownloadQueue?.getJobLabel?.(job)
+      || job.filename
+      || job.repo_id
+      || 'Model';
+  }
+
+  function renderDownloadingRow(job) {
+    const width = downloadProgressWidth(job);
+    const pctLabel = downloadProgressLabel(job);
+    const indeterminate = width == null;
+    const fillStyle = width != null ? ` style="width:${width}%"` : '';
+    const fillClass = indeterminate ? ' is-indeterminate' : '';
+    const bytes = job.bytes_total
+      ? `${window.DFlashDownloadQueue?.formatBytes?.(job.bytes_read) || '0 B'} / ${window.DFlashDownloadQueue?.formatBytes?.(job.bytes_total) || '—'}`
+      : (job.bytes_read ? window.DFlashDownloadQueue?.formatBytes?.(job.bytes_read) : '—');
+    const repo = job.repo_id || 'Hugging Face';
+    const filename = job.filename || '—';
+    return `
+      <tr class="lm-model-row downloading-model" data-download-job-id="${escapeHtml(job.id)}">
+        <td class="lm-col-model">
+          <div class="lm-model-title-line">
+            <span class="lm-tag green">downloading</span>
+            <span class="lm-llm-name">${escapeHtml(downloadJobTitle(job))}</span>
+            <span class="lm-model-download-pct">${escapeHtml(pctLabel)}</span>
+          </div>
+          <div class="lm-model-download-bar" aria-hidden="true">
+            <div class="lm-model-download-fill${fillClass}"${fillStyle}></div>
+          </div>
+          <div class="lm-model-meta-line lm-model-download-meta">${escapeHtml(repo)} · ${escapeHtml(filename)}</div>
+        </td>
+        <td>—</td>
+        <td>—</td>
+        <td>${escapeHtml(repo.split('/')[0] || 'HF')}</td>
+        <td>${escapeHtml(bytes)}</td>
+        <td>Now</td>
+        <td><span class="lm-tag dim">in progress</span></td>
+      </tr>`;
+  }
+
+  function filterDownloadJobs(jobs, needle) {
+    if (!needle) return jobs;
+    return jobs.filter((job) => {
+      const hay = [
+        downloadJobTitle(job),
+        job.repo_id,
+        job.filename,
+        job.path,
+      ].join(' ').toLowerCase();
+      return hay.includes(needle);
+    });
+  }
+
   let typeFilter = localStorage.getItem('dflashConsole.modelsTypeFilter') || 'dflash';
 
   function renderTable(filterText) {
@@ -146,8 +212,10 @@
     if (!body) return;
     const needle = String(filterText || '').trim().toLowerCase();
     const pinned = loadPinnedSet();
-    const rows = models.filter((model) => {
+    const activeDownloads = filterDownloadJobs(getActiveDownloadJobs(), needle);
+    const catalogRows = models.filter((model) => {
       if (typeFilter === 'dflash' && !isDflashModel(model)) return false;
+      if (typeFilter === 'downloading') return false;
       if (!needle) return true;
       const hay = [
         model.label, model.id, model.path, model.publisher, model.arch, model.quant,
@@ -164,7 +232,16 @@
       return String(a.label || '').localeCompare(String(b.label || ''));
     });
 
-    body.innerHTML = rows.map((model) => {
+    if (typeFilter === 'downloading') {
+      body.innerHTML = activeDownloads.length
+        ? activeDownloads.map((job) => renderDownloadingRow(job)).join('')
+        : '<tr><td colspan="7" class="lm-models-empty">No models are downloading right now. Start a download from Model catalog.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = [
+      ...activeDownloads.map((job) => renderDownloadingRow(job)),
+      ...catalogRows.map((model) => {
       const key = modelKey(model);
       const selected = key === selectedKey ? ' selected' : '';
       const booting = model.server_id && bootingServers[model.server_id];
@@ -190,9 +267,10 @@
           <td>${escapeHtml(model.modified || '—')}</td>
           <td>${loadBtn}</td>
         </tr>`;
-    }).join('');
+    }),
+    ].join('');
 
-    body.querySelectorAll('.lm-model-row').forEach((row) => {
+    body.querySelectorAll('.lm-model-row:not(.downloading-model)').forEach((row) => {
       row.addEventListener('click', (event) => {
         if (event.target.closest('[data-action="load-model"]')) return;
         void selectModel(row.dataset.modelKey);
@@ -320,15 +398,23 @@
     const path = document.getElementById('modelsFooterPath');
     const hint = document.getElementById('modelsFooterHint');
     if (stats) {
-      const shown = typeFilter === 'dflash'
-        ? models.filter(isDflashModel).length
-        : models.length;
-      const filterNote = typeFilter === 'dflash' ? ` · showing ${shown} DFlash` : '';
-      stats.textContent = `${meta.total_count || models.length} checkpoints (${meta.loadable_count || 0} engine profiles), ${meta.total_size_gb || 0} GB total${filterNote}`;
+      const activeCount = getActiveDownloadJobs().length;
+      if (typeFilter === 'downloading') {
+        stats.textContent = `${activeCount} downloading now`;
+      } else {
+        const shown = typeFilter === 'dflash'
+          ? models.filter(isDflashModel).length
+          : models.length;
+        const filterNote = typeFilter === 'dflash' ? ` · showing ${shown} DFlash` : '';
+        const downloadNote = activeCount ? ` · ${activeCount} downloading` : '';
+        stats.textContent = `${meta.total_count || models.length} models (${meta.loadable_count || 0} engine profiles), ${meta.total_size_gb || 0} GB total${filterNote}${downloadNote}`;
+      }
     }
     if (path) path.textContent = meta.models_dir || '—';
     if (hint) {
-      hint.textContent = 'Green rows are running on an engine. DFlash profiles include an accelerator pair under the checkpoint name.';
+      hint.textContent = typeFilter === 'downloading'
+        ? 'Active Hugging Face downloads from Model catalog appear here with live progress.'
+        : 'Green rows are running on an engine. Downloading models appear at the top with a progress bar.';
     }
   }
 
@@ -348,8 +434,12 @@
   }
 
   async function loadModel(model) {
-    if (!model?.loadable || !window.DFlashServerLive?.loadSelectedModel) {
-      toast('This file is not wired to a server profile yet.', false);
+    if (!window.DFlashServerLive?.loadSelectedModel) {
+      toast('Engine panel is not ready yet.', false);
+      return;
+    }
+    if (!model?.loadable && !model?.path) {
+      toast('This file is not available to load.', false);
       return;
     }
     window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
@@ -386,13 +476,22 @@
   }
 
   function setTypeFilter(next) {
-    typeFilter = next === 'dflash' ? 'dflash' : 'all';
+    typeFilter = ['all', 'dflash', 'downloading'].includes(next) ? next : 'all';
     localStorage.setItem('dflashConsole.modelsTypeFilter', typeFilter);
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.modelsFilter === typeFilter);
     });
     renderTable(document.getElementById('modelsFilterInput')?.value || '');
     renderFooter(meta);
+  }
+
+  function onDownloadQueueUpdate() {
+    if (document.body.dataset.activeView !== 'models') return;
+    renderTable(document.getElementById('modelsFilterInput')?.value || '');
+    renderFooter(meta);
+    if (typeFilter === 'downloading' && !getActiveDownloadJobs().length) {
+      /* keep filter selected; empty state shown */
+    }
   }
 
   function bind() {
@@ -403,6 +502,7 @@
       btn.addEventListener('click', () => setTypeFilter(btn.dataset.modelsFilter));
     });
     setTypeFilter(typeFilter);
+    window.DFlashDownloadQueue?.subscribe?.(onDownloadQueueUpdate);
 
     document.addEventListener('click', hideContextMenu);
     document.addEventListener('scroll', hideContextMenu, true);

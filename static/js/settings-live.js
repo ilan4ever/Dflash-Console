@@ -27,22 +27,9 @@
       .replace(/"/g, '&quot;');
   }
 
-  function settingsModal() {
-    return document.getElementById('settingsModal');
-  }
-
   function activePanelId() {
     const panel = document.querySelector('.lm-settings-panel.active');
     return panel?.dataset.settingsPanel || DEFAULT_PANEL;
-  }
-
-  function openSettingsModal() {
-    const modal = settingsModal();
-    if (!modal) return;
-    modal.classList.add('open');
-    modal.setAttribute('aria-hidden', 'false');
-    document.body.classList.add('modal-open');
-    if (window.syncSysbarHeightVar) window.syncSysbarHeightVar();
   }
 
   function showPanel(id) {
@@ -56,6 +43,23 @@
     if (HW_PANELS.has(panelId)) renderHardwareForPanel(panelId);
     if (GW_PANELS.has(panelId)) renderGatewayPanel();
     if (panelId === 'int-mcp') void renderMcpPanel();
+  }
+
+  function openSettings(panelId = DEFAULT_PANEL) {
+    showPanel(panelId);
+    window.DFlashShell?.setView?.('settings');
+  }
+
+  function onViewEnter() {
+    const panel = activePanelId();
+    if (HW_PANELS.has(panel)) renderHardwareForPanel(panel);
+    if (GW_PANELS.has(panel)) renderGatewayPanel();
+    if (panel === 'int-mcp') void renderMcpPanel();
+    void fetchHardware().then(startPolling).catch(() => {});
+  }
+
+  function onViewLeave() {
+    stopPolling();
   }
 
   function enabledIndicesFromDraft() {
@@ -72,15 +76,114 @@
 
   function renderWorkspacePaths() {
     if (!hardwareData) return;
+    const configPath = document.getElementById('settingsConfigPath');
     const dflashRoot = document.getElementById('settingsDflashRoot');
+    const modelsDir = document.getElementById('settingsModelsDir');
     const logsDir = document.getElementById('settingsLogsDir');
     const presetsDir = document.getElementById('settingsPresetsDir');
     const uiPort = document.getElementById('settingsUiPort');
+    if (configPath) configPath.textContent = hardwareData.config_path || '—';
     if (dflashRoot) dflashRoot.textContent = hardwareData.dflash_root || '—';
+    if (modelsDir) modelsDir.textContent = hardwareData.models_dir || '—';
     if (logsDir) logsDir.textContent = hardwareData.logs_dir || '—';
     if (presetsDir) presetsDir.textContent = hardwareData.presets_dir || '—';
     if (uiPort) uiPort.textContent = hardwareData.ui_port ? `http://127.0.0.1:${hardwareData.ui_port}/` : '—';
     renderModelLibraries();
+  }
+
+  function downloadJson(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function pickJsonFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.addEventListener('change', () => {
+        resolve(input.files?.[0] || null);
+      });
+      input.click();
+    });
+  }
+
+  async function exportConfigFile() {
+    try {
+      const data = await api('/api/config');
+      downloadJson('dflash-console-config.json', data.config || {});
+      toast('Config exported');
+    } catch (err) {
+      toast(err.message, false);
+    }
+  }
+
+  async function importConfigFile() {
+    const file = await pickJsonFile();
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        toast('Invalid config file', false);
+        return;
+      }
+      const ok = window.confirm('Replace your current console settings with this config file?');
+      if (!ok) return;
+      await api('/api/config', {
+        method: 'PUT',
+        body: JSON.stringify(parsed),
+      });
+      toast('Config imported');
+      librariesDraft = null;
+      hardwareDraft = null;
+      await fetchHardware();
+      if (window.DFlashServerLive?.refresh) void window.DFlashServerLive.refresh();
+      if (window.DFlashModelsLive?.refresh) void window.DFlashModelsLive.refresh();
+    } catch (err) {
+      toast(err.message || 'Could not import config', false);
+    }
+  }
+
+  async function exportPresetFiles() {
+    try {
+      const data = await api('/api/presets/export');
+      downloadJson('dflash-console-presets.json', { files: data.files || {} });
+      toast(`Exported ${data.count || 0} preset file${data.count === 1 ? '' : 's'}`);
+    } catch (err) {
+      toast(err.message, false);
+    }
+  }
+
+  async function importPresetFiles() {
+    const file = await pickJsonFile();
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const files = parsed?.files && typeof parsed.files === 'object' ? parsed.files : parsed;
+      if (!files || typeof files !== 'object' || Array.isArray(files)) {
+        toast('Invalid presets file', false);
+        return;
+      }
+      const names = Object.keys(files).filter((name) => String(name).toLowerCase().endsWith('.ini'));
+      if (!names.length) {
+        toast('No .ini preset files found in import', false);
+        return;
+      }
+      const ok = window.confirm(`Import ${names.length} launch preset file${names.length === 1 ? '' : 's'}?`);
+      if (!ok) return;
+      const result = await api('/api/presets/import', {
+        method: 'POST',
+        body: JSON.stringify({ files }),
+      });
+      toast(`Imported ${result.written || 0} preset file${result.written === 1 ? '' : 's'}`);
+    } catch (err) {
+      toast(err.message || 'Could not import presets', false);
+    }
   }
 
   function renderModelLibraries() {
@@ -594,8 +697,7 @@
   function startPolling() {
     if (pollTimer) return;
     pollTimer = window.setInterval(() => {
-      const modal = settingsModal();
-      if (!modal?.classList.contains('open')) return;
+      if (document.body.dataset.activeView !== 'settings') return;
       void fetchHardware({ silent: true }).then(() => {
         const panel = activePanelId();
         if (panel === 'hw-system') renderHardwareSummary();
@@ -610,17 +712,7 @@
     pollTimer = null;
   }
 
-  function openSettings(panelId = DEFAULT_PANEL) {
-    openSettingsModal();
-    showPanel(panelId);
-    void fetchHardware().then(startPolling).catch((err) => toast(err.message, false));
-  }
-
   function bind() {
-    document.querySelector('[data-action="open-settings"]')?.addEventListener('click', () => {
-      openSettings(DEFAULT_PANEL);
-    });
-
     document.querySelectorAll('[data-action="open-settings-panel"]').forEach((btn) => {
       btn.addEventListener('click', () => {
         openSettings(btn.dataset.settingsPanel || DEFAULT_PANEL);
@@ -649,6 +741,10 @@
     document.getElementById('settingsAddLibrary')?.addEventListener('click', openLibraryBrowse);
     document.getElementById('settingsScanLibrary')?.addEventListener('click', openLibraryScan);
     document.getElementById('settingsDownloadLibrary')?.addEventListener('change', scheduleLibrariesSave);
+    document.getElementById('settingsExportConfig')?.addEventListener('click', () => void exportConfigFile());
+    document.getElementById('settingsImportConfig')?.addEventListener('click', () => void importConfigFile());
+    document.getElementById('settingsExportPresets')?.addEventListener('click', () => void exportPresetFiles());
+    document.getElementById('settingsImportPresets')?.addEventListener('click', () => void importPresetFiles());
 
     ['serverSettingsPort', 'serverSettingsHost', 'serverSettingsContext', 'serverSettingsIdle',
       'serverSettingsProfile', 'serverSettingsGpu'].forEach((id) => {
@@ -663,14 +759,6 @@
     document.getElementById('serverSettingsPick')?.addEventListener('change', () => {
       renderGatewayPanel();
     });
-
-    const modal = settingsModal();
-    if (modal) {
-      const observer = new MutationObserver(() => {
-        if (!modal.classList.contains('open')) stopPolling();
-      });
-      observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
-    }
   }
 
   document.addEventListener('DOMContentLoaded', bind);
@@ -678,6 +766,8 @@
   window.DFlashSettingsLive = {
     showPanel,
     openSettings,
+    onViewEnter,
+    onViewLeave,
     refresh: fetchHardware,
     addLibrariesFromScan,
     addLibraryFromBrowse,

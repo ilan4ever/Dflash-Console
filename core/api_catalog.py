@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+from core.version import APP_VERSION
+
+_DOCS_ROOT = Path(__file__).resolve().parent.parent / 'docs'
 
 
 def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str, Any]:
@@ -16,12 +21,12 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
             {
                 'id': 'overview',
                 'title': 'Overview',
-                'markdown': (
-                    'DFlash Console exposes two layers of API:\n\n'
-                    '1. **Console API** (`/api/...`) — manage engines, checkpoints, hardware, and load/unload with full runtime JSON.\n'
-                    '2. **Engine API** (`http://host:port/v1/...`) — OpenAI-compatible chat against a running llama-server router.\n\n'
-                    'Send **context window**, **load settings**, and **inference settings** as JSON when loading a checkpoint or in each chat request.'
-                ),
+                'html': _overview_html(base),
+            },
+            {
+                'id': 'user-guide',
+                'title': 'User guide',
+                'markdown': _load_user_guide(),
             },
             {
                 'id': 'engines',
@@ -45,6 +50,105 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
             },
         ],
     }
+
+
+def _load_user_guide() -> str:
+    path = _DOCS_ROOT / 'USER-GUIDE.md'
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return 'User guide file not found. See `docs/USER-GUIDE.md` in the repository.'
+    lines = text.splitlines()
+    if lines and lines[0].startswith('# '):
+        lines = lines[1:]
+    return '\n'.join(lines).strip()
+
+
+def _overview_html(base: str) -> str:
+    return f'''
+<div class="df-docs-hero">
+  <div class="df-docs-hero-inner">
+    <span class="df-docs-hero-badge">DFlash Console · v{APP_VERSION}</span>
+    <h2 class="df-docs-hero-title">Local control panel for DFlash engines</h2>
+    <p class="df-docs-hero-lead">
+      Manage llama-server routers, checkpoint libraries, GPU settings, and live inference stats
+      from one LM Studio–style workbench beside your DFlash install.
+    </p>
+    <div class="df-docs-hero-actions">
+      <a class="df-docs-pill primary" href="{base}/" target="_blank" rel="noopener">Open console</a>
+      <a class="df-docs-pill" href="{base}/docs" target="_blank" rel="noopener">Swagger UI</a>
+      <a class="df-docs-pill" href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>
+    </div>
+  </div>
+</div>
+
+<div class="df-docs-feature-grid">
+  <article class="df-docs-feature-card">
+    <span class="df-docs-feature-icon" aria-hidden="true">⚡</span>
+    <h3>Engines</h3>
+    <p>Start routers, load checkpoints in parallel, eject without stopping the listener, and watch live token stats on each card.</p>
+  </article>
+  <article class="df-docs-feature-card">
+    <span class="df-docs-feature-icon" aria-hidden="true">▤</span>
+    <h3>Checkpoints</h3>
+    <p>Scan GGUF and other model folders across library roots. Load loadable profiles straight from the catalog.</p>
+  </article>
+  <article class="df-docs-feature-card">
+    <span class="df-docs-feature-icon" aria-hidden="true">⌕</span>
+    <h3>Model catalog</h3>
+    <p>Search Hugging Face and download into configured library paths without leaving the app.</p>
+  </article>
+  <article class="df-docs-feature-card">
+    <span class="df-docs-feature-icon" aria-hidden="true">⚙</span>
+    <h3>Settings &amp; Locations</h3>
+    <p>GPU strategy, engine network, config and preset import/export — all paths in one panel.</p>
+  </article>
+</div>
+
+<div class="df-docs-strip">
+  <div class="df-docs-strip-item">
+    <span class="df-docs-strip-label">Console API</span>
+    <code>/api/…</code>
+    <span class="df-docs-strip-desc">Manage engines, hardware, libraries, and proxied chat</span>
+  </div>
+  <div class="df-docs-strip-item">
+    <span class="df-docs-strip-label">Engine API</span>
+    <code>host:port/v1/…</code>
+    <span class="df-docs-strip-desc">OpenAI-compatible chat against a running router</span>
+  </div>
+</div>
+
+<section class="df-docs-section-block">
+  <h3>What&apos;s new in v{APP_VERSION}</h3>
+  <ul class="df-docs-checklist">
+    <li>Live <strong>Generating</strong> timer and token speed on loaded engine cards</li>
+    <li>Parallel model loading without blocking other engines</li>
+    <li>Click loaded cards for runtime inspector; right-click context menu</li>
+    <li>Accurate CPU meter aligned with Task Manager</li>
+    <li>Locations panel with config and preset backup</li>
+    <li>Clear engine logs from the developer log header</li>
+  </ul>
+</section>
+
+<section class="df-docs-section-block">
+  <h3>Quick start</h3>
+  <ol class="df-docs-steps">
+    <li>Copy <code>config.example.json</code> → <code>config.json</code> and set <code>dflash_root</code>.</li>
+    <li>Run <code>.\\run.ps1</code> and open <a href="{base}/">{base}/</a>.</li>
+    <li>On <strong>Engines</strong>, turn on a profile and load a checkpoint.</li>
+    <li>Point your app at the card URL or the console chat proxy.</li>
+  </ol>
+</section>
+
+<section class="df-docs-section-block muted">
+  <h3>API layers</h3>
+  <p>
+    Send <strong>context window</strong>, <strong>load settings</strong>, and <strong>inference settings</strong>
+    as JSON when loading a checkpoint (<code>POST /api/servers/{{id}}/load</code>) or override them per chat request.
+    See <strong>Runtime JSON shapes</strong> and <strong>Engine control</strong> in the sidebar.
+  </p>
+</section>
+'''.strip()
 
 
 def _engine_endpoints() -> list[dict[str, Any]]:
@@ -72,7 +176,10 @@ def _engine_endpoints() -> list[dict[str, Any]]:
                 'context_size': 32768,
                 'load_settings': {'gpu_layers': 99},
                 'inference_settings': {'temperature': 0.7, 'max_tokens': 4096},
+                'model_path': 'C:\\\\path\\\\to\\\\model.gguf',
+                'model_id': 'optional-router-id',
             },
+            'notes': 'Omit model_path to load the engine profile default. Pass model_path to load any local GGUF on this engine (LM Studio, library scan, etc.).',
         },
         {'method': 'POST', 'path': f'/api/servers/{sid}/unload', 'summary': 'Unload checkpoint; router stays up.'},
         {'method': 'POST', 'path': f'/api/servers/{sid}/stop', 'summary': 'Stop the engine process.'},
@@ -86,6 +193,7 @@ def _engine_endpoints() -> list[dict[str, Any]]:
             'body': {'model': 'model-id', 'messages': [{'role': 'user', 'content': 'Hello'}], 'max_tokens': 512},
         },
         {'method': 'GET', 'path': f'/api/logs/{sid}?tail=200', 'summary': 'Tail engine logs.'},
+        {'method': 'DELETE', 'path': f'/api/logs/{sid}', 'summary': 'Clear engine log file.'},
     ]
 
 
@@ -107,11 +215,17 @@ def _engine_openai_endpoints() -> list[dict[str, Any]]:
 def _other_endpoints() -> list[dict[str, Any]]:
     return [
         {'method': 'GET', 'path': '/api/health', 'summary': 'Console liveness.'},
+        {'method': 'GET', 'path': '/api/endpoints', 'summary': 'Live list of every console HTTP route (for external apps).'},
+        {'method': 'GET', 'path': '/api/installed', 'summary': 'Installed local models grouped by library/provider preset.'},
+        {'method': 'GET', 'path': '/api/console/logs?tail=200', 'summary': 'Console, startup, engine, and API-call logs (optional errors_only=1).'},
         {'method': 'GET', 'path': '/api/models', 'summary': 'Checkpoint catalog.'},
         {'method': 'GET', 'path': '/api/hardware', 'summary': 'GPU/CPU and libraries.'},
         {'method': 'PATCH', 'path': '/api/hardware', 'summary': 'GPU strategy and enabled devices.'},
         {'method': 'GET', 'path': '/api/runtime-recommendations', 'summary': 'Hardware-aware runtime suggestions.'},
-        {'method': 'GET', 'path': '/api/docs/catalog', 'summary': 'Full API reference JSON.'},
+        {'method': 'GET', 'path': '/api/presets/export', 'summary': 'Export launch preset INI files.'},
+        {'method': 'POST', 'path': '/api/presets/import', 'summary': 'Import launch preset INI files.'},
+        {'method': 'GET', 'path': '/api/docs/catalog', 'summary': 'Curated API reference JSON for the UI.'},
+        {'method': 'GET', 'path': '/openapi.json', 'summary': 'OpenAPI schema with full route definitions.'},
     ]
 
 

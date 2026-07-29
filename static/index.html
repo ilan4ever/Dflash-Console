@@ -13,7 +13,10 @@
       <div class="df-brand">
         <img src="/assets/dflash_console_logo.png" alt="" class="df-brand-logo" width="80" height="80">
         <div class="df-brand-text">
-          <span class="df-brand-title">DFlash Console</span>
+          <div class="df-brand-title-row">
+            <span class="df-brand-title">DFlash Console</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.24</span>
+          </div>
         </div>
       </div>
       <nav class="df-nav">
@@ -23,21 +26,21 @@
         </button>
         <button type="button" class="df-nav-item lm-tab" data-tab="models">
           <span class="df-nav-icon" aria-hidden="true">▤</span>
-          <span class="df-nav-label">Checkpoints</span>
+          <span class="df-nav-label">Models</span>
         </button>
         <button type="button" class="df-nav-item lm-tab" data-tab="chat">
           <span class="df-nav-icon" aria-hidden="true">▷</span>
           <span class="df-nav-label">Playground</span>
         </button>
+        <button type="button" class="df-nav-item lm-tab" data-tab="catalog">
+          <span class="df-nav-icon" aria-hidden="true">⌕</span>
+          <span class="df-nav-label">Model catalog</span>
+        </button>
         <button type="button" class="df-nav-item lm-tab" data-tab="devices">
           <span class="df-nav-icon" aria-hidden="true">◎</span>
           <span class="df-nav-label">Nodes</span>
         </button>
-        <button type="button" class="df-nav-item" data-action="open-model-search">
-          <span class="df-nav-icon" aria-hidden="true">⌕</span>
-          <span class="df-nav-label">Model catalog</span>
-        </button>
-        <button type="button" class="df-nav-item" data-action="open-settings">
+        <button type="button" class="df-nav-item lm-tab" data-tab="settings">
           <span class="df-nav-icon" aria-hidden="true">⚙</span>
           <span class="df-nav-label">Settings</span>
         </button>
@@ -46,9 +49,6 @@
           <span class="df-nav-label">Documentation</span>
         </button>
       </nav>
-      <div class="df-sidenav-footer">
-        <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.23</span>
-      </div>
     </aside>
 
     <div class="df-workspace">
@@ -56,6 +56,22 @@
       <div class="lm-sysbar-row">
         <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
         <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+        <div class="df-downloads-tray" id="dfDownloadsTray">
+          <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" aria-controls="dfDownloadsPanel" title="Model downloads">
+            <span class="df-downloads-toggle-icon" aria-hidden="true">↓</span>
+            <span class="df-downloads-toggle-label">Downloads</span>
+            <span class="df-downloads-badge hidden" id="dfDownloadsBadge">0</span>
+          </button>
+          <div class="df-downloads-panel hidden" id="dfDownloadsPanel" role="region" aria-label="Download queue">
+            <div class="df-downloads-panel-head">
+              <strong>Downloads</strong>
+              <span class="df-downloads-panel-sub" id="dfDownloadsPanelSub">No active downloads</span>
+            </div>
+            <div class="df-downloads-list" id="dfDownloadsList">
+              <p class="df-downloads-empty">No downloads yet.</p>
+            </div>
+          </div>
+        </div>
         <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Activity status">
           <span class="lm-status-feed-line" id="statusFeedPrimary">Ready</span>
           <span class="lm-status-feed-line secondary" id="statusFeedSecondary"></span>
@@ -74,7 +90,7 @@
       <nav class="lm-tabs">
         <button class="lm-tab" data-tab="chat">Playground</button>
         <button class="lm-tab active" data-tab="server">Engines</button>
-        <button class="lm-tab" data-tab="models">Library</button>
+        <button class="lm-tab" data-tab="models">Models</button>
         <button class="lm-tab" data-tab="devices">Nodes</button>
       </nav>
       <div class="lm-topnav-title"></div>
@@ -84,11 +100,50 @@
     <div class="lm-body">
       <div class="lm-main">
 
-        <!-- Chat -->
+        <!-- Playground (chat) -->
         <div class="lm-view" data-view="chat">
-          <div class="lm-empty-state">
-            <p>No session selected</p>
-            <span class="lm-empty-hint">Playground is planned for a future release</span>
+          <div class="df-chat-layout">
+            <aside class="df-chat-sidebar" aria-label="Chat sessions">
+              <button type="button" class="lm-btn primary small df-chat-new" id="chatNewBtn">New chat</button>
+              <div class="df-chat-session-list" id="chatSessionList"></div>
+            </aside>
+            <div class="df-chat-main">
+              <header class="df-chat-head">
+                <div class="df-chat-head-left">
+                  <div class="df-chat-load-row">
+                    <label class="df-chat-engine-label" for="chatEnginePick">Engine</label>
+                    <select class="lm-select" id="chatEnginePick" title="Target inference engine">
+                      <option value="">Select engine…</option>
+                    </select>
+                  </div>
+                  <div class="df-chat-load-row">
+                    <label class="df-chat-engine-label" for="chatCheckpointPick">Model</label>
+                    <select class="lm-select df-chat-checkpoint-pick" id="chatCheckpointPick" title="Model to load">
+                      <option value="">Select model…</option>
+                    </select>
+                    <button type="button" class="lm-btn primary small" id="chatLoadBtn">Load</button>
+                  </div>
+                  <span class="df-chat-model-tag" id="chatModelTag" title="Model ready for chat">—</span>
+                </div>
+                <div class="df-chat-head-actions">
+                  <button type="button" class="lm-btn ghost small" id="chatClearBtn" title="Clear messages">Clear</button>
+                </div>
+              </header>
+              <div class="df-chat-body">
+                <div class="df-chat-messages" id="chatMessages" aria-live="polite"></div>
+                <div class="df-chat-welcome" id="chatWelcome">
+                  <div class="df-chat-welcome-icon" aria-hidden="true">▷</div>
+                  <h2>Playground</h2>
+                  <p>Pick an engine and model above, click <strong>Load</strong>, then chat to test prompts and speed.</p>
+                  <p class="lm-hint">Works with DFlash profiles, LM Studio files, and other local GGUF models.</p>
+                </div>
+              </div>
+              <footer class="df-chat-composer">
+                <textarea id="chatInput" class="df-chat-input" rows="1" placeholder="Message the model… (Enter to send, Shift+Enter for newline)" disabled></textarea>
+                <button type="button" class="lm-btn primary df-chat-send" id="chatSendBtn" disabled aria-label="Send message">Send</button>
+              </footer>
+              <div class="df-chat-status" id="chatStatus" aria-live="polite"></div>
+            </div>
           </div>
         </div>
 
@@ -111,16 +166,16 @@
                 <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
                 <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy">⧉</button>
                 <div class="lm-engine-load-group">
-                  <select id="serverModelPick" class="lm-select lm-engine-model-pick" title="Checkpoints discovered on this machine">
-                    <option value="">Select checkpoint…</option>
+                  <select id="serverModelPick" class="lm-select lm-engine-model-pick" title="Models discovered on this machine">
+                    <option value="">Select model…</option>
                   </select>
                   <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
                 </div>
               </div>
             </div>
-            <div class="lm-section-label">Running checkpoints</div>
+            <div class="lm-section-label">Running models</div>
             <div id="serverModelCards" class="lm-server-cards"></div>
-            <div id="serverEmptyState" class="lm-server-empty">Engine stopped. Enable it or run a checkpoint.</div>
+            <div id="serverEmptyState" class="lm-server-empty">Engine stopped. Enable it or load a model.</div>
           </div>
           <div class="lm-logs-dock" id="serverLogsDock">
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
@@ -128,24 +183,37 @@
               <div class="lm-logs-header">
                 <div class="lm-logs-header-left">
                   <span class="lm-logs-title">Engine log</span>
-                  <select class="lm-select compact lm-logs-filter" id="serverLogsFilter" title="Filter logs" aria-label="Filter logs">
-                    <option value="all">All lines</option>
-                    <option value="errors">Errors only</option>
-                    <option value="warnings">Warnings</option>
-                    <option value="model">Model activity</option>
-                    <option value="engine">Engine lifecycle</option>
-                    <option value="inference">Inference</option>
-                    <option value="smart-model">Model summary</option>
-                  </select>
+                  <div class="lm-logs-filter-dd" id="serverLogsFilterWrap">
+                    <button type="button" class="lm-select compact lm-logs-filter-trigger" id="serverLogsFilterTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter logs">
+                      <span class="lm-logs-filter-label" id="serverLogsFilterLabel">All lines</span>
+                    </button>
+                    <div class="lm-logs-filter-menu" id="serverLogsFilterMenu" role="listbox" aria-label="Filter logs" hidden>
+                      <button type="button" class="lm-logs-filter-item active" data-filter="all" role="option" aria-selected="true">All lines</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="errors" role="option" aria-selected="false">Errors only</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="warnings" role="option" aria-selected="false">Warnings</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="model" role="option" aria-selected="false">Model activity</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="engine" role="option" aria-selected="false">Engine lifecycle</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="inference" role="option" aria-selected="false">Inference</button>
+                      <button type="button" class="lm-logs-filter-item" data-filter="smart-model" role="option" aria-selected="false">Model summary</button>
+                    </div>
+                  </div>
                   <span class="lm-logs-count" id="serverLogsCount" aria-live="polite"></span>
                 </div>
                 <div class="lm-logs-header-actions">
                   <button class="lm-icon-btn tiny" id="serverLogsCopy" title="Copy visible logs" aria-label="Copy visible logs">⧉</button>
-                  <button class="lm-icon-btn tiny" id="serverLogsHide" title="Hide developer logs" aria-label="Hide developer logs">▾</button>
+                  <button class="lm-icon-btn tiny" id="serverLogsClear" title="Clear log" aria-label="Clear log">⌧</button>
                   <button class="lm-icon-btn tiny" id="serverLogsRefresh" title="Refresh">↻</button>
+                  <button class="lm-icon-btn tiny" id="serverLogsHide" title="Hide developer logs" aria-label="Hide developer logs">▾</button>
                 </div>
               </div>
-              <div class="lm-logs-body" id="serverLogsBody"></div>
+              <div class="lm-logs-body-wrap">
+                <div class="lm-logs-body" id="serverLogsBody"></div>
+                  <button type="button" class="lm-logs-jump-bottom" id="serverLogsJumpBottom" title="Scroll to latest logs" aria-label="Scroll to latest logs">
+                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path fill="currentColor" d="M12 16.5 7 10.5h10z"/>
+                    </svg>
+                  </button>
+              </div>
             </section>
           </div>
           <button type="button" class="lm-logs-restore" id="serverLogsRestore" title="Show engine log">Engine log ▴</button>
@@ -155,18 +223,19 @@
         <div class="lm-view" data-view="models">
           <div class="lm-models-toolbar">
             <div class="lm-models-toolbar-right">
-              <div class="lm-models-filter" role="group" aria-label="Checkpoint filter">
-                <button type="button" class="lm-filter-chip" data-models-filter="all">All checkpoints</button>
+              <div class="lm-models-filter" role="group" aria-label="Model filter">
+                <button type="button" class="lm-filter-chip" data-models-filter="all">All models</button>
                 <button type="button" class="lm-filter-chip active" data-models-filter="dflash">DFlash only</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="downloading">Downloading</button>
               </div>
-              <input type="search" class="lm-search-input" id="modelsFilterInput" placeholder="Filter checkpoints… (Ctrl + F)">
+              <input type="search" class="lm-search-input" id="modelsFilterInput" placeholder="Filter models… (Ctrl + F)">
             </div>
           </div>
           <div class="lm-models-table-wrap">
             <table class="lm-models-table">
               <thead>
                 <tr>
-                  <th class="lm-col-model">Checkpoint</th>
+                  <th class="lm-col-model">Model</th>
                   <th>Family</th>
                   <th>Scale</th>
                   <th>Source</th>
@@ -209,12 +278,297 @@
             </article>
           </div>
         </div>
+        <!-- Model catalog -->
+        <div class="lm-view" data-view="catalog">
+          <div class="df-catalog-shell lm-search-dialog">
+            <div class="lm-search-layout" id="hfSearchLayout">
+          <div class="lm-search-left" id="hfSearchLeft">
+            <input type="search" class="lm-search-input lm-search-input-modal" id="hfSearchInput" placeholder="Search Hugging Face models…" autocomplete="off">
+            <div class="lm-search-list-header">
+              <div class="df-catalog-toolbar">
+                <div class="df-catalog-toolbar-row">
+                  <div class="df-catalog-toolbar-group">
+                    <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
+                    <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
+                      <option value="dflash" selected>DFlash / speculative</option>
+                      <option value="text-generation">Text generation (GGUF)</option>
+                      <option value="all-gguf">All GGUF</option>
+                      <option value="text-to-speech">Text-to-speech</option>
+                      <option value="automatic-speech-recognition">Speech-to-text</option>
+                      <option value="image-to-text">OCR / image-to-text</option>
+                      <option value="feature-extraction">Embeddings</option>
+                    </select>
+                  </div>
+                  <div class="df-catalog-toolbar-group">
+                    <label class="df-catalog-filter-label" for="hfSearchSort">Filter by</label>
+                    <select class="lm-select small" id="hfSearchSort" aria-label="Filter by">
+                      <option value="downloads">Most downloads</option>
+                      <option value="lastModified">Recently updated</option>
+                      <option value="likes">Most liked</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="df-catalog-toolbar-row df-catalog-toolbar-row-full">
+                  <div class="df-catalog-toolbar-group">
+                    <label class="df-catalog-filter-label" for="hfSearchCreator">Lab</label>
+                    <select class="lm-select small" id="hfSearchCreator" aria-label="Lab">
+                      <option value="">All labs</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="lm-search-list" id="hfSearchList">
+              <div class="lm-search-empty">Open search to browse GGUF models from Hugging Face.</div>
+            </div>
+          </div>
+          <div class="lm-search-split-handle" id="hfSearchSplitHandle" role="separator" aria-orientation="vertical" aria-label="Resize model list" tabindex="0"></div>
+          <div class="lm-search-right" id="hfSearchDetail">
+            <div class="lm-search-placeholder">
+              <p>Select a model to view details, README, and download GGUF files.</p>
+            </div>
+          
+          </div>
+        </div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="lm-view" data-view="settings">
+          <div class="df-settings-shell">
+            <div class="lm-settings-layout">
+          <nav class="lm-settings-nav" id="settingsNav">
+            <button type="button" class="lm-settings-nav-item active" data-settings-panel="ws-checkpoints">Model storage</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-locations">Locations</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-system">System summary</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-gpus">GPU devices</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-strategy">Multi-GPU rules</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-live">Live monitor</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-network">Network &amp; API</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-behavior">Runtime limits</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-preset">Launch preset</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">MCP &amp; clients</button>
+          </nav>
+
+          <div class="lm-settings-content">
+            <div class="lm-settings-panel active" data-settings-panel="ws-checkpoints">
+              <div class="lm-settings-header"><h2>Model storage</h2></div>
+              <p class="lm-setting-desc">Choose where downloads land and which folders appear in the model library. DFlash models is the default; add optional libraries such as speech, OCR, or third-party apps.</p>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Default download folder</strong><p class="lm-setting-desc">New Hugging Face downloads save here</p></div>
+                  <select class="lm-select" id="settingsDownloadLibrary"></select>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Library locations</strong>
+                  <p class="lm-setting-desc">Enable folders to scan for models on this PC. Use Scan PC to find Piper, Whisper, GGUF, OCR, and other installs automatically.</p>
+                </div>
+                <div id="settingsModelLibraries" class="lm-library-list"></div>
+                <div class="lm-library-actions">
+                  <button class="lm-btn ghost" type="button" id="settingsScanLibrary">Scan PC</button>
+                  <button class="lm-btn ghost" type="button" id="settingsAddLibrary">Add folder</button>
+                </div>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="ws-locations">
+              <div class="lm-settings-header"><h2>Locations</h2></div>
+              <p class="lm-setting-desc">Paths used by DFlash Console on this machine.</p>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Config file</strong><p class="lm-setting-desc">Engine profiles, libraries, and preferences</p></div>
+                  <code class="lm-settings-path" id="settingsConfigPath">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>DFlash install</strong><p class="lm-setting-desc">llama-server binaries, draft models, and launch scripts</p></div>
+                  <code class="lm-settings-path" id="settingsDflashRoot">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Model library</strong><p class="lm-setting-desc">Default folder scanned for GGUF models</p></div>
+                  <code class="lm-settings-path" id="settingsModelsDir">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Engine logs</strong><p class="lm-setting-desc">Boot and load output for each engine profile</p></div>
+                  <code class="lm-settings-path" id="settingsLogsDir">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Launch presets</strong><p class="lm-setting-desc">Generated .ini files before each router launch</p></div>
+                  <code class="lm-settings-path" id="settingsPresetsDir">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Console UI</strong><p class="lm-setting-desc">Address where this app is served</p></div>
+                  <code class="lm-settings-path lm-settings-path-inline" id="settingsUiPort">—</code>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <div>
+                    <strong>Import &amp; export</strong>
+                    <p class="lm-setting-desc">Back up or move your config and generated launch presets.</p>
+                  </div>
+                  <div class="lm-settings-inline-actions">
+                    <button class="lm-btn ghost small" type="button" id="settingsExportConfig">Export config</button>
+                    <button class="lm-btn ghost small" type="button" id="settingsImportConfig">Import config</button>
+                    <button class="lm-btn ghost small" type="button" id="settingsExportPresets">Export presets</button>
+                    <button class="lm-btn ghost small" type="button" id="settingsImportPresets">Import presets</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="hw-system">
+              <div class="lm-settings-header">
+                <h2>System summary</h2>
+                <div class="lm-settings-header-actions">
+                  <button class="lm-btn ghost small" type="button" id="settingsHardwareCopy">Copy info</button>
+                  </div>
+              </div>
+              <div class="lm-hw-summary" id="settingsHwSummary"></div>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="hw-gpus">
+              <div class="lm-settings-header"><h2>GPU devices</h2></div>
+              <p class="lm-setting-desc" id="settingsGpuDetectLine">Detecting GPUs…</p>
+              <div id="settingsGpuList" class="lm-hw-gpu-list"></div>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="hw-strategy">
+              <div class="lm-settings-header"><h2>Multi-GPU rules</h2></div>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Multi-GPU mode</strong><p class="lm-setting-desc" id="settingsGpuStrategyHint">How weights spread when an engine uses automatic GPU selection.</p></div>
+                  <select class="lm-select" id="settingsGpuStrategy">
+                    <option value="single_largest">Single GPU (largest VRAM)</option>
+                    <option value="split_evenly">Split evenly</option>
+                    <option value="split_by_vram">Split by VRAM (large models only)</option>
+                  </select>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Dedicated VRAM only</strong><p class="lm-setting-desc">Prefer dedicated GPU memory over shared memory for weights.</p></div>
+                  <label class="lm-toggle small"><input type="checkbox" id="settingsLimitDedicatedVram" checked><span class="lm-toggle-track"></span></label>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>KV cache on GPU</strong><p class="lm-setting-desc">Keep attention cache on GPU when possible. <span class="lm-dev-badge subtle">Launch flag pending</span></p></div>
+                  <label class="lm-toggle small"><input type="checkbox" id="settingsOffloadKvGpu" checked><span class="lm-toggle-track"></span></label>
+                </div>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="hw-live">
+              <div class="lm-settings-header"><h2>Live monitor</h2></div>
+              <p class="lm-setting-desc">Refreshes every few seconds while settings stay open.</p>
+              <div class="lm-hw-monitor" id="settingsHwMonitor"></div>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="gw-network">
+              <div class="lm-settings-header"><h2>Network &amp; API</h2></div>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Engine profile</strong><p class="lm-setting-desc">Choose which configured engine you edit below</p></div>
+                  <select class="lm-select full" id="serverSettingsPick"></select>
+                </div>
+                <div id="settingsGatewaySummary" class="lm-gateway-summary"></div>
+                <div class="lm-setting-row">
+                  <div><strong>Listen port</strong><p class="lm-setting-desc">OpenAI-compatible API port for this profile</p></div>
+                  <input type="number" class="lm-num" id="serverSettingsPort" value="8090">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Bind address</strong><p class="lm-setting-desc">127.0.0.1 keeps the API local-only</p></div>
+                  <input type="text" class="lm-num" id="serverSettingsHost" value="127.0.0.1">
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>API endpoint</strong></div>
+                  <code class="lm-settings-path" id="settingsGatewayApiUrl">—</code>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Console API reference</strong>
+                  <p class="lm-setting-desc">Manage engines, load models with JSON runtime settings, and proxy chat completions.</p>
+                </div>
+                <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
+                <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="gw-behavior">
+              <div class="lm-settings-header"><h2>Runtime limits</h2></div>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Default context</strong><p class="lm-setting-desc">Starting context window when this engine loads a model</p></div>
+                  <input type="number" class="lm-num" id="serverSettingsContext" value="65536">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model is unloaded · 0 = never</p></div>
+                  <input type="number" class="lm-num" id="serverSettingsIdle" value="60">
+                </div>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="gw-preset">
+              <div class="lm-settings-header"><h2>Launch preset</h2></div>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>DFlash preset</strong><p class="lm-setting-desc">Target/draft pairing and speculative decoding mode</p></div>
+                  <select class="lm-select" id="serverSettingsProfile">
+                    <option value="gemma-chat">gemma-chat</option>
+                    <option value="gemma-12-ar">gemma-12-ar</option>
+                    <option value="gemma-ar">gemma-ar</option>
+                    <option value="qwen-dflash">qwen-dflash</option>
+                    <option value="qwen-ar">qwen-ar</option>
+                    <option value="bonsai">bonsai</option>
+                    <option value="bonsai-spec">bonsai-spec</option>
+                  </select>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>GPU device</strong><p class="lm-setting-desc">Override automatic GPU selection for this profile</p></div>
+                  <select class="lm-select" id="serverSettingsGpu"></select>
+                </div>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="int-mcp">
+              <div class="lm-settings-header">
+                <h2>MCP &amp; clients</h2>
+                <div class="lm-settings-header-actions">
+                  <button class="lm-btn ghost small" type="button" id="settingsMcpCopy">Copy mcp.json</button>
+                  </div>
+              </div>
+              <p class="lm-setting-desc">Model Context Protocol lets desktop AI clients attach tools and data sources. DFlash Console does not host an MCP server yet — use the OpenAI-compatible engine URLs below, or copy the starter file for external clients.</p>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>MCP host status</strong><p class="lm-setting-desc">In-console MCP discovery and registration</p></div>
+                  <span class="lm-tag yellow" id="settingsMcpStatus">Not active</span>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>OpenAI-compatible engines</strong>
+                  <p class="lm-setting-desc">These URLs work today with Playground, API clients, and many integrations</p>
+                </div>
+                <div id="settingsMcpEngines" class="lm-mcp-engine-list"></div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>mcp.json preview</strong>
+                  <p class="lm-setting-desc">Starter config for Cursor, Claude Desktop, or other MCP-aware apps</p>
+                </div>
+                <pre class="lm-metadata-pre lm-mcp-json" id="settingsMcpJson">{}</pre>
+              </section>
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+
       </div>
 
       <aside class="lm-inspector">
         <div class="lm-inspector-resize-handle" id="inspectorResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0"></div>
         <div class="lm-inspector-head">
-          <h2 id="inspectorHeadTitle">Select a checkpoint</h2>
+          <h2 id="inspectorHeadTitle">Select a model</h2>
         </div>
         <div class="lm-inspector-tabs">
           <button class="lm-inspector-tab" data-inspector-tab="info">Details</button>
@@ -223,7 +577,7 @@
         <div class="lm-inspector-scroll">
           <div class="lm-inspector-panel" data-inspector-panel="info">
             <section class="lm-field-group">
-              <h3>Checkpoint</h3>
+              <h3>Model</h3>
               <div class="lm-info-row"><span>Model family</span><strong id="inspectorInfoArch">—</strong></div>
               <div class="lm-info-row"><span>Parameter scale</span><strong id="inspectorInfoParams">—</strong></div>
               <div class="lm-info-row"><span>Precision</span><strong id="inspectorInfoQuant">—</strong></div>
@@ -276,7 +630,10 @@
                 </div>
               </div>
               <div class="lm-switch-row">
-                <span>Flash attention <span class="lm-hint lm-hint-inline" id="inspectorFlashHint"></span></span>
+                <div class="lm-switch-row-copy">
+                  <span class="lm-switch-row-title">Flash attention</span>
+                  <span class="lm-hint lm-hint-inline" id="inspectorFlashHint"></span>
+                </div>
                 <label class="lm-toggle small"><input type="checkbox" id="inspectorFlashAttention" checked><span class="lm-toggle-track"></span></label>
               </div>
               <div class="lm-field" id="inspectorSpeculativeGroup">
@@ -359,238 +716,6 @@
     </div>
   </div>
 
-  <!-- Settings modal -->
-  <div class="lm-modal lm-settings-modal" id="settingsModal" aria-hidden="true">
-    <div class="lm-modal-backdrop lm-settings-backdrop">
-      <div class="lm-modal-dialog lm-settings-dialog">
-        <div class="lm-settings-layout">
-          <nav class="lm-settings-nav" id="settingsNav">
-            <div class="lm-settings-nav-title">Settings</div>
-            <button type="button" class="lm-settings-nav-item active" data-settings-panel="ws-checkpoints">Checkpoint storage</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-install">DFlash install</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-logs">Log files</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-console">Console UI</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-system">System summary</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-gpus">GPU devices</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-strategy">Multi-GPU rules</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-live">Live monitor</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-network">Network &amp; API</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-behavior">Runtime limits</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-preset">Launch preset</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">MCP &amp; clients</button>
-          </nav>
-
-          <div class="lm-settings-content">
-            <div class="lm-settings-panel active" data-settings-panel="ws-checkpoints">
-              <div class="lm-settings-header"><h2>Checkpoint storage</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <p class="lm-setting-desc">Choose where downloads land and which folders appear in the checkpoint library. DFlash checkpoints is the default; add optional libraries such as speech, OCR, or third-party apps.</p>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Default download folder</strong><p class="lm-setting-desc">New Hugging Face downloads save here</p></div>
-                  <select class="lm-select" id="settingsDownloadLibrary"></select>
-                </div>
-              </section>
-              <section class="lm-settings-section">
-                <div class="lm-settings-section-head">
-                  <strong>Library locations</strong>
-                  <p class="lm-setting-desc">Enable folders to scan for models on this PC. Use Scan PC to find Piper, Whisper, GGUF, OCR, and other installs automatically.</p>
-                </div>
-                <div id="settingsModelLibraries" class="lm-library-list"></div>
-                <div class="lm-library-actions">
-                  <button class="lm-btn ghost" type="button" id="settingsScanLibrary">Scan PC</button>
-                  <button class="lm-btn ghost" type="button" id="settingsAddLibrary">Add folder</button>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="ws-install">
-              <div class="lm-settings-header"><h2>DFlash install</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <p class="lm-setting-desc">llama-server binaries, draft models, and launch scripts used by each engine profile.</p>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row lm-setting-row-path">
-                  <div><strong>Root path</strong></div>
-                  <code class="lm-settings-path" id="settingsDflashRoot">—</code>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="ws-logs">
-              <div class="lm-settings-header"><h2>Log files</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <p class="lm-setting-desc">Engine boot logs and presets written by DFlash Console.</p>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row lm-setting-row-path">
-                  <div><strong>Logs directory</strong></div>
-                  <code class="lm-settings-path" id="settingsLogsDir">—</code>
-                </div>
-                <div class="lm-setting-row lm-setting-row-path">
-                  <div><strong>Preset files</strong><p class="lm-setting-desc">Generated per engine before each router launch</p></div>
-                  <code class="lm-settings-path" id="settingsPresetsDir">—</code>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="ws-console">
-              <div class="lm-settings-header"><h2>Console UI</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Web UI port</strong><p class="lm-setting-desc">Address where this console is served</p></div>
-                  <code class="lm-settings-path lm-settings-path-inline" id="settingsUiPort">—</code>
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>Application</strong></div>
-                  <span class="lm-tag">DFlash Console</span>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="hw-system">
-              <div class="lm-settings-header">
-                <h2>System summary</h2>
-                <div class="lm-settings-header-actions">
-                  <button class="lm-btn ghost small" type="button" id="settingsHardwareCopy">Copy info</button>
-                  <button class="lm-icon-btn" type="button" data-action="close-modal">✕</button>
-                </div>
-              </div>
-              <div class="lm-hw-summary" id="settingsHwSummary"></div>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="hw-gpus">
-              <div class="lm-settings-header"><h2>GPU devices</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <p class="lm-setting-desc" id="settingsGpuDetectLine">Detecting GPUs…</p>
-              <div id="settingsGpuList" class="lm-hw-gpu-list"></div>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="hw-strategy">
-              <div class="lm-settings-header"><h2>Multi-GPU rules</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Multi-GPU mode</strong><p class="lm-setting-desc" id="settingsGpuStrategyHint">How weights spread when an engine uses automatic GPU selection.</p></div>
-                  <select class="lm-select" id="settingsGpuStrategy">
-                    <option value="single_largest">Single GPU (largest VRAM)</option>
-                    <option value="split_evenly">Split evenly</option>
-                    <option value="split_by_vram">Split by VRAM (large models only)</option>
-                  </select>
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>Dedicated VRAM only</strong><p class="lm-setting-desc">Prefer dedicated GPU memory over shared memory for weights.</p></div>
-                  <label class="lm-toggle small"><input type="checkbox" id="settingsLimitDedicatedVram" checked><span class="lm-toggle-track"></span></label>
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>KV cache on GPU</strong><p class="lm-setting-desc">Keep attention cache on GPU when possible. <span class="lm-dev-badge subtle">Launch flag pending</span></p></div>
-                  <label class="lm-toggle small"><input type="checkbox" id="settingsOffloadKvGpu" checked><span class="lm-toggle-track"></span></label>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="hw-live">
-              <div class="lm-settings-header"><h2>Live monitor</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <p class="lm-setting-desc">Refreshes every few seconds while settings stay open.</p>
-              <div class="lm-hw-monitor" id="settingsHwMonitor"></div>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="gw-network">
-              <div class="lm-settings-header"><h2>Network &amp; API</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Engine profile</strong><p class="lm-setting-desc">Choose which configured engine you edit below</p></div>
-                  <select class="lm-select full" id="serverSettingsPick"></select>
-                </div>
-                <div id="settingsGatewaySummary" class="lm-gateway-summary"></div>
-                <div class="lm-setting-row">
-                  <div><strong>Listen port</strong><p class="lm-setting-desc">OpenAI-compatible API port for this profile</p></div>
-                  <input type="number" class="lm-num" id="serverSettingsPort" value="8090">
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>Bind address</strong><p class="lm-setting-desc">127.0.0.1 keeps the API local-only</p></div>
-                  <input type="text" class="lm-num" id="serverSettingsHost" value="127.0.0.1">
-                </div>
-                <div class="lm-setting-row lm-setting-row-path">
-                  <div><strong>API endpoint</strong></div>
-                  <code class="lm-settings-path" id="settingsGatewayApiUrl">—</code>
-                </div>
-              </section>
-              <section class="lm-settings-section">
-                <div class="lm-settings-section-head">
-                  <strong>Console API reference</strong>
-                  <p class="lm-setting-desc">Manage engines, load checkpoints with JSON runtime settings, and proxy chat completions.</p>
-                </div>
-                <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
-                <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="gw-behavior">
-              <div class="lm-settings-header"><h2>Runtime limits</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Default context</strong><p class="lm-setting-desc">Starting context window when this engine loads a checkpoint</p></div>
-                  <input type="number" class="lm-num" id="serverSettingsContext" value="65536">
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model is unloaded · 0 = never</p></div>
-                  <input type="number" class="lm-num" id="serverSettingsIdle" value="60">
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="gw-preset">
-              <div class="lm-settings-header"><h2>Launch preset</h2><button class="lm-icon-btn" type="button" data-action="close-modal">✕</button></div>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>DFlash preset</strong><p class="lm-setting-desc">Target/draft pairing and speculative decoding mode</p></div>
-                  <select class="lm-select" id="serverSettingsProfile">
-                    <option value="gemma-chat">gemma-chat</option>
-                    <option value="gemma-12-ar">gemma-12-ar</option>
-                    <option value="gemma-ar">gemma-ar</option>
-                    <option value="qwen-dflash">qwen-dflash</option>
-                    <option value="qwen-ar">qwen-ar</option>
-                    <option value="bonsai">bonsai</option>
-                    <option value="bonsai-spec">bonsai-spec</option>
-                  </select>
-                </div>
-                <div class="lm-setting-row">
-                  <div><strong>GPU device</strong><p class="lm-setting-desc">Override automatic GPU selection for this profile</p></div>
-                  <select class="lm-select" id="serverSettingsGpu"></select>
-                </div>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="int-mcp">
-              <div class="lm-settings-header">
-                <h2>MCP &amp; clients</h2>
-                <div class="lm-settings-header-actions">
-                  <button class="lm-btn ghost small" type="button" id="settingsMcpCopy">Copy mcp.json</button>
-                  <button class="lm-icon-btn" type="button" data-action="close-modal">✕</button>
-                </div>
-              </div>
-              <p class="lm-setting-desc">Model Context Protocol lets desktop AI clients attach tools and data sources. DFlash Console does not host an MCP server yet — use the OpenAI-compatible engine URLs below, or copy the starter file for external clients.</p>
-              <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>MCP host status</strong><p class="lm-setting-desc">In-console MCP discovery and registration</p></div>
-                  <span class="lm-tag yellow" id="settingsMcpStatus">Not active</span>
-                </div>
-              </section>
-              <section class="lm-settings-section">
-                <div class="lm-settings-section-head">
-                  <strong>OpenAI-compatible engines</strong>
-                  <p class="lm-setting-desc">These URLs work today with Playground, API clients, and many integrations</p>
-                </div>
-                <div id="settingsMcpEngines" class="lm-mcp-engine-list"></div>
-              </section>
-              <section class="lm-settings-section">
-                <div class="lm-settings-section-head">
-                  <strong>mcp.json preview</strong>
-                  <p class="lm-setting-desc">Starter config for Cursor, Claude Desktop, or other MCP-aware apps</p>
-                </div>
-                <pre class="lm-metadata-pre lm-mcp-json" id="settingsMcpJson">{}</pre>
-              </section>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Library scan modal -->
   <div class="lm-modal" id="libraryScanModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -664,48 +789,8 @@
     </div>
   </div>
 
-  <!-- Model search modal -->
-  <div class="lm-modal" id="modelSearchModal" aria-hidden="true">
-    <div class="lm-modal-backdrop">
-      <div class="lm-modal-dialog lm-search-dialog">
-        <div class="lm-search-layout" id="hfSearchLayout">
-          <div class="lm-search-left" id="hfSearchLeft">
-            <input type="search" class="lm-search-input lm-search-input-modal" id="hfSearchInput" placeholder="Search Hugging Face models…" autocomplete="off">
-            <div class="lm-search-list-header">
-              <span id="hfSearchHeader">DFlash models</span>
-              <div class="lm-search-list-controls">
-                <select class="lm-select small" id="hfSearchCategory" aria-label="Model category">
-                  <option value="dflash" selected>DFlash / speculative</option>
-                  <option value="text-generation">Text generation (GGUF)</option>
-                  <option value="all-gguf">All GGUF</option>
-                  <option value="text-to-speech">Text-to-speech</option>
-                  <option value="automatic-speech-recognition">Speech-to-text</option>
-                  <option value="image-to-text">OCR / image-to-text</option>
-                  <option value="feature-extraction">Embeddings</option>
-                </select>
-                <select class="lm-select small" id="hfSearchSort" aria-label="Sort results">
-                  <option value="downloads">Most downloads</option>
-                  <option value="lastModified">Recently updated</option>
-                  <option value="likes">Most liked</option>
-                </select>
-              </div>
-            </div>
-            <div class="lm-search-list" id="hfSearchList">
-              <div class="lm-search-empty">Open search to browse GGUF models from Hugging Face.</div>
-            </div>
-          </div>
-          <div class="lm-search-split-handle" id="hfSearchSplitHandle" role="separator" aria-orientation="vertical" aria-label="Resize model list" tabindex="0"></div>
-          <div class="lm-search-right" id="hfSearchDetail">
-            <div class="lm-search-placeholder">
-              <p>Select a model to view details, README, and download GGUF files.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div id="modelsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
+  <div id="serverCardContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
 
   <div class="lm-modal" id="modelMetadataModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -725,6 +810,7 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
   <script src="/static/js/status-feed.js"></script>
+  <script src="/static/js/download-queue.js"></script>
   <script src="/static/js/server-reload-watch.js"></script>
   <script src="/static/js/library-type-options.js"></script>
   <script src="/static/js/library-scan-live.js"></script>
@@ -738,6 +824,8 @@
   <script src="/static/js/server-live.js"></script>
   <script src="/static/js/models-live.js"></script>
   <script src="/static/js/docs-live.js"></script>
+  <script src="/static/js/chat-live.js"></script>
   <script src="/static/js/lm-studio-ui.js"></script>
+  <script src="/static/js/select-theme.js"></script>
 </body>
 </html>
