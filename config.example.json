@@ -1,0 +1,48 @@
+{
+  "ui_port": 8900,
+  "dflash_root": "C:\\dev\\Dflash",
+  "hardware_settings": {
+    "gpu_strategy": "split_evenly",
+    "enabled_gpu_indices": [],
+    "limit_offload_dedicated_vram": true,
+    "offload_kv_cache_to_gpu": true
+  },
+  "servers": [
+    {
+      "id": "gemma-31b-dflash",
+      "label": "Gemma 4 31B DFlash",
+      "profile": "gemma-chat",
+      "port": 8090,
+      "host": "127.0.0.1",
+      "api_url": "http://127.0.0.1:8090/v1",
+      "model_id": "gemma-4-31b-it-dflash",
+      "gpu_device": "auto",
+      "context_size": 65536,
+      "idle_unload_minutes": 60,
+      "enabled": true,
+      "load_settings": {
+        "gpu_layers": 97,
+        "cpu_threads": 9,
+        "eval_batch_size": 2048,
+        "physical_batch_size": 512,
+        "flash_attention": true
+      },
+      "inference_settings": {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 40,
+        "repeat_penalty": 1.1
+      }
+    }
+  ],
+  "model_libraries": [
+    {
+      "id": "dflash-checkpoints",
+      "label": "DFlash checkpoints",
+      "path": "C:\\dev\\Dflash\\models",
+      "enabled": true,
+      "preset": "dflash",
+      "download_default": true
+    }
+  ]
+}

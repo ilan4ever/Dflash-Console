@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DFlash Studio</title>
+  <link rel="stylesheet" href="/static/css/lm-studio-mockup.css">
+</head>
+<body>
+  <div class="lm-app">
+    <section class="lm-sysbar">
+      <div class="lm-sysbar-row">
+        <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
+        <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+        <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Background activity">
+          <span class="lm-status-feed-line" id="statusFeedPrimary">Ready</span>
+          <span class="lm-status-feed-line secondary" id="statusFeedSecondary"></span>
+        </div>
+      </div>
+    </section>
+
+    <header class="lm-topnav">
+      <nav class="lm-tabs">
+        <button class="lm-tab" data-tab="chat">Chat</button>
+        <button class="lm-tab active" data-tab="server">Server</button>
+        <button class="lm-tab" data-tab="models">Models</button>
+        <button class="lm-tab" data-tab="devices">Devices</button>
+      </nav>
+      <div class="lm-topnav-title">Developer</div>
+      <div class="lm-topnav-actions">
+        <button class="lm-btn ghost small" data-action="toggle-inspector" title="Show/hide side panel">Panel</button>
+        <button class="lm-icon-btn" data-action="open-model-search" title="Model Search">⌕</button>
+        <button class="lm-icon-btn" title="Downloads">↓</button>
+        <button class="lm-btn ghost small" data-action="open-settings">⚙ Settings</button>
+      </div>
+    </header>
+
+    <div class="lm-body">
+      <div class="lm-main">
+
+        <!-- Chat -->
+        <div class="lm-view" data-view="chat">
+          <div class="lm-empty-state">
+            <p>No chat selected</p>
+            <span class="lm-empty-hint">Chat tab is planned for v1.1</span>
+          </div>
+        </div>
+
+        <!-- Server -->
+        <div class="lm-view active" data-view="server">
+          <div class="lm-server-upper">
+            <div class="lm-server-bar">
+              <div class="lm-server-left">
+                <span class="lm-status-label">Status:</span>
+                <span class="lm-status-running" id="serverStatusText">Stopped</span>
+                <label class="lm-toggle">
+                  <input type="checkbox" id="serverRunningToggle">
+                  <span class="lm-toggle-track"></span>
+                </label>
+                <select id="serverProfilePick" class="lm-select compact" title="Profile to load / configure"></select>
+                <button class="lm-btn ghost" data-action="open-server-settings">⚙ Server Settings</button>
+                <button class="lm-btn ghost" data-action="open-mcp-json">📄 mcp.json</button>
+              </div>
+              <div class="lm-server-right">
+                <span class="lm-reachable">Reachable at: <code id="serverReachableUrl">—</code></span>
+                <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy">⧉</button>
+                <button class="lm-btn primary" id="serverLoadBtn">+ Load Model</button>
+              </div>
+            </div>
+            <div class="lm-section-label">Loaded Models</div>
+            <div id="serverModelCards" class="lm-server-cards"></div>
+            <div id="serverEmptyState" class="lm-server-empty">Server stopped. Turn on Status or click Load Model.</div>
+          </div>
+          <div class="lm-logs-dock" id="serverLogsDock">
+            <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
+            <section class="lm-logs-panel" id="serverLogsPanel">
+              <div class="lm-logs-header">
+                <span>Developer Logs</span>
+                <div class="lm-logs-header-actions">
+                  <button class="lm-icon-btn tiny" id="serverLogsHide" title="Hide developer logs" aria-label="Hide developer logs">▾</button>
+                  <button class="lm-icon-btn tiny" id="serverLogsRefresh" title="Refresh">↻</button>
+                </div>
+              </div>
+              <div class="lm-logs-body" id="serverLogsBody"></div>
+            </section>
+          </div>
+          <button type="button" class="lm-logs-restore" id="serverLogsRestore" title="Show developer logs">Developer Logs ▴</button>
+        </div>
+
+        <!-- Models -->
+        <div class="lm-view" data-view="models">
+          <div class="lm-models-toolbar">
+            <h1>My Models</h1>
+            <div class="lm-models-toolbar-right">
+              <div class="lm-models-filter" role="group" aria-label="Model list filter">
+                <button type="button" class="lm-filter-chip active" data-models-filter="all">All models</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="dflash">D-Flash only</button>
+              </div>
+              <input type="search" class="lm-search-input" id="modelsFilterInput" placeholder="Filter models… (Ctrl + F)">
+            </div>
+          </div>
+          <div class="lm-models-table-wrap">
+            <table class="lm-models-table">
+              <thead>
+                <tr>
+                  <th>Arch</th><th>Params</th><th>Publisher</th><th>LLM</th><th>Quant</th><th>Size</th><th>Modified</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="modelsTableBody"></tbody>
+            </table>
+          </div>
+          <footer class="lm-models-footer">
+            <span id="modelsFooterStats">Loading models…</span>
+            <span class="lm-models-path" id="modelsFooterPath">—</span>
+            <span class="lm-models-hint" id="modelsFooterHint"></span>
+          </footer>
+        </div>
+
+        <!-- Devices -->
+        <div class="lm-view" data-view="devices">
+          <div class="lm-devices-page">
+            <span class="lm-preview-badge">AVAILABLE IN PREVIEW</span>
+            <div class="lm-devices-illus">💻 ··· 💻</div>
+            <h1>Use your local models, remotely.</h1>
+            <p>Introducing LM Link. Load models on remote machines and use them as if they are local. End-to-end encrypted. Works for local devices, LLM rigs, or cloud VMs.</p>
+            <div class="lm-devices-actions">
+              <button class="lm-btn primary">Login &amp; Enable LM Link</button>
+              <button class="lm-btn ghost">Learn how it works</button>
+            </div>
+            <a href="#" class="lm-devices-link">Why do I need to log in?</a>
+            <div class="lm-devices-footer">LM Link is in Preview.</div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="lm-inspector">
+        <div class="lm-inspector-resize-handle" id="inspectorResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0"></div>
+        <div class="lm-inspector-head">
+          <h2>Gemma 4 31B DFlash</h2>
+          <span class="lm-badge-custom">Customized</span>
+          <button class="lm-icon-btn tiny">⋯</button>
+        </div>
+        <div class="lm-inspector-actions">
+          <button class="lm-btn ghost">Use in New Chat</button>
+          <button class="lm-btn primary" id="inspectorLoadBtn">Load Model</button>
+        </div>
+        <div class="lm-inspector-tabs">
+          <button class="lm-inspector-tab" data-inspector-tab="info">Info</button>
+          <button class="lm-inspector-tab active" data-inspector-tab="load">Load</button>
+          <button class="lm-inspector-tab" data-inspector-tab="inference">Inference</button>
+        </div>
+        <div class="lm-inspector-scroll">
+          <div class="lm-inspector-panel" data-inspector-panel="info">
+            <section class="lm-field-group">
+              <h3>Model Info</h3>
+              <div class="lm-info-row"><span>Architecture</span><strong id="inspectorInfoArch">—</strong></div>
+              <div class="lm-info-row"><span>Parameters</span><strong id="inspectorInfoParams">—</strong></div>
+              <div class="lm-info-row"><span>Quantization</span><strong id="inspectorInfoQuant">—</strong></div>
+              <div class="lm-info-row"><span>Format</span><strong>GGUF</strong></div>
+              <div class="lm-info-row"><span>Size on disk</span><strong id="inspectorInfoSize">—</strong></div>
+              <div class="lm-info-row"><span>Max context</span><strong id="inspectorInfoContext">—</strong></div>
+              <div class="lm-info-row"><span>Capabilities</span><span id="inspectorInfoCaps"></span></div>
+              <div class="lm-info-row" id="inspectorInfoDraftRow"><span>Speculative</span><strong id="inspectorInfoDraft">—</strong></div>
+              <div class="lm-info-row"><span>Path</span><code class="lm-info-path" id="inspectorInfoPath">—</code></div>
+              <div class="lm-info-row"><span>D-Flash profile</span><strong id="inspectorInfoProfile">—</strong></div>
+            </section>
+          </div>
+          <div class="lm-inspector-panel active" data-inspector-panel="load">
+            <section class="lm-field-group">
+              <h3>Context and Offload</h3>
+              <div class="lm-field">
+                <label>Context Length <span class="lm-hint" id="inspectorContextHint">Model supports up to 262144 tokens.</span></label>
+                <div class="lm-field-row">
+                  <input type="number" value="65536" min="2048" max="262144" step="1024" class="lm-num" id="inspectorContext">
+                  <input type="range" min="2048" max="262144" step="1024" value="65536" class="lm-range" id="inspectorContextRange">
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>GPU Offload <span class="lm-hint" id="inspectorGpuHint">Layers on GPU (-ngl). 99 = all layers.</span></label>
+                <div class="lm-field-row">
+                  <input type="number" value="99" min="0" max="128" class="lm-num" id="inspectorGpuLayers">
+                  <input type="range" min="0" max="128" value="99" class="lm-range" id="inspectorGpuLayersRange">
+                </div>
+                <button class="lm-btn ghost small" type="button" data-action="open-hardware-settings">GPU Settings</button>
+              </div>
+            </section>
+            <section class="lm-field-group">
+              <h3>Advanced</h3>
+              <div class="lm-field">
+                <label>CPU Thread Pool Size</label>
+                <div class="lm-field-row">
+                  <input type="number" value="9" min="1" max="64" class="lm-num" id="inspectorCpuThreads">
+                  <input type="range" min="1" max="64" value="9" class="lm-range" id="inspectorCpuThreadsRange">
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Evaluation Batch Size</label>
+                <input type="number" value="2048" min="32" max="8192" class="lm-num full" id="inspectorEvalBatch">
+              </div>
+              <div class="lm-field">
+                <label>Physical Batch Size</label>
+                <input type="number" value="512" min="32" max="8192" class="lm-num full" id="inspectorPhysicalBatch">
+              </div>
+              <div class="lm-switch-row"><span>Flash Attention</span><label class="lm-toggle small"><input type="checkbox" id="inspectorFlashAttention" checked><span class="lm-toggle-track"></span></label></div>
+              <div class="lm-field" id="inspectorSpeculativeGroup">
+                <label>Speculative Decoding</label>
+                <p class="lm-hint" id="inspectorSpeculativeHint">Set by D-Flash profile (draft-dflash / draft-dspark).</p>
+              </div>
+            </section>
+            <section class="lm-field-group">
+              <h3>Sampling defaults</h3>
+              <div class="lm-field">
+                <label>Temperature</label>
+                <div class="lm-field-row">
+                  <input type="number" value="0.7" step="0.1" min="0" max="2" class="lm-num" id="inspectorTemperature">
+                  <input type="range" min="0" max="2" step="0.1" value="0.7" class="lm-range" id="inspectorTemperatureRange">
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Top P</label>
+                <div class="lm-field-row">
+                  <input type="number" value="0.9" step="0.05" min="0" max="1" class="lm-num" id="inspectorTopP">
+                  <input type="range" min="0" max="1" step="0.05" value="0.9" class="lm-range" id="inspectorTopPRange">
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Top K</label>
+                <div class="lm-field-row">
+                  <input type="number" value="40" min="0" max="200" class="lm-num" id="inspectorTopK">
+                  <input type="range" min="0" max="200" value="40" class="lm-range" id="inspectorTopKRange">
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Repeat Penalty</label>
+                <div class="lm-field-row">
+                  <input type="number" value="1.1" step="0.05" min="1" max="2" class="lm-num" id="inspectorRepeatPenalty">
+                  <input type="range" min="1" max="2" step="0.05" value="1.1" class="lm-range" id="inspectorRepeatPenaltyRange">
+                </div>
+              </div>
+            </section>
+          </div>
+          <div class="lm-inspector-panel" data-inspector-panel="inference">
+            <section class="lm-field-group">
+              <h3>Chat &amp; API</h3>
+              <p class="lm-hint">Sampling defaults (temperature, top P, top K, repeat penalty) are saved per model under <strong>Load</strong>. This tab is for per-request options when Chat and API clients are wired up.</p>
+            </section>
+            <section class="lm-field-group">
+              <h3>Limits</h3>
+              <div class="lm-field">
+                <label>Max Predicted Tokens</label>
+                <input type="number" value="4096" class="lm-num full" id="inspectorMaxTokens">
+              </div>
+              <div class="lm-switch-row"><span>Structured Output (JSON)</span><label class="lm-toggle small"><input type="checkbox" id="inspectorStructuredOutput"><span class="lm-toggle-track"></span></label></div>
+              <div class="lm-switch-row"><span>Include reasoning in response</span><label class="lm-toggle small"><input type="checkbox" id="inspectorIncludeReasoning" checked><span class="lm-toggle-track"></span></label></div>
+            </section>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Server Settings modal -->
+  <div class="lm-modal" id="serverSettingsModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-server-settings-dialog">
+        <div class="lm-settings-header">
+          <h2>Server Settings</h2>
+          <button class="lm-icon-btn" data-action="close-modal">✕</button>
+        </div>
+        <div class="lm-modal-scroll">
+          <section class="lm-settings-section">
+            <h3>Profile</h3>
+            <div class="lm-setting-row">
+              <span>Server</span>
+              <select class="lm-select full" id="serverSettingsPick"></select>
+            </div>
+          </section>
+          <section class="lm-settings-section">
+            <h3>Server</h3>
+            <div class="lm-setting-row">
+              <div><strong>Server Port</strong><p class="lm-setting-desc">Port for the local OpenAI-compatible API</p></div>
+              <input type="number" class="lm-num" id="serverSettingsPort" value="8090">
+            </div>
+            <div class="lm-setting-row">
+              <div><strong>Server Host</strong><p class="lm-setting-desc">Bind address (127.0.0.1 recommended)</p></div>
+              <input type="text" class="lm-num" id="serverSettingsHost" value="127.0.0.1">
+            </div>
+            <div class="lm-setting-row">
+              <div><strong>Context length</strong></div>
+              <input type="number" class="lm-num" id="serverSettingsContext" value="65536">
+            </div>
+            <div class="lm-setting-row">
+              <div><strong>Idle unload (minutes)</strong><p class="lm-setting-desc">0 = never unload when idle</p></div>
+              <input type="number" class="lm-num" id="serverSettingsIdle" value="60">
+            </div>
+            <div class="lm-setting-row">
+              <div><strong>GPU</strong></div>
+              <select class="lm-select" id="serverSettingsGpu"></select>
+            </div>
+            <div class="lm-setting-row">
+              <div><strong>Launch profile</strong></div>
+              <select class="lm-select" id="serverSettingsProfile">
+                <option value="gemma-chat">gemma-chat</option>
+                <option value="gemma-12-ar">gemma-12-ar</option>
+                <option value="gemma-ar">gemma-ar</option>
+                <option value="qwen-dflash">qwen-dflash</option>
+                <option value="qwen-ar">qwen-ar</option>
+                <option value="bonsai">bonsai</option>
+                <option value="bonsai-spec">bonsai-spec</option>
+              </select>
+            </div>
+          </section>
+        </div>
+        <div class="lm-modal-footer">
+          <button class="lm-btn ghost" data-action="close-modal">Cancel</button>
+          <button class="lm-btn primary" id="serverSettingsSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="lm-modal" id="settingsModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-settings-dialog">
+        <div class="lm-settings-layout">
+          <nav class="lm-settings-nav">
+            <div class="lm-settings-nav-title">Settings</div>
+            <button class="lm-settings-nav-item active" data-settings-panel="general">General</button>
+            <button class="lm-settings-nav-item" data-settings-panel="hardware">Hardware</button>
+            <button class="lm-settings-nav-item" data-settings-panel="developer">Developer</button>
+            <div class="lm-settings-nav-section">Planned</div>
+            <button class="lm-settings-nav-item lm-nav-dev" data-settings-panel="appearance">Appearance</button>
+            <button class="lm-settings-nav-item lm-nav-dev" data-settings-panel="chat">Chat</button>
+            <button class="lm-settings-nav-item lm-nav-dev" data-settings-panel="integrations">Integrations</button>
+            <button class="lm-settings-nav-item lm-nav-dev" data-settings-panel="runtime">Runtime</button>
+          </nav>
+          <div class="lm-settings-content">
+            <div class="lm-settings-panel active" data-settings-panel="general">
+              <div class="lm-settings-header"><h2>General</h2><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <section class="lm-settings-section">
+                <h3>Paths</h3>
+                <div class="lm-setting-row">
+                  <div><strong>LM Studio models</strong><p class="lm-setting-desc">Scanned for local GGUF files</p></div>
+                  <code class="lm-settings-path" id="settingsModelsDir">—</code>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>D-Flash root</strong><p class="lm-setting-desc">Binaries, drafts, and launch scripts</p></div>
+                  <code class="lm-settings-path" id="settingsDflashRoot">—</code>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <h3>App <span class="lm-dev-badge">Under development</span></h3>
+                <div class="lm-setting-row lm-setting-disabled"><div><strong>Updates</strong></div><button class="lm-btn ghost small" type="button" disabled>Check for updates</button></div>
+                <div class="lm-setting-row lm-setting-disabled"><div><strong>App language</strong></div><select class="lm-select" disabled><option>English</option></select></div>
+                <div class="lm-setting-row lm-setting-disabled"><div><strong>Hugging Face proxy</strong></div><label class="lm-toggle small"><input type="checkbox" disabled><span class="lm-toggle-track"></span></label></div>
+              </section>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="hardware">
+              <div class="lm-settings-header">
+                <h2>Hardware</h2>
+                <div class="lm-settings-header-actions">
+                  <button class="lm-btn ghost small" type="button" id="settingsHardwareCopy">Copy info</button>
+                  <button class="lm-icon-btn" data-action="close-modal">✕</button>
+                </div>
+              </div>
+              <div class="lm-hw-summary" id="settingsHwSummary"></div>
+              <section class="lm-settings-section">
+                <h3>GPUs</h3>
+                <div class="lm-setting-row">
+                  <div><strong>Multi-GPU strategy</strong><p class="lm-setting-desc" id="settingsGpuStrategyHint">How weights are spread when a server uses Automatic GPU.</p></div>
+                  <select class="lm-select" id="settingsGpuStrategy">
+                    <option value="single_largest">Single GPU (largest VRAM)</option>
+                    <option value="split_evenly">Split evenly</option>
+                    <option value="split_by_vram">Split by VRAM (large models only)</option>
+                  </select>
+                </div>
+                <p class="lm-setting-desc" id="settingsGpuDetectLine">Detecting GPUs…</p>
+                <div id="settingsGpuList" class="lm-hw-gpu-list"></div>
+                <div class="lm-setting-row">
+                  <div><strong>Limit offload to dedicated VRAM</strong><p class="lm-setting-desc">Prefer dedicated GPU memory over shared memory for weights.</p></div>
+                  <label class="lm-toggle small"><input type="checkbox" id="settingsLimitDedicatedVram" checked><span class="lm-toggle-track"></span></label>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Offload KV cache to GPU</strong><p class="lm-setting-desc">Keep attention cache on GPU when possible. <span class="lm-dev-badge subtle">Launch flag pending</span></p></div>
+                  <label class="lm-toggle small"><input type="checkbox" id="settingsOffloadKvGpu" checked><span class="lm-toggle-track"></span></label>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <h3>Resource monitor</h3>
+                <div class="lm-hw-monitor" id="settingsHwMonitor"></div>
+              </section>
+              <section class="lm-settings-section">
+                <h3>Load guardrails</h3>
+                <p class="lm-setting-desc">Precautions before loading a model that may exceed available memory.</p>
+                <div class="lm-guardrail-list" id="settingsGuardrails">
+                  <label class="lm-guardrail-option"><input type="radio" name="guardrails" value="off"><span><strong>Off</strong><small>No memory checks (not recommended).</small></span></label>
+                  <label class="lm-guardrail-option"><input type="radio" name="guardrails" value="relaxed" checked><span><strong>Relaxed</strong><small>Light warnings only.</small></span></label>
+                  <label class="lm-guardrail-option"><input type="radio" name="guardrails" value="balanced"><span><strong>Balanced</strong><small>Warn before loads that likely exceed VRAM.</small></span></label>
+                  <label class="lm-guardrail-option"><input type="radio" name="guardrails" value="strict"><span><strong>Strict</strong><small>Block risky loads. <span class="lm-dev-badge subtle">Enforcement pending</span></small></span></label>
+                </div>
+              </section>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="developer">
+              <div class="lm-settings-header"><h2>Developer</h2><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <section class="lm-settings-section">
+                <h3>Working now</h3>
+                <div class="lm-setting-row">
+                  <div><strong>Server profiles</strong><p class="lm-setting-desc">Ports, hosts, idle unload, per-server GPU override</p></div>
+                  <button class="lm-btn ghost small" type="button" data-action="open-server-settings">Open Server Settings</button>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Developer logs</strong><p class="lm-setting-desc">Resize and show/hide on the Server tab</p></div>
+                  <span class="lm-tag green">Live</span>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <h3>Under development</h3>
+                <div class="lm-setting-row lm-setting-disabled"><div><strong>Background LLM service</strong></div><label class="lm-toggle small"><input type="checkbox" disabled><span class="lm-toggle-track"></span></label></div>
+                <div class="lm-setting-row lm-setting-disabled"><div><strong>Llama.cpp log level</strong></div><select class="lm-select" disabled><option>Info</option></select></div>
+              </section>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="appearance">
+              <div class="lm-settings-header"><h2>Appearance</h2><span class="lm-dev-badge">Under development</span><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <p class="lm-setting-desc">Theme, navigation layout, and chat bubble styles will live here.</p>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="chat">
+              <div class="lm-settings-header"><h2>Chat</h2><span class="lm-dev-badge">Under development</span><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <p class="lm-setting-desc">Chat tab is not built yet. Per-request limits stay in the model Inference panel for now.</p>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="integrations">
+              <div class="lm-settings-header"><h2>Integrations</h2><span class="lm-dev-badge">Under development</span><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <p class="lm-setting-desc">OneVoice, Open WebUI, and MCP discovery are planned.</p>
+            </div>
+            <div class="lm-settings-panel" data-settings-panel="runtime">
+              <div class="lm-settings-header"><h2>Runtime</h2><span class="lm-dev-badge">Under development</span><button class="lm-icon-btn" data-action="close-modal">✕</button></div>
+              <p class="lm-setting-desc">Engine versions are managed through D-Flash scripts today. In-app engine updates will come later.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model search modal -->
+  <div class="lm-modal" id="modelSearchModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-search-dialog">
+        <div class="lm-search-layout" id="hfSearchLayout">
+          <div class="lm-search-left" id="hfSearchLeft">
+            <input type="search" class="lm-search-input lm-search-input-modal" id="hfSearchInput" placeholder="Search Hugging Face GGUF models…" autocomplete="off">
+            <div class="lm-search-list-header">
+              <span id="hfSearchHeader">Popular on Hugging Face</span>
+              <select class="lm-select small" id="hfSearchSort" aria-label="Sort results">
+                <option value="downloads">Most downloads</option>
+                <option value="lastModified">Recently updated</option>
+                <option value="likes">Most liked</option>
+              </select>
+            </div>
+            <div class="lm-search-list" id="hfSearchList">
+              <div class="lm-search-empty">Open search to browse GGUF models from Hugging Face.</div>
+            </div>
+          </div>
+          <div class="lm-search-split-handle" id="hfSearchSplitHandle" role="separator" aria-orientation="vertical" aria-label="Resize model list" tabindex="0"></div>
+          <div class="lm-search-right" id="hfSearchDetail">
+            <div class="lm-search-placeholder">
+              <p>Select a model to view details, README, and download GGUF files.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="modelsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
+
+  <div class="lm-modal" id="modelMetadataModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-metadata-dialog">
+        <div class="lm-modal-head">
+          <h2>Model metadata</h2>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="lm-modal-scroll">
+          <pre class="lm-metadata-pre" id="modelMetadataBody"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/studio-api.js"></script>
+  <script src="/static/js/status-feed.js"></script>
+  <script src="/static/js/model-search-live.js"></script>
+  <script src="/static/js/sysbar-live.js"></script>
+  <script src="/static/js/settings-live.js"></script>
+  <script src="/static/js/server-live.js"></script>
+  <script src="/static/js/models-live.js"></script>
+  <script src="/static/js/lm-studio-ui.js"></script>
+</body>
+</html>

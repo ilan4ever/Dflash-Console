@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DFlash Studio — App (functional)</title>
+  <link rel="stylesheet" href="/static/css/studio.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>DFlash Studio</h1>
+        <p>Local speculative decoding server</p>
+      </div>
+      <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+      <button class="nav-btn" data-view="gpus">GPUs</button>
+      <button class="nav-btn" data-view="logs">Logs</button>
+      <button class="nav-btn" data-view="settings">Settings</button>
+    </aside>
+    <main class="main">
+      <section id="view-dashboard">
+        <div class="topbar">
+          <h2>Servers</h2>
+          <div class="topbar-actions">
+            <button class="btn" id="btnRefresh">Refresh</button>
+          </div>
+        </div>
+        <div id="serverGrid" class="grid"></div>
+      </section>
+      <section id="view-gpus" class="hidden">
+        <div class="topbar"><h2>GPUs</h2></div>
+        <div class="panel">
+          <h3>Detected NVIDIA GPUs</h3>
+          <div id="gpuList" class="gpu-list"></div>
+        </div>
+      </section>
+      <section id="view-logs" class="hidden">
+        <div class="topbar">
+          <h2>Logs</h2>
+          <div class="topbar-actions">
+            <select id="logServerSelect"></select>
+            <button class="btn" id="btnRefreshLogs">Refresh logs</button>
+          </div>
+        </div>
+        <div id="logBox" class="log-box">Select a server to view logs.</div>
+      </section>
+      <section id="view-settings" class="hidden">
+        <div class="topbar"><h2>Settings</h2></div>
+        <div class="panel">
+          <h3>Global</h3>
+          <div class="field-grid">
+            <div class="field">
+              <label>DFlash root</label>
+              <input id="settingDflashRoot" type="text">
+            </div>
+            <div class="field">
+              <label>UI port</label>
+              <input id="settingUiPort" type="number" min="1024" max="65535">
+            </div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-primary" id="btnSaveSettings">Save settings</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
