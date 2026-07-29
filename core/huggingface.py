@@ -70,7 +70,7 @@ _jobs_lock = threading.Lock()
 
 
 def _request_json(url: str, *, timeout: float = 20.0) -> Any:
-    headers = {'Accept': 'application/json', 'User-Agent': 'DFlash-Studio/0.1'}
+    headers = {'Accept': 'application/json', 'User-Agent': 'DFlash-Console/0.1'}
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'
@@ -80,7 +80,7 @@ def _request_json(url: str, *, timeout: float = 20.0) -> Any:
 
 
 def _request_text(url: str, *, timeout: float = 20.0) -> str:
-    headers = {'User-Agent': 'DFlash-Studio/0.1'}
+    headers = {'User-Agent': 'DFlash-Console/0.1'}
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'
@@ -312,7 +312,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
 
 def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> None:
     url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
-    headers = {'User-Agent': 'DFlash-Studio/0.1'}
+    headers = {'User-Agent': 'DFlash-Console/0.1'}
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'

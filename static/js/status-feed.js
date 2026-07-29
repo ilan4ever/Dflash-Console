@@ -1,6 +1,6 @@
 /** Global top-bar status feed — background activity across all tabs */
 (function () {
-  const { api } = window.StudioApi;
+  const { api } = window.ConsoleApi;
 
   let transient = null;
   let transientTimer = null;

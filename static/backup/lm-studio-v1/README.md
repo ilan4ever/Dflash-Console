@@ -1,6 +1,6 @@
 # LM Studio-style UI backup (v1)
 
-Snapshot of the original DFlash Studio interface before the left-sidebar redesign.
+Snapshot of the original DFlash Console interface before the left-sidebar redesign.
 
 ## Files
 
@@ -14,7 +14,7 @@ Snapshot of the original DFlash Studio interface before the left-sidebar redesig
 1. Copy files back to `static/`:
 
 ```powershell
-cd C:\dev\Dflash-Studio
+cd C:\dev\Dflash-Console
 Copy-Item static\backup\lm-studio-v1\index.html static\index.html -Force
 Copy-Item static\backup\lm-studio-v1\css\lm-studio-mockup.css static\css\lm-studio-mockup.css -Force
 Copy-Item static\backup\lm-studio-v1\js\lm-studio-ui.js static\js\lm-studio-ui.js -Force

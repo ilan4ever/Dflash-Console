@@ -1,6 +1,6 @@
 /** Live Server tab — polls /api/servers and renders model stack cards */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   const SPEC_PROFILES = new Set(['gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec']);
   const PROFILE_CTX_MAX = {
@@ -16,11 +16,11 @@
   let servers = [];
   let allServers = [];
   let gpus = [];
-  let activeId = localStorage.getItem('dflashStudio.activeServerId') || '';
+  let activeId = localStorage.getItem('dflashConsole.activeServerId') || '';
   let pollTimer = null;
   let busy = false;
   let busyAction = null;
-  const PREFS_KEY = 'dflashStudio.modelPrefs';
+  const PREFS_KEY = 'dflashConsole.modelPrefs';
   let inspectorBound = null;
   let inspectorFilling = false;
   let autoSaveTimer = null;
@@ -526,7 +526,7 @@
     fillInspectorLoadSettings(getMergedLoadSettings(model));
     if (model.server_id) {
       activeId = model.server_id;
-      localStorage.setItem('dflashStudio.activeServerId', activeId);
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
     }
   }
 
@@ -588,7 +588,7 @@
     gpus = data.gpus || [];
     if (!activeId || !allServers.some((s) => s.id === activeId)) {
       activeId = data.primary_server_id || servers[0]?.id || allServers[0]?.id || '';
-      localStorage.setItem('dflashStudio.activeServerId', activeId);
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
     }
     renderAll();
     await refreshLogs();
@@ -661,7 +661,7 @@
       toast('Model ejected — server still running');
       await waitUntilServerIdle(serverId);
       activeId = serverId;
-      localStorage.setItem('dflashStudio.activeServerId', activeId);
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
       await refreshLogs();
     } catch (err) {
       toast(err.message, false);
@@ -774,14 +774,14 @@
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', (e) => {
       activeId = e.target.value;
-      localStorage.setItem('dflashStudio.activeServerId', activeId);
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
       fillSettingsForm(allServers.find((s) => s.id === activeId) || activeServer());
       void refresh();
     });
 
     document.getElementById('serverProfilePick')?.addEventListener('change', (e) => {
       activeId = e.target.value;
-      localStorage.setItem('dflashStudio.activeServerId', activeId);
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
       renderAll();
       void refreshLogs().catch((err) => toast(err.message, false));
     });

@@ -1,4 +1,4 @@
-"""Basic config tests for DFlash Studio."""
+"""Basic config tests for DFlash Console."""
 
 from __future__ import annotations
 

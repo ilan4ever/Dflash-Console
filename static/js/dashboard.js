@@ -1,7 +1,7 @@
 function renderGpuList() {
   const list = document.getElementById('gpuList');
   if (!list) return;
-  const gpus = window.DFlashStudio.gpus || [];
+  const gpus = window.DFlashConsole.gpus || [];
   if (!gpus.length) {
     list.innerHTML = '<div class="gpu-item">No NVIDIA GPUs detected.</div>';
     return;
@@ -17,7 +17,7 @@ function renderGpuList() {
 function renderServerGrid() {
   const grid = document.getElementById('serverGrid');
   if (!grid) return;
-  const servers = window.DFlashStudio.servers || [];
+  const servers = window.DFlashConsole.servers || [];
   if (!servers.length) {
     grid.innerHTML = '<div class="panel">No servers configured. Edit config.json to add profiles.</div>';
     return;
@@ -35,7 +35,7 @@ function renderServerGrid() {
             <div class="card-title">${escapeHtml(server.label || server.id)}</div>
             <div class="card-sub">${escapeHtml(server.profile || '')} · port ${server.port}</div>
           </div>
-          <span class="status-pill ${window.DFlashStudio.statusClass(status)}">${status}</span>
+          <span class="status-pill ${window.DFlashConsole.statusClass(status)}">${status}</span>
         </div>
 
         <div class="meta-row">
@@ -60,7 +60,7 @@ function renderServerGrid() {
         <div class="field-grid">
           <div class="field">
             <label>GPU</label>
-            <select data-field="gpu_device">${window.DFlashStudio.gpuOptions(server.gpu_device)}</select>
+            <select data-field="gpu_device">${window.DFlashConsole.gpuOptions(server.gpu_device)}</select>
           </div>
           <div class="field">
             <label>Context (tokens)</label>
@@ -135,36 +135,36 @@ function bindCard(card) {
       try {
         if (action === 'save') {
           const patch = collectCardPatch(card);
-          await window.DFlashStudio.patchServer(serverId, patch);
-          window.DFlashStudio.showToast('Server settings saved');
-          await window.DFlashStudio.refreshServers();
+          await window.DFlashConsole.patchServer(serverId, patch);
+          window.DFlashConsole.showToast('Server settings saved');
+          await window.DFlashConsole.refreshServers();
           return;
         }
         if (action === 'copy-url') {
           const url = card.querySelector('.mono')?.textContent?.trim();
           if (url) {
             await navigator.clipboard.writeText(url);
-            window.DFlashStudio.showToast('API URL copied');
+            window.DFlashConsole.showToast('API URL copied');
           }
           return;
         }
         if (action === 'reload') {
           const patch = collectCardPatch(card);
-          await window.DFlashStudio.patchServer(serverId, patch);
-          await window.DFlashStudio.serverAction(serverId, 'reload');
-          window.DFlashStudio.showToast('Server reloaded');
+          await window.DFlashConsole.patchServer(serverId, patch);
+          await window.DFlashConsole.serverAction(serverId, 'reload');
+          window.DFlashConsole.showToast('Server reloaded');
         } else if (action === 'unload') {
-          await window.DFlashStudio.serverAction(serverId, 'unload');
-          window.DFlashStudio.showToast('Server unloaded');
+          await window.DFlashConsole.serverAction(serverId, 'unload');
+          window.DFlashConsole.showToast('Server unloaded');
         } else if (action === 'start') {
           const patch = collectCardPatch(card);
-          await window.DFlashStudio.patchServer(serverId, patch);
-          await window.DFlashStudio.serverAction(serverId, 'start');
-          window.DFlashStudio.showToast('Server started');
+          await window.DFlashConsole.patchServer(serverId, patch);
+          await window.DFlashConsole.serverAction(serverId, 'start');
+          window.DFlashConsole.showToast('Server started');
         }
-        await window.DFlashStudio.refreshServers();
+        await window.DFlashConsole.refreshServers();
       } catch (error) {
-        window.DFlashStudio.showToast(error.message, false);
+        window.DFlashConsole.showToast(error.message, false);
       }
     });
   });

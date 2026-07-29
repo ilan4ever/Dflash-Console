@@ -1,6 +1,6 @@
 /** Library scan modal — discover model folders on PC */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   let scanPreset = 'dflash';
   let candidates = [];

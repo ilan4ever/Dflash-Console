@@ -30,7 +30,7 @@ if (-not $env:DFLASH_ROOT) {
     }
 }
 
-function Stop-StudioServer {
+function Stop-ConsoleServer {
     param([int]$TargetPort)
     Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
         $procId = [int]$_.OwningProcess
@@ -51,14 +51,14 @@ function Stop-StudioServer {
 
 $logDir = Join-Path $Root 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$serverLog = Join-Path $logDir 'studio-server.log'
-$errLog = Join-Path $logDir 'studio-server.err.log'
+$serverLog = Join-Path $logDir 'console-server.log'
+$errLog = Join-Path $logDir 'console-server.err.log'
 
-Write-Host "Restarting DFlash Studio on port $Port..." -ForegroundColor Cyan
-Stop-StudioServer -TargetPort $Port
+Write-Host "Restarting DFlash Console on port $Port..." -ForegroundColor Cyan
+Stop-ConsoleServer -TargetPort $Port
 Start-Sleep -Seconds 1
 
-$worker = Join-Path $Root 'scripts\start-studio-server.ps1'
+$worker = Join-Path $Root 'scripts\start-console-server.ps1'
 Start-Process -FilePath 'pwsh.exe' `
     -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $worker, '-Port', $Port, '-Root', $Root) `
     -WorkingDirectory $Root `
@@ -68,4 +68,4 @@ Start-Process -FilePath 'pwsh.exe' `
     -RedirectStandardError $errLog | Out-Null
 
 Start-Sleep -Seconds 2
-Write-Host "DFlash Studio: http://127.0.0.1:$Port/" -ForegroundColor Green
+Write-Host "DFlash Console: http://127.0.0.1:$Port/" -ForegroundColor Green

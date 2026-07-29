@@ -1,6 +1,6 @@
 /** Library browse modal — pick a folder manually */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   let browsePreset = 'dflash';
   let currentPath = '';

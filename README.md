@@ -59,7 +59,7 @@ Foreground mode (attach logs to the terminal):
 Restart API after backend edits:
 
 ```powershell
-.\scripts\restart-studio-server.ps1
+.\scripts\restart-console-server.ps1
 ```
 
 The UI auto-refreshes when the API restarts (`/api/health` boot id).
@@ -91,7 +91,7 @@ Dflash-Console/
 ├── docs/ui/                # UI panel notes
 ├── run.ps1                 # Full startup (deps + background API)
 ├── config.example.json     # Template configuration
-└── DFLASH-STUDIO-PLAN.md   # Detailed build plan & handoff notes
+└── DFLASH-CONSOLE-PLAN.md   # Detailed build plan & handoff notes
 ```
 
 ---
@@ -141,4 +141,4 @@ Not yet published for open source. License will be added before public release.
 
 ## Roadmap
 
-See [DFLASH-STUDIO-PLAN.md](./DFLASH-STUDIO-PLAN.md) for architecture, handoff notes, and remaining work (chat tab, live VRAM sysbar, expanded tests).
+See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture, handoff notes, and remaining work (chat tab, live VRAM sysbar, expanded tests).

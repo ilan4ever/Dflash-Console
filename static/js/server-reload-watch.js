@@ -1,4 +1,4 @@
-/** Reload the page when the Studio API restarts (new boot_id or reconnect after outage). */
+/** Reload the page when the Console API restarts (new boot_id or reconnect after outage). */
 (function () {
   const POLL_MS = 2000;
 

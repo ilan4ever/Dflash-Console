@@ -1,5 +1,5 @@
-/** Shared API helpers for DFlash Studio UI */
-window.StudioApi = (function () {
+/** Shared API helpers for DFlash Console UI */
+window.ConsoleApi = (function () {
   async function api(path, options = {}) {
     const resp = await fetch(path, {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
@@ -19,10 +19,10 @@ window.StudioApi = (function () {
   }
 
   function toast(message, ok = true) {
-    let el = document.getElementById('studioToast');
+    let el = document.getElementById('consoleToast');
     if (!el) {
       el = document.createElement('div');
-      el.id = 'studioToast';
+      el.id = 'consoleToast';
       el.className = 'lm-toast hidden';
       document.body.appendChild(el);
     }

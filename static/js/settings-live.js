@@ -1,6 +1,6 @@
 /** Settings modal — nested nav, workspace / compute / engines */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   let hardwareData = null;
   let hardwareDraft = null;

@@ -1,4 +1,4 @@
-"""Scan local GGUF models and map them to DFlash Studio server profiles."""
+"""Scan local GGUF models and map them to DFlash Console server profiles."""
 
 from __future__ import annotations
 
