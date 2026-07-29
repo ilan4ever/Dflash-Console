@@ -176,9 +176,52 @@
       renderRoots(data.quick_roots);
       renderList(data.entries);
       void loadPreview();
+      void updateImportHint();
     } catch (err) {
       if (list) list.innerHTML = `<div class="lm-search-empty">${escapeHtml(err.message)}</div>`;
       toast(err.message, false);
+    }
+  }
+
+  function getImportMode() {
+    return document.querySelector('input[name="libraryImportMode"]:checked')?.value || 'link';
+  }
+
+  async function updateImportHint() {
+    const hint = document.getElementById('libraryImportHint');
+    if (!hint) return;
+    const mode = getImportMode();
+    if (!currentPath) {
+      hint.textContent = mode === 'link'
+        ? 'Link keeps files in the original location.'
+        : 'Choose a folder to see where models will be placed.';
+      return;
+    }
+    if (mode === 'link') {
+      hint.textContent = 'Files stay in the folder you selected. DFlash Console will scan that path.';
+      return;
+    }
+    hint.textContent = mode === 'move'
+      ? 'Checking destination… Move removes models from the original folder.'
+      : 'Checking destination… Copy uses extra disk space but keeps the original files.';
+    try {
+      const query = new URLSearchParams({
+        path: currentPath,
+        preset: browsePreset,
+        mode,
+      });
+      const plan = await api(`/api/model-libraries/import-plan?${query.toString()}`);
+      if (plan.already_in_library_home) {
+        hint.textContent = 'This folder is already inside your DFlash library home.';
+        return;
+      }
+      const verb = mode === 'move' ? 'Move to' : 'Copy to';
+      const size = plan.size_gb ? ` · about ${plan.size_gb} GB` : '';
+      const count = plan.file_count || plan.model_count || 0;
+      const countLabel = count ? `${count} file${count === 1 ? '' : 's'}${size}` : 'folder contents';
+      hint.textContent = `${verb} ${plan.destination_path} (${countLabel})`;
+    } catch (err) {
+      hint.textContent = err.message || 'Could not plan import';
     }
   }
 
@@ -192,6 +235,7 @@
     updateSubtitle();
     openModal();
     void loadDirectory('');
+    void updateImportHint();
   }
 
   function addCurrentFolder() {
@@ -209,10 +253,11 @@
       model_type: preview.model_type,
       sample_models: preview.sample_models,
     };
-    if (window.DFlashSettingsLive?.addLibraryFromBrowse) {
-      window.DFlashSettingsLive.addLibraryFromBrowse(entry);
-    }
-    closeModal();
+    const mode = getImportMode();
+    void (async () => {
+      const ok = await window.DFlashSettingsLive?.importLibraryAndAdd?.(entry, mode);
+      if (ok !== false) closeModal();
+    })();
   }
 
   function bind() {
@@ -221,6 +266,10 @@
       browsePreset = e.target.value || 'dflash';
       updateSubtitle();
       void loadPreview();
+      void updateImportHint();
+    });
+    document.querySelectorAll('input[name="libraryImportMode"]').forEach((input) => {
+      input.addEventListener('change', () => { void updateImportHint(); });
     });
     document.getElementById('libraryBrowseUp')?.addEventListener('click', () => {
       void loadDirectory(parentPath ?? '');

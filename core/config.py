@@ -33,6 +33,7 @@ DEFAULT_INFERENCE_SETTINGS: dict[str, Any] = {
     'top_p': 0.9,
     'top_k': 40,
     'repeat_penalty': 1.1,
+    'max_tokens': 4096,
 }
 
 DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
@@ -66,6 +67,7 @@ def normalize_inference_settings(raw: Any) -> dict[str, Any]:
         'top_p': max(0.0, min(1.0, float(raw.get('top_p') if raw.get('top_p') is not None else DEFAULT_INFERENCE_SETTINGS['top_p']))),
         'top_k': max(0, min(200, int(raw.get('top_k') if raw.get('top_k') is not None else DEFAULT_INFERENCE_SETTINGS['top_k']))),
         'repeat_penalty': max(1.0, min(2.0, float(raw.get('repeat_penalty') if raw.get('repeat_penalty') is not None else DEFAULT_INFERENCE_SETTINGS['repeat_penalty']))),
+        'max_tokens': max(256, min(32768, int(raw.get('max_tokens') if raw.get('max_tokens') is not None else DEFAULT_INFERENCE_SETTINGS['max_tokens']))),
     }
 
 
@@ -114,6 +116,27 @@ def save_config(cfg: dict[str, Any]) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
 
 
+def update_server_runtime(
+    server_id: str,
+    *,
+    engine_on: bool | None = None,
+) -> dict[str, Any]:
+    cfg = load_config()
+    entry = get_server(cfg, server_id)
+    if not entry:
+        return {'engine_on': False}
+
+    changed = False
+    if engine_on is not None and (entry.get('engine_on') is True) != bool(engine_on):
+        entry['engine_on'] = bool(engine_on)
+        changed = True
+    if changed:
+        entry.pop('checkpoint_loaded', None)
+        save_config(cfg)
+
+    return {'engine_on': entry.get('engine_on') is True}
+
+
 def get_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any] | None:
     for entry in cfg.get('servers') or []:
         if isinstance(entry, dict) and str(entry.get('id') or '') == server_id:
@@ -141,6 +164,7 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
         'context_size': max(2048, int(entry.get('context_size') or 8192)),
         'idle_unload_minutes': max(0, int(idle_minutes or 0)),
         'enabled': entry.get('enabled', True) is not False,
+        'engine_on': entry.get('engine_on') is True,
         'load_settings': normalize_load_settings(entry.get('load_settings')),
         'inference_settings': normalize_inference_settings(entry.get('inference_settings')),
     }

@@ -27,6 +27,27 @@ def get_started_launch(port: int) -> dict[str, Any]:
     return dict(_started_launch.get(int(port)) or {})
 
 
+def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Track an engine process Console did not spawn (e.g. after Console restart)."""
+    entry = normalize_server(server)
+    port = int(entry['port'] or 0)
+    host = str(entry['host'] or '127.0.0.1')
+    if port <= 0:
+        return {'success': False, 'adopted': False, 'error': 'invalid port'}
+    if not _tcp_port_open(host, port):
+        return {'success': False, 'adopted': False, 'port': port}
+
+    launch = resolve_role_gpu_launch_params(
+        entry.get('gpu_device'),
+        model_id=entry.get('model_id'),
+        hardware=(cfg or {}).get('hardware_settings'),
+    )
+    signature = _launch_signature(entry, launch)
+    _started_launch[port] = dict(signature)
+    note_boot_cycle_end(port)
+    return {'success': True, 'adopted': True, 'port': port}
+
+
 def clear_server_tracking(port: int) -> None:
     _started_launch.pop(int(port), None)
     _boot_attempt_at.pop(int(port), None)
@@ -73,7 +94,28 @@ def _launch_signature(server: dict[str, Any], launch: dict[str, Any]) -> dict[st
     }
 
 
-def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[str, Any], log_file) -> None:
+def _spawn_detached(cmd: list[str], *, log_path: Path, cwd: Path, handle_key: str = '') -> None:
+    """Start engine; break away from Console job so restarts do not kill it."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = log_path.open('a', encoding='utf-8')
+    popen_kwargs: dict[str, Any] = {
+        'cwd': str(cwd),
+        'stdout': log_file,
+        'stderr': subprocess.STDOUT,
+        'stdin': subprocess.DEVNULL,
+    }
+    if sys.platform == 'win32':
+        create_no_window = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        create_breakaway_from_job = 0x01000000
+        popen_kwargs['creationflags'] = create_no_window | create_breakaway_from_job
+    else:
+        popen_kwargs['start_new_session'] = True
+    subprocess.Popen(cmd, **popen_kwargs)
+    key = handle_key or str(log_path)
+    _log_handles[key] = log_file
+
+
+def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[str, Any], log_path: Path) -> None:
     dflash_root = get_dflash_root()
     script = dflash_root / 'scripts' / 'start_llama_server.ps1'
     cmd = [
@@ -112,14 +154,7 @@ def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[s
     if signature['tensor_split']:
         cmd.extend(['-TensorSplit', signature['tensor_split']])
 
-    popen_kwargs: dict[str, Any] = {
-        'cwd': str(dflash_root),
-        'stdout': log_file,
-        'stderr': subprocess.STDOUT,
-    }
-    if sys.platform == 'win32':
-        popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    subprocess.Popen(cmd, **popen_kwargs)
+    _spawn_detached(cmd, log_path=log_path, cwd=dflash_root, handle_key=str(entry['id']))
 
 
 def start_router_listener(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -151,20 +186,19 @@ def start_router_listener(server: dict[str, Any], *, cfg: dict[str, Any] | None 
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f'{server_id}.log'
-    log_file = log_path.open('a', encoding='utf-8')
-    log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 idle=1 ===\n")
-    log_file.flush()
-    _log_handles[server_id] = log_file
+    with log_path.open('a', encoding='utf-8') as log_file:
+        log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 idle=1 ===\n")
+        log_file.flush()
 
     try:
-        _spawn_router(entry, preset_path=preset_path, signature=signature, log_file=log_file)
+        _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
     except Exception as exc:
         return {'success': False, 'error': str(exc), 'port': port}
 
     for _ in range(120):
         if _tcp_port_open(host, port):
-            log_file.write(f"=== router idle ready {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-            log_file.flush()
+            with log_path.open('a', encoding='utf-8') as ready_log:
+                ready_log.write(f"=== router idle ready {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
             _started_launch[port] = dict(signature)
             note_boot_cycle_end(port)
             return {'success': True, 'port': port, 'log_file': str(log_path), 'router_idle': True}
@@ -192,6 +226,41 @@ def eject_to_router_idle(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     if not stop_result.get('success'):
         return stop_result
     return start_router_listener(entry, cfg=cfg)
+
+
+def load_server_checkpoint(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Ensure router is listening, then load the configured checkpoint."""
+    from core.runtime import load_model, probe_models
+
+    entry = normalize_server(server)
+    port = int(entry['port'] or 0)
+    host = str(entry['host'] or '127.0.0.1')
+    api_url = str(entry.get('api_url') or '')
+    model_id = str(entry.get('model_id') or '').strip()
+    if port <= 0:
+        return {'success': False, 'error': 'invalid port'}
+    if not model_id:
+        return {'success': False, 'error': 'model_id required'}
+
+    if _tcp_port_open(host, port):
+        loaded = probe_models(api_url)
+        if model_id in loaded:
+            note_boot_cycle_end(port)
+            return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True}
+    else:
+        listen = start_router_listener(entry, cfg=cfg)
+        if not listen.get('success'):
+            return listen
+
+    load_result = load_model(api_url=api_url, model_id=model_id)
+    if load_result.get('success'):
+        note_boot_cycle_end(port)
+        return {'success': True, 'port': port, 'loaded': True, 'model': model_id}
+    return {
+        'success': False,
+        'error': load_result.get('error') or 'model load failed',
+        'port': port,
+    }
 
 
 def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -259,13 +328,12 @@ def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f'{server_id}.log'
-    log_file = log_path.open('a', encoding='utf-8')
-    log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 ===\n")
-    log_file.flush()
-    _log_handles[server_id] = log_file
+    with log_path.open('a', encoding='utf-8') as log_file:
+        log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 ===\n")
+        log_file.flush()
 
     try:
-        _spawn_router(entry, preset_path=preset_path, signature=signature, log_file=log_file)
+        _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
     except Exception as exc:
         return {'success': False, 'error': str(exc), 'port': port}
 

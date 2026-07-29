@@ -223,10 +223,15 @@
     document.getElementById('libraryScanAddSelected')?.addEventListener('click', () => {
       const picked = selectedCandidates();
       if (!picked.length) return;
-      if (window.DFlashSettingsLive?.addLibrariesFromScan) {
-        window.DFlashSettingsLive.addLibrariesFromScan(picked);
-      }
-      closeModal();
+      const mode = document.querySelector('input[name="libraryScanImportMode"]:checked')?.value || 'link';
+      void (async () => {
+        if (window.DFlashSettingsLive?.importLibrariesAndAdd) {
+          await window.DFlashSettingsLive.importLibrariesAndAdd(picked, mode);
+        } else if (window.DFlashSettingsLive?.addLibrariesFromScan) {
+          window.DFlashSettingsLive.addLibrariesFromScan(picked);
+        }
+        closeModal();
+      })();
     });
 
     modal()?.querySelector('[data-action="close-modal"]')?.addEventListener('click', closeModal);

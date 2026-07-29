@@ -260,6 +260,54 @@ def summarize_library_path(path: str | Path, preset: str = 'custom') -> dict[str
     }
 
 
+def _sidecar_files(path: Path) -> list[Path]:
+    extras: list[Path] = []
+    suffix = path.suffix.lower()
+    if suffix == '.onnx':
+        for candidate in (path.with_suffix('.onnx.json'), Path(f'{path}.json')):
+            if candidate.is_file():
+                extras.append(candidate.resolve())
+    if suffix == '.gguf':
+        try:
+            for sibling in path.parent.glob('*.gguf'):
+                if 'mmproj' in sibling.name.lower():
+                    extras.append(sibling.resolve())
+        except OSError:
+            pass
+    return extras
+
+
+def collect_model_files(path: str | Path, preset: str = 'custom') -> list[Path]:
+    root = Path(str(path)).expanduser().resolve()
+    if not root.is_dir():
+        return []
+    preset_key = str(preset or 'custom').strip().lower()
+    detectors = _PRESET_DETECTORS.get(preset_key, _PRESET_DETECTORS['custom'])
+    seen: set[str] = set()
+    files: list[Path] = []
+    for name in detectors:
+        fn = _DETECTORS[name]
+        result = fn(root)
+        for raw in result.get('files') or []:
+            try:
+                resolved = Path(raw).resolve()
+            except OSError:
+                continue
+            key = str(resolved).lower()
+            if key in seen or not resolved.is_file():
+                continue
+            seen.add(key)
+            files.append(resolved)
+    for path_item in list(files):
+        for sidecar in _sidecar_files(path_item):
+            key = str(sidecar).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(sidecar)
+    return files
+
+
 def _analyze_directory(path: Path, preset: str) -> dict[str, Any] | None:
     stats = summarize_library_path(path, preset)
     if not stats['exists'] or stats['model_count'] <= 0:

@@ -17,6 +17,7 @@
     server: 'Developer',
     models: '',
     devices: 'LM Link',
+    docs: 'Docs',
   };
 
   const pageTitles = {
@@ -24,6 +25,7 @@
     server: 'Inference engines',
     models: 'Checkpoint library',
     devices: 'Remote nodes',
+    docs: 'Documentation',
   };
 
   const inspectorFor = new Set(['server', 'models']);
@@ -43,6 +45,8 @@
     if (inspector) inspector.classList.toggle('hidden', !inspectorFor.has(tab));
     document.body.dataset.activeView = tab;
     if (persist) localStorage.setItem('dflashConsole.activeTab', tab);
+    if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
+    if (tab === 'server') void window.DFlashServerLive?.refresh?.(true);
   }
 
   tabs.forEach((tab) => {
@@ -153,7 +157,7 @@
   syncSysbarHeightVar();
   window.syncSysbarHeightVar = syncSysbarHeightVar;
   const savedTab = localStorage.getItem('dflashConsole.activeTab');
-  const validTabs = new Set(['chat', 'server', 'models', 'devices']);
+  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs']);
   setView(validTabs.has(savedTab) ? savedTab : 'server', { persist: false });
 
   function clamp(value, min, max) {

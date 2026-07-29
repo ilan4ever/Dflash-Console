@@ -16,7 +16,12 @@
   --accent-deep: #064e3b;
   --ok: #34d399;
   --warn: #fbbf24;
-  --log-ts: #2dd4bf;
+  --log-ts: #64748b;
+  --log-dbg: #94a3b8;
+  --log-warn: #fbbf24;
+  --log-info: #4ade80;
+  --log-error: #f87171;
+  --log-marker: #c4b5fd;
   --sidenav-width: 200px;
   --radius: 4px;
 }
@@ -36,26 +41,36 @@
 }
 
 .df-brand {
-  padding: 18px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft);
+  text-align: center;
 }
 
-.df-brand-mark {
+.df-brand-logo {
+  flex: 0 0 auto;
+  width: 80px;
+  height: 80px;
+  object-fit: contain;
   display: block;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 2px;
+}
+
+.df-brand-text {
+  min-width: 0;
+  width: 100%;
 }
 
 .df-brand-title {
   display: block;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
-  line-height: 1.2;
+  line-height: 1.1;
+  text-align: center;
+  margin: 0;
 }
 
 .df-nav {
@@ -103,16 +118,69 @@
 }
 
 .df-sidenav-footer {
-  padding: 10px 8px 14px;
+  margin-top: auto;
+  padding: 12px 14px 16px;
   border-top: 1px solid var(--border-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
-.df-sidenav-footer .df-nav-item {
-  font-size: 12px;
-  padding: 8px 12px;
+.df-app-version {
+  display: block;
+  font-size: 11px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.lm-runtime-rec-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+
+.lm-rec-summary {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.lm-rec-tag {
+  color: #5eead4;
+  cursor: help;
+  border-bottom: 1px dotted rgba(94, 234, 212, 0.45);
+  position: relative;
+}
+
+.lm-rec-tag:hover::after,
+.lm-rec-tag:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 220px;
+  max-width: 280px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #111118;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  font-weight: normal;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  white-space: normal;
+}
+
+.lm-hint-inline {
+  display: inline;
+  margin-top: 0;
+  margin-left: 6px;
 }
 
 .df-workspace {
@@ -260,6 +328,345 @@
   border-color: var(--accent-hover);
 }
 
+.df-shell .lm-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.df-shell .lm-stepper-input {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.df-shell .lm-stepper-input::-webkit-outer-spin-button,
+.df-shell .lm-stepper-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.df-shell .lm-stepper-btn {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.df-shell .lm-stepper-btn:hover {
+  border-color: var(--accent);
+  background: rgba(17, 94, 89, 0.15);
+}
+
+.df-shell .lm-field .lm-stepper {
+  margin-top: 2px;
+}
+
+.lm-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.lm-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lm-section-head .lm-btn {
+  flex-shrink: 0;
+}
+
+.lm-engine-load-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.df-shell .lm-server-cards {
+  gap: 4px;
+}
+
+.df-shell .lm-model-card.lm-model-card-compact {
+  margin-bottom: 0;
+  border-radius: var(--radius);
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-top {
+  flex-wrap: nowrap;
+  align-items: center;
+  padding: 5px 10px;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.df-shell .lm-model-card-compact .lm-model-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-model-card-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-model-card-compact .lm-badge {
+  flex-shrink: 0;
+  min-width: 44px;
+  text-align: center;
+}
+
+.df-shell .lm-model-card-compact.loading {
+  min-height: 42px;
+}
+
+.df-shell .lm-model-card-compact.loading .lm-model-card-top {
+  padding-top: 14px;
+}
+
+.df-shell .lm-model-card.loading {
+  background: var(--bg-card);
+  border-color: rgba(20, 184, 166, 0.4);
+}
+
+.df-shell .lm-model-card-load-label {
+  color: #5eead4;
+}
+
+.df-shell .lm-model-card-load-track {
+  background: rgba(6, 24, 22, 0.72);
+}
+
+.df-shell .lm-model-card-load-fill {
+  background: linear-gradient(
+    90deg,
+    rgba(20, 184, 166, 0.62) 0%,
+    rgba(45, 212, 191, 0.42) 55%,
+    rgba(20, 184, 166, 0.18) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(153, 246, 228, 0.2),
+    inset 0 -8px 16px rgba(20, 184, 166, 0.08);
+}
+
+.df-shell .lm-model-card-compact .lm-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+
+.df-shell .lm-model-card-compact .lm-model-stats {
+  flex-shrink: 0;
+  margin-left: 0;
+  gap: 6px;
+}
+
+.df-shell .lm-model-card-compact .lm-model-stats .lm-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.df-shell .lm-model-card-live {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #5eead4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.df-shell .df-docs-layout {
+  display: flex;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.df-shell .df-docs-nav {
+  flex: 0 0 200px;
+  border-right: 1px solid var(--border-soft);
+  padding: 12px 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.df-shell .df-docs-nav-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.df-shell .df-docs-nav-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.df-shell .df-docs-nav-item.active {
+  background: rgba(17, 94, 89, 0.2);
+  color: #5eead4;
+}
+
+.df-shell .df-docs-body {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px 40px;
+}
+
+.df-shell .df-docs-body h1 {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+
+.df-shell .df-docs-markdown {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-bottom: 20px;
+}
+
+.df-shell .lm-api-endpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.df-shell .lm-api-endpoint {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.df-shell .lm-api-endpoint-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.df-shell .lm-api-method {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #134e4a;
+  color: #ecfdf5;
+}
+
+.df-shell .lm-api-path {
+  font-size: 11px;
+  color: #a7f3d0;
+  word-break: break-all;
+}
+
+.df-shell .lm-api-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.df-shell .lm-api-body {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 10px;
+  line-height: 1.4;
+  background: #0a0a0f;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  overflow-x: auto;
+  color: #cbd5e1;
+}
+
+.df-shell .lm-section-label {
+  margin-bottom: 6px;
+}
+
+.df-shell select,
+.df-shell .lm-select {
+  color-scheme: dark;
+  background-color: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.df-shell select:focus,
+.df-shell .lm-select:focus {
+  outline: none;
+  border-color: #115e59;
+  box-shadow: 0 0 0 1px rgba(17, 94, 89, 0.4);
+}
+
+.df-shell select option,
+.df-shell select optgroup,
+.df-shell .lm-select option,
+.df-shell .lm-select optgroup {
+  background-color: #0c0c12;
+  color: var(--text);
+}
+
+.df-shell select option:checked,
+.df-shell .lm-select option:checked {
+  background-color: #134e4a;
+  color: #ecfdf5;
+}
+
+.df-shell select optgroup,
+.df-shell .lm-select optgroup {
+  color: var(--text-muted);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.df-shell .lm-select.lm-engine-model-pick {
+  min-width: 180px;
+  max-width: 280px;
+  width: min(280px, 42vw);
+  font-size: 12px;
+  padding: 5px 28px 5px 10px;
+  appearance: none;
+  background-color: var(--bg-input);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
 .df-shell .lm-select,
 .df-shell .lm-num,
 .df-shell .lm-search-input {
@@ -271,6 +678,31 @@
 .df-shell .lm-inspector,
 .df-shell .lm-modal-dialog {
   border-radius: var(--radius);
+}
+
+.df-shell .lm-server-bar {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.df-shell .lm-server-left {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+}
+
+.df-shell .lm-engine-power-toggle {
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.df-shell .lm-engine-status-labels {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+  min-width: 0;
 }
 
 .df-shell .lm-tab.active {
@@ -312,6 +744,66 @@
 .df-shell .lm-logs-panel {
   border-radius: var(--radius) var(--radius) 0 0;
   font-family: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  background: #020203;
+}
+
+.df-shell .lm-logs-header {
+  background: #040405;
+  color: #64748b;
+}
+
+.df-shell .lm-logs-filter {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #0a0a0e;
+  border-color: #252530;
+  color: #a1a1aa;
+  padding-right: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+
+.df-shell .lm-logs-filter:focus {
+  outline: none;
+  border-color: #115e59;
+  box-shadow: 0 0 0 1px rgba(17, 94, 89, 0.35);
+}
+
+.df-shell .lm-logs-filter option {
+  background-color: #0c0c12;
+  color: #cbd5e1;
+}
+
+.df-shell .lm-logs-filter option:checked {
+  background-color: #134e4a;
+  color: #ecfdf5;
+}
+
+.df-shell .lm-logs-count {
+  color: #64748b;
+}
+
+.df-shell .lm-logs-body {
+  background: #020203;
+  color: #94a3b8;
+}
+
+.df-shell .lm-logs-body .log-ts,
+.df-shell .lm-logs-body .log-datetime {
+  color: #64748b;
+}
+
+.df-shell .lm-logs-body .log-datetime {
+  color: #64748b;
+}
+
+.df-shell .lm-logs-body .log-comp {
+  color: #9ca3af;
+}
+
+.df-shell .lm-logs-body .log-marker-body {
+  color: #a78bfa;
 }
 
 .df-shell .lm-models-toolbar h1 {
@@ -472,14 +964,18 @@
   }
 
   .df-brand-title,
-  .df-nav-label,
-  .df-sidenav-footer .df-nav-label {
+  .df-nav-label {
     display: none;
   }
 
   .df-brand {
-    padding: 14px 8px;
-    text-align: center;
+    padding: 12px 8px;
+    justify-content: center;
+  }
+
+  .df-brand-logo {
+    width: 64px;
+    height: 64px;
   }
 
   .df-nav-item {
@@ -819,6 +1315,39 @@
   border-top: 1px solid var(--border-soft);
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.df-shell .lm-library-import-panel {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.df-shell .lm-library-import-panel-scan {
+  flex-shrink: 0;
+}
+
+.df-shell .lm-library-import-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.df-shell .lm-library-import-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.df-shell .lm-library-import-option input {
+  accent-color: var(--accent-deep);
 }
 
 .df-shell .lm-browse-footer {

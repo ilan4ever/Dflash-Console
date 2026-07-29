@@ -20,11 +20,52 @@
   let pollTimer = null;
   let busy = false;
   let busyAction = null;
+  let loadingModelMeta = null;
   const PREFS_KEY = 'dflashConsole.modelPrefs';
+  let catalogModels = [];
+  let suppressRunningToggle = false;
+  let selectedModelKey = localStorage.getItem('dflashConsole.selectedModelKey') || '';
+
+  const MODEL_GROUPS = [
+    { id: 'profiles', label: 'DFlash engine profiles', match: (m) => m.source === 'dflash-profile' },
+    {
+      id: 'dflash',
+      label: 'DFlash checkpoints',
+      match: (m) => m.source !== 'dflash-profile' && (
+        m.source === 'dflash'
+        || (Array.isArray(m.capabilities) && m.capabilities.includes('dflash'))
+        || !!m.draft_path
+      ),
+    },
+    { id: 'lmstudio', label: 'LM Studio', match: (m) => m.source === 'lmstudio' },
+    { id: 'gguf', label: 'GGUF library', match: () => true },
+  ];
   let inspectorBound = null;
   let inspectorFilling = false;
+  let inspectorDirty = false;
   let autoSaveTimer = null;
   let saveInFlight = null;
+  let logsFollowTail = true;
+  let logsScrollBound = false;
+  let lastLogsServerId = '';
+  let logLinesRaw = [];
+  let logFilterId = localStorage.getItem('dflashConsole.logFilter') || 'all';
+  const LOG_FETCH_TAIL = 500;
+  const LOG_SCROLL_THRESHOLD = 32;
+
+  function logsAtBottom(box) {
+    if (!box) return true;
+    return box.scrollHeight - box.scrollTop - box.clientHeight <= LOG_SCROLL_THRESHOLD;
+  }
+
+  function bindLogsAutoScroll() {
+    const box = document.getElementById('serverLogsBody');
+    if (!box || logsScrollBound) return;
+    logsScrollBound = true;
+    box.addEventListener('scroll', () => {
+      logsFollowTail = logsAtBottom(box);
+    }, { passive: true });
+  }
 
   function escapeHtml(value) {
     return String(value || '')
@@ -36,6 +77,31 @@
 
   function activeServer() {
     return servers.find((s) => s.id === activeId) || allServers.find((s) => s.id === activeId) || servers[0] || null;
+  }
+
+  function serverIsLive(server) {
+    return !!server && (server.running || server.status === 'booting' || server.status === 'loaded');
+  }
+
+  /** Follow backend when another profile was started via API while the UI had a stopped selection. */
+  function syncActiveIdFromLiveState() {
+    if (busy) return;
+    if (serverIsLive(activeServer())) return;
+    const live = servers.find((s) => serverIsLive(s));
+    if (live && live.id !== activeId) {
+      activeId = live.id;
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
+    }
+  }
+
+  function pollIntervalMs() {
+    if (busy || servers.some((s) => s.status === 'booting')) return 1000;
+    return 2500;
+  }
+
+  function reschedulePoll() {
+    if (pollTimer) window.clearInterval(pollTimer);
+    pollTimer = window.setInterval(() => void pollTick(), pollIntervalMs());
   }
 
   function modelKeyFor(model) {
@@ -118,6 +184,8 @@
       prefs[inspectorBound.modelKey] = patch;
       saveBrowsePrefs(prefs);
     }
+    inspectorDirty = false;
+    window.DFlashStatusFeed?.note('Runtime settings saved', 'Changes apply on next load');
   }
 
   async function flushInspectorSave() {
@@ -135,6 +203,7 @@
 
   function scheduleInspectorAutoSave() {
     if (inspectorFilling || !inspectorBound) return;
+    inspectorDirty = true;
     if (autoSaveTimer) clearTimeout(autoSaveTimer);
     autoSaveTimer = window.setTimeout(() => {
       autoSaveTimer = null;
@@ -162,6 +231,21 @@
         entries.push({ server, row });
       }
     }
+    if (!entries.length && busyAction === 'loading' && loadingModelMeta) {
+      const server = servers.find((s) => s.id === loadingModelMeta.server_id) || activeServer();
+      if (server) {
+        entries.push({
+          server,
+          row: {
+            card_state: 'loading',
+            title: loadingModelMeta.label,
+            role: 'alias',
+            ejectable: true,
+            progress: null,
+          },
+        });
+      }
+    }
     return entries;
   }
 
@@ -177,8 +261,9 @@
     const loaded = loadedServerCount();
     const booting = bootingServerCount();
     if (busyAction === 'stopping') return 'Stopping…';
-    if (busyAction === 'ejecting') return 'Ejecting…';
-    if (busyAction === 'starting') return 'Loading…';
+    if (busyAction === 'ejecting') return 'Unloading…';
+    if (busyAction === 'starting') return 'Starting engine…';
+    if (busyAction === 'loading') return 'Loading model…';
     if (booting && loaded) return `${loaded} loaded · ${booting} loading`;
     if (booting) return booting === 1 ? 'Loading model…' : `${booting} models loading`;
     if (loaded > 1) return `${loaded} models loaded`;
@@ -198,11 +283,28 @@
 
   function cardDisplayName(row) {
     if (row.title) return row.title;
-    if (row.role === 'alias') return `llm ${row.id}`;
-    if (row.role === 'draft-dflash') return `dflash ${row.id}`;
-    if (row.role === 'draft-dspark') return `dspark ${row.id}`;
+    if (row.role === 'alias') return row.id || 'API alias';
+    if (row.role === 'draft-dflash' || row.role === 'draft-dspark') {
+      const base = row.path ? row.path.split(/[/\\]/).pop() : row.label;
+      return base || row.id || 'draft';
+    }
     const base = row.path ? row.path.split(/[/\\]/).pop() : row.label;
-    return `llm ${base}`;
+    return base || row.id || 'checkpoint';
+  }
+
+  function cardHoverTitle({ server, row }) {
+    const lines = [
+      `${server.label || server.id} · port :${server.port}`,
+      server.reachable_url || '',
+      row.subtitle || '',
+    ];
+    const details = Array.isArray(row.stack_details) ? row.stack_details : [];
+    for (const part of details) {
+      const size = part.size_gb != null ? ` · ${part.size_gb} GB` : '';
+      lines.push(`${detailBadge(part.source, part.role)}: ${part.name || '—'}${size}`);
+    }
+    if (row.path) lines.push(row.path);
+    return lines.filter(Boolean).join('\n');
   }
 
   function roleBadge(row) {
@@ -213,24 +315,22 @@
     return '';
   }
 
-  function renderStackDetails(row) {
-    const details = Array.isArray(row.stack_details) ? row.stack_details : [];
-    if (!details.length) return '';
-    return `
-      <div class="lm-model-stack">
-        ${details.map((part) => `
-          <div class="lm-model-stack-line">
-            <span class="lm-tag dim">${escapeHtml(detailBadge(part.source, part.role))}</span>
-            <span>${escapeHtml(part.name)}</span>
-            ${part.size_gb != null ? `<span class="lm-stack-size">${part.size_gb} GB</span>` : ''}
-          </div>`).join('')}
-      </div>`;
+  function cardLiveStats(server) {
+    const stats = server?.inference_stats;
+    if (!stats || server.status !== 'loaded') return '';
+    const parts = [];
+    if (stats.tokens_loaded != null) parts.push(`${stats.tokens_loaded} ctx`);
+    if (stats.generation_tokens != null) parts.push(`${stats.generation_tokens} out`);
+    if (stats.tokens_per_second != null) parts.push(`${stats.tokens_per_second} t/s`);
+    if (!parts.length) return '';
+    return `<span class="lm-model-card-live">${escapeHtml(parts.join(' · '))}</span>`;
   }
 
   function emptyMessage(server) {
     if (busyAction === 'stopping') return 'Stopping server…';
-    if (busyAction === 'ejecting') return 'Ejecting model…';
-    if (busyAction === 'starting') return 'Starting server…';
+    if (busyAction === 'ejecting') return 'Unloading model…';
+    if (busyAction === 'starting') return 'Starting engine…';
+    if (busyAction === 'loading') return 'Loading model…';
     if (server?.status === 'running') return 'Engine is listening but no checkpoint is loaded. Click Run checkpoint.';
     return 'Engine stopped. Turn it on or run a checkpoint.';
   }
@@ -261,40 +361,40 @@
       const loading = row.card_state === 'loading';
       const rawProgress = row.progress ?? (loading ? server.load_progress : null);
       const progressPct = rawProgress != null ? Math.min(100, Math.max(0, Number(rawProgress))) : null;
-      const indeterminate = loading && progressPct == null;
-      const badge = ready
-        ? '<span class="lm-badge ready">READY</span>'
-        : `<span class="lm-badge loading">⟳ LOADING${progressPct != null ? ` ${Math.round(progressPct)}%` : ''}</span>`;
-      const subtitleParts = [];
-      if (row.subtitle) subtitleParts.push(row.subtitle);
-      subtitleParts.push(`:${server.port} · ${server.reachable_url || ''}`);
-      const subtitle = `<div class="lm-model-subtitle">${escapeHtml(subtitleParts.join(' · '))}</div>`;
       let action = '';
       if (row.ejectable) {
         action = ready
-          ? '<button class="lm-btn ghost" data-action="eject">⏏ Eject</button>'
-          : '<button class="lm-btn ghost" data-action="cancel-load">Cancel</button>';
+          ? '<button class="lm-btn ghost small" data-action="eject" title="Unload checkpoint">Unload</button>'
+          : '<button class="lm-btn ghost small" data-action="cancel-load">Cancel</button>';
       }
-      const cardStyle = progressPct != null ? ` style="--card-progress:${progressPct}%"` : '';
-      const cardClass = `lm-model-card ${ready ? 'ready' : 'loading'}${indeterminate ? ' lm-progress-indeterminate' : ''}`;
-      const missing = row.path_missing ? '<span class="lm-tag yellow">missing file</span>' : '';
-      const serverHead = `<div class="lm-model-card-server">${escapeHtml(server.label || server.id)} <span class="lm-port">:${server.port}</span> · ${escapeHtml(serverStatusLabel(server))}</div>`;
+      const cardClass = `lm-model-card lm-model-card-compact ${ready ? 'ready' : 'loading'}${loading && progressPct == null ? ' lm-progress-indeterminate' : ''}`;
+      const cardStyle = loading && progressPct != null ? ` style="--card-progress:${progressPct}%"` : '';
+      const loadChrome = loading
+        ? `<div class="lm-model-card-load-shell" aria-hidden="true">
+            <span class="lm-model-card-load-label">Loading<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span></span>
+            <div class="lm-model-card-load-track"><div class="lm-model-card-load-fill"></div></div>
+          </div>`
+        : '';
+      const badge = ready
+        ? '<span class="lm-badge ready">READY</span>'
+        : `<span class="lm-badge loading">${progressPct != null ? `${Math.round(progressPct)}%` : '…'}</span>`;
+      const missing = row.path_missing ? '<span class="lm-tag yellow">missing</span>' : '';
+      const hoverTitle = cardHoverTitle({ server, row });
+      const engineMeta = escapeHtml(server.label || server.id);
 
       return `
-        <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role)}"${cardStyle}>
-          ${serverHead}
+        <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role)}" title="${escapeHtml(hoverTitle)}"${cardStyle}>
+          ${loadChrome}
           <div class="lm-model-card-top">
             ${badge}
-            <div class="lm-model-title-block">
-              <span class="lm-model-path">${escapeHtml(cardDisplayName(row))}</span>
-              ${subtitle}
-            </div>
+            <span class="lm-model-path">${escapeHtml(cardDisplayName(row))}</span>
+            ${cardLiveStats(server)}
+            <span class="lm-model-card-meta"><span class="lm-port">:${server.port}</span> · ${engineMeta}</span>
             ${roleBadge(row)} ${missing}
             <div class="lm-model-stats">
               ${action}
             </div>
           </div>
-          ${renderStackDetails(row)}
         </article>`;
     }).join('');
 
@@ -314,33 +414,138 @@
     });
   }
 
-  function renderServerPicker() {
-    const pick = document.getElementById('serverProfilePick');
+  function modelCatalogKey(model) {
+    return model?.server_id || model?.path || model?.id || '';
+  }
+
+  function modelGroupId(model) {
+    for (const group of MODEL_GROUPS) {
+      if (group.id === 'gguf') continue;
+      if (group.match(model)) return group.id;
+    }
+    return 'gguf';
+  }
+
+  function modelOptionLabel(model) {
+    const parts = [model.label || model.filename || model.id || 'Checkpoint'];
+    if (model.quant && model.quant !== '—') parts.push(model.quant);
+    if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
+    if (model.loadable && model.port) parts.push(`port :${model.port}`);
+    else if (!model.loadable) parts.push('browse only');
+    return parts.join(' · ');
+  }
+
+  function groupedCatalogModels(list) {
+    const buckets = Object.fromEntries(MODEL_GROUPS.map((g) => [g.id, []]));
+    const seen = new Set();
+    for (const model of list) {
+      const key = modelCatalogKey(model);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      buckets[modelGroupId(model)].push(model);
+    }
+    for (const group of MODEL_GROUPS) {
+      buckets[group.id].sort((a, b) => {
+        const aScore = a.loadable ? 0 : 1;
+        const bScore = b.loadable ? 0 : 1;
+        if (aScore !== bScore) return aScore - bScore;
+        return String(a.label || '').localeCompare(String(b.label || ''));
+      });
+    }
+    return buckets;
+  }
+
+  function renderEngineModelPicker() {
+    const pick = document.getElementById('serverModelPick');
+    const loadBtn = document.getElementById('serverModelLoadBtn');
     if (!pick) return;
-    const options = allServers.filter((s) => s.enabled !== false);
-    pick.innerHTML = options.map((s) => {
-      const mark = s.status === 'loaded' ? '●' : s.status === 'booting' ? '◐' : s.running ? '○' : '·';
-      return `<option value="${escapeHtml(s.id)}"${s.id === activeId ? ' selected' : ''}>${mark} ${escapeHtml(s.label || s.id)} :${s.port}</option>`;
-    }).join('');
+
+    const buckets = groupedCatalogModels(catalogModels);
+    const parts = ['<option value="">Select checkpoint…</option>'];
+    for (const group of MODEL_GROUPS) {
+      const rows = buckets[group.id] || [];
+      if (!rows.length) continue;
+      parts.push(`<optgroup label="${escapeHtml(group.label)}">`);
+      for (const model of rows) {
+        const key = modelCatalogKey(model);
+        const selected = key === selectedModelKey ? ' selected' : '';
+        parts.push(`<option value="${escapeHtml(key)}"${selected}>${escapeHtml(modelOptionLabel(model))}</option>`);
+      }
+      parts.push('</optgroup>');
+    }
+    pick.innerHTML = parts.join('');
+
+    const selected = catalogModels.find((m) => modelCatalogKey(m) === pick.value);
+    if (loadBtn) loadBtn.disabled = busy || !selected?.loadable;
+  }
+
+  function syncModelPicker(key) {
+    selectedModelKey = key || localStorage.getItem('dflashConsole.selectedModelKey') || '';
+    renderEngineModelPicker();
+  }
+
+  function selectedCatalogModel() {
+    const pick = document.getElementById('serverModelPick');
+    if (!pick?.value) return null;
+    return catalogModels.find((m) => modelCatalogKey(m) === pick.value) || null;
+  }
+
+  async function onEngineModelPickChange() {
+    const pick = document.getElementById('serverModelPick');
+    const loadBtn = document.getElementById('serverModelLoadBtn');
+    const model = selectedCatalogModel();
+    selectedModelKey = pick?.value || '';
+    if (selectedModelKey) localStorage.setItem('dflashConsole.selectedModelKey', selectedModelKey);
+    else localStorage.removeItem('dflashConsole.selectedModelKey');
+    if (loadBtn) loadBtn.disabled = busy || !model?.loadable;
+    if (model?.server_id) {
+      activeId = model.server_id;
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
+    }
+    if (model) {
+      await applyModelSelection(model);
+      await window.DFlashModelsLive?.selectModel?.(selectedModelKey, { applyInspector: false });
+    }
+  }
+
+  function setRunningToggle(checked) {
+    const toggle = document.getElementById('serverRunningToggle');
+    if (!toggle || toggle.checked === checked) return;
+    suppressRunningToggle = true;
+    toggle.checked = checked;
+    suppressRunningToggle = false;
+  }
+
+  async function loadPickedModel() {
+    const model = selectedCatalogModel();
+    if (!model?.loadable) {
+      toast('This checkpoint is browse-only — wire it to an engine profile in Settings.', false);
+      return;
+    }
+    if (window.DFlashModelsLive?.loadModel) {
+      await window.DFlashModelsLive.loadModel(model);
+      return;
+    }
+    await loadSelectedModel(model);
   }
 
   function renderToolbar(server) {
     const statusText = document.getElementById('serverStatusText');
     const toggle = document.getElementById('serverRunningToggle');
     const urlEl = document.getElementById('serverReachableUrl');
-    const loadBtn = document.getElementById('serverLoadBtn');
+    const loadBtn = document.getElementById('serverModelLoadBtn');
 
-    renderServerPicker();
+    renderEngineModelPicker();
 
     if (!server) {
       if (statusText) { statusText.textContent = 'No server'; statusText.className = 'lm-status-stopped'; }
-      if (toggle) toggle.checked = false;
+      if (toggle) setRunningToggle(false);
       if (urlEl) urlEl.textContent = '—';
       if (loadBtn) loadBtn.disabled = true;
       return;
     }
 
-    const running = server.running || server.status === 'booting';
+    const running = serverIsLive(server);
     const label = aggregateStatusLabel();
 
     if (statusText) {
@@ -348,36 +553,93 @@
       const anyActive = loadedServerCount() > 0 || bootingServerCount() > 0 || server.running || server.status === 'booting';
       statusText.className = anyActive ? 'lm-status-running' : 'lm-status-stopped';
     }
-    if (toggle) toggle.checked = running && busyAction !== 'stopping';
+    if (toggle) setRunningToggle(running && busyAction !== 'stopping');
     if (urlEl) urlEl.textContent = server.reachable_url || '—';
-    if (loadBtn) loadBtn.disabled = busy;
+    if (loadBtn) {
+      const picked = selectedCatalogModel();
+      loadBtn.disabled = busy || !picked?.loadable;
+    }
+  }
+
+  function visibleLogLines() {
+    const format = window.DFlashLogFormat;
+    if (format?.getDisplayLines) return format.getDisplayLines(logLinesRaw, logFilterId);
+    return logLinesRaw.slice();
+  }
+
+  function updateLogsCount(visibleCount) {
+    const countEl = document.getElementById('serverLogsCount');
+    if (!countEl) return;
+    const total = logLinesRaw.length;
+    const visible = typeof visibleCount === 'number' ? visibleCount : visibleLogLines().length;
+    if (!total) {
+      countEl.textContent = '';
+      return;
+    }
+    if (logFilterId === 'all') {
+      countEl.textContent = `${total} lines`;
+      return;
+    }
+    countEl.textContent = `${visible} / ${total}`;
   }
 
   function renderLogs(lines) {
+    logLinesRaw = Array.isArray(lines) ? lines : [];
     const box = document.getElementById('serverLogsBody');
     if (!box) return;
-    if (!lines.length) {
-      box.innerHTML = '<div class="log-line"><span class="ts">—</span> <span class="dbg">No log output yet. Start the server from here to capture logs.</span></div>';
+    bindLogsAutoScroll();
+    const format = window.DFlashLogFormat?.highlightLogLine;
+    const filterLabel = window.DFlashLogFormat?.filterLabel?.(logFilterId) || 'All lines';
+    const displayLines = visibleLogLines();
+    const stickToBottom = logsFollowTail;
+    if (!logLinesRaw.length) {
+      box.innerHTML = '<div class="log-line log-empty"><span class="log-datetime">—</span> <span class="log-dim">No log output yet. Start the engine to capture logs.</span></div>';
+      updateLogsCount(0);
+      if (stickToBottom) box.scrollTop = box.scrollHeight;
       return;
     }
-    box.innerHTML = lines.slice(-200).map((line) => {
-      const cls = line.includes('[WARN]') ? 'warn' : line.includes('[INFO]') ? 'info' : 'dbg';
-      return `<div class="log-line"><span class="ts"></span> <span class="${cls}">${escapeHtml(line)}</span></div>`;
-    }).join('');
-    box.scrollTop = box.scrollHeight;
+    if (!displayLines.length) {
+      box.innerHTML = `<div class="log-line log-empty"><span class="log-dim">No lines match filter “${escapeHtml(filterLabel)}”.</span></div>`;
+      updateLogsCount(0);
+      if (stickToBottom) box.scrollTop = box.scrollHeight;
+      return;
+    }
+    box.innerHTML = displayLines.map((line) => (
+      format ? format(line) : `<div class="log-line">${escapeHtml(line)}</div>`
+    )).join('');
+    updateLogsCount(displayLines.length);
+    if (stickToBottom) box.scrollTop = box.scrollHeight;
   }
 
-  function bindRangePair(numEl, rangeEl) {
-    if (!numEl || !rangeEl) return;
-    rangeEl.addEventListener('input', () => { numEl.value = rangeEl.value; });
-    numEl.addEventListener('input', () => {
-      const min = Number(numEl.min || rangeEl.min || 0);
-      const max = Number(numEl.max || rangeEl.max || 999999);
-      let value = Number(numEl.value || rangeEl.value || min);
-      value = Math.min(max, Math.max(min, value));
-      numEl.value = String(value);
-      rangeEl.value = String(value);
-    });
+  async function copyVisibleLogs() {
+    const lines = visibleLogLines();
+    if (!lines.length) {
+      toast('Nothing to copy for this filter', false);
+      return;
+    }
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      const filterLabel = window.DFlashLogFormat?.filterLabel?.(logFilterId) || 'All lines';
+      const suffix = logFilterId === 'all'
+        ? `${lines.length} lines`
+        : `${lines.length} lines (${filterLabel.toLowerCase()})`;
+      toast(`Copied ${suffix}`);
+    } catch (error) {
+      toast(error.message || 'Copy failed', false);
+    }
+  }
+
+  function refreshInspectorRecommendations(server) {
+    if (!server || inspectorDirty) return;
+    const model = {
+      server_id: server.id || inspectorBound?.serverId || '',
+      profile: server.profile || inspectorBound?.profile,
+      size_gb: server.size_gb,
+      context_max: PROFILE_CTX_MAX[server.profile] || server.context_max || 262144,
+      gpu_layers_max: server.gpu_layers_max || 128,
+    };
+    window.DFlashRuntimeRecommendations?.scheduleRefresh?.(model);
   }
 
   function readInspectorLoadSettings() {
@@ -395,44 +657,30 @@
         top_p: parseFloat(document.getElementById('inspectorTopP')?.value || '0.9'),
         top_k: parseInt(document.getElementById('inspectorTopK')?.value || '40', 10),
         repeat_penalty: parseFloat(document.getElementById('inspectorRepeatPenalty')?.value || '1.1'),
+        max_tokens: parseInt(document.getElementById('inspectorMaxTokens')?.value || '4096', 10),
       },
     };
   }
 
   function fillInspectorLoadSettings(server) {
-    if (!server) return;
+    if (!server || inspectorDirty) return;
     inspectorFilling = true;
     try {
     const load = server.load_settings || {};
     const ctxMax = PROFILE_CTX_MAX[server.profile] || server.context_max || 262144;
     const gpuMax = server.gpu_layers_max || 128;
     const ctxEl = document.getElementById('inspectorContext');
-    const ctxRange = document.getElementById('inspectorContextRange');
-    const ctxHint = document.getElementById('inspectorContextHint');
     if (ctxEl) ctxEl.value = server.context_size || 65536;
-    if (ctxRange) {
-      ctxRange.max = String(ctxMax);
-      ctxRange.value = String(server.context_size || 65536);
-    }
     if (ctxEl) ctxEl.max = String(ctxMax);
-    if (ctxHint) ctxHint.textContent = `Model supports up to ${ctxMax} tokens.`;
 
     const gpuEl = document.getElementById('inspectorGpuLayers');
-    const gpuRange = document.getElementById('inspectorGpuLayersRange');
-    const gpuHint = document.getElementById('inspectorGpuHint');
     const gpuLayers = load.gpu_layers ?? 99;
     if (gpuEl) {
       gpuEl.max = String(gpuMax);
       gpuEl.value = gpuLayers;
     }
-    if (gpuRange) {
-      gpuRange.max = String(gpuMax);
-      gpuRange.value = gpuLayers;
-    }
-    if (gpuHint) gpuHint.textContent = `Layers on GPU (-ngl). Max ${gpuMax}; 99 = all layers.`;
 
     document.getElementById('inspectorCpuThreads').value = load.cpu_threads ?? 9;
-    document.getElementById('inspectorCpuThreadsRange').value = load.cpu_threads ?? 9;
     document.getElementById('inspectorEvalBatch').value = load.eval_batch_size ?? 2048;
     document.getElementById('inspectorPhysicalBatch').value = load.physical_batch_size ?? 512;
     document.getElementById('inspectorFlashAttention').checked = load.flash_attention !== false;
@@ -443,21 +691,15 @@
     const topK = infer.top_k ?? 40;
     const repeatPenalty = infer.repeat_penalty ?? 1.1;
     const tempEl = document.getElementById('inspectorTemperature');
-    const tempRange = document.getElementById('inspectorTemperatureRange');
-    if (tempEl) tempEl.value = temperature;
-    if (tempRange) tempRange.value = temperature;
+    if (tempEl) tempEl.value = Number(temperature).toFixed(2);
     const topPEl = document.getElementById('inspectorTopP');
-    const topPRange = document.getElementById('inspectorTopPRange');
-    if (topPEl) topPEl.value = topP;
-    if (topPRange) topPRange.value = topP;
+    if (topPEl) topPEl.value = Number(topP).toFixed(2);
     const topKEl = document.getElementById('inspectorTopK');
-    const topKRange = document.getElementById('inspectorTopKRange');
     if (topKEl) topKEl.value = topK;
-    if (topKRange) topKRange.value = topK;
     const repeatEl = document.getElementById('inspectorRepeatPenalty');
-    const repeatRange = document.getElementById('inspectorRepeatPenaltyRange');
-    if (repeatEl) repeatEl.value = repeatPenalty;
-    if (repeatRange) repeatRange.value = repeatPenalty;
+    if (repeatEl) repeatEl.value = Number(repeatPenalty).toFixed(2);
+    const maxTokensEl = document.getElementById('inspectorMaxTokens');
+    if (maxTokensEl) maxTokensEl.value = infer.max_tokens ?? 4096;
 
     const specGroup = document.getElementById('inspectorSpeculativeGroup');
     const specHint = document.getElementById('inspectorSpeculativeHint');
@@ -473,6 +715,7 @@
         specHint.textContent = 'No speculative draft for this profile.';
       }
     }
+    refreshInspectorRecommendations({ ...server, id: server.id || inspectorBound?.serverId });
     } finally {
       inspectorFilling = false;
     }
@@ -508,13 +751,12 @@
       draftEl.textContent = hasDraft ? model.draft_label : '—';
     }
     document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode(model.label || model.id || 'Checkpoint'));
-    const loadBtn = document.getElementById('inspectorLoadBtn');
-    if (loadBtn) loadBtn.disabled = !model.server_id;
   }
 
   async function applyModelSelection(model) {
     if (!model) return;
     await flushInspectorSave();
+    inspectorDirty = false;
     inspectorBound = {
       serverId: model.server_id || '',
       modelKey: modelKeyFor(model),
@@ -577,45 +819,80 @@
   async function refreshLogs() {
     const server = activeServer();
     if (!server) return;
-    const data = await api(`/api/logs/${encodeURIComponent(server.id)}?tail=200`);
+    if (server.id !== lastLogsServerId) {
+      lastLogsServerId = server.id;
+      logsFollowTail = true;
+    }
+    const data = await api(`/api/logs/${encodeURIComponent(server.id)}?tail=${LOG_FETCH_TAIL}`);
     renderLogs(data.lines || []);
   }
 
-  async function refresh() {
-    const data = await api('/api/servers');
+  async function refresh(shouldRender = true) {
+    const [data, modelsData] = await Promise.all([
+      api('/api/servers'),
+      api('/api/models').catch(() => ({ models: [] })),
+    ]);
     servers = data.servers || [];
     allServers = data.all_servers || servers;
     gpus = data.gpus || [];
+    catalogModels = modelsData.models || [];
+    selectedModelKey = localStorage.getItem('dflashConsole.selectedModelKey') || selectedModelKey;
     if (!activeId || !allServers.some((s) => s.id === activeId)) {
       activeId = data.primary_server_id || servers[0]?.id || allServers[0]?.id || '';
       localStorage.setItem('dflashConsole.activeServerId', activeId);
     }
-    renderAll();
-    await refreshLogs();
+    syncActiveIdFromLiveState();
+    if (shouldRender) {
+      renderAll();
+      await refreshLogs();
+    }
+    reschedulePoll();
+  }
+
+  async function pollTick() {
+    const view = document.body.dataset.activeView;
+    await refresh(view === 'server');
+    if (view === 'models' && window.DFlashModelsLive) {
+      try {
+        await window.DFlashModelsLive.refresh();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async function waitUntilModelLoaded(serverId, { maxAttempts = 180 } = {}) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await refresh(true);
+      const server = servers.find((s) => s.id === serverId);
+      if (server?.status === 'loaded') return server;
+      if (server && !server.booting && server.status !== 'booting' && attempt > 2) {
+        return server;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    return servers.find((s) => s.id === serverId) || null;
   }
 
   async function startActive() {
     const server = activeServer();
     if (!server || busy) return;
+    if (serverIsLive(server) && server.status !== 'stopped') {
+      toast('Engine is already running');
+      setRunningToggle(true);
+      return;
+    }
     busy = true;
     busyAction = 'starting';
-    window.DFlashStatusFeed?.setTransient(`Starting ${server.label || server.id}…`, {
+    window.DFlashStatusFeed?.setTransient(`Starting engine ${server.label || server.id}…`, {
       secondary: `Port :${server.port}`,
       ttlMs: 120000,
     });
     renderAll();
     try {
-      await saveInspectorLoadSettings();
-      const result = await api(`/api/servers/${encodeURIComponent(server.id)}/start`, { method: 'POST' });
-      if (result?.memory_warning) {
-        toast(result.memory_warning);
-        window.DFlashStatusFeed?.note(result.memory_warning, server.label || server.id);
-      }
-      toast('Starting server…');
-      window.DFlashStatusFeed?.setTransient(`Loading ${server.label || server.id}…`, {
-        secondary: 'Reading weights into GPU',
-        ttlMs: 120000,
-      });
+      await api(`/api/servers/${encodeURIComponent(server.id)}/listen`, { method: 'POST' });
+      toast('Engine started');
+      window.DFlashStatusFeed?.note('Engine listening', `Port :${server.port} · no checkpoint loaded yet`);
       await refresh();
     } catch (err) {
       toast(err.message, false);
@@ -645,8 +922,46 @@
       toast('Only configured server profiles can be loaded here. Add a server in Settings.', false);
       return;
     }
+    if (busy) return;
     await applyModelSelection(model);
-    await startActive();
+    activeId = model.server_id;
+    localStorage.setItem('dflashConsole.activeServerId', activeId);
+    const label = model.label || model.id;
+    loadingModelMeta = { server_id: model.server_id, label };
+    busy = true;
+    busyAction = 'loading';
+    window.DFlashStatusFeed?.setTransient(`Loading ${label}…`, {
+      secondary: 'Reading weights into GPU',
+      ttlMs: 120000,
+    });
+    renderAll();
+    try {
+      await saveInspectorLoadSettings();
+      const result = await api(`/api/servers/${encodeURIComponent(model.server_id)}/load`, { method: 'POST' });
+      if (result?.memory_warning) {
+        toast(result.memory_warning);
+        window.DFlashStatusFeed?.note(result.memory_warning, label);
+      }
+      if (result?.already_loaded) {
+        toast('Model already loaded');
+        window.DFlashStatusFeed?.note(`${label} ready`, `Port :${result.port || '—'}`);
+        await refresh();
+        return;
+      }
+      const loaded = await waitUntilModelLoaded(model.server_id);
+      if (loaded?.status === 'loaded') {
+        toast('Model loaded');
+        window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
+      }
+    } catch (err) {
+      toast(err.message, false);
+      window.DFlashStatusFeed?.note('Load failed', err.message || label);
+    } finally {
+      loadingModelMeta = null;
+      busy = false;
+      busyAction = null;
+      renderAll();
+    }
   }
 
   async function ejectServer(serverId) {
@@ -654,11 +969,11 @@
     busy = true;
     busyAction = 'ejecting';
     const label = allServers.find((s) => s.id === serverId)?.label || serverId;
-    window.DFlashStatusFeed?.setTransient(`Ejecting ${label}…`, { ttlMs: 30000 });
+    window.DFlashStatusFeed?.setTransient(`Unloading ${label}…`, { ttlMs: 30000 });
     renderAll();
     try {
       await api(`/api/servers/${encodeURIComponent(serverId)}/unload`, { method: 'POST' });
-      toast('Model ejected — server still running');
+      toast('Model unloaded — server still running');
       await waitUntilServerIdle(serverId);
       activeId = serverId;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
@@ -729,61 +1044,55 @@
   }
 
   function startPolling() {
-    if (pollTimer) return;
-    pollTimer = window.setInterval(() => {
-      const view = document.body.dataset.activeView;
-      if (view === 'server') void refresh();
-      else if (view === 'models' && window.DFlashModelsLive) void window.DFlashModelsLive.refresh().catch(() => {});
-    }, 3000);
+    reschedulePoll();
   }
 
   function bind() {
-    bindRangePair(document.getElementById('inspectorContext'), document.getElementById('inspectorContextRange'));
-    bindRangePair(document.getElementById('inspectorGpuLayers'), document.getElementById('inspectorGpuLayersRange'));
-    bindRangePair(document.getElementById('inspectorCpuThreads'), document.getElementById('inspectorCpuThreadsRange'));
-    bindRangePair(document.getElementById('inspectorTemperature'), document.getElementById('inspectorTemperatureRange'));
-    bindRangePair(document.getElementById('inspectorTopP'), document.getElementById('inspectorTopPRange'));
-    bindRangePair(document.getElementById('inspectorTopK'), document.getElementById('inspectorTopKRange'));
-    bindRangePair(document.getElementById('inspectorRepeatPenalty'), document.getElementById('inspectorRepeatPenaltyRange'));
+    window.DFlashRuntimeSteppers?.bindInspectorSteppers?.();
 
     const autoSaveIds = [
-      'inspectorContext', 'inspectorContextRange', 'inspectorGpuLayers', 'inspectorGpuLayersRange',
-      'inspectorCpuThreads', 'inspectorCpuThreadsRange', 'inspectorEvalBatch', 'inspectorPhysicalBatch',
-      'inspectorFlashAttention', 'inspectorTemperature', 'inspectorTemperatureRange', 'inspectorTopP',
-      'inspectorTopPRange', 'inspectorTopK', 'inspectorTopKRange', 'inspectorRepeatPenalty',
-      'inspectorRepeatPenaltyRange',
+      'inspectorContext', 'inspectorGpuLayers', 'inspectorCpuThreads', 'inspectorEvalBatch',
+      'inspectorPhysicalBatch', 'inspectorFlashAttention', 'inspectorTemperature', 'inspectorTopP',
+      'inspectorTopK', 'inspectorRepeatPenalty', 'inspectorMaxTokens',
     ];
     autoSaveIds.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
       const eventName = el.type === 'checkbox' ? 'change' : 'input';
       el.addEventListener(eventName, scheduleInspectorAutoSave);
+      if (el.type === 'number') {
+        el.addEventListener('change', scheduleInspectorAutoSave);
+      }
     });
 
     document.getElementById('serverRunningToggle')?.addEventListener('change', (e) => {
+      if (suppressRunningToggle) return;
       if (e.target.checked) void startActive();
       else void stopActive();
     });
-    document.getElementById('serverLoadBtn')?.addEventListener('click', () => void startActive());
-    document.getElementById('inspectorLoadBtn')?.addEventListener('click', () => void startActive());
+    document.getElementById('serverModelLoadBtn')?.addEventListener('click', () => void loadPickedModel());
+    document.getElementById('serverModelPick')?.addEventListener('change', () => {
+      void onEngineModelPickChange();
+    });
     document.getElementById('serverCopyUrl')?.addEventListener('click', () => {
       const url = document.getElementById('serverReachableUrl')?.textContent;
       if (url && url !== '—') navigator.clipboard.writeText(url).then(() => toast('URL copied'));
     });
     document.getElementById('serverLogsRefresh')?.addEventListener('click', () => void refreshLogs().catch((e) => toast(e.message, false)));
+    document.getElementById('serverLogsCopy')?.addEventListener('click', () => void copyVisibleLogs());
+    document.getElementById('serverLogsFilter')?.addEventListener('change', (e) => {
+      logFilterId = e.target.value || 'all';
+      localStorage.setItem('dflashConsole.logFilter', logFilterId);
+      renderLogs(logLinesRaw);
+    });
+    const filterEl = document.getElementById('serverLogsFilter');
+    if (filterEl) filterEl.value = logFilterId;
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', (e) => {
       activeId = e.target.value;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
       fillSettingsForm(allServers.find((s) => s.id === activeId) || activeServer());
       void refresh();
-    });
-
-    document.getElementById('serverProfilePick')?.addEventListener('change', (e) => {
-      activeId = e.target.value;
-      localStorage.setItem('dflashConsole.activeServerId', activeId);
-      renderAll();
-      void refreshLogs().catch((err) => toast(err.message, false));
     });
   }
 
@@ -806,5 +1115,6 @@
     flushInspectorSave,
     getMergedLoadSettings,
     modelKeyFor,
+    syncModelPicker,
   };
 })();

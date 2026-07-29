@@ -15,7 +15,7 @@ from core.gpu_devices import format_gpu_assignment, query_gpu_devices, resolve_r
 from core.load_progress import is_active_boot, parse_load_progress, read_log_tail
 from core.model_presets import gpu_layers_max_for
 from core.model_stack import resolve_model_stack
-from core.server_boot import clear_server_tracking, get_started_launch
+from core.server_boot import clear_server_tracking, get_started_launch, adopt_running_engine
 
 
 def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
@@ -323,6 +323,8 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
     )
     gpu_display = format_gpu_assignment(str(server.get('gpu_device') or 'auto'), launch, gpus)
     running = tcp_port_open(host, port) if port > 0 else False
+    if running and not get_started_launch(port):
+        adopt_running_engine(server, cfg=cfg)
     loaded_models = probe_models(api_url) if running else []
     loading_models = probe_loading_models(api_url) if running else []
     router_ready = running and router_unload_available(api_url)
@@ -357,6 +359,10 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         progress=load_progress,
     )
 
+    from core.inference_stats import fetch_inference_stats
+
+    inference_stats = fetch_inference_stats(api_url) if running and loaded_models else {}
+
     return {
         **server,
         'running': running,
@@ -377,6 +383,7 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         'active_gpu_index': started.get('main_gpu') if started else launch.get('main_gpu'),
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
+        'inference_stats': inference_stats,
     }
 
 
