@@ -11,8 +11,10 @@
   <div class="lm-app df-app">
     <aside class="df-sidenav" aria-label="Main navigation">
       <div class="df-brand">
-        <span class="df-brand-mark">DFlash</span>
-        <span class="df-brand-title">Console</span>
+        <img src="/assets/dflash_console_logo.png" alt="" class="df-brand-logo" width="80" height="80">
+        <div class="df-brand-text">
+          <span class="df-brand-title">DFlash Console</span>
+        </div>
       </div>
       <nav class="df-nav">
         <button type="button" class="df-nav-item lm-tab active" data-tab="server">
@@ -31,8 +33,6 @@
           <span class="df-nav-icon" aria-hidden="true">◎</span>
           <span class="df-nav-label">Nodes</span>
         </button>
-      </nav>
-      <div class="df-sidenav-footer">
         <button type="button" class="df-nav-item" data-action="open-model-search">
           <span class="df-nav-icon" aria-hidden="true">⌕</span>
           <span class="df-nav-label">Model catalog</span>
@@ -41,6 +41,13 @@
           <span class="df-nav-icon" aria-hidden="true">⚙</span>
           <span class="df-nav-label">Settings</span>
         </button>
+        <button type="button" class="df-nav-item lm-tab" data-tab="docs">
+          <span class="df-nav-icon" aria-hidden="true">📖</span>
+          <span class="df-nav-label">Documentation</span>
+        </button>
+      </nav>
+      <div class="df-sidenav-footer">
+        <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.23</span>
       </div>
     </aside>
 
@@ -90,19 +97,25 @@
           <div class="lm-server-upper">
             <div class="lm-server-bar">
               <div class="lm-server-left">
-                <span class="lm-status-label">Engine:</span>
-                <span class="lm-status-running" id="serverStatusText">Stopped</span>
-                <label class="lm-toggle">
+                <label class="lm-toggle lm-engine-power-toggle" title="Start or stop engine">
                   <input type="checkbox" id="serverRunningToggle">
                   <span class="lm-toggle-track"></span>
                 </label>
-                <select id="serverProfilePick" class="lm-select compact" title="Profile to load / configure"></select>
-                <button class="lm-btn ghost" data-action="open-settings-panel" data-settings-panel="gw-network">Engine settings</button>
+                <div class="lm-engine-status-labels">
+                  <span class="lm-status-label">Engine:</span>
+                  <span class="lm-status-running" id="serverStatusText">Stopped</span>
+                </div>
+                <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="gw-network">Engine settings</button>
               </div>
               <div class="lm-server-right">
                 <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
                 <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy">⧉</button>
-                <button class="lm-btn primary" id="serverLoadBtn">Run checkpoint</button>
+                <div class="lm-engine-load-group">
+                  <select id="serverModelPick" class="lm-select lm-engine-model-pick" title="Checkpoints discovered on this machine">
+                    <option value="">Select checkpoint…</option>
+                  </select>
+                  <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
+                </div>
               </div>
             </div>
             <div class="lm-section-label">Running checkpoints</div>
@@ -113,8 +126,21 @@
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
             <section class="lm-logs-panel" id="serverLogsPanel">
               <div class="lm-logs-header">
-                <span>Engine log</span>
+                <div class="lm-logs-header-left">
+                  <span class="lm-logs-title">Engine log</span>
+                  <select class="lm-select compact lm-logs-filter" id="serverLogsFilter" title="Filter logs" aria-label="Filter logs">
+                    <option value="all">All lines</option>
+                    <option value="errors">Errors only</option>
+                    <option value="warnings">Warnings</option>
+                    <option value="model">Model activity</option>
+                    <option value="engine">Engine lifecycle</option>
+                    <option value="inference">Inference</option>
+                    <option value="smart-model">Model summary</option>
+                  </select>
+                  <span class="lm-logs-count" id="serverLogsCount" aria-live="polite"></span>
+                </div>
                 <div class="lm-logs-header-actions">
+                  <button class="lm-icon-btn tiny" id="serverLogsCopy" title="Copy visible logs" aria-label="Copy visible logs">⧉</button>
                   <button class="lm-icon-btn tiny" id="serverLogsHide" title="Hide developer logs" aria-label="Hide developer logs">▾</button>
                   <button class="lm-icon-btn tiny" id="serverLogsRefresh" title="Refresh">↻</button>
                 </div>
@@ -173,6 +199,16 @@
             <div class="lm-devices-footer">Remote nodes are not available in this build.</div>
           </div>
         </div>
+
+        <!-- Documentation -->
+        <div class="lm-view" data-view="docs">
+          <div class="df-docs-layout">
+            <nav class="df-docs-nav" id="docsNav" aria-label="Documentation sections"></nav>
+            <article class="df-docs-body" id="docsBody">
+              <p class="lm-hint">Loading documentation…</p>
+            </article>
+          </div>
+        </div>
       </div>
 
       <aside class="lm-inspector">
@@ -180,13 +216,9 @@
         <div class="lm-inspector-head">
           <h2 id="inspectorHeadTitle">Select a checkpoint</h2>
         </div>
-        <div class="lm-inspector-actions">
-          <button class="lm-btn primary" id="inspectorLoadBtn">Run on engine</button>
-        </div>
         <div class="lm-inspector-tabs">
           <button class="lm-inspector-tab" data-inspector-tab="info">Details</button>
           <button class="lm-inspector-tab active" data-inspector-tab="load">Runtime</button>
-          <button class="lm-inspector-tab" data-inspector-tab="inference">API</button>
         </div>
         <div class="lm-inspector-scroll">
           <div class="lm-inspector-panel" data-inspector-panel="info">
@@ -205,27 +237,48 @@
             </section>
           </div>
           <div class="lm-inspector-panel active" data-inspector-panel="load">
+            <div class="lm-runtime-rec-bar">
+              <p class="lm-rec-summary hidden" id="inspectorRecSummary"></p>
+              <button class="lm-btn ghost small" type="button" id="inspectorApplyRecommended">Use recommended</button>
+            </div>
             <section class="lm-field-group">
-              <h3>Context</h3>
               <div class="lm-field">
-                <label>Context window <span class="lm-hint" id="inspectorContextHint">Model supports up to 262144 tokens.</span></label>
-                <div class="lm-field-row">
-                  <input type="number" value="65536" min="2048" max="262144" step="1024" class="lm-num" id="inspectorContext">
-                  <input type="range" min="2048" max="262144" step="1024" value="65536" class="lm-range" id="inspectorContextRange">
+                <label>Context window</label>
+                <span class="lm-hint" id="inspectorContextHint">Model supports up to 262144 tokens.</span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease context">−</button>
+                  <input type="number" value="65536" min="2048" max="262144" step="1024" class="lm-num lm-stepper-input" id="inspectorContext">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase context">+</button>
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Response limit</label>
+                <span class="lm-hint" id="inspectorMaxTokensHint">Max output tokens per API request.</span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease response limit">−</button>
+                  <input type="number" value="4096" min="256" max="32768" class="lm-num lm-stepper-input" id="inspectorMaxTokens">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase response limit">+</button>
                 </div>
               </div>
             </section>
             <section class="lm-field-group">
-              <h3>GPU &amp; memory</h3>
-              <div class="lm-field">
-                <label>GPU layer count <span class="lm-hint" id="inspectorGpuHint">Layers on GPU (-ngl). 99 = all layers.</span></label>
-                <div class="lm-field-row">
-                  <input type="number" value="99" min="0" max="128" class="lm-num" id="inspectorGpuLayers">
-                  <input type="range" min="0" max="128" value="99" class="lm-range" id="inspectorGpuLayersRange">
-                </div>
+              <div class="lm-section-head">
+                <h3>GPU &amp; memory</h3>
                 <button class="lm-btn ghost small" type="button" data-action="open-hardware-settings">Compute settings</button>
               </div>
-              <div class="lm-switch-row"><span>Flash attention</span><label class="lm-toggle small"><input type="checkbox" id="inspectorFlashAttention" checked><span class="lm-toggle-track"></span></label></div>
+              <div class="lm-field">
+                <label>GPU layer count</label>
+                <span class="lm-hint" id="inspectorGpuHint">Layers on GPU (-ngl). 99 = all layers.</span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease GPU layers">−</button>
+                  <input type="number" value="99" min="0" max="128" class="lm-num lm-stepper-input" id="inspectorGpuLayers">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase GPU layers">+</button>
+                </div>
+              </div>
+              <div class="lm-switch-row">
+                <span>Flash attention <span class="lm-hint lm-hint-inline" id="inspectorFlashHint"></span></span>
+                <label class="lm-toggle small"><input type="checkbox" id="inspectorFlashAttention" checked><span class="lm-toggle-track"></span></label>
+              </div>
               <div class="lm-field" id="inspectorSpeculativeGroup">
                 <p class="lm-hint" id="inspectorSpeculativeHint">Accelerator pairing is defined by the DFlash engine profile.</p>
               </div>
@@ -234,59 +287,69 @@
               <h3>CPU throughput</h3>
               <div class="lm-field">
                 <label>Thread pool</label>
-                <div class="lm-field-row">
-                  <input type="number" value="9" min="1" max="64" class="lm-num" id="inspectorCpuThreads">
-                  <input type="range" min="1" max="64" value="9" class="lm-range" id="inspectorCpuThreadsRange">
+                <span class="lm-hint" id="inspectorCpuThreadsHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease threads">−</button>
+                  <input type="number" value="9" min="1" max="64" class="lm-num lm-stepper-input" id="inspectorCpuThreads">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase threads">+</button>
                 </div>
               </div>
               <div class="lm-field">
                 <label>Eval batch</label>
-                <input type="number" value="2048" min="32" max="8192" class="lm-num full" id="inspectorEvalBatch">
+                <span class="lm-hint" id="inspectorEvalBatchHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease eval batch">−</button>
+                  <input type="number" value="2048" min="32" max="8192" class="lm-num lm-stepper-input" id="inspectorEvalBatch">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase eval batch">+</button>
+                </div>
               </div>
               <div class="lm-field">
                 <label>Physical batch</label>
-                <input type="number" value="512" min="32" max="8192" class="lm-num full" id="inspectorPhysicalBatch">
+                <span class="lm-hint" id="inspectorPhysicalBatchHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease physical batch">−</button>
+                  <input type="number" value="512" min="32" max="8192" class="lm-num lm-stepper-input" id="inspectorPhysicalBatch">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase physical batch">+</button>
+                </div>
               </div>
             </section>
             <section class="lm-field-group">
               <h3>Default sampling</h3>
               <div class="lm-field">
                 <label>Temperature</label>
-                <div class="lm-field-row">
-                  <input type="number" value="0.7" step="0.1" min="0" max="2" class="lm-num" id="inspectorTemperature">
-                  <input type="range" min="0" max="2" step="0.1" value="0.7" class="lm-range" id="inspectorTemperatureRange">
+                <span class="lm-hint" id="inspectorTemperatureHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease temperature">−</button>
+                  <input type="number" value="0.7" step="0.05" min="0" max="2" class="lm-num lm-stepper-input" id="inspectorTemperature">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase temperature">+</button>
                 </div>
               </div>
               <div class="lm-field">
                 <label>Top P</label>
-                <div class="lm-field-row">
-                  <input type="number" value="0.9" step="0.05" min="0" max="1" class="lm-num" id="inspectorTopP">
-                  <input type="range" min="0" max="1" step="0.05" value="0.9" class="lm-range" id="inspectorTopPRange">
+                <span class="lm-hint" id="inspectorTopPHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease top P">−</button>
+                  <input type="number" value="0.9" step="0.05" min="0" max="1" class="lm-num lm-stepper-input" id="inspectorTopP">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase top P">+</button>
                 </div>
               </div>
               <div class="lm-field">
                 <label>Top K</label>
-                <div class="lm-field-row">
-                  <input type="number" value="40" min="0" max="200" class="lm-num" id="inspectorTopK">
-                  <input type="range" min="0" max="200" value="40" class="lm-range" id="inspectorTopKRange">
+                <span class="lm-hint" id="inspectorTopKHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease top K">−</button>
+                  <input type="number" value="40" min="0" max="200" class="lm-num lm-stepper-input" id="inspectorTopK">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase top K">+</button>
                 </div>
               </div>
               <div class="lm-field">
                 <label>Repeat penalty</label>
-                <div class="lm-field-row">
-                  <input type="number" value="1.1" step="0.05" min="1" max="2" class="lm-num" id="inspectorRepeatPenalty">
-                  <input type="range" min="1" max="2" step="0.05" value="1.1" class="lm-range" id="inspectorRepeatPenaltyRange">
+                <span class="lm-hint" id="inspectorRepeatPenaltyHint"></span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease repeat penalty">−</button>
+                  <input type="number" value="1.1" step="0.05" min="1" max="2" class="lm-num lm-stepper-input" id="inspectorRepeatPenalty">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase repeat penalty">+</button>
                 </div>
-              </div>
-            </section>
-          </div>
-          <div class="lm-inspector-panel" data-inspector-panel="inference">
-            <section class="lm-field-group">
-              <h3>Response limits</h3>
-              <p class="lm-hint">Per-request caps for the playground and API clients. Sampling defaults are under <strong>Runtime</strong>.</p>
-              <div class="lm-field">
-                <label>Max output tokens</label>
-                <input type="number" value="4096" class="lm-num full" id="inspectorMaxTokens">
               </div>
             </section>
           </div>
@@ -446,6 +509,14 @@
                   <code class="lm-settings-path" id="settingsGatewayApiUrl">—</code>
                 </div>
               </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Console API reference</strong>
+                  <p class="lm-setting-desc">Manage engines, load checkpoints with JSON runtime settings, and proxy chat completions.</p>
+                </div>
+                <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
+                <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
+              </section>
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="gw-behavior">
@@ -540,6 +611,13 @@
         <div class="lm-scan-results" id="libraryScanResults">
           <div class="lm-search-empty">Starting scan…</div>
         </div>
+        <div class="lm-library-import-panel lm-library-import-panel-scan">
+          <div class="lm-library-import-label">When adding selected folders</div>
+          <label class="lm-library-import-option"><input type="radio" name="libraryScanImportMode" value="link" checked> Use folders where they are</label>
+          <label class="lm-library-import-option"><input type="radio" name="libraryScanImportMode" value="copy"> Copy models into DFlash library</label>
+          <label class="lm-library-import-option"><input type="radio" name="libraryScanImportMode" value="move"> Move models into DFlash library</label>
+          <p class="lm-setting-desc" id="libraryScanImportHint">Link keeps files in the original locations.</p>
+        </div>
         <div class="lm-scan-footer">
           <span class="lm-setting-desc" id="libraryScanMeta">—</span>
           <button class="lm-btn df-btn-accent" type="button" id="libraryScanAddSelected" disabled>Add selected to library</button>
@@ -572,6 +650,13 @@
           <div class="lm-search-empty">Loading…</div>
         </div>
         <div class="lm-browse-preview" id="libraryBrowsePreview">—</div>
+        <div class="lm-library-import-panel">
+          <div class="lm-library-import-label">When adding this folder</div>
+          <label class="lm-library-import-option"><input type="radio" name="libraryImportMode" value="link" checked> Use folder where it is</label>
+          <label class="lm-library-import-option"><input type="radio" name="libraryImportMode" value="copy"> Copy models into DFlash library</label>
+          <label class="lm-library-import-option"><input type="radio" name="libraryImportMode" value="move"> Move models into DFlash library</label>
+          <p class="lm-setting-desc" id="libraryImportHint">Link keeps files in the original location.</p>
+        </div>
         <div class="lm-browse-footer">
           <button class="lm-btn df-btn-accent" type="button" id="libraryBrowseAdd">Add this folder</button>
         </div>
@@ -647,8 +732,12 @@
   <script src="/static/js/model-search-live.js"></script>
   <script src="/static/js/sysbar-live.js"></script>
   <script src="/static/js/settings-live.js"></script>
+  <script src="/static/js/runtime-steppers.js"></script>
+  <script src="/static/js/runtime-recommendations.js"></script>
+  <script src="/static/js/log-format.js"></script>
   <script src="/static/js/server-live.js"></script>
   <script src="/static/js/models-live.js"></script>
+  <script src="/static/js/docs-live.js"></script>
   <script src="/static/js/lm-studio-ui.js"></script>
 </body>
 </html>

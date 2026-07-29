@@ -1,9 +1,9 @@
 ---
-description: Restart DFlash Console dev server after backend changes
+description: Restart DFlash Console dev server after backend changes; auto-refresh UI
 alwaysApply: true
 ---
 
-# DFlash Console — restart after changes
+# DFlash Console — restart and UI refresh
 
 When you finish a task that changed any of these, **automatically restart the Console server** before ending your turn:
 
@@ -21,12 +21,16 @@ From the repo root:
 
 Use `.\run.ps1` only for a full cold start (first run, dependency install, or llama-server port cleanup).
 
-## Static-only changes
+## Static UI changes (no restart needed)
 
-Changes under `static/**` or `static/css/**` do **not** require a server restart. Tell the user to hard-refresh the browser (Ctrl+Shift+R) if they do not see UI updates.
+Changes under `static/**`, `static/css/**`, or `assets/**` do **not** require a server restart.
+
+An open browser tab on `http://127.0.0.1:8900/` **auto-refreshes within ~2 seconds** when UI files change (`server-reload-watch.js` polls `/api/health` `ui_version`). Do **not** ask the user to hard-refresh manually after UI edits when the dev server is running.
+
+After backend restart, the same watcher reloads on a new `boot_id`. No manual refresh needed in either case.
 
 ## After restart
 
 Confirm the API is up (HTTP 200 from `http://127.0.0.1:8900/` or the configured `ui_port`). Do not ask the user to restart manually when you can run the script yourself.
 
-The open browser tab auto-refreshes when the API comes back (`server-reload-watch.js` + `/api/health` `boot_id`). No need to tell the user to hard-refresh after a backend restart.
+When verifying UI work yourself, reload or open the Console in the browser rather than assuming the user already sees your changes.

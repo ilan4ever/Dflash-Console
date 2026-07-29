@@ -156,7 +156,7 @@
     return list.some((row) => String(row.path || '').trim().toLowerCase() === key);
   }
 
-  function addLibraryFromBrowse(entry) {
+  function addLibraryFromBrowse(entry, options = {}) {
     if (!entry?.path) {
       toast('Could not resolve library path', false);
       return;
@@ -180,7 +180,66 @@
     });
     renderModelLibraries();
     scheduleLibrariesSave();
-    toast('Folder added to library');
+    if (!options.quiet) toast('Folder added to library');
+  }
+
+  async function importLibraryAndAdd(entry, mode) {
+    const importMode = mode || 'link';
+    if (!entry?.path) {
+      toast('Could not resolve library path', false);
+      return false;
+    }
+    if (importMode === 'move') {
+      const ok = window.confirm(
+        'Move will transfer model files into your DFlash library folder and remove them from the original location. Continue?',
+      );
+      if (!ok) return false;
+    }
+    try {
+      let resolved = { ...entry };
+      if (importMode !== 'link') {
+        const data = await api('/api/model-libraries/import', {
+          method: 'POST',
+          body: JSON.stringify({
+            path: entry.path,
+            preset: entry.preset || 'dflash',
+            mode: importMode,
+          }),
+        });
+        resolved = { ...entry, ...(data.library || {}), path: data.library_path || data.library?.path || entry.path };
+        const verb = importMode === 'move' ? 'Moved' : 'Copied';
+        toast(`${verb} models into DFlash library`);
+      }
+      if (libraryPathExists(resolved.path)) {
+        toast('That folder is already in your library list', false);
+        return true;
+      }
+      addLibraryFromBrowse(resolved, { quiet: importMode !== 'link' });
+      return true;
+    } catch (err) {
+      toast(err.message, false);
+      return false;
+    }
+  }
+
+  async function importLibrariesAndAdd(rows, mode) {
+    if (!Array.isArray(rows) || !rows.length) return;
+    const importMode = mode || 'link';
+    if (importMode === 'move') {
+      const ok = window.confirm(
+        `Move will transfer models from ${rows.length} folder${rows.length === 1 ? '' : 's'} into your DFlash library and remove them from the original locations. Continue?`,
+      );
+      if (!ok) return;
+    }
+    let added = 0;
+    for (const row of rows) {
+      if (!row?.path) continue;
+      const done = await importLibraryAndAdd(row, importMode);
+      if (done) added += 1;
+    }
+    if (!added) {
+      toast('No folders were added', false);
+    }
   }
 
   function addLibrariesFromScan(rows) {
@@ -374,10 +433,12 @@
       live.fillSettingsForm(live.activeServer?.());
       updateGatewaySummary();
       updateGatewayApiUrl();
+      void window.DFlashDocsLive?.renderSettingsList?.();
     }).catch(() => {
       live.fillSettingsForm(live.activeServer?.());
       updateGatewaySummary();
       updateGatewayApiUrl();
+      void window.DFlashDocsLive?.renderSettingsList?.();
     });
   }
 
@@ -620,5 +681,7 @@
     refresh: fetchHardware,
     addLibrariesFromScan,
     addLibraryFromBrowse,
+    importLibraryAndAdd,
+    importLibrariesAndAdd,
   };
 })();

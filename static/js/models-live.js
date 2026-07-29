@@ -170,10 +170,6 @@
       const booting = model.server_id && bootingServers[model.server_id];
       const running = model.server_id && loadedServerIds.has(model.server_id) ? ' running-on-server' : '';
       const loading = booting ? ' loading-on-server' : '';
-      const progress = booting?.progress ?? model.runtime_progress;
-      const progressPct = progress != null ? Math.min(100, Math.max(0, Number(progress))) : null;
-      const indeterminate = booting && progressPct == null ? ' lm-progress-indeterminate' : '';
-      const rowStyle = booting && progressPct != null ? ` style="--row-progress:${progressPct}%"` : '';
       const pinnedClass = pinned.has(key) ? ' pinned' : '';
       const size = model.size_gb != null ? `${model.size_gb} GB` : '—';
       const pinMark = pinned.has(key) ? '<span class="lm-model-pin" title="Pinned">📌</span>' : '';
@@ -182,7 +178,7 @@
         ? '<button class="lm-btn ghost tiny" type="button" data-action="load-model">Run</button>'
         : '<span class="lm-tag dim">browse</span>';
       return `
-        <tr class="lm-model-row${selected}${running}${loading}${indeterminate}${pinnedClass}" data-model-key="${escapeHtml(key)}" data-server-id="${escapeHtml(model.server_id || '')}"${rowStyle}>
+        <tr class="lm-model-row${selected}${running}${loading}${pinnedClass}" data-model-key="${escapeHtml(key)}" data-server-id="${escapeHtml(model.server_id || '')}">
           <td class="lm-col-model">
             <div class="lm-model-title-line">${pinMark}<span class="lm-llm-name">${escapeHtml(model.label || model.id || '—')}</span>${quantLabel}</div>
             <div class="lm-model-meta-line">${capTags(model)}${draftHint(model)}</div>
@@ -344,6 +340,7 @@
     }
     selectedKey = key;
     localStorage.setItem('dflashConsole.selectedModelKey', key);
+    window.DFlashServerLive?.syncModelPicker?.(key);
     renderTable(document.getElementById('modelsFilterInput')?.value || '');
     if (applyInspector && window.DFlashServerLive?.applyModelSelection) {
       await window.DFlashServerLive.applyModelSelection(model);
@@ -356,7 +353,7 @@
       return;
     }
     window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
-      secondary: 'Switching to Server tab',
+      secondary: 'Reading weights into GPU',
       ttlMs: 120000,
     });
     localStorage.setItem('dflashConsole.activeTab', 'server');
