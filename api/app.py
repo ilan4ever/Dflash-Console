@@ -29,6 +29,38 @@ _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
 
 
+@app.middleware('http')
+async def log_console_api_requests(request: Request, call_next):
+    from core.api_access_log import record_api_call
+
+    path = request.url.path
+    if not path.startswith('/api/'):
+        return await call_next(request)
+
+    start = time.perf_counter()
+    client = request.client.host if request.client else ''
+    query = request.url.query
+    error = ''
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    except Exception as exc:
+        error = str(exc)
+        raise
+    finally:
+        record_api_call(
+            method=request.method,
+            path=path,
+            query=query,
+            status=status,
+            duration_ms=(time.perf_counter() - start) * 1000,
+            client=client,
+            error=error,
+        )
+
+
 @app.on_event('startup')
 def _restore_engines_on_startup() -> None:
     import logging
@@ -39,12 +71,8 @@ def _restore_engines_on_startup() -> None:
     def run() -> None:
         time.sleep(1.0)
         try:
-            from core.engine_state import release_all_gpu_checkpoints, restore_engines
+            from core.engine_state import restore_engines
 
-            released = release_all_gpu_checkpoints(cfg=load_config())
-            for row in released:
-                if row.get('unloaded'):
-                    logger.info('released GPU checkpoints %s', row)
             results = restore_engines(cfg=load_config())
             for row in results:
                 if row.get('action') not in ('skipped_engine_off',):
@@ -57,12 +85,8 @@ def _restore_engines_on_startup() -> None:
 
 @app.on_event('shutdown')
 def _release_gpu_on_shutdown() -> None:
-    try:
-        from core.engine_state import release_all_gpu_checkpoints
-
-        release_all_gpu_checkpoints(cfg=load_config())
-    except Exception:
-        pass
+    """Console exit does not unload detached llama-server checkpoints."""
+    return
 
 
 def _ui_version() -> str:
@@ -122,10 +146,16 @@ class LibraryImportRequest(BaseModel):
     mode: str = Field(default='link', pattern='^(link|copy|move)$')
 
 
+class PresetsImportBody(BaseModel):
+    files: dict[str, str] = Field(default_factory=dict)
+
+
 class ServerLoadRequest(BaseModel):
     context_size: int | None = None
     load_settings: dict[str, Any] | None = None
     inference_settings: dict[str, Any] | None = None
+    model_path: str | None = None
+    model_id: str | None = None
 
 
 def _persist_server_merge(cfg: dict[str, Any], server_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -195,6 +225,30 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
     cfg.update(data)
     save_config(cfg)
     return {'success': True, 'config': cfg}
+
+
+@app.get('/api/presets/export')
+def export_presets() -> dict[str, Any]:
+    presets_dir = ROOT / 'logs' / 'presets'
+    presets_dir.mkdir(parents=True, exist_ok=True)
+    files: dict[str, str] = {}
+    for path in sorted(presets_dir.glob('*.ini')):
+        files[path.name] = path.read_text(encoding='utf-8', errors='replace')
+    return {'success': True, 'files': files, 'count': len(files), 'presets_dir': str(presets_dir)}
+
+
+@app.post('/api/presets/import')
+def import_presets(body: PresetsImportBody) -> dict[str, Any]:
+    presets_dir = ROOT / 'logs' / 'presets'
+    presets_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for name, content in (body.files or {}).items():
+        safe_name = Path(str(name)).name
+        if not safe_name.endswith('.ini'):
+            continue
+        (presets_dir / safe_name).write_text(str(content), encoding='utf-8')
+        written += 1
+    return {'success': True, 'written': written, 'presets_dir': str(presets_dir)}
 
 
 @app.get('/api/model-libraries/scan')
@@ -330,12 +384,25 @@ def hf_model_detail(
     return result
 
 
+@app.get('/api/hf/local-match')
+def hf_local_match(
+    repo_id: str = Query(..., min_length=3),
+    filename: str = Query(..., min_length=1),
+) -> dict[str, Any]:
+    from core.hf_local_match import find_local_matches
+
+    matches = find_local_matches(repo_id, filename, cfg=load_config())
+    return {'success': True, 'matches': matches, 'installed': bool(matches)}
+
+
 @app.post('/api/hf/download')
 def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
     from core.huggingface import start_download
 
     result = start_download(body.repo_id, body.filename, library_id=body.library_id, cfg=load_config())
     if not result.get('success'):
+        if result.get('already_installed'):
+            raise HTTPException(status_code=409, detail=result)
         raise HTTPException(status_code=400, detail=result.get('error') or 'download failed')
     return result
 
@@ -348,6 +415,13 @@ def hf_download_status(job_id: str) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=404, detail=result.get('error') or 'unknown job')
     return result
+
+
+@app.get('/api/hf/downloads')
+def hf_downloads(active: bool = Query(default=False)) -> dict[str, Any]:
+    from core.huggingface import list_download_jobs
+
+    return list_download_jobs(active_only=active)
 
 
 @app.get('/api/models')
@@ -403,6 +477,40 @@ def api_docs_catalog() -> dict[str, Any]:
     return get_api_catalog(console_base=f'http://127.0.0.1:{port}')
 
 
+@app.get('/api/endpoints')
+def api_endpoints() -> dict[str, Any]:
+    from core.api_introspection import list_app_endpoints
+
+    cfg = load_config()
+    port = int(cfg.get('ui_port') or 8900)
+    return list_app_endpoints(app, console_base=f'http://127.0.0.1:{port}')
+
+
+@app.get('/api/installed')
+def api_installed() -> dict[str, Any]:
+    from core.api_introspection import get_installed_payload
+
+    return get_installed_payload(cfg=load_config())
+
+
+@app.get('/api/console/logs')
+def console_logs(
+    tail: int = Query(default=200, ge=1, le=5000),
+    errors_only: bool = Query(default=False),
+    include_engines: bool = Query(default=True),
+    include_api_calls: bool = Query(default=True),
+) -> dict[str, Any]:
+    from core.api_introspection import get_console_logs_payload
+
+    return get_console_logs_payload(
+        cfg=load_config(),
+        tail=tail,
+        errors_only=errors_only,
+        include_engines=include_engines,
+        include_api_calls=include_api_calls,
+    )
+
+
 @app.post('/api/servers/{server_id}/listen')
 @app.post('/api/servers/{server_id}/engine/start')
 def server_listen(server_id: str) -> dict[str, Any]:
@@ -424,14 +532,20 @@ def server_load(server_id: str, body: ServerLoadRequest | None = None) -> dict[s
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
+    model_path = None
+    model_id = None
     if body:
         patch = body.model_dump(exclude_none=True)
+        model_path = patch.pop('model_path', None)
+        model_id = patch.pop('model_id', None)
         if patch:
             server = _persist_server_merge(cfg, server_id, patch)
+    if model_path:
+        server = {**server, 'adhoc_model_path': model_path}
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
-    result = load_server_checkpoint(server, cfg=cfg)
+    result = load_server_checkpoint(server, cfg=cfg, model_path=model_path, model_id=model_id)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     note_engine_loaded(server_id)
@@ -448,18 +562,33 @@ def server_inference_stats(server_id: str) -> dict[str, Any]:
     cfg = load_config()
     server = _require_server(cfg, server_id)
     status = build_server_status(server, cfg=cfg)
-    stats = status.get('inference_stats') or fetch_inference_stats(str(server.get('api_url') or ''))
+    stats = status.get('inference_stats') or fetch_inference_stats(str(server.get('api_url') or ''), server_id=server_id)
     return {'success': True, 'server_id': server_id, 'status': status.get('status'), 'inference_stats': stats}
 
 
 @app.post('/api/servers/{server_id}/v1/chat/completions')
 async def proxy_chat_completions(server_id: str, request: Request) -> JSONResponse:
+    import asyncio
     import json
     import urllib.error
     import urllib.request
 
-    from core.inference_stats import note_completion_stats
+    from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
     from core.runtime import api_base_url
+
+    def _upstream_chat_completion() -> tuple[int, dict[str, Any]]:
+        upstream = urllib.request.Request(url, data=raw, method='POST', headers={'Content-Type': content_type})
+        try:
+            with urllib.request.urlopen(upstream, timeout=600) as resp:
+                payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+                return resp.status, payload if isinstance(payload, dict) else {}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            try:
+                body = json.loads(detail)
+            except json.JSONDecodeError:
+                body = {'error': detail or str(exc)}
+            return exc.code, body if isinstance(body, dict) else {'error': str(body)}
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
@@ -470,21 +599,17 @@ async def proxy_chat_completions(server_id: str, request: Request) -> JSONRespon
     raw = await request.body()
     content_type = request.headers.get('content-type') or 'application/json'
     url = f'{base}/v1/chat/completions'
-    upstream = urllib.request.Request(url, data=raw, method='POST', headers={'Content-Type': content_type})
+    mark_inference_start(server_id)
     try:
-        with urllib.request.urlopen(upstream, timeout=600) as resp:
-            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
-            note_completion_stats(api_url, payload if isinstance(payload, dict) else {})
-            return JSONResponse(content=payload, status_code=resp.status)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode('utf-8', errors='replace')
-        try:
-            body = json.loads(detail)
-        except json.JSONDecodeError:
-            body = {'error': detail or str(exc)}
-        return JSONResponse(content=body, status_code=exc.code)
+        status_code, payload = await asyncio.to_thread(_upstream_chat_completion)
+        if status_code >= 400:
+            return JSONResponse(content=payload, status_code=status_code)
+        note_completion_stats(server_id, payload)
+        return JSONResponse(content=payload, status_code=status_code)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        mark_inference_end(server_id)
 
 
 @app.post('/api/servers/{server_id}/start')
@@ -597,6 +722,16 @@ def server_logs(server_id: str, tail: int = 200) -> dict[str, Any]:
         return {'success': True, 'lines': [], 'path': str(log_path)}
     lines = log_path.read_text(encoding='utf-8', errors='replace').splitlines()
     return {'success': True, 'lines': lines[-max(1, min(tail, 2000)):], 'path': str(log_path)}
+
+
+@app.delete('/api/logs/{server_id}')
+def clear_server_logs(server_id: str) -> dict[str, Any]:
+    _require_server(load_config(), server_id)
+    log_path = ROOT / 'logs' / f'{server_id}.log'
+    LOG_DIR = log_path.parent
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path.write_text('', encoding='utf-8')
+    return {'success': True, 'lines': [], 'path': str(log_path)}
 
 
 def _allowed_model_roots(cfg: dict[str, Any]) -> list[Path]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -89,25 +90,45 @@ def _request_text(url: str, *, timeout: float = 20.0) -> str:
         return resp.read().decode('utf-8', errors='replace')
 
 
-def _time_ago(iso_ts: str | None) -> str:
+def _parse_iso_ts(iso_ts: str | None):
     if not iso_ts:
-        return '—'
+        return None
     try:
         from datetime import datetime, timezone
 
-        if iso_ts.endswith('Z'):
-            iso_ts = iso_ts[:-1] + '+00:00'
-        dt = datetime.fromisoformat(iso_ts)
+        value = str(iso_ts)
+        if value.endswith('Z'):
+            value = value[:-1] + '+00:00'
+        dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+        return dt
     except (TypeError, ValueError):
+        return None
+
+
+def _time_ago(iso_ts: str | None) -> str:
+    dt = _parse_iso_ts(iso_ts)
+    if not dt:
         return '—'
+    from datetime import datetime, timezone
+
+    seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
     if seconds < 3600:
         return f'{max(1, seconds // 60)}m ago'
     if seconds < 86400:
         return f'{seconds // 3600}h ago'
     return f'{seconds // 86400}d ago'
+
+
+def _days_since(iso_ts: str | None) -> int | None:
+    dt = _parse_iso_ts(iso_ts)
+    if not dt:
+        return None
+    from datetime import datetime, timezone
+
+    seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    return seconds // 86400
 
 
 def _format_downloads(count: int | float | None) -> str:
@@ -146,6 +167,17 @@ def _gguf_files(siblings: list[Any] | None) -> list[dict[str, Any]]:
     return _model_files(siblings, gguf_only=True)
 
 
+def _largest_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
+    gguf_files = _gguf_files(siblings)
+    sized = [row for row in gguf_files if isinstance(row.get('size_gb'), (int, float))]
+    if not sized:
+        return None, '—'
+    largest = max(sized, key=lambda row: int(row.get('size_bytes') or 0))
+    size_gb = float(largest['size_gb'])
+    label = f'{size_gb:g} GB'
+    return size_gb, label
+
+
 def _author_avatar_url(author: str) -> str:
     author = str(author or '').strip()
     if not author:
@@ -153,26 +185,267 @@ def _author_avatar_url(author: str) -> str:
     return f'{HF_BASE}/{urllib.parse.quote(author, safe="")}/avatar'
 
 
+_LAB_PATTERNS: list[tuple[str, str]] = [
+    ('Google', r'gemma|google/|google-|\bgoogle\b'),
+    ('Qwen', r'qwen'),
+    ('Meta', r'meta-llama|\bllama[-\d]|\bllama\b|facebook'),
+    ('Mistral AI', r'\bmistral\b'),
+    ('Microsoft', r'\bphi[-\d]|\bphi\b|microsoft'),
+    ('DeepSeek', r'deepseek'),
+    ('Apple', r'openelm|\bapple\b'),
+    ('IBM', r'\bgranite\b|\bibm\b'),
+    ('NVIDIA', r'nemotron|nvidia'),
+    ('BAAI', r'\bbge[-_]|baai'),
+    ('z-lab', r'z-lab|zlabs'),
+    ('LM Studio', r'lmstudio|lm-studio|lm studio'),
+    ('Cohere', r'command-r|cohere'),
+    ('Anthropic', r'\bclaude\b|anthropic'),
+    ('OpenAI', r'\bgpt-oss\b|openai'),
+    ('Alibaba', r'\btongyi\b|alibaba'),
+]
+
+_AUTHOR_LAB_ALIASES = {
+    'google': 'Google',
+    'meta-llama': 'Meta',
+    'mistralai': 'Mistral AI',
+    'microsoft': 'Microsoft',
+    'deepseek-ai': 'DeepSeek',
+    'qwen': 'Qwen',
+    'z-lab': 'z-lab',
+    'lmstudio': 'LM Studio',
+    'lmstudio-community': 'LM Studio',
+    'nvidia': 'NVIDIA',
+    'ibm-granite': 'IBM',
+    'cohere': 'Cohere',
+    'anthropics': 'Anthropic',
+    'openai': 'OpenAI',
+}
+
+
+def _lab_from_patterns(text: str) -> str:
+    haystack = str(text or '').lower().replace('llama.cpp', ' ')
+    if not haystack.strip():
+        return ''
+    for label, pattern in _LAB_PATTERNS:
+        if re.search(pattern, haystack, flags=re.I):
+            return label
+    return ''
+
+
+def _author_lab_alias(author: str) -> str:
+    key = str(author or '').strip().lower()
+    if not key:
+        return ''
+    if key in _AUTHOR_LAB_ALIASES:
+        return _AUTHOR_LAB_ALIASES[key]
+    if key.endswith('-ai') and key[:-3] in _AUTHOR_LAB_ALIASES:
+        return _AUTHOR_LAB_ALIASES[key[:-3]]
+    return ''
+
+
+def _base_model_hint(readme: str) -> str:
+    text = str(readme or '').strip()
+    if not text.startswith('---'):
+        return ''
+    parts = text.split('---', 2)
+    if len(parts) < 3:
+        return ''
+    block = parts[1]
+    values: list[str] = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if stripped.startswith('base_model'):
+            _, _, rhs = stripped.partition(':')
+            rhs = rhs.strip().strip('"').strip("'")
+            if rhs:
+                values.append(rhs)
+            continue
+        if values and stripped.startswith('- '):
+            values.append(stripped[2:].strip().strip('"').strip("'"))
+    return ' '.join(values)
+
+
+def infer_model_lab(
+    *,
+    repo_id: str = '',
+    author: str = '',
+    tags: list[str] | None = None,
+    title: str = '',
+    base_model: str = '',
+) -> str:
+    if base_model:
+        matched = _lab_from_patterns(base_model)
+        if matched:
+            return matched
+    haystack = ' '.join([
+        repo_id,
+        author,
+        title,
+        base_model,
+        ' '.join(tags or []),
+    ])
+    matched = _lab_from_patterns(haystack)
+    if matched:
+        return matched
+    alias = _author_lab_alias(author)
+    if alias:
+        return alias
+    clean_author = str(author or '').strip()
+    if clean_author:
+        return clean_author.replace('-', ' ').title()
+    return 'Unknown'
+
+
+def _readme_body(readme: str) -> str:
+    text = str(readme or '').strip()
+    if text.startswith('---'):
+        parts = text.split('---', 2)
+        if len(parts) >= 3:
+            return parts[2].strip()
+    return text
+
+
+def _truncate_text(text: str, limit: int = 160) -> str:
+    value = ' '.join(str(text or '').split())
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)].rstrip() + '…'
+
+
+def _title_from_readme(readme: str, fallback: str = '') -> str:
+    for line in _readme_body(readme).splitlines():
+        stripped = line.strip()
+        if stripped.startswith('# '):
+            return stripped[2:].strip()
+    return str(fallback or '').strip()
+
+
+def _description_from_readme(readme: str, *, limit: int = 160) -> str:
+    lines = _readme_body(readme).splitlines()
+    start = 0
+    if lines and lines[0].strip().startswith('#'):
+        start = 1
+    paragraph: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if stripped.startswith('#'):
+            if paragraph:
+                break
+            continue
+        paragraph.append(stripped)
+    return _truncate_text(' '.join(paragraph), limit)
+
+
+def _card_description(card: dict[str, Any] | None) -> str:
+    data = card if isinstance(card, dict) else {}
+    return str(data.get('short_description') or data.get('description') or '').strip()
+
+
+def _fetch_readme_head(repo_id: str, *, max_chars: int = 8000, timeout: float = 5.0) -> str:
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo:
+        return ''
+    for candidate in (f'{HF_BASE}/{repo}/raw/main/README.md', f'{HF_BASE}/{repo}/raw/main/readme.md'):
+        try:
+            text = _request_text(candidate, timeout=timeout)
+            if text.strip():
+                return text[:max_chars]
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            continue
+    return ''
+
+
+def _enrich_model_card(model: dict[str, Any]) -> dict[str, Any]:
+    row = dict(model)
+    fallback_title = str(row.get('label') or row.get('id') or '').strip()
+    card_desc = str(row.get('description') or '').strip()
+    current_title = str(row.get('title') or fallback_title).strip()
+    needs_title = not current_title or current_title == fallback_title
+    needs_desc = not card_desc
+    if not needs_title and not needs_desc:
+        row['title'] = current_title
+        return row
+    readme = _fetch_readme_head(str(row.get('id') or ''))
+    if readme:
+        if needs_title:
+            row['title'] = _title_from_readme(readme, fallback_title) or fallback_title
+        if needs_desc:
+            row['description'] = _description_from_readme(readme) or card_desc
+        base_model = _base_model_hint(readme)
+        row['lab'] = infer_model_lab(
+            repo_id=str(row.get('id') or ''),
+            author=str(row.get('author') or ''),
+            tags=list(row.get('tags') or []),
+            title=str(row.get('title') or fallback_title),
+            base_model=base_model,
+        )
+    row.setdefault('title', fallback_title)
+    row.setdefault(
+        'lab',
+        infer_model_lab(
+            repo_id=str(row.get('id') or ''),
+            author=str(row.get('author') or ''),
+            tags=list(row.get('tags') or []),
+            title=str(row.get('title') or fallback_title),
+        ),
+    )
+    return row
+
+
+def _enrich_models_from_readme(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not models:
+        return models
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    enriched: list[dict[str, Any] | None] = [None] * len(models)
+    with ThreadPoolExecutor(max_workers=min(8, len(models))) as pool:
+        futures = {
+            pool.submit(_enrich_model_card, row): idx
+            for idx, row in enumerate(models)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                enriched[idx] = future.result()
+            except Exception:
+                enriched[idx] = models[idx]
+    return [row if row is not None else models[idx] for idx, row in enumerate(enriched)]
+
+
 def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     repo_id = str(raw.get('id') or raw.get('modelId') or '')
     author = str(raw.get('author') or (repo_id.split('/')[0] if '/' in repo_id else ''))
     card = raw.get('cardData') if isinstance(raw.get('cardData'), dict) else {}
-    description = str(card.get('short_description') or card.get('description') or '').strip()
-    if len(description) > 160:
-        description = description[:157] + '…'
+    description = _truncate_text(_card_description(card))
     tags = [str(t) for t in (raw.get('tags') or []) if t]
     siblings = raw.get('siblings')
     downloadable = _model_files(siblings, gguf_only=False)
+    last_modified = str(raw.get('lastModified') or '')
+    size_gb, size_label = _largest_gguf_size(siblings)
+    updated_days = _days_since(last_modified)
+    repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
+    lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
     return {
         'id': repo_id,
         'author': author,
+        'lab': lab,
         'author_avatar_url': _author_avatar_url(author),
-        'label': repo_id.split('/')[-1] if '/' in repo_id else repo_id,
+        'label': repo_label,
+        'title': repo_label,
         'downloads': int(raw.get('downloads') or 0),
         'downloads_label': _format_downloads(raw.get('downloads')),
         'likes': int(raw.get('likes') or 0),
-        'last_modified': str(raw.get('lastModified') or ''),
-        'updated_ago': _time_ago(str(raw.get('lastModified') or '')),
+        'last_modified': last_modified,
+        'updated_ago': _time_ago(last_modified),
+        'updated_days': updated_days,
+        'size_gb': size_gb,
+        'size_label': size_label,
         'tags': tags,
         'pipeline_tag': str(raw.get('pipeline_tag') or ''),
         'description': description,
@@ -255,6 +528,7 @@ def search_models(
             -int(row.get('downloads') or 0),
         ),
     )
+    models = _enrich_models_from_readme(models)
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
@@ -291,16 +565,30 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     downloadable_files = _model_files(raw.get('siblings'), gguf_only=use_gguf_only)
     files = gguf_files if use_gguf_only else downloadable_files
     summary = _summary_from_model(raw)
-    description = str(card.get('short_description') or card.get('description') or summary.get('description') or '').strip()
+    description = _truncate_text(_card_description(card) or summary.get('description') or '')
+    title = str(summary.get('title') or summary.get('label') or repo).strip()
+    if readme:
+        title = _title_from_readme(readme, title) or title
+        if not description:
+            description = _description_from_readme(readme, limit=320)
+
+    from core.config import load_config
+    from core.hf_local_match import local_installs_for_files
+
+    config = load_config()
+    filenames = [str(item.get('filename') or '') for item in files if item.get('filename')]
+    local_installs = local_installs_for_files(repo, filenames, cfg=config)
 
     return {
         'success': True,
         'model': {
             **summary,
+            'title': title,
             'description': description,
             'tags': tags,
             'gguf_files': gguf_files,
             'download_files': files,
+            'local_installs': local_installs,
             'readme': readme[:12000],
             'url': f'{HF_BASE}/{repo}',
             'gated': bool(raw.get('gated')),
@@ -370,6 +658,30 @@ def start_download(
     root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()
     author, repo_name = repo.split('/', 1)
     dest = root / author / repo_name / Path(name).name
+    from core.hf_local_match import find_local_matches
+
+    existing = find_local_matches(repo, name, cfg=config)
+    if existing:
+        return {
+            'success': False,
+            'error': 'This model file is already installed on this PC',
+            'already_installed': True,
+            'matches': existing,
+            'path': existing[0].get('path'),
+        }
+    if dest.is_file():
+        return {
+            'success': False,
+            'error': 'This model file is already installed on this PC',
+            'already_installed': True,
+            'matches': [{
+                'path': str(dest.resolve()),
+                'filename': dest.name,
+                'library_label': str((library or {}).get('label') or 'Models'),
+                'match_type': 'exact_path',
+            }],
+            'path': str(dest.resolve()),
+        }
     job_id = f'{int(time.time())}-{abs(hash(repo + name)) % 1_000_000:06d}'
     with _jobs_lock:
         _download_jobs[job_id] = {
@@ -395,3 +707,18 @@ def get_download_job(job_id: str) -> dict[str, Any]:
         if not job:
             return {'success': False, 'error': 'unknown job'}
         return {'success': True, 'job': dict(job)}
+
+
+def list_download_jobs(*, active_only: bool = False) -> dict[str, Any]:
+    with _jobs_lock:
+        jobs = [dict(job) for job in _download_jobs.values()]
+    if active_only:
+        jobs = [job for job in jobs if str(job.get('status') or '') == 'downloading']
+    jobs.sort(key=lambda row: float(row.get('started_at') or 0), reverse=True)
+    active_count = sum(1 for job in jobs if str(job.get('status') or '') == 'downloading')
+    return {
+        'success': True,
+        'jobs': jobs,
+        'count': len(jobs),
+        'active_count': active_count,
+    }

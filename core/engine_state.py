@@ -77,7 +77,7 @@ def release_all_gpu_checkpoints(*, cfg: dict[str, Any] | None = None) -> list[di
 
 
 def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """On Console boot: restore engine listen state only; always clear GPU checkpoints first."""
+    """On Console boot: reconcile saved engine_on with live llama-server processes."""
     from core.runtime import stop_server
     from core.server_boot import adopt_running_engine, start_router_listener
 
@@ -90,6 +90,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
         server_id = str(server['id'])
         host = str(server.get('host') or '127.0.0.1')
         port = int(server.get('port') or 0)
+        api_url = str(server.get('api_url') or '')
         if port <= 0:
             continue
 
@@ -98,7 +99,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
 
         if not runtime.get('engine_on'):
             if port_open:
-                stop_server(port=port, host=host, api_url=str(server.get('api_url') or ''))
+                stop_server(port=port, host=host, api_url=api_url)
                 results.append({'server_id': server_id, 'action': 'stopped_saved_off'})
             else:
                 results.append({'server_id': server_id, 'action': 'skipped_engine_off'})
@@ -106,14 +107,18 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
 
         if port_open:
             adopt = adopt_running_engine(server, cfg=config)
-            released = release_gpu_checkpoints(server)
-            note_engine_idle(server_id)
-            results.append({
-                'server_id': server_id,
-                'action': 'adopted_idle',
-                'released': released,
-                **adopt,
-            })
+            loaded = probe_models(api_url) if api_url else []
+            if loaded:
+                note_engine_loaded(server_id)
+                results.append({
+                    'server_id': server_id,
+                    'action': 'adopted_loaded',
+                    'models': loaded,
+                    **adopt,
+                })
+            else:
+                note_engine_idle(server_id)
+                results.append({'server_id': server_id, 'action': 'adopted_idle', **adopt})
             continue
 
         result = start_router_listener(server, cfg=config)

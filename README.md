@@ -4,7 +4,7 @@
 
 > **Status:** Private development repository. Open-source release planned; not published yet.
 
-**UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/)
+**UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.24
 
 ---
 
@@ -14,13 +14,40 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 
 | Area | Highlights |
 |------|------------|
-| **Server** | Start/stop llama-server, load & eject checkpoints, live boot progress, developer logs |
-| **Models** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
-| **Search** | Browse and download Hugging Face models into configured library locations |
-| **Settings** | GPU strategy, checkpoint storage, engine network/API, MCP client preview |
+| **Engines** | Start/stop llama-server routers, load & eject checkpoints in parallel, live boot progress, token stats on cards, developer logs with clear button |
+| **Checkpoints** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
+| **Model catalog** | Browse and download Hugging Face models into configured library locations |
+| **Settings** | GPU strategy, checkpoint storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
+| **Documentation** | In-app API reference, runtime JSON shapes, and user guide |
 | **Discovery** | **Scan PC** finds model folders; **Add folder** opens a drive-aware browser (C:, D:, …) |
 
 Router mode uses `--models-preset` with load/unload over HTTP so engines stay listening while models swap.
+
+---
+
+## Recent improvements (v0.0.24)
+
+| Feature | Description |
+|---------|-------------|
+| **Model catalog** | HF README titles/descriptions, lab filter, size/age on list cards, install detection, card download progress |
+| **Download queue** | Global downloads tray, Models tab **Downloading** filter with live progress bars |
+| **External API** | `/api/endpoints`, `/api/installed`, `/api/console/logs`, and request logging for integrations |
+| **Playground** | Load models from catalog via engine + model picker |
+| **UI polish** | Themed dropdowns, settings/docs as main views, terminology cleanup (checkpoint → model) |
+
+## Recent improvements (v0.0.23)
+
+| Feature | Description |
+|---------|-------------|
+| **Live token stats** | Loaded engine cards show generated tokens and speed; **Generating Xs** updates every second during inference |
+| **Parallel loading** | Load multiple engines at once without blocking the UI |
+| **Engine card UX** | Click a loaded card to open the runtime inspector; right-click for context menu (details, copy URL, unload, etc.) |
+| **Accurate CPU meter** | System bar CPU reading matches Task Manager (process-time delta, not inflated WMI load) |
+| **Cleaner load progress** | Solid progress bar without conflicting slide animation |
+| **Locations settings** | One panel for config file, DFlash install, logs, presets, and console URL; import/export config and launch presets |
+| **Clear engine logs** | One-click clear in the developer log header |
+| **Chat proxy fix** | Long completions no longer freeze live stats polling |
+| **In-app docs** | Documentation tab with overview, user guide, and full API catalog |
 
 ---
 
@@ -66,6 +93,20 @@ The UI auto-refreshes when the API restarts (`/api/health` boot id).
 
 ---
 
+## Using the app
+
+See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or open **Documentation → User guide** in the sidebar.
+
+**Typical workflow:**
+
+1. Open **Engines** and turn on an engine profile (toggle or **Load**).
+2. Pick a checkpoint from the dropdown and click **Load**, or load from the **Checkpoints** tab.
+3. Watch boot progress and live stats on the card; click the card for runtime settings in the side panel.
+4. Point your app at the engine OpenAI URL shown on the card, or use the console proxy at `/api/servers/{id}/v1/chat/completions`.
+5. Use **Settings → Locations** to back up or restore `config.json` and launch presets.
+
+---
+
 ## Configuration
 
 | Variable / file | Purpose |
@@ -84,14 +125,16 @@ Default UI port is **8900**. Engine ports (e.g. 8090, 8092) are configured per s
 ```
 Dflash-Console/
 ├── api/app.py              # FastAPI routes
-├── core/                   # Config, runtime, model discovery, HF, GPU
+├── core/                   # Config, runtime, model discovery, HF, GPU, inference stats
 ├── static/                 # UI (HTML, CSS, JS)
 ├── scripts/                # Server start / restart helpers
 ├── tests/                  # pytest suite
-├── docs/ui/                # UI panel notes
+├── docs/
+│   ├── USER-GUIDE.md       # End-user walkthrough
+│   └── ui/                 # UI panel design notes
 ├── run.ps1                 # Full startup (deps + background API)
 ├── config.example.json     # Template configuration
-└── DFLASH-CONSOLE-PLAN.md   # Detailed build plan & handoff notes
+└── DFLASH-CONSOLE-PLAN.md  # Detailed build plan & handoff notes
 ```
 
 ---
@@ -101,16 +144,19 @@ Dflash-Console/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness + `boot_id` (UI reload watch) |
-| `GET` | `/api/servers` | All engine statuses |
-| `POST` | `/api/servers/{id}/start` | Boot router / load checkpoint |
+| `GET` | `/api/servers` | All engine statuses + inference stats |
+| `POST` | `/api/servers/{id}/load` | Load checkpoint (optional runtime JSON body) |
 | `POST` | `/api/servers/{id}/unload` | Eject model (router stays up) |
+| `POST` | `/api/servers/{id}/v1/chat/completions` | Proxy chat; updates live token stats |
 | `GET` | `/api/models` | Local catalog from enabled libraries |
+| `GET` | `/api/docs/catalog` | In-app documentation JSON |
 | `GET` | `/api/model-libraries/scan` | PC scan for model folders |
 | `GET` | `/api/fs/browse` | Folder picker for library paths |
 | `GET` | `/api/hf/search` | Hugging Face model search |
 | `POST` | `/api/hf/download` | Download GGUF into a library |
+| `DELETE` | `/api/logs/{id}` | Clear engine log file |
 
-Full route list: `api/app.py`.
+Full route list: `api/app.py` or **Documentation** tab in the UI.
 
 ---
 
@@ -141,4 +187,4 @@ Not yet published for open source. License will be added before public release.
 
 ## Roadmap
 
-See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture, handoff notes, and remaining work (chat tab, live VRAM sysbar, expanded tests).
+See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture, handoff notes, and remaining work (Playground chat tab, live VRAM sysbar, expanded tests).

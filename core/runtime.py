@@ -361,7 +361,7 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
 
     from core.inference_stats import fetch_inference_stats
 
-    inference_stats = fetch_inference_stats(api_url) if running and loaded_models else {}
+    inference_stats = fetch_inference_stats(api_url, server_id=str(server.get('id') or '')) if running and loaded_models else {}
 
     return {
         **server,

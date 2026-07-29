@@ -51,21 +51,30 @@ def _vram_budget(cfg: dict[str, Any]) -> tuple[float, float, int]:
 
 
 def _estimate_load_gb(server: dict[str, Any], cfg: dict[str, Any]) -> float:
-    stack = resolve_model_stack(server, cfg=cfg)
-    weights_gb = 0.0
-    for row in stack:
-        path = row.get('path')
-        if not path:
-            continue
-        size = row.get('size_gb')
-        if size is None:
-            from pathlib import Path
+    adhoc_path = str(server.get('adhoc_model_path') or '').strip()
+    if adhoc_path:
+        from pathlib import Path
 
-            try:
-                size = round(Path(str(path)).stat().st_size / (1024 ** 3), 2)
-            except OSError:
-                size = 0.0
-        weights_gb += float(size or 0)
+        try:
+            weights_gb = round(Path(adhoc_path).stat().st_size / (1024 ** 3), 2)
+        except OSError:
+            weights_gb = 0.0
+    else:
+        stack = resolve_model_stack(server, cfg=cfg)
+        weights_gb = 0.0
+        for row in stack:
+            path = row.get('path')
+            if not path:
+                continue
+            size = row.get('size_gb')
+            if size is None:
+                from pathlib import Path
+
+                try:
+                    size = round(Path(str(path)).stat().st_size / (1024 ** 3), 2)
+                except OSError:
+                    size = 0.0
+            weights_gb += float(size or 0)
 
     context = max(2048, int(server.get('context_size') or 8192))
     load = normalize_load_settings(server.get('load_settings'))

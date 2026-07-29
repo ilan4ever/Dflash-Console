@@ -18,9 +18,8 @@
   let gpus = [];
   let activeId = localStorage.getItem('dflashConsole.activeServerId') || '';
   let pollTimer = null;
-  let busy = false;
-  let busyAction = null;
-  let loadingModelMeta = null;
+  const serverActions = new Map();
+  const pendingLoads = new Map();
   const PREFS_KEY = 'dflashConsole.modelPrefs';
   let catalogModels = [];
   let suppressRunningToggle = false;
@@ -30,7 +29,7 @@
     { id: 'profiles', label: 'DFlash engine profiles', match: (m) => m.source === 'dflash-profile' },
     {
       id: 'dflash',
-      label: 'DFlash checkpoints',
+      label: 'DFlash models',
       match: (m) => m.source !== 'dflash-profile' && (
         m.source === 'dflash'
         || (Array.isArray(m.capabilities) && m.capabilities.includes('dflash'))
@@ -47,6 +46,8 @@
   let saveInFlight = null;
   let logsFollowTail = true;
   let logsScrollBound = false;
+  let logsFilterBound = false;
+  let logsJumpObserver = null;
   let lastLogsServerId = '';
   let logLinesRaw = [];
   let logFilterId = localStorage.getItem('dflashConsole.logFilter') || 'all';
@@ -58,13 +59,133 @@
     return box.scrollHeight - box.scrollTop - box.clientHeight <= LOG_SCROLL_THRESHOLD;
   }
 
+  function bindLogsFilterDropdown() {
+    const trigger = document.getElementById('serverLogsFilterTrigger');
+    const menu = document.getElementById('serverLogsFilterMenu');
+    const label = document.getElementById('serverLogsFilterLabel');
+    if (!trigger || !menu || logsFilterBound) return;
+    logsFilterBound = true;
+
+    function syncFilterUi() {
+      const filterLabel = window.DFlashLogFormat?.filterLabel?.(logFilterId) || 'All lines';
+      if (label) label.textContent = filterLabel;
+      menu.querySelectorAll('.lm-logs-filter-item').forEach((item) => {
+        const active = item.dataset.filter === logFilterId;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    }
+
+    function closeMenu() {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+
+    function positionMenu() {
+      const rect = trigger.getBoundingClientRect();
+      menu.style.minWidth = `${Math.max(rect.width, 170)}px`;
+      menu.style.left = `${Math.max(8, rect.left)}px`;
+      menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 4)}px`;
+    }
+
+    function openMenu() {
+      menu.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      positionMenu();
+    }
+
+    function setLogFilter(nextId, shouldRender = true) {
+      logFilterId = nextId || 'all';
+      localStorage.setItem('dflashConsole.logFilter', logFilterId);
+      syncFilterUi();
+      closeMenu();
+      if (shouldRender) renderLogs(logLinesRaw);
+    }
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    });
+
+    menu.addEventListener('click', (e) => e.stopPropagation());
+
+    menu.querySelectorAll('.lm-logs-filter-item').forEach((item) => {
+      item.addEventListener('click', () => setLogFilter(item.dataset.filter || 'all'));
+    });
+
+    document.addEventListener('click', closeMenu);
+    window.addEventListener('resize', closeMenu);
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeMenu();
+    });
+
+    setLogFilter(logFilterId, false);
+  }
+
+  function positionLogsJumpButton() {
+    const box = document.getElementById('serverLogsBody');
+    const btn = document.getElementById('serverLogsJumpBottom');
+    if (!box || !btn) return;
+    const rect = box.getBoundingClientRect();
+    const scrollbarWidth = Math.max(0, box.offsetWidth - box.clientWidth);
+    const btnSize = btn.offsetWidth || 34;
+    const gap = 8;
+    btn.style.left = `${Math.max(12, rect.right - scrollbarWidth - btnSize - gap)}px`;
+    btn.style.top = `${Math.max(12, rect.bottom - btnSize - gap)}px`;
+  }
+
+  function updateLogsJumpButton() {
+    const box = document.getElementById('serverLogsBody');
+    const btn = document.getElementById('serverLogsJumpBottom');
+    if (!box || !btn) return;
+    const show = box.scrollHeight > box.clientHeight + 8 && !logsAtBottom(box);
+    btn.classList.toggle('is-visible', show);
+    if (show) positionLogsJumpButton();
+  }
+
+  function scrollLogsToBottom() {
+    const box = document.getElementById('serverLogsBody');
+    if (!box) return;
+    logsFollowTail = true;
+    box.scrollTop = box.scrollHeight;
+    window.requestAnimationFrame(updateLogsJumpButton);
+  }
+
+  function ensureLogsJumpSentinel() {
+    const box = document.getElementById('serverLogsBody');
+    if (!box) return;
+    let sentinel = box.querySelector('.lm-logs-jump-sentinel');
+    if (!sentinel) {
+      sentinel = document.createElement('div');
+      sentinel.className = 'lm-logs-jump-sentinel';
+      sentinel.setAttribute('aria-hidden', 'true');
+    }
+    box.appendChild(sentinel);
+    if (!logsJumpObserver) {
+      logsJumpObserver = new IntersectionObserver(
+        ([entry]) => {
+          if (entry) logsFollowTail = entry.isIntersecting;
+          updateLogsJumpButton();
+        },
+        { root: box, threshold: 0 },
+      );
+    }
+    logsJumpObserver.disconnect();
+    logsJumpObserver.observe(sentinel);
+  }
+
   function bindLogsAutoScroll() {
     const box = document.getElementById('serverLogsBody');
     if (!box || logsScrollBound) return;
     logsScrollBound = true;
     box.addEventListener('scroll', () => {
       logsFollowTail = logsAtBottom(box);
+      updateLogsJumpButton();
     }, { passive: true });
+    window.addEventListener('resize', updateLogsJumpButton);
+    document.getElementById('serverLogsJumpBottom')?.addEventListener('click', scrollLogsToBottom);
   }
 
   function escapeHtml(value) {
@@ -73,6 +194,47 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function getServerAction(serverId) {
+    return serverId ? (serverActions.get(serverId) || null) : null;
+  }
+
+  function setServerAction(serverId, action) {
+    if (!serverId) return;
+    if (action) serverActions.set(serverId, action);
+    else serverActions.delete(serverId);
+  }
+
+  function isServerBusy(serverId) {
+    return !!getServerAction(serverId);
+  }
+
+  function canLoadModel(model) {
+    if (!model) return false;
+    const serverId = model.server_id || activeServer()?.id;
+    if (!serverId) return false;
+    if (isServerBusy(serverId)) return false;
+    const server = servers.find((s) => s.id === serverId) || allServers.find((s) => s.id === serverId);
+    if (server?.status === 'booting' || server?.booting) return false;
+    if (model.loadable && model.server_id) return true;
+    return !!model.path;
+  }
+
+  function anyServerLoading() {
+    return pendingLoads.size > 0 || servers.some((s) => s.status === 'booting' || s.booting);
+  }
+
+  function pendingLoadRow(serverId) {
+    const meta = pendingLoads.get(serverId);
+    if (!meta) return null;
+    return {
+      card_state: 'loading',
+      title: meta.label,
+      role: 'alias',
+      ejectable: true,
+      progress: null,
+    };
   }
 
   function activeServer() {
@@ -85,7 +247,7 @@
 
   /** Follow backend when another profile was started via API while the UI had a stopped selection. */
   function syncActiveIdFromLiveState() {
-    if (busy) return;
+    if (isServerBusy(activeId)) return;
     if (serverIsLive(activeServer())) return;
     const live = servers.find((s) => serverIsLive(s));
     if (live && live.id !== activeId) {
@@ -95,7 +257,7 @@
   }
 
   function pollIntervalMs() {
-    if (busy || servers.some((s) => s.status === 'booting')) return 1000;
+    if (serverActions.size > 0 || anyServerLoading() || loadedServerCount() > 0) return 1000;
     return 2500;
   }
 
@@ -215,8 +377,162 @@
     }, 400);
   }
 
+  let cardContextTarget = null;
+
+  function catalogModelForServer(serverId) {
+    if (!serverId) return null;
+    return catalogModels.find((m) => m.server_id === serverId)
+      || catalogModels.find((m) => modelCatalogKey(m) === serverId)
+      || null;
+  }
+
+  function modelFromLoadedEntry(server, row) {
+    const catalog = catalogModelForServer(server.id);
+    if (catalog) return catalog;
+    return {
+      id: server.id,
+      server_id: server.id,
+      label: cardDisplayName(row) || server.label || server.id,
+      profile: server.profile || '',
+      path: row.path || '',
+      loadable: true,
+      arch: row.arch || '—',
+      params: row.params || '—',
+      quant: row.quant || '—',
+      context_max: PROFILE_CTX_MAX[server.profile] || server.context_max || 262144,
+      gpu_layers_max: server.gpu_layers_max || 128,
+      capabilities: row.capabilities || [],
+    };
+  }
+
+  function ensureInspectorVisible() {
+    const bodyEl = document.querySelector('.lm-body');
+    const inspectorToggleBtn = document.querySelector('[data-action="toggle-inspector"]');
+    if (!bodyEl?.classList.contains('inspector-collapsed')) return;
+    bodyEl.classList.remove('inspector-collapsed');
+    inspectorToggleBtn?.classList.add('active');
+  }
+
+  function focusInspectorTab(tabId) {
+    const tab = document.querySelector(`.lm-inspector-tab[data-inspector-tab="${tabId}"]`);
+    if (!tab) return;
+    tab.click();
+  }
+
+  async function selectLoadedCard(server, row, { tab } = {}) {
+    if (!server) return;
+    activeId = server.id;
+    localStorage.setItem('dflashConsole.activeServerId', activeId);
+    const model = modelFromLoadedEntry(server, row);
+    selectedModelKey = modelCatalogKey(model);
+    if (selectedModelKey) {
+      localStorage.setItem('dflashConsole.selectedModelKey', selectedModelKey);
+    }
+    syncModelPicker(selectedModelKey);
+    await applyModelSelection(model);
+    ensureInspectorVisible();
+    if (tab) focusInspectorTab(tab);
+    renderCards();
+    renderToolbar(activeServer());
+  }
+
+  function hideCardContextMenu() {
+    const menu = document.getElementById('serverCardContextMenu');
+    if (!menu) return;
+    menu.classList.add('hidden');
+    menu.setAttribute('aria-hidden', 'true');
+    menu.innerHTML = '';
+    cardContextTarget = null;
+  }
+
+  function openCardContextMenu(event, server, row) {
+    const menu = document.getElementById('serverCardContextMenu');
+    if (!menu) return;
+    cardContextTarget = { server, row };
+    const ready = row.card_state === 'ready';
+    const loading = row.card_state === 'loading';
+    const url = server.reachable_url || '';
+    const path = row.path || '';
+
+    menu.innerHTML = `
+      <button type="button" data-cmd="details">Show details</button>
+      <button type="button" data-cmd="runtime">Show runtime settings</button>
+      <button type="button" data-cmd="copy-url"${url ? '' : ' disabled'}>Copy API URL</button>
+      <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
+      <button type="button" data-cmd="metadata">Show metadata</button>
+      <hr>
+      <button type="button" data-cmd="unload"${ready && row.ejectable ? '' : ' disabled'}>Unload</button>
+      <button type="button" data-cmd="cancel"${loading && row.ejectable ? '' : ' disabled'}>Cancel load</button>`;
+
+    menu.classList.remove('hidden');
+    menu.setAttribute('aria-hidden', 'false');
+    menu.style.left = `${event.clientX}px`;
+    menu.style.top = `${event.clientY}px`;
+
+    menu.querySelectorAll('button[data-cmd]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void runCardContextCommand(btn.dataset.cmd, server, row);
+        hideCardContextMenu();
+      });
+    });
+  }
+
+  async function runCardContextCommand(cmd, server, row) {
+    if (cmd === 'details') {
+      await selectLoadedCard(server, row, { tab: 'info' });
+      return;
+    }
+    if (cmd === 'runtime') {
+      await selectLoadedCard(server, row, { tab: 'load' });
+      return;
+    }
+    if (cmd === 'copy-url') {
+      const url = server.reachable_url;
+      if (!url) return;
+      await navigator.clipboard.writeText(url);
+      toast('API URL copied');
+      return;
+    }
+    if (cmd === 'copy-path') {
+      const path = row.path;
+      if (!path) return;
+      await navigator.clipboard.writeText(path);
+      toast('Model path copied');
+      return;
+    }
+    if (cmd === 'metadata') {
+      const modal = document.getElementById('modelMetadataModal');
+      const pre = document.getElementById('modelMetadataBody');
+      if (pre) {
+        pre.textContent = JSON.stringify({ server: { id: server.id, label: server.label, port: server.port, status: server.status, reachable_url: server.reachable_url }, row }, null, 2);
+      }
+      modal?.classList.add('open');
+      modal?.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
+      return;
+    }
+    if (cmd === 'unload') {
+      await ejectServer(server.id);
+      return;
+    }
+    if (cmd === 'cancel') {
+      await stopServer(server.id);
+    }
+  }
+
   function loadedServerCount() {
     return servers.filter((s) => s.status === 'loaded').length;
+  }
+
+  function entryForCard(card) {
+    const serverId = card?.dataset?.serverId;
+    const role = card?.dataset?.role;
+    const server = servers.find((s) => s.id === serverId);
+    if (!server) return null;
+    let row = server.visible_cards?.find((entry) => entry.role === role);
+    if (!row) row = pendingLoadRow(serverId);
+    return row ? { server, row } : null;
   }
 
   function bootingServerCount() {
@@ -231,20 +547,11 @@
         entries.push({ server, row });
       }
     }
-    if (!entries.length && busyAction === 'loading' && loadingModelMeta) {
-      const server = servers.find((s) => s.id === loadingModelMeta.server_id) || activeServer();
-      if (server) {
-        entries.push({
-          server,
-          row: {
-            card_state: 'loading',
-            title: loadingModelMeta.label,
-            role: 'alias',
-            ejectable: true,
-            progress: null,
-          },
-        });
-      }
+    for (const [serverId] of pendingLoads) {
+      if (entries.some(({ server }) => server.id === serverId)) continue;
+      const server = servers.find((s) => s.id === serverId);
+      const row = pendingLoadRow(serverId);
+      if (server && row) entries.push({ server, row });
     }
     return entries;
   }
@@ -260,12 +567,19 @@
   function aggregateStatusLabel() {
     const loaded = loadedServerCount();
     const booting = bootingServerCount();
-    if (busyAction === 'stopping') return 'Stopping…';
-    if (busyAction === 'ejecting') return 'Unloading…';
-    if (busyAction === 'starting') return 'Starting engine…';
-    if (busyAction === 'loading') return 'Loading model…';
-    if (booting && loaded) return `${loaded} loaded · ${booting} loading`;
-    if (booting) return booting === 1 ? 'Loading model…' : `${booting} models loading`;
+    const starting = [...serverActions.values()].filter((a) => a === 'starting').length;
+    const loading = pendingLoads.size;
+    const stopping = [...serverActions.values()].filter((a) => a === 'stopping').length;
+    const ejecting = [...serverActions.values()].filter((a) => a === 'ejecting').length;
+    if (stopping === 1 && loaded === 0 && booting === 0) return 'Stopping…';
+    if (stopping > 1) return `${stopping} engines stopping`;
+    if (ejecting === 1 && loaded <= 1) return 'Unloading…';
+    if (ejecting > 0) return `${ejecting} unloading · ${loaded} loaded`;
+    if (starting === 1 && loaded === 0 && booting === 0) return 'Starting engine…';
+    if (starting > 0) return `${starting} starting · ${loaded} loaded`;
+    if (loading > 0 && booting > 0 && loaded > 0) return `${loaded} loaded · ${Math.max(loading, booting)} loading`;
+    if (loading > 1 || booting > 1) return `${Math.max(loading, booting)} models loading`;
+    if (loading === 1 || booting === 1) return 'Loading model…';
     if (loaded > 1) return `${loaded} models loaded`;
     if (loaded === 1) return 'Running';
     const active = activeServer();
@@ -289,7 +603,7 @@
       return base || row.id || 'draft';
     }
     const base = row.path ? row.path.split(/[/\\]/).pop() : row.label;
-    return base || row.id || 'checkpoint';
+    return base || row.id || 'model';
   }
 
   function cardHoverTitle({ server, row }) {
@@ -315,37 +629,45 @@
     return '';
   }
 
-  function cardLiveStats(server) {
-    const stats = server?.inference_stats;
-    if (!stats || server.status !== 'loaded') return '';
-    const parts = [];
-    if (stats.tokens_loaded != null) parts.push(`${stats.tokens_loaded} ctx`);
-    if (stats.generation_tokens != null) parts.push(`${stats.generation_tokens} out`);
-    if (stats.tokens_per_second != null) parts.push(`${stats.tokens_per_second} t/s`);
-    if (!parts.length) return '';
-    return `<span class="lm-model-card-live">${escapeHtml(parts.join(' · '))}</span>`;
+  function cardLiveStats(server, ready) {
+    if (!ready || server?.status !== 'loaded') return '';
+    const stats = server?.inference_stats || {};
+    if (stats.generating) {
+      const secs = stats.generating_seconds != null ? `${stats.generating_seconds}s` : '…';
+      return `
+      <div class="lm-model-card-live-row is-generating" title="Inference running on this engine">
+        <span class="lm-model-card-live-metric"><span class="lm-model-card-live-label">Status</span> Generating ${escapeHtml(secs)}</span>
+        <span class="lm-model-card-live-metric dim">Live</span>
+      </div>`;
+    }
+    const out = stats.generation_tokens;
+    const tps = stats.tokens_per_second;
+    const outText = out != null ? `${out} tok` : '— tok';
+    const tpsText = tps != null ? `${tps} t/s` : '— t/s';
+    const tip = out != null || tps != null
+      ? 'Last completion on this engine'
+      : 'Run inference to measure output tokens and speed';
+    return `
+      <div class="lm-model-card-live-row" title="${escapeHtml(tip)}">
+        <span class="lm-model-card-live-metric"><span class="lm-model-card-live-label">Generated</span> ${escapeHtml(outText)}</span>
+        <span class="lm-model-card-live-metric"><span class="lm-model-card-live-label">Speed</span> ${escapeHtml(tpsText)}</span>
+      </div>`;
   }
 
   function emptyMessage(server) {
-    if (busyAction === 'stopping') return 'Stopping server…';
-    if (busyAction === 'ejecting') return 'Unloading model…';
-    if (busyAction === 'starting') return 'Starting engine…';
-    if (busyAction === 'loading') return 'Loading model…';
-    if (server?.status === 'running') return 'Engine is listening but no checkpoint is loaded. Click Run checkpoint.';
-    return 'Engine stopped. Turn it on or run a checkpoint.';
+    const action = getServerAction(server?.id);
+    if (action === 'stopping') return 'Stopping server…';
+    if (action === 'ejecting') return 'Unloading model…';
+    if (action === 'starting') return 'Starting engine…';
+    if (action === 'loading' || server?.status === 'booting') return 'Loading model…';
+    if (server?.status === 'running') return 'Engine is listening but no model is loaded. Click Load.';
+    return 'Engine stopped. Turn it on or load a model.';
   }
 
   function renderCards() {
     const wrap = document.getElementById('serverModelCards');
     const empty = document.getElementById('serverEmptyState');
     if (!wrap || !empty) return;
-
-    if (busyAction === 'stopping' || busyAction === 'ejecting') {
-      wrap.innerHTML = '';
-      empty.textContent = emptyMessage(activeServer());
-      empty.classList.remove('hidden');
-      return;
-    }
 
     const entries = collectLoadedEntries();
     if (!entries.length) {
@@ -364,10 +686,11 @@
       let action = '';
       if (row.ejectable) {
         action = ready
-          ? '<button class="lm-btn ghost small" data-action="eject" title="Unload checkpoint">Unload</button>'
+          ? '<button class="lm-btn ghost small" data-action="eject" title="Unload model">Unload</button>'
           : '<button class="lm-btn ghost small" data-action="cancel-load">Cancel</button>';
       }
-      const cardClass = `lm-model-card lm-model-card-compact ${ready ? 'ready' : 'loading'}${loading && progressPct == null ? ' lm-progress-indeterminate' : ''}`;
+      const isSelected = server.id === activeId;
+      const cardClass = `lm-model-card lm-model-card-compact ${ready ? 'ready' : 'loading'}${isSelected ? ' selected' : ''}`;
       const cardStyle = loading && progressPct != null ? ` style="--card-progress:${progressPct}%"` : '';
       const loadChrome = loading
         ? `<div class="lm-model-card-load-shell" aria-hidden="true">
@@ -383,12 +706,12 @@
       const engineMeta = escapeHtml(server.label || server.id);
 
       return `
-        <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role)}" title="${escapeHtml(hoverTitle)}"${cardStyle}>
+        <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role)}" role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${cardStyle}>
           ${loadChrome}
+          ${cardLiveStats(server, ready)}
           <div class="lm-model-card-top">
             ${badge}
             <span class="lm-model-path">${escapeHtml(cardDisplayName(row))}</span>
-            ${cardLiveStats(server)}
             <span class="lm-model-card-meta"><span class="lm-port">:${server.port}</span> · ${engineMeta}</span>
             ${roleBadge(row)} ${missing}
             <div class="lm-model-stats">
@@ -412,6 +735,23 @@
         if (serverId) void stopServer(serverId);
       });
     });
+
+    wrap.querySelectorAll('.lm-model-card').forEach((card) => {
+      const activate = (event) => {
+        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.type === 'keydown') event.preventDefault();
+        if (event.target.closest('[data-action]')) return;
+        const entry = entryForCard(card);
+        if (entry) void selectLoadedCard(entry.server, entry.row);
+      };
+      card.addEventListener('click', activate);
+      card.addEventListener('keydown', activate);
+      card.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        const entry = entryForCard(card);
+        if (entry) openCardContextMenu(event, entry.server, entry.row);
+      });
+    });
   }
 
   function modelCatalogKey(model) {
@@ -427,11 +767,11 @@
   }
 
   function modelOptionLabel(model) {
-    const parts = [model.label || model.filename || model.id || 'Checkpoint'];
+    const parts = [model.label || model.filename || model.id || 'Model'];
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
     if (model.loadable && model.port) parts.push(`port :${model.port}`);
-    else if (!model.loadable) parts.push('browse only');
+    else if (model.path && !model.server_id) parts.push('load on active engine');
     return parts.join(' · ');
   }
 
@@ -461,7 +801,7 @@
     if (!pick) return;
 
     const buckets = groupedCatalogModels(catalogModels);
-    const parts = ['<option value="">Select checkpoint…</option>'];
+    const parts = ['<option value="">Select model…</option>'];
     for (const group of MODEL_GROUPS) {
       const rows = buckets[group.id] || [];
       if (!rows.length) continue;
@@ -476,7 +816,7 @@
     pick.innerHTML = parts.join('');
 
     const selected = catalogModels.find((m) => modelCatalogKey(m) === pick.value);
-    if (loadBtn) loadBtn.disabled = busy || !selected?.loadable;
+    if (loadBtn) loadBtn.disabled = !canLoadModel(selected);
   }
 
   function syncModelPicker(key) {
@@ -497,7 +837,7 @@
     selectedModelKey = pick?.value || '';
     if (selectedModelKey) localStorage.setItem('dflashConsole.selectedModelKey', selectedModelKey);
     else localStorage.removeItem('dflashConsole.selectedModelKey');
-    if (loadBtn) loadBtn.disabled = busy || !model?.loadable;
+    if (loadBtn) loadBtn.disabled = !canLoadModel(model);
     if (model?.server_id) {
       activeId = model.server_id;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
@@ -518,8 +858,9 @@
 
   async function loadPickedModel() {
     const model = selectedCatalogModel();
-    if (!model?.loadable) {
-      toast('This checkpoint is browse-only — wire it to an engine profile in Settings.', false);
+    if (!canLoadModel(model)) {
+      if (model?.path) toast('Pick an engine profile first (use the toolbar toggle), then Load.', false);
+      else toast('This model is browse-only — wire it to an engine profile in Settings.', false);
       return;
     }
     if (window.DFlashModelsLive?.loadModel) {
@@ -553,11 +894,11 @@
       const anyActive = loadedServerCount() > 0 || bootingServerCount() > 0 || server.running || server.status === 'booting';
       statusText.className = anyActive ? 'lm-status-running' : 'lm-status-stopped';
     }
-    if (toggle) setRunningToggle(running && busyAction !== 'stopping');
+    if (toggle) setRunningToggle(running && getServerAction(server.id) !== 'stopping');
     if (urlEl) urlEl.textContent = server.reachable_url || '—';
     if (loadBtn) {
       const picked = selectedCatalogModel();
-      loadBtn.disabled = busy || !picked?.loadable;
+      loadBtn.disabled = !canLoadModel(picked);
     }
   }
 
@@ -592,16 +933,24 @@
     const filterLabel = window.DFlashLogFormat?.filterLabel?.(logFilterId) || 'All lines';
     const displayLines = visibleLogLines();
     const stickToBottom = logsFollowTail;
+    const savedScroll = stickToBottom
+      ? null
+      : { top: box.scrollTop, ratio: box.scrollHeight > 0 ? box.scrollTop / box.scrollHeight : 0 };
     if (!logLinesRaw.length) {
       box.innerHTML = '<div class="log-line log-empty"><span class="log-datetime">—</span> <span class="log-dim">No log output yet. Start the engine to capture logs.</span></div>';
       updateLogsCount(0);
       if (stickToBottom) box.scrollTop = box.scrollHeight;
+      ensureLogsJumpSentinel();
+      window.requestAnimationFrame(updateLogsJumpButton);
       return;
     }
     if (!displayLines.length) {
       box.innerHTML = `<div class="log-line log-empty"><span class="log-dim">No lines match filter “${escapeHtml(filterLabel)}”.</span></div>`;
       updateLogsCount(0);
       if (stickToBottom) box.scrollTop = box.scrollHeight;
+      else if (savedScroll) box.scrollTop = Math.max(0, savedScroll.ratio * box.scrollHeight);
+      ensureLogsJumpSentinel();
+      window.requestAnimationFrame(updateLogsJumpButton);
       return;
     }
     box.innerHTML = displayLines.map((line) => (
@@ -609,6 +958,9 @@
     )).join('');
     updateLogsCount(displayLines.length);
     if (stickToBottom) box.scrollTop = box.scrollHeight;
+    else if (savedScroll) box.scrollTop = Math.max(0, savedScroll.ratio * box.scrollHeight);
+    ensureLogsJumpSentinel();
+    window.requestAnimationFrame(updateLogsJumpButton);
   }
 
   async function copyVisibleLogs() {
@@ -750,7 +1102,7 @@
       draftRow.classList.toggle('hidden', !hasDraft);
       draftEl.textContent = hasDraft ? model.draft_label : '—';
     }
-    document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode(model.label || model.id || 'Checkpoint'));
+    document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode(model.label || model.id || 'Model'));
   }
 
   async function applyModelSelection(model) {
@@ -802,17 +1154,41 @@
     const server = activeServer();
     renderToolbar(server);
     renderCards();
-    if (server) {
-      fillInspectorLoadSettings(server);
-      if (document.body.dataset.activeView === 'server') {
-        inspectorBound = {
-          serverId: server.id,
-          modelKey: server.id,
-          profile: server.profile,
-          context_max: PROFILE_CTX_MAX[server.profile] || server.context_max || 262144,
-          gpu_layers_max: server.gpu_layers_max || 128,
-        };
+    if (!server) return;
+
+    if (inspectorBound?.serverId === server.id) {
+      if (!inspectorDirty && !inspectorFilling) {
+        fillInspectorLoadSettings(server);
       }
+      return;
+    }
+
+    if (document.body.dataset.activeView !== 'server') return;
+
+    const model = catalogModelForServer(server.id) || modelFromLoadedEntry(server, server.visible_cards?.[0] || {});
+    fillInspectorInfo(model);
+    if (!inspectorDirty && !inspectorFilling) {
+      fillInspectorLoadSettings(getMergedLoadSettings(model));
+    }
+    inspectorBound = {
+      serverId: server.id,
+      modelKey: modelKeyFor(model),
+      profile: model.profile,
+      context_max: model.context_max,
+      gpu_layers_max: model.gpu_layers_max,
+    };
+  }
+
+  async function clearLogs() {
+    const server = activeServer();
+    if (!server) return;
+    try {
+      await api(`/api/logs/${encodeURIComponent(server.id)}`, { method: 'DELETE' });
+      renderLogs([]);
+      logsFollowTail = true;
+      toast('Engine log cleared');
+    } catch (err) {
+      toast(err.message, false);
     }
   }
 
@@ -876,14 +1252,13 @@
 
   async function startActive() {
     const server = activeServer();
-    if (!server || busy) return;
+    if (!server || isServerBusy(server.id)) return;
     if (serverIsLive(server) && server.status !== 'stopped') {
       toast('Engine is already running');
       setRunningToggle(true);
       return;
     }
-    busy = true;
-    busyAction = 'starting';
+    setServerAction(server.id, 'starting');
     window.DFlashStatusFeed?.setTransient(`Starting engine ${server.label || server.id}…`, {
       secondary: `Port :${server.port}`,
       ttlMs: 120000,
@@ -892,13 +1267,12 @@
     try {
       await api(`/api/servers/${encodeURIComponent(server.id)}/listen`, { method: 'POST' });
       toast('Engine started');
-      window.DFlashStatusFeed?.note('Engine listening', `Port :${server.port} · no checkpoint loaded yet`);
+      window.DFlashStatusFeed?.note('Engine listening', `Port :${server.port} · no model loaded yet`);
       await refresh();
     } catch (err) {
       toast(err.message, false);
     } finally {
-      busy = false;
-      busyAction = null;
+      setServerAction(server.id, null);
       renderAll();
     }
   }
@@ -917,19 +1291,15 @@
     return activeServer();
   }
 
-  async function loadSelectedModel(model) {
-    if (!model?.server_id) {
-      toast('Only configured server profiles can be loaded here. Add a server in Settings.', false);
+  async function executeModelLoad(model, forceServerId) {
+    const serverId = forceServerId || model.server_id || activeServer()?.id;
+    if (!serverId) {
+      toast('Select an engine first', false);
       return;
     }
-    if (busy) return;
-    await applyModelSelection(model);
-    activeId = model.server_id;
-    localStorage.setItem('dflashConsole.activeServerId', activeId);
     const label = model.label || model.id;
-    loadingModelMeta = { server_id: model.server_id, label };
-    busy = true;
-    busyAction = 'loading';
+    setServerAction(serverId, 'loading');
+    pendingLoads.set(serverId, { label });
     window.DFlashStatusFeed?.setTransient(`Loading ${label}…`, {
       secondary: 'Reading weights into GPU',
       ttlMs: 120000,
@@ -937,7 +1307,15 @@
     renderAll();
     try {
       await saveInspectorLoadSettings();
-      const result = await api(`/api/servers/${encodeURIComponent(model.server_id)}/load`, { method: 'POST' });
+      const body = {};
+      if (model.path && !model.server_id) {
+        body.model_path = model.path;
+        if (model.id) body.model_id = model.id;
+      }
+      const result = await api(`/api/servers/${encodeURIComponent(serverId)}/load`, {
+        method: 'POST',
+        body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+      });
       if (result?.memory_warning) {
         toast(result.memory_warning);
         window.DFlashStatusFeed?.note(result.memory_warning, label);
@@ -948,7 +1326,7 @@
         await refresh();
         return;
       }
-      const loaded = await waitUntilModelLoaded(model.server_id);
+      const loaded = await waitUntilModelLoaded(serverId);
       if (loaded?.status === 'loaded') {
         toast('Model loaded');
         window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
@@ -957,17 +1335,34 @@
       toast(err.message, false);
       window.DFlashStatusFeed?.note('Load failed', err.message || label);
     } finally {
-      loadingModelMeta = null;
-      busy = false;
-      busyAction = null;
+      pendingLoads.delete(serverId);
+      setServerAction(serverId, null);
       renderAll();
+      await refresh();
     }
   }
 
+  async function loadSelectedModel(model) {
+    const serverId = model?.server_id || activeServer()?.id;
+    if (!serverId) {
+      toast('Select an engine first', false);
+      return;
+    }
+    if (!canLoadModel(model)) {
+      if (isServerBusy(serverId)) toast('This engine is already busy', false);
+      return;
+    }
+    await applyModelSelection(model);
+    activeId = serverId;
+    localStorage.setItem('dflashConsole.activeServerId', activeId);
+    ensureInspectorVisible();
+    focusInspectorTab('load');
+    void executeModelLoad({ ...model, server_id: model.server_id || '' });
+  }
+
   async function ejectServer(serverId) {
-    if (!serverId || busy) return;
-    busy = true;
-    busyAction = 'ejecting';
+    if (!serverId || isServerBusy(serverId)) return;
+    setServerAction(serverId, 'ejecting');
     const label = allServers.find((s) => s.id === serverId)?.label || serverId;
     window.DFlashStatusFeed?.setTransient(`Unloading ${label}…`, { ttlMs: 30000 });
     renderAll();
@@ -981,8 +1376,7 @@
     } catch (err) {
       toast(err.message, false);
     } finally {
-      busy = false;
-      busyAction = null;
+      setServerAction(serverId, null);
       await refresh();
     }
   }
@@ -994,21 +1388,20 @@
   }
 
   async function stopServer(serverId) {
-    if (!serverId || busy) return;
-    busy = true;
-    busyAction = 'stopping';
+    if (!serverId || isServerBusy(serverId)) return;
+    setServerAction(serverId, 'stopping');
     const label = allServers.find((s) => s.id === serverId)?.label || serverId;
     window.DFlashStatusFeed?.setTransient(`Stopping ${label}…`, { ttlMs: 30000 });
     renderAll();
     try {
       await api(`/api/servers/${encodeURIComponent(serverId)}/stop`, { method: 'POST' });
       toast('Server stopped');
+      pendingLoads.delete(serverId);
       await refresh();
     } catch (err) {
       toast(err.message, false);
     } finally {
-      busy = false;
-      busyAction = null;
+      setServerAction(serverId, null);
       renderAll();
     }
   }
@@ -1080,13 +1473,8 @@
     });
     document.getElementById('serverLogsRefresh')?.addEventListener('click', () => void refreshLogs().catch((e) => toast(e.message, false)));
     document.getElementById('serverLogsCopy')?.addEventListener('click', () => void copyVisibleLogs());
-    document.getElementById('serverLogsFilter')?.addEventListener('change', (e) => {
-      logFilterId = e.target.value || 'all';
-      localStorage.setItem('dflashConsole.logFilter', logFilterId);
-      renderLogs(logLinesRaw);
-    });
-    const filterEl = document.getElementById('serverLogsFilter');
-    if (filterEl) filterEl.value = logFilterId;
+    document.getElementById('serverLogsClear')?.addEventListener('click', () => void clearLogs());
+    bindLogsFilterDropdown();
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', (e) => {
       activeId = e.target.value;
@@ -1094,6 +1482,36 @@
       fillSettingsForm(allServers.find((s) => s.id === activeId) || activeServer());
       void refresh();
     });
+
+    document.addEventListener('click', hideCardContextMenu);
+    document.addEventListener('scroll', hideCardContextMenu, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') hideCardContextMenu();
+    });
+  }
+
+  async function loadModelOnServer(serverId, model) {
+    if (!serverId || !model) {
+      toast('Select an engine and model', false);
+      return false;
+    }
+    if (isServerBusy(serverId)) {
+      toast('This engine is already busy', false);
+      return false;
+    }
+    const server = allServers.find((s) => s.id === serverId) || servers.find((s) => s.id === serverId);
+    if (server?.status === 'booting' || server?.booting) {
+      toast('Engine is still booting', false);
+      return false;
+    }
+    const payload = { ...model };
+    if (payload.server_id !== serverId) payload.server_id = '';
+    if (!payload.server_id && !payload.path) {
+      toast('This model cannot be loaded', false);
+      return false;
+    }
+    await executeModelLoad(payload, serverId);
+    return true;
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -1109,6 +1527,7 @@
     activeServer,
     applyModelSelection,
     loadSelectedModel,
+    loadModelOnServer,
     fillSettingsForm,
     saveGatewaySettings,
     fillInspectorLoadSettings,

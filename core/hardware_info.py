@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from core.config import get_dflash_root, load_config, normalize_hardware_settings
+from core.config import CONFIG_PATH, get_dflash_root, load_config, normalize_hardware_settings
 from core.gpu_devices import query_gpu_devices
 from core.local_models import list_local_models
 from core.system_stats import get_cpu_info_payload, get_system_stats_payload
@@ -62,6 +62,7 @@ def get_hardware_payload(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
         'download_library_id': get_download_library(config).get('id'),
         'storage_presets': storage_presets(),
         'dflash_root': str(get_dflash_root(config)),
+        'config_path': str(CONFIG_PATH),
         'logs_dir': str(studio_root / 'logs'),
         'presets_dir': str(studio_root / 'logs' / 'presets'),
         'ui_port': int(config.get('ui_port') or 8900),

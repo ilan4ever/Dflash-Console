@@ -2,6 +2,8 @@
 
 Reference: LM Studio 0.4.20 screenshots. Mockup only until wired to API.
 
+**End-user docs:** [USER-GUIDE.md](../USER-GUIDE.md) · in-app **Documentation → User guide**
+
 ## Views (top tabs)
 
 | Tab | Doc | Status |

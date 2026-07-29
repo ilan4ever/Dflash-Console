@@ -38,7 +38,11 @@
     const el = document.getElementById(HINT_IDS[key]);
     if (!el) return;
     if (field?.hint) {
-      el.innerHTML = recTag(field);
+      let hint = String(field.hint);
+      if (key === 'flash_attention') {
+        hint = hint.replace(/^Flash attention\s*/i, '');
+      }
+      el.innerHTML = recTag({ ...field, hint });
     } else if (fallback) {
       el.textContent = fallback;
     }
