@@ -1,15 +1,15 @@
 /** Models tab — local catalog + inspector binding */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   let models = [];
   let meta = {};
-  let selectedKey = localStorage.getItem('dflashStudio.selectedModelKey') || '';
+  let selectedKey = localStorage.getItem('dflashConsole.selectedModelKey') || '';
   let loadedServerIds = new Set();
   let bootingServers = {};
   let contextModel = null;
 
-  const PINNED_KEY = 'dflashStudio.pinnedModels';
+  const PINNED_KEY = 'dflashConsole.pinnedModels';
 
   function escapeHtml(value) {
     return String(value || '')
@@ -38,7 +38,7 @@
 
   function loadBrowsePrefs() {
     try {
-      return JSON.parse(localStorage.getItem('dflashStudio.modelPrefs') || '{}');
+      return JSON.parse(localStorage.getItem('dflashConsole.modelPrefs') || '{}');
     } catch {
       return {};
     }
@@ -139,7 +139,7 @@
     return '';
   }
 
-  let typeFilter = localStorage.getItem('dflashStudio.modelsTypeFilter') || 'dflash';
+  let typeFilter = localStorage.getItem('dflashConsole.modelsTypeFilter') || 'dflash';
 
   function renderTable(filterText) {
     const body = document.getElementById('modelsTableBody');
@@ -343,7 +343,7 @@
       await window.DFlashServerLive.flushInspectorSave();
     }
     selectedKey = key;
-    localStorage.setItem('dflashStudio.selectedModelKey', key);
+    localStorage.setItem('dflashConsole.selectedModelKey', key);
     renderTable(document.getElementById('modelsFilterInput')?.value || '');
     if (applyInspector && window.DFlashServerLive?.applyModelSelection) {
       await window.DFlashServerLive.applyModelSelection(model);
@@ -359,7 +359,7 @@
       secondary: 'Switching to Server tab',
       ttlMs: 120000,
     });
-    localStorage.setItem('dflashStudio.activeTab', 'server');
+    localStorage.setItem('dflashConsole.activeTab', 'server');
     document.body.dataset.activeView = 'server';
     document.querySelectorAll('.lm-tab').forEach((tab) => {
       tab.classList.toggle('active', tab.dataset.tab === 'server');
@@ -390,7 +390,7 @@
 
   function setTypeFilter(next) {
     typeFilter = next === 'dflash' ? 'dflash' : 'all';
-    localStorage.setItem('dflashStudio.modelsTypeFilter', typeFilter);
+    localStorage.setItem('dflashConsole.modelsTypeFilter', typeFilter);
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.modelsFilter === typeFilter);
     });

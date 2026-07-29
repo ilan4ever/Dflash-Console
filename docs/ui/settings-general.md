@@ -1,7 +1,7 @@
 # Settings — General
 
 ## App Update
-- **Installed:** DFlash Studio (build from git)
+- **Installed:** DFlash Console (build from git)
 - **Updates channel:** Stable | Beta — dropdown + "Check for updates" button
 
 ## User Interface

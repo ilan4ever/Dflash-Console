@@ -1,4 +1,4 @@
-"""Load and persist DFlash Studio configuration."""
+"""Load and persist DFlash Console configuration."""
 
 from __future__ import annotations
 

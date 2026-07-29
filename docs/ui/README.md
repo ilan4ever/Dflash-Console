@@ -1,4 +1,4 @@
-# DFlash Studio UI — Design Plan
+# DFlash Console UI — Design Plan
 
 Reference: LM Studio 0.4.20 screenshots. Mockup only until wired to API.
 

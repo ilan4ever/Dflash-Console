@@ -43,7 +43,7 @@ $logDir = Join-Path $Root 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $StartupLog = Join-Path $logDir 'startup.log'
 "" | Set-Content -Path $StartupLog
-$serverLog = Join-Path $logDir 'studio-server.log'
+$serverLog = Join-Path $logDir 'console-server.log'
 
 $cfgPath = Join-Path $Root 'config.json'
 $cfg = $null
@@ -72,13 +72,13 @@ if ($cfg -and $cfg.servers) {
 }
 
 Write-Host ''
-Write-Host '=== DFlash Studio startup ===' -ForegroundColor Cyan
-Write-StartupLine '=== DFlash Studio startup ===' 'Cyan'
+Write-Host '=== DFlash Console startup ===' -ForegroundColor Cyan
+Write-StartupLine '=== DFlash Console startup ===' 'Cyan'
 Write-StartupLine "Root: $Root"
 Write-StartupLine "DFlash root: $env:DFLASH_ROOT"
-Write-StartupLine "Studio UI port: $Port"
+Write-StartupLine "Console UI port: $Port"
 
-Write-StartupLine 'Stopping previous Studio / llama-server listeners...' 'Yellow'
+Write-StartupLine 'Stopping previous Console / llama-server listeners...' 'Yellow'
 foreach ($targetPort in ($ports | Sort-Object)) {
     $stopped = Stop-ListenersOnPort -TargetPort $targetPort
     if ($stopped.Count -gt 0) {
@@ -97,11 +97,11 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyC
     Where-Object { $_.CommandLine -match 'uvicorn\s+api\.app:app' -and $_.CommandLine -match [regex]::Escape($Root) } |
     ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-        Write-StartupLine "  Stopped stale Studio python (PID $($_.ProcessId))" 'DarkYellow'
+        Write-StartupLine "  Stopped stale Console python (PID $($_.ProcessId))" 'DarkYellow'
     }
 
 if ($cfg -and $cfg.servers) {
-    Write-StartupLine 'Configured model servers (start from UI after Studio loads):' 'Gray'
+    Write-StartupLine 'Configured model servers (start from UI after Console loads):' 'Gray'
     foreach ($server in $cfg.servers) {
         $enabled = if ($null -eq $server.enabled) { $true } else { [bool]$server.enabled }
         if (-not $enabled) { continue }
@@ -122,11 +122,11 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$worker = Join-Path $Root 'scripts\start-studio-server.ps1'
+$worker = Join-Path $Root 'scripts\start-console-server.ps1'
 $url = "http://127.0.0.1:$Port/"
 
 if ($Foreground) {
-    Write-StartupLine "Starting Studio in foreground at $url" 'Green'
+    Write-StartupLine "Starting Console in foreground at $url" 'Green'
     Write-StartupLine "Press Ctrl+C to stop." 'Gray'
     Write-Host ''
     $env:PYTHONPATH = $Root
@@ -134,8 +134,8 @@ if ($Foreground) {
     exit $LASTEXITCODE
 }
 
-Write-StartupLine 'Starting Studio API in background...' 'Green'
-$errLog = Join-Path $logDir 'studio-server.err.log'
+Write-StartupLine 'Starting Console API in background...' 'Green'
+$errLog = Join-Path $logDir 'console-server.err.log'
 $proc = Start-Process -FilePath 'pwsh.exe' `
     -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $worker, '-Port', $Port, '-Root', $Root) `
     -WorkingDirectory $Root `
@@ -145,10 +145,10 @@ $proc = Start-Process -FilePath 'pwsh.exe' `
     -RedirectStandardError $errLog
 
 Start-Sleep -Seconds 2
-Write-StartupLine "Studio API PID $($proc.Id) - log: $serverLog" 'Green'
+Write-StartupLine "Console API PID $($proc.Id) - log: $serverLog" 'Green'
 Write-StartupLine "Open UI: $url" 'Green'
 Write-Host ''
-Write-Host "DFlash Studio is running at $url" -ForegroundColor Green
+Write-Host "DFlash Console is running at $url" -ForegroundColor Green
 Write-Host "Logs: $StartupLog" -ForegroundColor DarkGray
 Write-Host "Use .\run.ps1 -Foreground to attach this terminal." -ForegroundColor DarkGray
 Write-Host ''

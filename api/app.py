@@ -1,4 +1,4 @@
-"""DFlash Studio — FastAPI backend."""
+"""DFlash Console — FastAPI backend."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from core.server_boot import eject_to_router_idle, note_boot_cycle_end, reload_s
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / 'static'
 
-app = FastAPI(title='DFlash Studio', version='0.1.0')
+app = FastAPI(title='DFlash Console', version='0.1.0')
 _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
 
@@ -74,7 +74,7 @@ def _require_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any]:
 def health() -> dict[str, Any]:
     return {
         'success': True,
-        'app': 'DFlash Studio',
+        'app': 'DFlash Console',
         'boot_id': _BOOT_ID,
         'boot_at': _BOOT_AT,
     }
@@ -360,7 +360,7 @@ def server_logs(server_id: str, tail: int = 200) -> dict[str, Any]:
             return {
                 'success': True,
                 'lines': [
-                    'Server is listening but was not started from DFlash Studio.',
+                    'Server is listening but was not started from DFlash Console.',
                     'Stop it here or restart from Load Model to capture developer logs.',
                 ],
                 'path': str(log_path),

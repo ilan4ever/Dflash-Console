@@ -1,6 +1,6 @@
 /** Model Search modal — live Hugging Face GGUF catalog */
 (function () {
-  const { api, toast } = window.StudioApi;
+  const { api, toast } = window.ConsoleApi;
 
   let models = [];
   let selectedId = '';
@@ -234,7 +234,7 @@
     } catch (err) {
       models = [];
       const message = /not found|404/i.test(err.message)
-        ? 'Hugging Face search is unavailable. Restart DFlash Studio, then try again.'
+        ? 'Hugging Face search is unavailable. Restart DFlash Console, then try again.'
         : err.message;
       renderListLoading(message);
       renderDetailPlaceholder(message);
@@ -326,7 +326,7 @@
 
     const widthMin = 180;
     const widthMax = () => clamp(Math.floor(dialog.getBoundingClientRect().width * 0.55), widthMin, 520);
-    const storedWidth = parseInt(localStorage.getItem('dflashStudio.hfSearchLeftWidth') || '', 10);
+    const storedWidth = parseInt(localStorage.getItem('dflashConsole.hfSearchLeftWidth') || '', 10);
     if (Number.isFinite(storedWidth) && storedWidth >= widthMin) {
       dialog.style.setProperty('--hf-search-left-width', `${storedWidth}px`);
     }
@@ -346,7 +346,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         const width = Math.round(left.getBoundingClientRect().width);
-        localStorage.setItem('dflashStudio.hfSearchLeftWidth', String(width));
+        localStorage.setItem('dflashConsole.hfSearchLeftWidth', String(width));
       };
 
       window.addEventListener('mousemove', onMove);
@@ -365,7 +365,7 @@
       const delta = e.key === 'ArrowRight' ? 16 : -16;
       const next = clamp(current + delta, widthMin, widthMax());
       dialog.style.setProperty('--hf-search-left-width', `${next}px`);
-      localStorage.setItem('dflashStudio.hfSearchLeftWidth', String(next));
+      localStorage.setItem('dflashConsole.hfSearchLeftWidth', String(next));
     });
   }
 

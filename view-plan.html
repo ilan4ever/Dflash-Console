@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DFlash Studio — Build Plan</title>
+  <title>DFlash Console — Build Plan</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     :root {
@@ -85,8 +85,8 @@
 </head>
 <body>
   <header>
-    <h1>DFlash Studio — Build Plan</h1>
-    <span>DFLASH-STUDIO-PLAN.md</span>
+    <h1>DFlash Console — Build Plan</h1>
+    <span>DFLASH-CONSOLE-PLAN.md</span>
   </header>
   <main>
     <div id="loading">Loading plan…</div>
@@ -95,8 +95,8 @@
   </main>
   <script>
     marked.setOptions({ gfm: true, breaks: false });
-    fetch('DFLASH-STUDIO-PLAN.md')
-      .then(r => { if (!r.ok) throw new Error('Could not load DFLASH-STUDIO-PLAN.md'); return r.text(); })
+    fetch('DFLASH-CONSOLE-PLAN.md')
+      .then(r => { if (!r.ok) throw new Error('Could not load DFLASH-CONSOLE-PLAN.md'); return r.text(); })
       .then(md => {
         document.getElementById('loading').style.display = 'none';
         document.getElementById('content').innerHTML = marked.parse(md);

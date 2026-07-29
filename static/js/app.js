@@ -156,7 +156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-window.DFlashStudio = {
+window.DFlashConsole = {
   api,
   showToast,
   patchServer,

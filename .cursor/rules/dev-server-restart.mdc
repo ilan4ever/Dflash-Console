@@ -1,11 +1,11 @@
 ---
-description: Restart DFlash Studio dev server after backend changes
+description: Restart DFlash Console dev server after backend changes
 alwaysApply: true
 ---
 
-# DFlash Studio — restart after changes
+# DFlash Console — restart after changes
 
-When you finish a task that changed any of these, **automatically restart the Studio server** before ending your turn:
+When you finish a task that changed any of these, **automatically restart the Console server** before ending your turn:
 
 - `api/**` or `core/**` (Python backend)
 - `config.json`
@@ -16,7 +16,7 @@ When you finish a task that changed any of these, **automatically restart the St
 From the repo root:
 
 ```powershell
-.\scripts\restart-studio-server.ps1
+.\scripts\restart-console-server.ps1
 ```
 
 Use `.\run.ps1` only for a full cold start (first run, dependency install, or llama-server port cleanup).

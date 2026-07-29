@@ -1,6 +1,6 @@
-# DFlash Studio — Full Build Plan
+# DFlash Console — Full Build Plan
 
-**Location:** `C:\dev\Dflash-Studio` (UI/backend) · binaries/models in `C:\dev\Dflash`  
+**Location:** `C:\dev\Dflash-Console` (UI/backend) · binaries/models in `C:\dev\Dflash`  
 **Status:** **In progress — v1 Server + Models tabs working; handoff ready**  
 **Last updated:** 2026-07-29  
 **UI URL:** http://127.0.0.1:8900/
@@ -42,7 +42,7 @@
 
 1. **Dual-model load (8090 + 8092)** — User reports loading two models at once: GPU activity but UI looks stuck / unclear if both loaded. **Investigate:** parallel boots, status polling per-server, VRAM contention, boot progress for two servers, primary vs active server selection in UI.
 2. **Gemma 31B DFlash load** — May fail on draft path case mismatch (`gemma-4-31B-it-DFlash-Q4_K_M.gguf` vs actual filename). Verify paths in preset / `start_llama_server.ps1` / model_stack.
-3. **Legacy servers** — Anything started outside Studio with `-m` breaks unload until migrated; Studio now migrates on Eject and replaces legacy on Start, but LM Studio can still grab ports.
+3. **Legacy servers** — Anything started outside Console with `-m` breaks unload until migrated; Console now migrates on Eject and replaces legacy on Start, but LM Studio can still grab ports.
 4. **Chat tab** — Not implemented (placeholder only).
 5. **GPU sysbar** — Shows `— / GB`; no live VRAM polling yet.
 6. **Qwen DFlash** — Disabled; enable in config when models/paths verified.
@@ -66,7 +66,7 @@
 ### Restart
 
 ```powershell
-cd C:\dev\Dflash-Studio
+cd C:\dev\Dflash-Console
 .\run.ps1
 ```
 
@@ -75,7 +75,7 @@ cd C:\dev\Dflash-Studio
 
 ## 1. Executive summary
 
-Build a **standalone local web app** (“DFlash Studio”) that manages D-Flash llama-server profiles with an LM Studio–like control panel: start/stop, GPU assignment, live load status, unload, and OpenAI-compatible API URLs. Reuse proven code from **OneVoice** and **Dflash** rather than rebuilding CLI logic in Node.js.
+Build a **standalone local web app** (“DFlash Console”) that manages D-Flash llama-server profiles with an LM Studio–like control panel: start/stop, GPU assignment, live load status, unload, and OpenAI-compatible API URLs. Reuse proven code from **OneVoice** and **Dflash** rather than rebuilding CLI logic in Node.js.
 
 ---
 
@@ -98,11 +98,11 @@ Build a **standalone local web app** (“DFlash Studio”) that manages D-Flash 
 
 ## 3. Recommended product name
 
-**Primary recommendation: DFlash Studio**
+**Primary recommendation: DFlash Console**
 
 - Clear, LM Studio–familiar
 - Matches folder `Dflash-ui` without awkward casing
-- Window title: **DFlash Studio** · subtitle: *Local speculative decoding server*
+- Window title: **DFlash Console** · subtitle: *Local speculative decoding server*
 
 **Alternatives:** FlashNode, SpecServe (more generic).
 
@@ -126,7 +126,7 @@ A **standalone local web app** that:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  DFlash Studio UI (Browser)                                  │
+│  DFlash Console UI (Browser)                                  │
 │  Dashboard · Profiles · GPUs · Logs · Test Chat · Settings   │
 └──────────────────────────┬──────────────────────────────────┘
                            │ REST
@@ -189,7 +189,7 @@ A **standalone local web app** that:
 
 ```
 C:\dev\Dflash\Dflash-ui\
-├── DFLASH-STUDIO-PLAN.md       # this file
+├── DFLASH-CONSOLE-PLAN.md       # this file
 ├── config.json                 # servers, ports, model paths, defaults
 ├── run.ps1                     # start UI on :8900, optional auto-boot
 ├── requirements.txt            # fastapi, uvicorn, pydantic
@@ -221,7 +221,7 @@ C:\dev\Dflash\Dflash-ui\
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  DFlash Studio                    [Refresh]  localhost:8900 │
+│  DFlash Console                    [Refresh]  localhost:8900 │
 ├──────────────┬──────────────────────────────────────────────┤
 │  Servers     │  Gemma 4 31B DFlash          ● Loaded        │
 │  ─────────   │  Port 8090 · RTX 4090 · 65536 ctx            │
@@ -435,9 +435,9 @@ C:\dev\Dflash\Dflash-ui\
 
 **Original plan — approved implicitly by build. Open items:**
 
-- [x] **Name:** DFlash Studio
+- [x] **Name:** DFlash Console
 - [x] **Stack:** Python FastAPI + static HTML/JS
-- [x] **Location:** `C:\dev\Dflash-Studio`
+- [x] **Location:** `C:\dev\Dflash-Console`
 - [x] **UI port:** 8900
 - [x] **v1 core:** Server tab start/stop/eject, Models catalog, config, logs
 - [ ] **Dual-server load UX** — both 8090 + 8092 stable with clear status

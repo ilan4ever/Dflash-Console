@@ -1,6 +1,6 @@
 /** Live sysbar — CPU, RAM, GPU load + VRAM */
 (function () {
-  const { api } = window.StudioApi;
+  const { api } = window.ConsoleApi;
   const track = document.getElementById('sysbarTrack');
   let pollTimer = null;
 

@@ -1,4 +1,4 @@
-"""Generate llama-server router preset INI files for DFlash Studio servers."""
+"""Generate llama-server router preset INI files for DFlash Console servers."""
 
 from __future__ import annotations
 

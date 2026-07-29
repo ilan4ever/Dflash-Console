@@ -1,4 +1,4 @@
-/** DFlash Studio — shell navigation & layout */
+/** DFlash Console — shell navigation & layout */
 (function () {
   const views = document.querySelectorAll('.lm-view');
   const tabs = document.querySelectorAll('.lm-tab');
@@ -42,7 +42,7 @@
     if (pageActions) pageActions.style.display = inspectorFor.has(tab) ? '' : 'none';
     if (inspector) inspector.classList.toggle('hidden', !inspectorFor.has(tab));
     document.body.dataset.activeView = tab;
-    if (persist) localStorage.setItem('dflashStudio.activeTab', tab);
+    if (persist) localStorage.setItem('dflashConsole.activeTab', tab);
   }
 
   tabs.forEach((tab) => {
@@ -152,7 +152,7 @@
   fitLayout();
   syncSysbarHeightVar();
   window.syncSysbarHeightVar = syncSysbarHeightVar;
-  const savedTab = localStorage.getItem('dflashStudio.activeTab');
+  const savedTab = localStorage.getItem('dflashConsole.activeTab');
   const validTabs = new Set(['chat', 'server', 'models', 'devices']);
   setView(validTabs.has(savedTab) ? savedTab : 'server', { persist: false });
 
@@ -168,12 +168,12 @@
     const restoreBtn = document.getElementById('serverLogsRestore');
     if (!serverView || !dock || !handle) return;
 
-    const storedHeight = parseInt(localStorage.getItem('dflashStudio.logsHeight') || '', 10);
+    const storedHeight = parseInt(localStorage.getItem('dflashConsole.logsHeight') || '', 10);
     if (Number.isFinite(storedHeight) && storedHeight >= 120) {
       serverView.style.setProperty('--logs-height', `${storedHeight}px`);
     }
 
-    if (localStorage.getItem('dflashStudio.logsHidden') === '1') {
+    if (localStorage.getItem('dflashConsole.logsHidden') === '1') {
       serverView.classList.add('logs-collapsed');
     }
 
@@ -195,7 +195,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         const height = Math.round(dock.getBoundingClientRect().height);
-        localStorage.setItem('dflashStudio.logsHeight', String(height));
+        localStorage.setItem('dflashConsole.logsHeight', String(height));
       };
 
       window.addEventListener('mousemove', onMove);
@@ -214,17 +214,17 @@
       const delta = e.key === 'ArrowUp' ? 16 : -16;
       const next = clamp(current + delta, logsMin, logsMax());
       serverView.style.setProperty('--logs-height', `${next}px`);
-      localStorage.setItem('dflashStudio.logsHeight', String(next));
+      localStorage.setItem('dflashConsole.logsHeight', String(next));
     });
 
     hideBtn?.addEventListener('click', () => {
       serverView.classList.add('logs-collapsed');
-      localStorage.setItem('dflashStudio.logsHidden', '1');
+      localStorage.setItem('dflashConsole.logsHidden', '1');
     });
 
     restoreBtn?.addEventListener('click', () => {
       serverView.classList.remove('logs-collapsed');
-      localStorage.setItem('dflashStudio.logsHidden', '0');
+      localStorage.setItem('dflashConsole.logsHidden', '0');
     });
   }
 
@@ -232,7 +232,7 @@
     const handle = document.getElementById('inspectorResizeHandle');
     if (!bodyEl || !handle || !inspector) return;
 
-    const storedWidth = parseInt(localStorage.getItem('dflashStudio.inspectorWidth') || '', 10);
+    const storedWidth = parseInt(localStorage.getItem('dflashConsole.inspectorWidth') || '', 10);
     if (Number.isFinite(storedWidth) && storedWidth >= 220) {
       bodyEl.style.setProperty('--inspector-width', `${storedWidth}px`);
     }
@@ -255,7 +255,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         const width = Math.round(inspector.getBoundingClientRect().width);
-        localStorage.setItem('dflashStudio.inspectorWidth', String(width));
+        localStorage.setItem('dflashConsole.inspectorWidth', String(width));
       };
 
       window.addEventListener('mousemove', onMove);
@@ -276,7 +276,7 @@
       const delta = e.key === 'ArrowLeft' ? 16 : -16;
       const next = clamp(current + delta, widthMin, widthMax());
       bodyEl.style.setProperty('--inspector-width', `${next}px`);
-      localStorage.setItem('dflashStudio.inspectorWidth', String(next));
+      localStorage.setItem('dflashConsole.inspectorWidth', String(next));
     });
   }
 
