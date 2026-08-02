@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
+
+from core.log_utils import read_tail_lines, rotate_log
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / 'logs'
@@ -13,17 +16,54 @@ LOG_DIR = ROOT / 'logs'
 _PROGRESS_RE = re.compile(r'(\d+(?:\.\d+)?)\s*%')
 _ROUTER_STATE_RE = re.compile(r'cmd_child_to_router:state:(\{.*\})')
 _LOAD_HINTS = ('load', 'progress', 'tensor', 'offload', 'ggml', 'llama')
+_BOOT_FAILURE_HINTS = (
+    "couldn't bind http server socket",
+    'exiting due to http server error',
+)
+_LOG_LOCK = threading.Lock()
+
+
+def _last_boot_index(lines: list[str]) -> int:
+    best = -1
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('=== boot failed '):
+            continue
+        if '=== boot ' in line or '=== embedding boot ' in line:
+            best = index
+    return best
+
+
+def boot_failure_message(lines: list[str]) -> str | None:
+    boot_index = _last_boot_index(lines)
+    if boot_index < 0:
+        return None
+    failed_index = _last_marker_index(lines, '=== boot failed ')
+    if failed_index > boot_index:
+        for line in reversed(lines[failed_index:]):
+            text = line.strip()
+            if text.startswith('=== boot failed ') and 'reason=' in text:
+                return text.split('reason=', 1)[-1].strip().rstrip('=').strip() or 'Engine failed to start'
+        return 'Engine failed to start (see developer logs)'
+    for line in reversed(lines[boot_index:]):
+        lower = line.lower()
+        if "couldn't bind http server socket" in lower:
+            return 'Port already in use — free the port or stop the other engine'
+    for line in reversed(lines[boot_index:]):
+        lower = line.lower()
+        if 'exiting due to http server error' in lower:
+            return 'Engine exited during startup (see developer logs)'
+    return None
+
+
+def mark_boot_failed(server_id: str, reason: str) -> None:
+    append_log(server_id, f"=== boot failed {time.strftime('%Y-%m-%d %H:%M:%S')} reason={reason} ===")
 
 
 def read_log_tail(server_id: str, *, max_lines: int = 120) -> list[str]:
     log_path = LOG_DIR / f'{server_id}.log'
-    if not log_path.is_file():
-        return []
-    try:
-        lines = log_path.read_text(encoding='utf-8', errors='replace').splitlines()
-    except OSError:
-        return []
-    return lines[-max(1, max_lines):]
+    lines, _ = read_tail_lines(log_path, max_lines=max_lines)
+    return lines
 
 
 def append_log(server_id: str, line: str) -> None:
@@ -31,8 +71,10 @@ def append_log(server_id: str, line: str) -> None:
         return
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f'{server_id}.log'
-    with log_path.open('a', encoding='utf-8') as handle:
-        handle.write(line.rstrip() + '\n')
+    with _LOG_LOCK:
+        rotate_log(log_path)
+        with log_path.open('a', encoding='utf-8') as handle:
+            handle.write(line.rstrip() + '\n')
 
 
 def _last_marker_index(lines: list[str], marker: str) -> int:
@@ -52,8 +94,10 @@ def _last_cycle_end_index(lines: list[str]) -> int:
 
 
 def is_active_boot(lines: list[str]) -> bool:
-    boot_index = _last_marker_index(lines, '=== boot ')
+    boot_index = _last_boot_index(lines)
     if boot_index < 0:
+        return False
+    if boot_failure_message(lines):
         return False
     return _last_cycle_end_index(lines) < boot_index
 
@@ -61,7 +105,7 @@ def is_active_boot(lines: list[str]) -> bool:
 def boot_segment(lines: list[str]) -> list[str]:
     if not is_active_boot(lines):
         return []
-    boot_index = _last_marker_index(lines, '=== boot ')
+    boot_index = _last_boot_index(lines)
     end_index = _last_cycle_end_index(lines)
     start = boot_index if end_index < boot_index else end_index + 1
     return lines[start:]

@@ -10,6 +10,12 @@
   let downloadLibraryId = '';
   let queueUnsubscribe = null;
   const notifiedJobs = new Set();
+  const searchCache = new Map();
+  const detailCache = new Map();
+  let searchRefreshGen = 0;
+  let catalogPrimed = false;
+  let listRefreshIndicator = null;
+  const CATALOG_REFRESH_MS = 10 * 60 * 1000;
 
   const CATEGORY_LABELS = {
     dflash: 'DFlash / speculative',
@@ -196,14 +202,27 @@
     return document.getElementById('hfSearchCreator')?.value || '';
   }
 
+  function installedOnly() {
+    return document.getElementById('hfSearchSort')?.value === 'installed';
+  }
+
+  function currentSort() {
+    const value = document.getElementById('hfSearchSort')?.value || 'downloads';
+    return value === 'installed' ? 'downloads' : value;
+  }
+
   function modelLab(model) {
     return model.lab || model.author || '—';
   }
 
   function visibleModels() {
+    let rows = models;
+    if (installedOnly()) {
+      rows = rows.filter((model) => catalogInstalled(model));
+    }
     const lab = currentCreator();
-    if (!lab) return models;
-    return models.filter((model) => modelLab(model) === lab);
+    if (!lab) return rows;
+    return rows.filter((model) => modelLab(model) === lab);
   }
 
   function populateCreatorFilter() {
@@ -234,7 +253,7 @@
   }
 
   function modelTitle(model) {
-    return model.title || model.label || model.id || '—';
+    return model.id || model.title || model.label || '—';
   }
 
   function modelDescription(model) {
@@ -286,9 +305,226 @@
     return row?.path || row?.label || 'DFlash models folder';
   }
 
-  function renderListLoading(message) {
+  function catalogReadyToLoad(model) {
+    return !!model?.catalog_ready_to_load;
+  }
+
+  function catalogInstalled(model) {
+    if (model?.local_ready || model?.catalog_ready_to_load) return true;
+    const map = model?.local_installs || {};
+    return Object.values(map).some((rows) => Array.isArray(rows) && rows.length > 0);
+  }
+
+  function catalogInstalledBadge() {
+    return '<span class="lm-tag gold dflash-logo-label catalog-installed-logo" role="img" aria-label="Installed" title="Installed"></span>';
+  }
+
+  function catalogBadge(label, tone = 'blue') {
+    return `<span class="lm-tag ${tone}">${escapeHtml(label)}</span>`;
+  }
+
+  function catalogDflashLabel() {
+    return '<span class="lm-tag gold dflash-logo-label" role="img" aria-label="DFlash" title="DFlash speculative decoding stack"></span>';
+  }
+
+  function catalogHaystack(model) {
+    return [
+      model?.id,
+      model?.title,
+      model?.description,
+      model?.readme,
+      ...(Array.isArray(model?.tags) ? model.tags : []),
+    ].join(' ').toLowerCase();
+  }
+
+  function catalogDetailBadges(model) {
+    const badges = [];
+    const haystack = catalogHaystack(model);
+    const hfTags = Array.isArray(model?.tags)
+      ? model.tags
+          .map((tag) => String(tag || '').toLowerCase())
+          .filter((tag) => tag && !/^(base_model|license|region|arxiv|doi):/.test(tag))
+      : [];
+    const hasTag = (pattern) => hfTags.some((tag) => pattern.test(tag));
+    const hasText = (pattern) => pattern.test(haystack);
+
+    if (hasText(/dflash|dspark/)) badges.push(catalogDflashLabel());
+    if (catalogReadyToLoad(model)) badges.push(catalogBadge('ready to load', 'gold'));
+    if (hasTag(/vision|multimodal|image-text|mmproj/) || hasText(/-vl-|mmproj|vision|multimodal/)) {
+      badges.push(catalogBadge('vision', 'purple'));
+    }
+    if (hasTag(/tool|function-calling|agentic/) || hasText(/\btools?\b|function calling|agentic/)) {
+      badges.push(catalogBadge('tools', 'green'));
+    }
+    if (hasTag(/reason|think|chain-of-thought|cot/) || hasText(/reasoning|\bthink\b|chain-of-thought/)) {
+      badges.push(catalogBadge('reasoning', 'yellow'));
+    }
+    if (hasTag(/conversational|instruct|chat/) || hasText(/\binstruct\b|\bchat\b/)) {
+      badges.push(catalogBadge('instruct', 'blue'));
+    }
+    if (hasTag(/speculative|draft-model|speculator/) || hasText(/speculative decoding|draft model/)) {
+      badges.push(catalogBadge('speculative', 'purple'));
+    }
+
+    const paramTag = hfTags.find((tag) => /^\d+(?:\.\d+)?b$/i.test(tag) || /^\d+(?:\.\d+)?\s*b$/i.test(tag));
+    const paramMatch = haystack.match(/\b(\d+(?:\.\d+)?)\s*b\b/);
+    if (paramTag) badges.push(catalogBadge(paramTag.replace(/\s+/g, '').toUpperCase(), 'blue'));
+    else if (paramMatch) badges.push(catalogBadge(`${paramMatch[1].toUpperCase()}B`, 'blue'));
+
+    const archHaystack = haystack.replace(/llama\.cpp/g, ' ');
+    for (const arch of ['gemma', 'qwen', 'mistral', 'deepseek', 'phi', 'llama']) {
+      if (hasTag(new RegExp(`^${arch}\\d*`)) || new RegExp(`\\b${arch}\\b`).test(archHaystack)) {
+        badges.push(catalogBadge(arch, 'blue'));
+        break;
+      }
+    }
+
+    const files = model?.download_files || model?.gguf_files || [];
+    const format = files[0]?.format || (model?.has_gguf ? 'gguf' : '');
+    if (format) badges.push(catalogBadge(String(format).toUpperCase(), 'blue'));
+
+    return badges.join('');
+  }
+
+  function searchCacheKey(query, sort, category) {
+    const installed = installedOnly() ? '1' : '0';
+    return `${category}|${sort}|${installed}|${query}`;
+  }
+
+  function detailCacheKey(repoId, category) {
+    return `${category}|${repoId}`;
+  }
+
+  function getCachedSearch(query, sort, category) {
+    return searchCache.get(searchCacheKey(query, sort, category)) || null;
+  }
+
+  function putCachedSearch(query, sort, category, nextModels) {
+    const key = searchCacheKey(query, sort, category);
+    const prior = searchCache.get(key);
+    searchCache.set(key, {
+      models: nextModels,
+      fetchedAt: Date.now(),
+      detailById: prior?.detailById || {},
+    });
+  }
+
+  function loadingCopy(category) {
+    return {
+      listTitle: 'Loading model catalog',
+      listSub: `Fetching ${categoryLabel(category)} from Hugging Face. This usually takes a few seconds.`,
+      detailTitle: 'Loading model details',
+      detailSub: 'README, GGUF files, and install status will appear here shortly.',
+    };
+  }
+
+  function renderCatalogLoading(target = 'both', copy = {}) {
+    const title = copy.listTitle || 'Loading model catalog';
+    const subtitle = copy.listSub || 'Fetching models from Hugging Face…';
+    const block = `
+      <div class="df-catalog-loading" role="status" aria-live="polite">
+        <div class="df-catalog-loading-spinner" aria-hidden="true"></div>
+        <p class="df-catalog-loading-title">${escapeHtml(title)}</p>
+        <p class="df-catalog-loading-sub">${escapeHtml(subtitle)}</p>
+      </div>`;
+    if (target === 'list' || target === 'both') {
+      const list = searchList();
+      if (list) list.innerHTML = block;
+    }
+    if (target === 'detail' || target === 'both') {
+      renderDetailLoading(copy.detailTitle, copy.detailSub);
+    }
+  }
+
+  function renderDetailLoading(title, subtitle) {
+    const pane = detailPane();
+    if (!pane) return;
+    pane.innerHTML = `
+      <div class="lm-search-placeholder df-catalog-loading df-catalog-loading-detail" role="status" aria-live="polite">
+        <div class="df-catalog-loading-spinner" aria-hidden="true"></div>
+        <p class="df-catalog-loading-title">${escapeHtml(title || 'Loading model details')}</p>
+        <p class="df-catalog-loading-sub">${escapeHtml(subtitle || 'Reading README and file list from Hugging Face…')}</p>
+      </div>`;
+  }
+
+  function setListRefreshIndicator(on) {
     const list = searchList();
-    if (list) list.innerHTML = `<div class="lm-search-empty">${escapeHtml(message || 'Searching…')}</div>`;
+    if (!list) return;
+    if (!listRefreshIndicator) {
+      listRefreshIndicator = document.createElement('div');
+      listRefreshIndicator.id = 'hfCatalogListRefresh';
+      listRefreshIndicator.className = 'df-catalog-list-refresh hidden';
+      listRefreshIndicator.setAttribute('role', 'status');
+      listRefreshIndicator.setAttribute('aria-live', 'polite');
+      listRefreshIndicator.textContent = 'Refreshing catalog…';
+      list.parentElement?.insertBefore(listRefreshIndicator, list);
+    }
+    listRefreshIndicator.classList.toggle('hidden', !on);
+  }
+
+  function restoreVisibleSelection({ preferCache = true } = {}) {
+    const visible = visibleModels();
+    if (selectedId && visible.some((model) => model.id === selectedId)) {
+      void selectModel(selectedId, { preferCache, backgroundDetail: preferCache });
+      return;
+    }
+    selectedId = '';
+    selectedDetail = null;
+    if (visible[0]) void selectModel(visible[0].id, { preferCache, backgroundDetail: preferCache });
+    else renderDetailPlaceholder('Select a model to view details, README, and download GGUF files.');
+  }
+
+  async function prefetchDetail(repoId, category) {
+    const key = detailCacheKey(repoId, category);
+    if (detailCache.has(key)) return;
+    try {
+      const data = await api(`/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`);
+      if (data?.model) detailCache.set(key, data.model);
+    } catch {
+      /* warm-cache best effort */
+    }
+  }
+
+  async function warmCatalogCache() {
+    if (catalogPrimed) return;
+    try {
+      if (!modelLibraries.length) await loadLibraries();
+      const category = 'dflash';
+      const sort = 'downloads';
+      const query = '';
+      const key = searchCacheKey(query, sort, category);
+      if (searchCache.has(key)) {
+        catalogPrimed = true;
+        return;
+      }
+      const data = await searchCatalog('', sort, category);
+      const rows = data.models || [];
+      searchCache.set(key, { models: rows, fetchedAt: Date.now(), detailById: {} });
+      catalogPrimed = true;
+      if (rows[0]?.id) void prefetchDetail(rows[0].id, category);
+    } catch {
+      /* prefetch is best-effort */
+    }
+  }
+
+  async function searchCatalog(query, sort, category) {
+    const path = `/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`;
+    try {
+      return await api(path, { timeoutMs: 30000 });
+    } catch (firstError) {
+      // Hugging Face can transiently stall; retry once before showing an empty catalog.
+      return api(path, { timeoutMs: 30000 }).catch(() => { throw firstError; });
+    }
+  }
+
+  function renderListLoading(message) {
+    const category = currentCategory();
+    if (message) {
+      const list = searchList();
+      if (list) list.innerHTML = `<div class="lm-search-empty df-catalog-loading-message">${escapeHtml(message)}</div>`;
+      return;
+    }
+    renderCatalogLoading('list', loadingCopy(category));
   }
 
   function renderList() {
@@ -297,7 +533,9 @@
     const visible = visibleModels();
     if (!visible.length) {
       const creator = currentCreator();
-      const hint = creator
+      const hint = installedOnly()
+        ? 'No installed models in this search. Try another query or pick a different filter.'
+        : creator
         ? `No ${creator} models in this search. Try another lab or clear the filter.`
         : `No models found for ${escapeHtml(categoryLabel(category))}. Try another search or category.`;
       list.innerHTML = `<div class="lm-search-empty">${escapeHtml(hint)}</div>`;
@@ -305,54 +543,44 @@
     }
     list.innerHTML = visible.map((model) => {
       const selected = model.id === selectedId ? ' selected' : '';
+      const ready = catalogReadyToLoad(model) ? ' ready-to-load' : '';
       const description = modelDescription(model);
       const labName = modelLab(model);
       const descLine = description
         ? `<span class="lm-search-item-summary">${escapeHtml(description)}</span>`
-        : `<span class="lm-search-item-desc">
-            <span class="lm-search-item-author">${escapeHtml(labName)}</span>
-            · ${escapeHtml(model.downloads_label || '0')} downloads
-          </span>`;
+        : `<span class="lm-search-item-summary">${escapeHtml(model.pipeline_tag || 'GGUF model')} · Hugging Face model</span>`;
       const metaLine = description
         ? `<span class="lm-search-item-desc">
             <span class="lm-search-item-author">${escapeHtml(labName)}</span>
-            · ${escapeHtml(model.downloads_label || '0')} downloads
+            · ${escapeHtml(model.downloads_label || '0')} downloads${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
           </span>`
-        : '';
+        : `<span class="lm-search-item-desc">
+            <span class="lm-search-item-author">${escapeHtml(labName)}</span>
+            · ${escapeHtml(model.downloads_label || '0')} downloads${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
+          </span>`;
       return `
-        <button type="button" class="lm-search-item${selected}" data-repo-id="${escapeHtml(model.id)}">
+        <button type="button" class="lm-search-item${selected}${ready}" data-repo-id="${escapeHtml(model.id)}">
           ${avatarImg(model.author, model.author_avatar_url, 'lm-hf-avatar sm')}
           <div class="lm-search-item-main">
             <span class="lm-search-item-name">${escapeHtml(modelTitle(model))}</span>
             ${descLine}
             ${metaLine}
           </div>
-          <div class="lm-search-item-stats">
-            <span class="lm-search-item-stat">${escapeHtml(listSizeLabel(model))}</span>
-            <span class="lm-search-item-stat">${escapeHtml(listAgeLabel(model))}</span>
+          <div class="lm-search-item-aside">
+            <div class="lm-search-item-badge-slot">${catalogInstalled(model) ? catalogInstalledBadge() : ''}</div>
+            <div class="lm-search-item-stats">
+              <span class="lm-search-item-stat">${escapeHtml(listSizeLabel(model))}</span>
+              <span class="lm-search-item-stat">${escapeHtml(listAgeLabel(model))}</span>
+            </div>
           </div>
         </button>`;
     }).join('');
 
     list.querySelectorAll('.lm-search-item').forEach((btn) => {
       btn.addEventListener('click', () => {
-        void selectModel(btn.dataset.repoId);
+        void selectModel(btn.dataset.repoId, { preferCache: true, backgroundDetail: true });
       });
     });
-  }
-
-  function metaTags(model) {
-    const tags = Array.isArray(model.tags) ? model.tags : [];
-    const picked = [];
-    const params = tags.find((t) => /\d+b/i.test(t));
-    if (params) picked.push(`PARAMS ${params.toUpperCase()}`);
-    const arch = tags.find((t) => /llama|gemma|qwen|mistral|phi|gpt/i.test(t));
-    if (arch) picked.push(`ARCH ${arch}`);
-    const files = model.download_files || model.gguf_files || [];
-    const format = files[0]?.format || (model.has_gguf ? 'gguf' : 'file');
-    picked.push(`FORMAT ${String(format).toUpperCase()}`);
-    if (model.pipeline_tag) picked.push(model.pipeline_tag.toUpperCase());
-    return picked.slice(0, 5).map((t) => `<span>${escapeHtml(t)}</span>`).join('');
   }
 
   function getSelectedFilename() {
@@ -382,6 +610,23 @@
     }
   }
 
+  async function resolveAnyLocalInstall(model) {
+    if (!model?.id) return null;
+    const known = Object.values(model.local_installs || {}).flatMap((rows) => Array.isArray(rows) ? rows : []);
+    if (known[0]) return known[0];
+    try {
+      const data = await api(`/api/hf/local-installs?repo_id=${encodeURIComponent(model.id)}`);
+      const matches = data.matches || [];
+      if (!model.local_installs) model.local_installs = {};
+      matches.forEach((match) => {
+        if (match.filename) model.local_installs[match.filename] = [match];
+      });
+      return matches[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function refreshInstallUI(model) {
     if (!model) return;
     const filename = getSelectedFilename();
@@ -391,24 +636,27 @@
       return;
     }
     const install = filename ? await resolveLocalInstall(model, filename) : null;
+    const repoInstall = install || (model.local_ready ? await resolveAnyLocalInstall(model) : null);
+    const installed = Boolean(repoInstall || catalogInstalled(model));
     const btn = document.getElementById('hfDownloadBtn');
     const saveNote = document.getElementById('hfSaveNote');
     const installedNote = document.getElementById('hfInstalledNote');
+    const card = document.querySelector('.df-catalog-model-card');
     hideCardDownloadProgress();
-    if (install) {
+    if (installed) {
       if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Load model';
-        btn.dataset.action = 'load';
+        btn.disabled = true;
+        btn.textContent = 'Installed';
+        btn.dataset.action = 'installed';
       }
       saveNote?.classList.add('hidden');
       if (installedNote) {
         installedNote.classList.remove('hidden');
         installedNote.innerHTML = `
           <span class="df-catalog-installed-label">Already installed</span>
-          <span class="df-catalog-installed-library">${escapeHtml(install.library_label || 'Local library')}</span>
-          <code class="df-catalog-installed-path">${escapeHtml(install.path || '')}</code>`;
+          <code class="df-catalog-installed-path">${escapeHtml(repoInstall?.path || 'Installed locally; path unavailable')}</code>`;
       }
+      card?.classList.toggle('ready-to-load', catalogReadyToLoad(model));
     } else {
       if (btn) {
         btn.disabled = false;
@@ -418,6 +666,7 @@
       saveNote?.classList.remove('hidden');
       installedNote?.classList.add('hidden');
       if (installedNote) installedNote.innerHTML = '';
+      card?.classList.remove('ready-to-load');
     }
     const statusEl = document.getElementById('hfDownloadStatus');
     statusEl?.classList.add('hidden');
@@ -437,6 +686,7 @@
     const fillEl = document.getElementById('hfDownloadProgressFill');
     const statusEl = document.getElementById('hfDownloadStatus');
     const btn = document.getElementById('hfDownloadBtn');
+    const buttonTools = document.getElementById('hfDownloadButtonTools');
     const saveNote = document.getElementById('hfSaveNote');
     const installedNote = document.getElementById('hfInstalledNote');
 
@@ -449,6 +699,7 @@
       labelEl.textContent = `Downloading ${job.filename || modelTitle(model)}`;
     }
     if (pctEl) pctEl.textContent = pctLabel;
+    pctEl?.classList.remove('hidden');
     if (fillEl) {
       fillEl.classList.toggle('is-indeterminate', indeterminate);
       fillEl.style.width = width != null ? `${width}%` : '';
@@ -456,7 +707,7 @@
 
     if (btn) {
       btn.disabled = true;
-      btn.textContent = 'Downloading…';
+      btn.textContent = 'Downloading...';
       btn.dataset.action = 'downloading';
     }
     saveNote?.classList.add('hidden');
@@ -472,6 +723,8 @@
 
     if (job.status === 'done') {
       hideCardDownloadProgress();
+      pctEl?.classList.add('hidden');
+      if (btn) buttonTools?.appendChild(btn);
       if (statusEl) {
         statusEl.textContent = `Saved to ${job.path || 'models folder'}`;
         statusEl.classList.remove('hidden');
@@ -480,6 +733,8 @@
       void refreshInstallUI(model);
     } else if (job.status === 'error') {
       hideCardDownloadProgress();
+      pctEl?.classList.add('hidden');
+      if (btn) buttonTools?.appendChild(btn);
       if (statusEl) {
         statusEl.textContent = job.error || 'Download failed';
         statusEl.classList.remove('hidden');
@@ -544,7 +799,7 @@
         ? `<input type="hidden" id="hfFilePick" value="${escapeHtml(files[0].filename)}">`
         : '');
     const downloadBtn = files.length
-      ? '<button class="lm-btn hf-primary small" type="button" id="hfDownloadBtn" data-action="download">Download</button>'
+      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
       : '';
     const savePath = downloadTargetLabel(downloadLibraryId);
     const downloadNote = files.length
@@ -557,28 +812,20 @@
 
     const summaryText = modelDescription(model) || 'No description on Hugging Face.';
     pane.innerHTML = `
-      <div class="df-catalog-model-card">
-        <div class="df-catalog-download-progress hidden" id="hfDownloadProgress">
-          <div class="df-catalog-download-progress-head">
-            <span id="hfDownloadProgressLabel">Downloading…</span>
-            <span id="hfDownloadProgressPct">0%</span>
-          </div>
-          <div class="df-catalog-download-progress-bar">
-            <div class="df-catalog-download-progress-fill" id="hfDownloadProgressFill"></div>
-          </div>
-        </div>
+      <div class="df-catalog-model-card${catalogReadyToLoad(model) ? ' ready-to-load' : ''}">
         <div class="lm-search-detail-head">
           <div class="lm-search-detail-top">
             ${avatarImg(model.author, model.author_avatar_url, 'lm-hf-avatar')}
             <div class="lm-search-detail-identity">
               <div class="lm-search-detail-title-row">
                 <h2 title="${escapeHtml(model.id)}">${escapeHtml(modelTitle(model))}</h2>
-                <div class="lm-search-detail-tools">
-                  ${downloadBtn}
+                <div class="lm-search-detail-tools" id="hfDownloadButtonTools">
+                  <button class="lm-btn ghost small" type="button" id="hfCreateStackBtn">Create DFlash stack</button>
                   <button class="lm-icon-btn tiny" type="button" id="hfCopyRepo" title="Copy repo id">⧉</button>
                   <a class="lm-btn ghost small" href="${escapeHtml(model.url)}" target="_blank" rel="noopener noreferrer">Open HF</a>
                 </div>
               </div>
+              <div class="df-catalog-model-badges">${catalogDetailBadges(model)}</div>
               <p class="lm-search-stats">
                 <span class="lm-search-item-author">${escapeHtml(modelLab(model))}</span>
                 · ${escapeHtml(model.author || '—')}
@@ -587,11 +834,24 @@
               </p>
               <p class="lm-search-repo-id">${escapeHtml(model.id)}</p>
               <p class="lm-search-description">${escapeHtml(summaryText)}</p>
-              ${filePick}
+              <div class="df-catalog-quant-download-row">
+                ${filePick}
+                <div class="df-catalog-quant-download-actions">
+                  ${downloadBtn}
+                  <span class="df-catalog-download-progress-pct hidden" id="hfDownloadProgressPct">0%</span>
+                </div>
+                <div class="df-catalog-download-progress hidden" id="hfDownloadProgress">
+                  <div class="df-catalog-download-progress-head">
+                    <span id="hfDownloadProgressLabel">Downloading…</span>
+                  </div>
+                  <div class="df-catalog-download-progress-bar">
+                    <div class="df-catalog-download-progress-fill" id="hfDownloadProgressFill"></div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div class="lm-meta-tags">${metaTags(model)}</div>
         ${downloadNote}
         ${downloadStatus}
         <section class="lm-readme">
@@ -603,10 +863,32 @@
     document.getElementById('hfCopyRepo')?.addEventListener('click', () => {
       navigator.clipboard.writeText(model.id).then(() => toast('Repo id copied'));
     });
+    document.getElementById('hfCreateStackBtn')?.addEventListener('click', async () => {
+      const filename = getSelectedFilename();
+      if (!filename) {
+        toast('Pick a GGUF file first', false);
+        return;
+      }
+      const install = await resolveLocalInstall(model, filename);
+      const path = install?.path || '';
+      const isAccel = /dflash|dspark/i.test(filename);
+      if (!path) {
+        toast('Download this file first, then create the stack from Models or reopen this button.', false);
+        return;
+      }
+      window.DFlashStackWizard?.open?.({
+        targetPath: isAccel ? '' : path,
+        targetLabel: isAccel ? '' : filename,
+        draftPath: isAccel ? path : '',
+        draftLabel: isAccel ? filename : '',
+      });
+    });
     document.getElementById('hfFilePick')?.addEventListener('change', () => {
       void refreshInstallUI(model);
     });
-    document.getElementById('hfDownloadBtn')?.addEventListener('click', async () => {
+    document.getElementById('hfDownloadBtn')?.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const btn = document.getElementById('hfDownloadBtn');
       const filename = getSelectedFilename();
       if (!filename || btn?.disabled || btn?.dataset.action === 'downloading') return;
@@ -624,33 +906,60 @@
   function renderDetailPlaceholder(message) {
     const pane = detailPane();
     if (!pane) return;
-    pane.innerHTML = `<div class="lm-search-placeholder"><p>${escapeHtml(message || 'Select a model to view details.')}</p></div>`;
+    pane.innerHTML = `<div class="lm-search-placeholder"><p>${escapeHtml(message || 'Select a model to view details, README, and download GGUF files.')}</p></div>`;
   }
 
-  async function runSearch() {
+  async function runSearch({ background = false } = {}) {
     const query = searchInput()?.value?.trim() || '';
-    const sort = document.getElementById('hfSearchSort')?.value || 'downloads';
+    const sort = currentSort();
     const category = currentCategory();
-    renderListLoading('Searching Hugging Face…');
+    const copy = loadingCopy(category);
+    const cached = getCachedSearch(query, sort, category);
+    const canShowCached = !!(cached?.models?.length);
+
+    if (canShowCached && !background) {
+      models = cached.models;
+      populateCreatorFilter();
+      renderList();
+      restoreVisibleSelection({ preferCache: true });
+      background = true;
+    } else if (!background) {
+      renderCatalogLoading('both', copy);
+    }
+
+    if (background) setListRefreshIndicator(true);
+
+    const gen = ++searchRefreshGen;
     try {
-      const data = await api(`/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`);
+      const data = await searchCatalog(query, sort, category);
+      if (gen !== searchRefreshGen) return;
       models = data.models || [];
+      putCachedSearch(query, sort, category, models);
       populateCreatorFilter();
       if (!models.some((m) => m.id === selectedId)) {
         selectedId = '';
         selectedDetail = null;
-        renderDetailPlaceholder();
+        if (!background) renderDetailPlaceholder();
       }
       renderList();
       const visible = visibleModels();
-      if (!selectedId && visible[0]) await selectModel(visible[0].id);
+      if (!selectedId && visible[0]) {
+        await selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
+      } else if (selectedId && !visible.some((model) => model.id === selectedId)) {
+        if (visible[0]) await selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
+        else renderDetailPlaceholder();
+      }
     } catch (err) {
+      if (gen !== searchRefreshGen) return;
+      if (canShowCached) return;
       models = [];
       const message = /not found|404/i.test(err.message)
         ? 'Hugging Face search is unavailable. Restart DFlash Console, then try again.'
         : err.message;
       renderListLoading(message);
       renderDetailPlaceholder(message);
+    } finally {
+      if (gen === searchRefreshGen) setListRefreshIndicator(false);
     }
   }
 
@@ -662,19 +971,36 @@
     }, 350);
   }
 
-  async function selectModel(repoId) {
+  async function selectModel(repoId, { preferCache = false, backgroundDetail = false } = {}) {
     if (!repoId) return;
     selectedId = repoId;
     renderList();
-    renderDetailPlaceholder('Loading model details…');
-    try {
-      const category = currentCategory();
-      const data = await api(`/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`);
-      selectedDetail = data.model;
+    const category = currentCategory();
+    const cacheKey = detailCacheKey(repoId, category);
+    const cachedDetail = detailCache.get(cacheKey);
+    if (preferCache && cachedDetail) {
+      selectedDetail = cachedDetail;
       renderDetail(selectedDetail);
+      if (backgroundDetail) void refreshDetail(repoId, category);
+      return;
+    }
+    renderDetailLoading();
+    await refreshDetail(repoId, category);
+  }
+
+  async function refreshDetail(repoId, category) {
+    try {
+      const data = await api(`/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`);
+      detailCache.set(detailCacheKey(repoId, category), data.model);
+      if (selectedId === repoId) {
+        selectedDetail = data.model;
+        renderDetail(selectedDetail);
+      }
     } catch (err) {
-      renderDetailPlaceholder(err.message);
-      toast(err.message, false);
+      if (selectedId === repoId) {
+        renderDetailPlaceholder(err.message);
+        toast(err.message, false);
+      }
     }
   }
 
@@ -752,7 +1078,7 @@
 
     const widthMin = 180;
     const widthMax = () => clamp(Math.floor(container.getBoundingClientRect().width * 0.55), widthMin, 520);
-    const storedWidth = parseInt(localStorage.getItem('dflashConsole.hfSearchLeftWidth') || '', 10);
+    const storedWidth = window.DFlashUiLayout?.getNumber?.('hf_search_left_width');
     if (Number.isFinite(storedWidth) && storedWidth >= widthMin) {
       container.style.setProperty('--hf-search-left-width', `${storedWidth}px`);
     }
@@ -772,7 +1098,7 @@
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         const width = Math.round(left.getBoundingClientRect().width);
-        localStorage.setItem('dflashConsole.hfSearchLeftWidth', String(width));
+        window.DFlashUiLayout?.setNumber?.('hf_search_left_width', width);
       };
 
       window.addEventListener('mousemove', onMove);
@@ -791,41 +1117,68 @@
       const delta = e.key === 'ArrowRight' ? 16 : -16;
       const next = clamp(current + delta, widthMin, widthMax());
       container.style.setProperty('--hf-search-left-width', `${next}px`);
-      localStorage.setItem('dflashConsole.hfSearchLeftWidth', String(next));
+      window.DFlashUiLayout?.setNumber?.('hf_search_left_width', next);
     });
   }
 
   async function onViewEnter() {
     await loadLibraries();
     const input = searchInput();
-    if (input) {
-      input.focus();
-      void runSearch();
+    input?.focus();
+
+    const query = input?.value?.trim() || '';
+    const sort = currentSort();
+    const category = currentCategory();
+    const cached = getCachedSearch(query, sort, category);
+    if (cached?.models?.length) {
+      models = cached.models;
+      populateCreatorFilter();
+      renderList();
+      restoreVisibleSelection({ preferCache: true });
+      void runSearch({ background: true });
+      return;
     }
+
+    void runSearch({ background: false });
   }
 
-  function onCreatorFilterChange() {
+  function onListFilterChange() {
     const visible = visibleModels();
     if (selectedId && !visible.some((model) => model.id === selectedId)) {
       selectedId = '';
       selectedDetail = null;
-      if (visible[0]) void selectModel(visible[0].id);
+      if (visible[0]) void selectModel(visible[0].id, { preferCache: true, backgroundDetail: true });
       else renderDetailPlaceholder();
     }
     renderList();
   }
 
+  function onCreatorFilterChange() {
+    onListFilterChange();
+  }
+
   function bind() {
     searchInput()?.addEventListener('input', scheduleSearch);
-    document.getElementById('hfSearchSort')?.addEventListener('change', () => void runSearch());
+    document.getElementById('hfSearchSort')?.addEventListener('change', () => {
+      if (installedOnly()) onListFilterChange();
+      else void runSearch();
+    });
     document.getElementById('hfSearchCategory')?.addEventListener('change', () => void runSearch());
     document.getElementById('hfSearchCreator')?.addEventListener('change', onCreatorFilterChange);
-    setupSearchResize();
+    const ready = window.DFlashUiLayout?.whenReady?.() ?? Promise.resolve();
+    ready.then(() => setupSearchResize());
     if (queueUnsubscribe) queueUnsubscribe();
     queueUnsubscribe = window.DFlashDownloadQueue?.subscribe?.(handleDownloadQueueUpdate) || null;
   }
 
-  document.addEventListener('DOMContentLoaded', bind);
+  document.addEventListener('DOMContentLoaded', () => {
+    bind();
+    window.setTimeout(() => void warmCatalogCache(), 300);
+    window.setInterval(() => {
+      catalogPrimed = false;
+      void warmCatalogCache();
+    }, CATALOG_REFRESH_MS);
+  });
 
-  window.DFlashModelSearchLive = { onViewEnter };
+  window.DFlashModelSearchLive = { onViewEnter, runSearch, warmCatalogCache };
 })();

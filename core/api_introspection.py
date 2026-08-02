@@ -31,7 +31,8 @@ def list_app_endpoints(app: Any, *, console_base: str = '') -> dict[str, Any]:
             continue
         for method in sorted(methods - {'HEAD', 'OPTIONS'}):
             endpoint = getattr(route, 'endpoint', None)
-            doc = str(getattr(endpoint, '__doc__', '') or '').strip().splitlines()[0] if endpoint else ''
+            doc_lines = str(getattr(endpoint, '__doc__', '') or '').strip().splitlines() if endpoint else []
+            doc = doc_lines[0] if doc_lines else ''
             rows.append({
                 'method': method,
                 'path': path,

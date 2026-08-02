@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from core.config import get_dflash_root, normalize_load_settings
+from core.config import get_dflash_root, normalize_load_settings, SPECULATIVE_PROFILES
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.model_stack import resolve_model_stack
 
@@ -66,7 +66,8 @@ def write_server_preset(
     )
     cache_k, cache_v = PROFILE_CACHE_TYPES.get(preset_profile, ('q4_0', 'q4_0'))
 
-    target_path_resolved = str(target_path or '').strip()
+    target_path_resolved = str(target_path or server.get('target_path') or '').strip()
+    draft_path_resolved = str(server.get('draft_path') or '').strip()
     if target_path_resolved:
         target = {
             'role': 'target',
@@ -74,6 +75,12 @@ def write_server_preset(
             'path': target_path_resolved,
         }
         draft = None
+        if use_draft is not False and draft_path_resolved:
+            draft = {
+                'role': 'draft-dflash',
+                'label': Path(draft_path_resolved).name,
+                'path': draft_path_resolved,
+            }
     else:
         stack = resolve_model_stack(server, cfg=cfg)
         target = next((row for row in stack if row.get('role') == 'target'), None)
@@ -101,7 +108,7 @@ def write_server_preset(
         f"split-mode = {launch.get('split_mode') or 'none'}",
         f"cache-type-k = {cache_k}",
         f"cache-type-v = {cache_v}",
-        'np = 1',
+        f"np = {int(load.get('parallel_slots') or 4)}",
         '',
         f'[{preset_model_id}]',
         f"model = {target['path']}",
@@ -114,6 +121,15 @@ def write_server_preset(
             lines.extend(['spec-type = draft-dflash', 'spec-draft-n-max = 8'])
         elif preset_profile == 'bonsai-spec':
             lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = 999'])
+
+    mmproj_path = str(server.get('mmproj_path') or '').strip()
+    if preset_profile not in SPECULATIVE_PROFILES:
+        if not mmproj_path:
+            from core.vision_setup import resolve_mmproj_path
+
+            mmproj_path = resolve_mmproj_path(server, cfg=cfg)
+        if mmproj_path and Path(mmproj_path).is_file():
+            lines.append(f"mmproj = {mmproj_path}")
 
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
     path = preset_path_for(server_id)

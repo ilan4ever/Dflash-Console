@@ -14,8 +14,8 @@
   const GW_PANELS = new Set(['gw-network', 'gw-behavior', 'gw-preset']);
 
   const STRATEGY_HINTS = {
-    single_largest: 'Use one GPU — the enabled card with the most VRAM.',
-    split_evenly: 'Spread model layers evenly across all enabled GPUs.',
+    single_largest: 'Use one GPU — the fastest/largest card (RTX 4090). No layer-split.',
+    split_evenly: 'Spread model layers evenly across GPUs (usually much slower over PCIe).',
     split_by_vram: 'Split large models across GPUs in proportion to VRAM.',
   };
 
@@ -32,7 +32,7 @@
     return panel?.dataset.settingsPanel || DEFAULT_PANEL;
   }
 
-  function showPanel(id) {
+  function showPanel(id, { persist = true } = {}) {
     const panelId = id || DEFAULT_PANEL;
     document.querySelectorAll('.lm-settings-nav-item[data-settings-panel]').forEach((item) => {
       item.classList.toggle('active', item.dataset.settingsPanel === panelId);
@@ -40,6 +40,10 @@
     document.querySelectorAll('.lm-settings-panel').forEach((panel) => {
       panel.classList.toggle('active', panel.dataset.settingsPanel === panelId);
     });
+    if (persist) {
+      window.DFlashUiLayout?.setString?.('settings_panel', panelId);
+      window.DFlashShell?.syncHash?.();
+    }
     if (HW_PANELS.has(panelId)) renderHardwareForPanel(panelId);
     if (GW_PANELS.has(panelId)) renderGatewayPanel();
     if (panelId === 'int-mcp') void renderMcpPanel();
@@ -500,8 +504,8 @@
     const hint = document.getElementById('settingsGpuStrategyHint');
     const dedicated = document.getElementById('settingsLimitDedicatedVram');
     const kv = document.getElementById('settingsOffloadKvGpu');
-    if (strategy) strategy.value = hardwareDraft.gpu_strategy || 'split_evenly';
-    if (hint) hint.textContent = STRATEGY_HINTS[strategy?.value || 'split_evenly'] || STRATEGY_HINTS.split_evenly;
+    if (strategy) strategy.value = hardwareDraft.gpu_strategy || 'single_largest';
+    if (hint) hint.textContent = STRATEGY_HINTS[strategy?.value || 'single_largest'] || STRATEGY_HINTS.single_largest;
     if (dedicated) dedicated.checked = hardwareDraft.limit_offload_dedicated_vram !== false;
     if (kv) kv.checked = hardwareDraft.offload_kv_cache_to_gpu !== false;
     renderGpuList();
@@ -511,7 +515,7 @@
   function readHardwareDraftFromForm() {
     if (!hardwareDraft) hardwareDraft = {};
     const strategy = document.getElementById('settingsGpuStrategy');
-    hardwareDraft.gpu_strategy = strategy?.value || 'split_evenly';
+    hardwareDraft.gpu_strategy = strategy?.value || 'single_largest';
     hardwareDraft.limit_offload_dedicated_vram = !!document.getElementById('settingsLimitDedicatedVram')?.checked;
     hardwareDraft.offload_kv_cache_to_gpu = !!document.getElementById('settingsOffloadKvGpu')?.checked;
     if (!Array.isArray(hardwareDraft.enabled_gpu_indices) || !hardwareDraft.enabled_gpu_indices.length) {
@@ -689,7 +693,7 @@
       `RAM: ${hardwareData.ram?.total_gb || '—'} GB`,
       `VRAM total: ${hardwareData.vram_total_gb || '—'} GB`,
       ...(hardwareData.gpus || []).map((g) => `GPU ${g.index}: ${g.name} (${g.vram_total_gb ?? g.vram_gb ?? '?'} GB)`),
-      `Strategy: ${hardwareDraft?.gpu_strategy || 'split_evenly'}`,
+      `Strategy: ${hardwareDraft?.gpu_strategy || 'single_largest'}`,
     ];
     navigator.clipboard.writeText(lines.join('\n')).then(() => toast('Hardware info copied'));
   }
@@ -765,6 +769,7 @@
 
   window.DFlashSettingsLive = {
     showPanel,
+    activePanelId,
     openSettings,
     onViewEnter,
     onViewLeave,

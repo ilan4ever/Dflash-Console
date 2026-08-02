@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core import config as cfg
 
@@ -33,6 +34,30 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(loaded['ui_port'], 8900)
             finally:
                 cfg.CONFIG_PATH = original
+
+    def test_validate_config_rejects_duplicate_ports_and_non_loopback_hosts(self):
+        with self.assertRaisesRegex(ValueError, 'already used'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [{'id': 'one', 'port': 8900, 'host': '127.0.0.1'}],
+            })
+        with self.assertRaisesRegex(ValueError, 'loopback'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [{'id': 'one', 'port': 8090, 'host': '0.0.0.0'}],
+            })
+
+    def test_config_root_wins_unless_explicit_override_is_set(self):
+        with patch.dict('os.environ', {'DFLASH_ROOT': r'C:\env-root'}, clear=False):
+            self.assertEqual(
+                cfg.get_dflash_root({'dflash_root': r'C:\config-root'}),
+                Path(r'C:\config-root').resolve(),
+            )
+        with patch.dict('os.environ', {'DFLASH_ROOT': r'C:\env-root', 'DFLASH_ROOT_OVERRIDE': r'C:\override-root'}, clear=False):
+            self.assertEqual(
+                cfg.get_dflash_root({'dflash_root': r'C:\config-root'}),
+                Path(r'C:\override-root').resolve(),
+            )
 
 
 if __name__ == '__main__':

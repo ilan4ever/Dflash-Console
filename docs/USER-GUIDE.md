@@ -10,7 +10,7 @@ This guide walks you through everyday use of DFlash Console: starting engines, l
 2. Run `.\run.ps1` from PowerShell.
 3. Open **http://127.0.0.1:8900/** in your browser.
 
-The sidebar shows the main areas: **Engines**, **Checkpoints**, **Playground** (planned), **Nodes**, **Model catalog**, **Settings**, and **Documentation**.
+The sidebar shows the main areas: **Engines**, **Checkpoints**, **Playground**, **Nodes**, **Model catalog**, **Settings**, and **Documentation**.
 
 ---
 
@@ -57,6 +57,10 @@ Each loaded card shows:
 |--------|--------|
 | **Eject / Unload** | Removes the checkpoint; router keeps listening on the port |
 | **Stop engine** | Shuts down the llama-server process entirely |
+
+Embedding engines are different: their listener requires the embedding
+checkpoint to remain loaded, so use **Stop** when you need to release their
+GPU memory.
 
 ### Developer logs
 
@@ -105,7 +109,9 @@ From here you can **Export / Import config** and **Export / Import presets** for
 
 ### Engine settings
 
-Configure network bind address, idle unload behavior, and per-engine defaults under **Engine settings** in the Engines bar or **Settings → Engine network**.
+Configure idle unload behavior and per-engine defaults under **Engine settings**
+in the Engines bar or **Settings → Engine network**. The Console UI and managed
+engine listeners are loopback-only by design.
 
 ---
 
@@ -154,7 +160,7 @@ Swagger UI is also available at `/docs` for interactive testing.
 
 | Problem | What to try |
 |---------|-------------|
-| Engine shows **Stopped** after console restart | Turn the engine on again or call **Load** — in-memory stats reset on restart |
+| Engine shows **Ready to load** after console restart | This is expected: full restart clears model VRAM but restores saved listeners idle; click **Load** when needed |
 | **400 Bad Request** on chat | Checkpoint may not be loaded; load the model first |
 | Stats stuck on dashes | Run at least one completion through the engine or console proxy |
 | CPU looks wrong | Hard-refresh the page (Ctrl+Shift+R) after updating |

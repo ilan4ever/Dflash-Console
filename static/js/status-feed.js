@@ -5,6 +5,8 @@
   let transient = null;
   let transientTimer = null;
   let serversSnapshot = [];
+  /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
+  let pendingLoadsSnapshot = {};
 
   function primaryEl() {
     return document.getElementById('statusFeedPrimary');
@@ -29,19 +31,44 @@
     }
   }
 
+  function loadingModelLabel(server) {
+    const pending = pendingLoadsSnapshot[server.id];
+    if (pending?.label) return pending.label;
+    const cards = Array.isArray(server.visible_cards) ? server.visible_cards : [];
+    const loadingCard = cards.find((row) => row.card_state === 'loading');
+    if (loadingCard?.title) return loadingCard.title;
+    if (server.active_model_id) return String(server.active_model_id).replace(/-/g, ' ');
+    return server.label || server.id || 'Model';
+  }
+
   function buildFromServers(servers) {
     const loading = [];
     const loaded = [];
     const idle = [];
+    const pendingIds = new Set(Object.keys(pendingLoadsSnapshot));
+
+    for (const [serverId, meta] of Object.entries(pendingLoadsSnapshot)) {
+      const server = servers.find((row) => row.id === serverId);
+      const label = meta?.label || server?.label || serverId;
+      const pct = server?.load_progress != null ? ` · ${Math.round(server.load_progress)}%` : '';
+      loading.push(`Loading ${label}${pct}`);
+    }
+
     for (const server of servers) {
-      const label = server.label || server.id || 'Model';
-      if (server.status === 'booting') {
+      if (pendingIds.has(server.id)) continue;
+      const label = loadingModelLabel(server);
+      if (server.status === 'booting' || server.booting) {
         const pct = server.load_progress != null ? ` · ${Math.round(server.load_progress)}%` : '';
         loading.push(`Loading ${label}${pct}`);
       } else if (server.status === 'loaded') {
-        loaded.push(`${label} ready on :${server.port || '—'}`);
+        const readyLabel = server.visible_cards?.[0]?.title
+          || (server.active_model_id ? String(server.active_model_id).replace(/-/g, ' ') : null)
+          || server.label
+          || server.id
+          || 'Model';
+        loaded.push(`${readyLabel} ready on :${server.port || '—'}`);
       } else if (server.running) {
-        idle.push(`${label} listening :${server.port || '—'}`);
+        idle.push(`${server.label || server.id || 'Model'} listening :${server.port || '—'}`);
       }
     }
     if (loading.length) {
@@ -62,10 +89,10 @@
       };
     }
     if (idle.length === 1) {
-      return { primary: idle[0], secondary: 'No model loaded yet' };
+      return { primary: `${idle[0].replace(/ listening :\d+$/, '')} ready to load`, secondary: 'No model loaded yet' };
     }
     if (idle.length > 1) {
-      return { primary: `${idle.length} servers running`, secondary: 'No models loaded' };
+      return { primary: `${idle.length} DFlash engines ready to load`, secondary: 'No models loaded' };
     }
     return { primary: 'Ready', secondary: '' };
   }
@@ -106,7 +133,7 @@
 
   async function poll() {
     try {
-      const data = await api('/api/servers');
+      const data = await api('/api/servers?include_external=0');
       serversSnapshot = data.servers || [];
       refreshDisplay();
     } catch {
@@ -121,10 +148,16 @@
 
   document.addEventListener('DOMContentLoaded', startPolling);
 
+  function setPendingLoads(map) {
+    pendingLoadsSnapshot = map && typeof map === 'object' ? { ...map } : {};
+    refreshDisplay();
+  }
+
   window.DFlashStatusFeed = {
     setTransient,
     note,
     refresh: poll,
     getServers: () => serversSnapshot,
+    setPendingLoads,
   };
 })();

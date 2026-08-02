@@ -71,16 +71,24 @@ cd Dflash-Console
 copy config.example.json config.json
 # Edit config.json — set dflash_root, server ports, and model paths
 
-pip install -r requirements.txt
-.\run.ps1
+.\server.ps1
 ```
 
 Open **http://127.0.0.1:8900/** in your browser.
 
+`run.ps1` performs a full developer reset: it releases managed model VRAM,
+stops configured engines, and starts a clean Console instance.
+
 Foreground mode (attach logs to the terminal):
 
 ```powershell
-.\run.ps1 -Foreground
+.\server.ps1 -Foreground
+```
+
+Full restart (release GPU + stop engines):
+
+```powershell
+.\server.ps1 -Restart
 ```
 
 Restart API after backend edits:
@@ -89,7 +97,9 @@ Restart API after backend edits:
 .\scripts\restart-console-server.ps1
 ```
 
-The UI auto-refreshes when the API restarts (`/api/health` boot id).
+This is a gentle API restart. It preserves engine listeners, then the new
+Console process adopts them and leaves router models unloaded. The UI
+auto-refreshes when the API restarts (`/api/health` boot id).
 
 ---
 
@@ -112,7 +122,8 @@ See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or op
 | Variable / file | Purpose |
 |-----------------|--------|
 | `config.json` | Local settings (not committed — copy from `config.example.json`) |
-| `DFLASH_ROOT` | Path to DFlash repo with llama-server binaries and launch scripts |
+| `DFLASH_ROOT_OVERRIDE` | Optional explicit override for the configured DFlash root |
+| `config.json` → `dflash_root` | Path to DFlash repo with llama-server binaries and launch scripts |
 | `config.json` → `servers[]` | Engine profiles: port, GPU layers, context, idle unload |
 | `config.json` → `model_libraries[]` | Folders scanned for local models and HF download targets |
 
@@ -132,7 +143,7 @@ Dflash-Console/
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
 │   └── ui/                 # UI panel design notes
-├── run.ps1                 # Full startup (deps + background API)
+├── run.ps1                 # Full reset and background API startup
 ├── config.example.json     # Template configuration
 └── DFLASH-CONSOLE-PLAN.md  # Detailed build plan & handoff notes
 ```
@@ -164,6 +175,7 @@ Full route list: `api/app.py` or **Documentation** tab in the UI.
 
 ```powershell
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 pytest
 .\run.ps1 -Foreground
 ```
@@ -187,4 +199,6 @@ Not yet published for open source. License will be added before public release.
 
 ## Roadmap
 
-See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture, handoff notes, and remaining work (Playground chat tab, live VRAM sysbar, expanded tests).
+See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture and
+handoff notes. Run `python scripts/release-preflight.py` before packaging a
+checkout.

@@ -6,16 +6,36 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
+_SERVER_STATUS_CACHE: dict[str, dict[str, Any]] = {}
+_STATUS_PAYLOAD_CACHE: dict[str, Any] = {
+    'payload': None,
+    'updated_at': 0.0,
+    'include_external': None,
+}
+_STATUS_EXTERNAL_CACHE: list[dict[str, Any]] = []
+_STATUS_PAYLOAD_LOCK = threading.Lock()
+_ROUTER_UNLOAD_CACHE: dict[str, tuple[bool, float]] = {}
+_ROUTER_UNLOAD_CACHE_TTL = 300.0
+
 from core.gpu_devices import format_gpu_assignment, query_gpu_devices, resolve_role_gpu_launch_params
 from core.load_progress import is_active_boot, parse_load_progress, read_log_tail
 from core.model_presets import gpu_layers_max_for
 from core.model_stack import resolve_model_stack
-from core.server_boot import clear_server_tracking, get_started_launch, adopt_running_engine
+from core.server_boot import (
+    adopt_running_engine,
+    clear_server_tracking,
+    get_started_launch,
+    managed_process_identity,
+    terminate_started_process,
+    wait_for_port_closed,
+)
 
 
 def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
@@ -26,6 +46,11 @@ def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
             pass
     except OSError:
         return False
+
+    if terminate_started_process(port):
+        return wait_for_port_closed(host, port)
+    if not tcp_port_open(host, port):
+        return True
 
     pid = None
     try:
@@ -66,13 +91,20 @@ def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
 
     if pid is None:
         return False
+    if not managed_process_identity(pid):
+        return False
 
     try:
         if sys.platform == 'win32':
-            subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True, timeout=5, check=False)
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(pid)],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
         else:
             os.kill(pid, 9)
-        return True
+        return wait_for_port_closed(host, port)
     except Exception:
         return False
 
@@ -124,9 +156,7 @@ def router_unload_available(api_url: str) -> bool:
         return False
 
 
-def probe_models(api_url: str) -> list[str]:
-    entries = _fetch_models_payload(api_url)
-    router = router_unload_available(api_url)
+def _loaded_model_ids(entries: list[dict[str, Any]], *, router: bool) -> list[str]:
     ids: list[str] = []
     for entry in entries:
         model_id = str(entry.get('id') or entry.get('model') or '').strip()
@@ -143,15 +173,45 @@ def probe_models(api_url: str) -> list[str]:
     return ids
 
 
-def probe_loading_models(api_url: str) -> list[str]:
+def _loading_model_ids(entries: list[dict[str, Any]]) -> list[str]:
     ids: list[str] = []
-    for entry in _fetch_models_payload(api_url):
+    for entry in entries:
         if _model_state(entry) != 'loading':
             continue
         model_id = str(entry.get('id') or entry.get('model') or '').strip()
         if model_id and model_id != 'default':
             ids.append(model_id)
     return ids
+
+
+def probe_models(api_url: str) -> list[str]:
+    entries = _fetch_models_payload(api_url)
+    router = router_unload_available(api_url)
+    return _loaded_model_ids(entries, router=router)
+
+
+def probe_loading_models(api_url: str) -> list[str]:
+    return _loading_model_ids(_fetch_models_payload(api_url))
+
+
+def _router_unload_cached(api_url: str) -> bool:
+    key = api_base_url(api_url)
+    if not key:
+        return False
+    now = time.time()
+    cached = _ROUTER_UNLOAD_CACHE.get(key)
+    if cached and cached[1] > now:
+        return cached[0]
+    value = router_unload_available(api_url)
+    _ROUTER_UNLOAD_CACHE[key] = (value, now + _ROUTER_UNLOAD_CACHE_TTL)
+    return value
+
+
+def probe_runtime_state(api_url: str) -> tuple[list[str], list[str], bool]:
+    """Single /models fetch for status polling — avoids duplicate HTTP calls."""
+    entries = _fetch_models_payload(api_url)
+    router = _router_unload_cached(api_url)
+    return _loaded_model_ids(entries, router=router), _loading_model_ids(entries), router
 
 
 def api_base_url(api_url: str) -> str:
@@ -180,6 +240,17 @@ def unload_model(*, api_url: str, model_id: str) -> dict[str, Any]:
             payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace')
+        # Unload is intentionally idempotent. A prior stop, crash, or router
+        # cleanup may already have removed the checkpoint, so a second unload
+        # must not turn an already-clean state into a false failure.
+        if 'model is not running' in detail.lower():
+            return {
+                'success': True,
+                'unloaded': False,
+                'already_unloaded': True,
+                'model': model,
+                'response': detail,
+            }
         return {'success': False, 'error': detail or str(exc), 'http_status': exc.code}
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, ConnectionResetError, OSError) as exc:
         return {'success': False, 'error': str(exc)}
@@ -220,12 +291,57 @@ def stop_server(*, port: int | None = None, api_url: str | None = None, host: st
 
     killed = _kill_listener_on_port(resolved_port, host)
     clear_server_tracking(resolved_port)
+    stopped = killed or not tcp_port_open(host, resolved_port)
     return {
-        'success': True,
+        'success': stopped,
         'port': resolved_port,
         'host': host,
-        'stopped': killed or not tcp_port_open(host, resolved_port),
+        'stopped': stopped,
+        'error': None if stopped else f'Listener on {host}:{resolved_port} is still running',
     }
+
+
+_GENERIC_LOADED_IDS = frozenset({'default', 'model', 'browse', ''})
+
+
+def _normalize_loaded_model_ids(
+    loaded_models: list[str],
+    *,
+    configured_model_id: str = '',
+    model_path: 'Path | None' = None,
+    allow_fallback: bool = True,
+) -> list[str]:
+    fallback = ''
+    if model_path is not None:
+        fallback = model_path.name
+    elif configured_model_id and configured_model_id.lower() not in _GENERIC_LOADED_IDS:
+        fallback = configured_model_id
+    normalized: list[str] = []
+    for raw in loaded_models:
+        token = str(raw or '').strip()
+        if not token or token.lower() in _GENERIC_LOADED_IDS:
+            continue
+        if token not in normalized:
+            normalized.append(token)
+    if not normalized and fallback and allow_fallback:
+        normalized.append(fallback)
+    return normalized
+
+
+def _apply_engine_runtime_flags(
+    server: dict[str, Any],
+    *,
+    port_open: bool,
+    booting: bool,
+    status: str,
+) -> tuple[bool, str]:
+    """Honor saved engine_on — user stop must not flip back to running on poll."""
+    engine_on = server.get('engine_on') is True
+    if engine_on:
+        return port_open, status
+    if booting:
+        return port_open, status
+    return False, 'stopped'
 
 
 def _annotate_model_stack(
@@ -268,28 +384,85 @@ def _stack_detail(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _stack_size_gb(parts: list[dict[str, Any]]) -> float | None:
+    total = 0.0
+    found = False
+    for row in parts:
+        val = row.get('size_gb')
+        if val is None:
+            continue
+        try:
+            total += float(val)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2) if found else None
+
+
+def _stack_has_dflash_draft(parts: list[dict[str, Any]]) -> bool:
+    return any(str(row.get('role') or '').startswith('draft') for row in parts)
+
+
 def _build_visible_cards(
     model_stack: list[dict[str, Any]],
     *,
     server_label: str,
+    display_name: str = '',
     booting: bool,
     loaded_models: list[str],
     progress: float | None,
 ) -> list[dict[str, Any]]:
+    card_title = str(display_name or server_label or '').strip()
     alias_rows = [row for row in model_stack if row.get('role') == 'alias']
     alias = alias_rows[0] if alias_rows else None
     alias_ready = bool(loaded_models)
+    loaded_id = str(loaded_models[0] or '') if loaded_models else ''
+    alias_id = str(alias.get('id') or '') if alias else ''
+    if loaded_id.lower() in _GENERIC_LOADED_IDS:
+        loaded_id = alias_id or loaded_id
+    adhoc = bool(
+        alias_ready
+        and alias
+        and loaded_id
+        and alias_id
+        and alias_id.lower() not in _GENERIC_LOADED_IDS
+        and loaded_id != alias_id
+        and loaded_id.lower() not in _GENERIC_LOADED_IDS
+    )
 
     if alias_ready and alias:
+        if adhoc:
+            composite = {
+                **alias,
+                'id': loaded_id,
+                'title': loaded_id.replace('-', ' '),
+                'subtitle': f"API: {loaded_id}",
+                'stack_details': [{
+                    'role': 'target',
+                    'label': 'target',
+                    'name': loaded_id,
+                    'source': 'adhoc',
+                }],
+                'size_gb': None,
+                'card_state': 'ready',
+                'progress': None,
+                'ejectable': True,
+                'dflash_stack': False,
+                'plain_llm': True,
+                'is_adhoc': True,
+            }
+            return [composite]
         parts = [row for row in model_stack if row.get('role') != 'alias']
         composite = {
             **alias,
-            'title': server_label or str(alias.get('id') or 'Loaded model'),
+            'title': card_title or str(alias.get('id') or 'Loaded model'),
             'subtitle': f"API: {alias.get('id')}",
             'stack_details': [_stack_detail(row) for row in parts],
+            'size_gb': _stack_size_gb(parts),
             'card_state': 'ready',
             'progress': None,
             'ejectable': True,
+            'dflash_stack': _stack_has_dflash_draft(parts),
         }
         return [composite]
 
@@ -297,52 +470,410 @@ def _build_visible_cards(
         parts = [row for row in model_stack if row.get('role') != 'alias']
         composite = {
             **alias,
-            'title': server_label or str(alias.get('id') or 'Loading model'),
+            'title': card_title or str(alias.get('id') or 'Loading model'),
             'subtitle': 'Loading…',
             'stack_details': [_stack_detail(row) for row in parts],
+            'size_gb': _stack_size_gb(parts),
             'card_state': 'loading',
             'progress': progress,
             'ejectable': True,
+            'dflash_stack': _stack_has_dflash_draft(parts),
         }
         return [composite]
 
     return [row for row in model_stack if row.get('card_state') in ('ready', 'loading')]
 
 
-def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    host = str(server.get('host') or '127.0.0.1')
-    port = int(server.get('port') or 0)
-    api_url = str(server.get('api_url') or '')
-    server_id = str(server.get('id') or '')
-    gpus = query_gpu_devices()
+def _build_embedding_server_status(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    gpus: list[dict[str, Any]] | None = None,
+    vram_map: dict[int, float] | None = None,
+) -> dict[str, Any]:
+    from core.config import normalize_server
+    from core.display_names import build_engine_client_metadata
+    from core.embedding_server import embedding_metadata, probe_embedding_health, probe_embedding_models, resolve_embedding_model_path
+    from core.gpu_processes import _model_kind_fields, vram_gb_for_port
+
+    entry = normalize_server(server)
+    host = str(entry.get('host') or '127.0.0.1')
+    port = int(entry.get('port') or 0)
+    api_url = str(entry.get('api_url') or '')
+    server_id = str(entry.get('id') or '')
+    if gpus is None:
+        gpus = query_gpu_devices()
     launch = resolve_role_gpu_launch_params(
-        server.get('gpu_device'),
-        model_id=server.get('model_id'),
+        entry.get('gpu_device'),
+        model_id=entry.get('model_id'),
         gpus=gpus,
         hardware=(cfg or {}).get('hardware_settings'),
+        context_size=entry.get('context_size'),
     )
-    gpu_display = format_gpu_assignment(str(server.get('gpu_device') or 'auto'), launch, gpus)
-    running = tcp_port_open(host, port) if port > 0 else False
-    if running and not get_started_launch(port):
-        adopt_running_engine(server, cfg=cfg)
-    loaded_models = probe_models(api_url) if running else []
-    loading_models = probe_loading_models(api_url) if running else []
-    router_ready = running and router_unload_available(api_url)
+    gpu_display = format_gpu_assignment(str(entry.get('gpu_device') or 'auto'), launch, gpus)
+    configured_model_id = str(entry.get('model_id') or '').strip()
+    port_open = tcp_port_open(host, port) if port > 0 else False
+    engine_on = entry.get('engine_on') is True
+    running = port_open
+    healthy = False
+    loaded_models: list[str] = []
+    if running:
+        loaded_models = probe_embedding_models(api_url)
+        healthy = probe_embedding_health(host, port) or bool(loaded_models)
+        if healthy and not get_started_launch(port) and engine_on:
+            adopt_running_engine(entry, cfg=cfg)
     log_lines = read_log_tail(server_id) if server_id else []
+    from core.load_progress import boot_failure_message
+
+    boot_error = boot_failure_message(log_lines)
     active_boot = is_active_boot(log_lines)
     load_progress = parse_load_progress(log_lines) if active_boot else None
-    alias_ready = bool(loaded_models)
-    booting = running and not alias_ready and (
-        bool(loading_models) or (active_boot and not router_ready)
-    )
-    started = get_started_launch(port)
+    booting = running and not healthy and active_boot and not boot_error
     status = 'stopped'
-    if running and loaded_models:
+    if boot_error:
+        status = 'error'
+    elif running and healthy and loaded_models:
         status = 'loaded'
     elif booting:
         status = 'booting'
     elif running:
         status = 'running'
+
+    running, status = _apply_engine_runtime_flags(entry, port_open=running, booting=booting, status=status)
+    if not running:
+        loaded_models = []
+        healthy = False
+        booting = False
+
+    try:
+        model_path = resolve_embedding_model_path(entry, cfg=cfg)
+        meta = embedding_metadata(model_path)
+    except ValueError:
+        model_path = None
+        meta = {
+            'model_kind': 'embedding',
+            'architecture': 'nomic-bert',
+            'model_family': 'nomic-embed-text',
+            'model_version': 'v1.5',
+            'pooling': str(entry.get('pooling') or 'mean'),
+            'embedding_dimensions': int((entry.get('embedding_settings') or {}).get('dimensions') or 768),
+            'parameters': str((entry.get('embedding_settings') or {}).get('parameters') or '137M'),
+            'quantization': 'Q8_0',
+            'context_tokens': int(entry.get('context_size') or 2048),
+            'api_path': '/v1/embeddings',
+        }
+
+    loaded_models = _normalize_loaded_model_ids(
+        loaded_models,
+        configured_model_id=configured_model_id,
+        model_path=model_path,
+        # /models may list an embedding alias while the router reports it as
+        # unloaded; only an explicit loaded/running state counts.
+        allow_fallback=False,
+    )
+
+    stack = resolve_model_stack(entry, cfg=cfg)
+    model_stack = _annotate_model_stack(
+        stack,
+        booting=booting,
+        loaded_models=loaded_models,
+        progress=load_progress,
+    )
+    client_meta = build_engine_client_metadata(entry, model_stack)
+    card_title = str(
+        client_meta.get('display_name_full')
+        or client_meta.get('display_name')
+        or entry.get('label')
+        or '',
+    ).strip()
+    visible_cards = _build_visible_cards(
+        model_stack,
+        server_label=str(entry.get('label') or ''),
+        display_name=card_title,
+        booting=booting,
+        loaded_models=loaded_models,
+        progress=load_progress,
+    )
+    listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map) if running and port > 0 else None
+    embed_settings = dict(entry.get('embedding_settings') or {})
+    embed_file_name = model_path.name if model_path else ''
+    embed_display = (
+        embed_file_name
+        or card_title
+        or configured_model_id
+        or str(entry.get('label') or '')
+        or 'Embedding model'
+    )
+    loaded_by = str(entry.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
+    card_detail = (
+        f"{meta.get('parameters')} · {meta.get('embedding_dimensions')}d · "
+        f"{meta.get('pooling')} pooling · {meta.get('quantization')}"
+        if embed_file_name
+        else (
+            f"Embedding · {meta.get('model_family')} {meta.get('model_version')} · "
+            f"{meta.get('parameters')} · {meta.get('embedding_dimensions')}d · "
+            f"{meta.get('pooling')} pooling · {meta.get('quantization')}"
+        )
+    )
+    for card in visible_cards:
+        card['gpu_display'] = gpu_display
+        card['title'] = embed_display
+        card['display_name'] = embed_display
+        card['display_name_full'] = embed_display
+        card['path'] = str(model_path) if model_path else card.get('path')
+        card['app_label'] = loaded_by
+        card['loaded_by'] = loaded_by
+        card['app_source'] = 'dflash'
+        card['external'] = False
+        card['card_detail'] = card_detail
+        card['model_kind'] = 'embedding'
+        card['embedding_settings'] = {**embed_settings, **meta}
+        card.update(
+            _model_kind_fields(
+                model_name=str(card.get('title') or card.get('id') or ''),
+                model_path=str(card.get('path') or (str(model_path) if model_path else '')),
+                role=str(card.get('role') or 'target'),
+            )
+        )
+        if listener_vram_gb is not None:
+            card['vram_gb'] = listener_vram_gb
+        if card.get('size_gb') is None and model_path is not None:
+            try:
+                card['size_gb'] = round(model_path.stat().st_size / (1024 ** 3), 2)
+            except OSError:
+                pass
+
+    active_model_id = loaded_models[0] if loaded_models else configured_model_id
+    started = get_started_launch(port)
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+    from core.inference_stats import fetch_inference_stats, get_cached_inference_stats
+
+    inference_stats: dict[str, Any] = {}
+    if healthy and api_url:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                fetch_inference_stats,
+                api_url,
+                server_id=server_id,
+                model_id=active_model_id,
+            )
+            try:
+                inference_stats = future.result(timeout=2.5)
+            except FuturesTimeoutError:
+                inference_stats = get_cached_inference_stats(server_id)
+
+    for card in visible_cards:
+        card['inference_stats'] = inference_stats
+
+    return {
+        **entry,
+        'model_id': configured_model_id,
+        **client_meta,
+        'running': running,
+        'status': status,
+        'booting': booting,
+        'load_progress': load_progress,
+        'loaded_models': loaded_models,
+        'active_model_id': active_model_id,
+        'ready_for_chat': bool(healthy and loaded_models),
+        'ready_for_embedding': bool(healthy and loaded_models),
+        'model_stack': model_stack,
+        'visible_cards': visible_cards,
+        'gpu_display': gpu_display,
+        'model_kind': 'embedding',
+        'card_detail': card_detail,
+        'embedding_settings': {**embed_settings, **meta},
+        'pooling': str(entry.get('pooling') or meta.get('pooling') or 'mean'),
+        'launch': started or {
+            'context': entry.get('context_size'),
+            'main_gpu': launch.get('main_gpu'),
+            'split_mode': launch.get('split_mode'),
+            'tensor_split': launch.get('tensor_split'),
+            'engine_mode': 'embedding',
+            'gpu_layers': (entry.get('load_settings') or {}).get('gpu_layers'),
+        },
+        'active_gpu_index': started.get('main_gpu') if started else launch.get('main_gpu'),
+        'reachable_url': f'http://{host}:{port}' if port > 0 else '',
+        'gpu_layers_max': gpu_layers_max_for(entry, cfg=cfg),
+        'inference_stats': inference_stats,
+        'boot_error': boot_error,
+    }
+
+
+def _live_stats_during_generation(
+    *,
+    server_id: str,
+    api_url: str,
+    configured_model_id: str,
+) -> dict[str, Any]:
+    """Refresh slot metrics only — never run nvidia-smi / full probes mid-generation."""
+    from core.inference_stats import fetch_inference_stats, get_cached_inference_stats
+
+    try:
+        stats = fetch_inference_stats(
+            api_url,
+            server_id=server_id,
+            model_id=configured_model_id,
+        )
+        if isinstance(stats, dict) and stats:
+            return stats
+    except Exception:
+        pass
+    return get_cached_inference_stats(server_id)
+
+
+def _cached_status_while_generating(
+    server: dict[str, Any],
+    *,
+    server_id: str,
+    host: str,
+    port: int,
+    configured_model_id: str,
+) -> dict[str, Any] | None:
+    """Return a lightweight status snapshot without probing llama-server during inference."""
+    from core.inference_stats import is_proxy_generating
+
+    if not is_proxy_generating(server_id):
+        return None
+
+    api_url = str(server.get('api_url') or '').strip()
+    if not api_url and port > 0:
+        api_url = f'http://{host}:{port}'
+
+    cached = _SERVER_STATUS_CACHE.get(server_id)
+    if isinstance(cached, dict) and cached.get('loaded_models'):
+        refreshed = dict(cached)
+        stats = _live_stats_during_generation(
+            server_id=server_id,
+            api_url=api_url,
+            configured_model_id=configured_model_id or str(refreshed.get('active_model_id') or ''),
+        )
+        if stats:
+            refreshed['inference_stats'] = stats
+        refreshed['ready_for_chat'] = bool(refreshed.get('loaded_models'))
+        refreshed['status'] = refreshed.get('status') or 'loaded'
+        refreshed['running'] = True
+        _SERVER_STATUS_CACHE[server_id] = dict(refreshed)
+        return refreshed
+
+    port_open = tcp_port_open(host, port) if port > 0 else False
+    if not port_open:
+        return None
+
+    stats = _live_stats_during_generation(
+        server_id=server_id,
+        api_url=api_url,
+        configured_model_id=configured_model_id,
+    )
+    loaded = [configured_model_id] if configured_model_id else []
+    result = {
+        **server,
+        'running': True,
+        'status': 'loaded' if loaded else 'running',
+        'booting': False,
+        'load_progress': None,
+        'loaded_models': loaded,
+        'active_model_id': loaded[0] if loaded else '',
+        'ready_for_chat': bool(loaded),
+        'model_stack': server.get('model_stack') or [],
+        'visible_cards': server.get('visible_cards') or [],
+        'inference_stats': stats,
+        'boot_error': None,
+    }
+    _SERVER_STATUS_CACHE[server_id] = dict(result)
+    return result
+
+
+def build_server_status(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    gpus: list[dict[str, Any]] | None = None,
+    vram_map: dict[int, float] | None = None,
+) -> dict[str, Any]:
+    from core.config import is_embedding_server
+
+    if is_embedding_server(server):
+        status = _build_embedding_server_status(server, cfg=cfg, gpus=gpus, vram_map=vram_map)
+        server_id = str(server.get('id') or '')
+        if server_id:
+            _SERVER_STATUS_CACHE[server_id] = dict(status)
+        return status
+
+    host = str(server.get('host') or '127.0.0.1')
+    port = int(server.get('port') or 0)
+    api_url = str(server.get('api_url') or '')
+    server_id = str(server.get('id') or '')
+    configured_model_id = str(server.get('model_id') or '').strip()
+    cached_generating = _cached_status_while_generating(
+        server,
+        server_id=server_id,
+        host=host,
+        port=port,
+        configured_model_id=configured_model_id,
+    )
+    if cached_generating is not None:
+        return cached_generating
+    if gpus is None:
+        gpus = query_gpu_devices()
+    launch = resolve_role_gpu_launch_params(
+        server.get('gpu_device'),
+        model_id=server.get('model_id'),
+        gpus=gpus,
+        hardware=(cfg or {}).get('hardware_settings'),
+        context_size=server.get('context_size'),
+    )
+    engine_on = server.get('engine_on') is True
+    port_open = tcp_port_open(host, port) if port > 0 else False
+    running = port_open
+    if running and not get_started_launch(port) and engine_on:
+        adopt_running_engine(server, cfg=cfg)
+    started_launch = get_started_launch(port) if port > 0 else {}
+    display_launch = {
+        'main_gpu': started_launch.get('main_gpu', launch.get('main_gpu')),
+        'split_mode': started_launch.get('split_mode', launch.get('split_mode')),
+        'tensor_split': started_launch.get('tensor_split', launch.get('tensor_split')),
+    } if started_launch else launch
+    gpu_display = format_gpu_assignment(str(server.get('gpu_device') or 'auto'), display_launch, gpus)
+    if running and api_url:
+        loaded_models, loading_models, router_ready = probe_runtime_state(api_url)
+    else:
+        loaded_models, loading_models, router_ready = [], [], False
+    loaded_models = _normalize_loaded_model_ids(
+        loaded_models,
+        configured_model_id=configured_model_id,
+        # A router can advertise configured model aliases while its weights
+        # are explicitly unloaded. Never turn that advertisement into a
+        # false "loaded" state.
+        allow_fallback=running and not router_ready,
+    )
+    log_lines = read_log_tail(server_id) if server_id else []
+    from core.load_progress import boot_failure_message
+
+    boot_error = boot_failure_message(log_lines)
+    active_boot = is_active_boot(log_lines)
+    load_progress = parse_load_progress(log_lines) if active_boot else None
+    alias_ready = bool(loaded_models)
+    booting = running and not alias_ready and not boot_error and (
+        bool(loading_models) or (active_boot and not router_ready)
+    )
+    started = get_started_launch(port)
+    status = 'stopped'
+    if boot_error:
+        status = 'error'
+    elif running and loaded_models:
+        status = 'loaded'
+    elif booting:
+        status = 'booting'
+    elif running:
+        status = 'running'
+
+    running, status = _apply_engine_runtime_flags(server, port_open=running, booting=booting, status=status)
+    if not running:
+        loaded_models = []
+        loading_models = []
+        booting = False
 
     stack = resolve_model_stack(server, cfg=cfg)
     model_stack = _annotate_model_stack(
@@ -351,25 +882,93 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         loaded_models=loaded_models,
         progress=load_progress,
     )
+    from core.display_names import build_engine_client_metadata
+
+    client_meta = build_engine_client_metadata(server, model_stack)
+    card_title = str(
+        client_meta.get('display_name_full')
+        or client_meta.get('display_name')
+        or server.get('label')
+        or '',
+    ).strip()
     visible_cards = _build_visible_cards(
         model_stack,
         server_label=str(server.get('label') or ''),
+        display_name=card_title,
         booting=booting,
         loaded_models=loaded_models,
         progress=load_progress,
     )
+    listener_vram_gb = None
+    if running and port > 0:
+        from core.gpu_processes import vram_gb_for_port
 
-    from core.inference_stats import fetch_inference_stats
+        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map)
+    from core.gpu_processes import _model_kind_fields
 
-    inference_stats = fetch_inference_stats(api_url, server_id=str(server.get('id') or '')) if running and loaded_models else {}
+    loaded_by = str(server.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
 
-    return {
+    for card in visible_cards:
+        card['gpu_display'] = gpu_display
+        if not card.get('is_adhoc'):
+            card['display_name'] = client_meta.get('display_name')
+            card['display_name_full'] = client_meta.get('display_name_full')
+        card['app_label'] = loaded_by
+        card['loaded_by'] = loaded_by
+        card['app_source'] = 'dflash'
+        card['external'] = False
+        card.update(
+            _model_kind_fields(
+                model_name=str(card.get('title') or card.get('id') or ''),
+                model_path=str(card.get('path') or ''),
+                role=str(card.get('role') or ''),
+            )
+        )
+        if listener_vram_gb is not None:
+            card['vram_gb'] = listener_vram_gb
+        if card.get('size_gb') is None:
+            card['size_gb'] = card.get('size_gb') or _stack_size_gb([card])
+
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+    from core.inference_stats import fetch_inference_stats, get_cached_inference_stats, is_proxy_generating
+
+    inference_stats: dict[str, Any] = {}
+    if running and loaded_models:
+        active_model = loaded_models[0]
+        server_id = str(server.get('id') or '')
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                fetch_inference_stats,
+                api_url,
+                server_id=server_id,
+                model_id=active_model,
+            )
+            try:
+                inference_stats = future.result(timeout=2.5)
+            except FuturesTimeoutError:
+                inference_stats = get_cached_inference_stats(server_id)
+                if not is_proxy_generating(server_id):
+                    inference_stats = {
+                        **inference_stats,
+                        'generating': False,
+                        'generating_tokens': None,
+                        'generating_tokens_per_second': None,
+                        'generating_seconds': None,
+                    }
+
+    active_model_id = loaded_models[0] if loaded_models else ''
+
+    result = {
         **server,
+        'model_id': configured_model_id,
+        **client_meta,
         'running': running,
         'status': status,
         'booting': booting,
         'load_progress': load_progress,
         'loaded_models': loaded_models,
+        'active_model_id': active_model_id,
+        'ready_for_chat': bool(loaded_models),
         'model_stack': model_stack,
         'visible_cards': visible_cards,
         'gpu_display': gpu_display,
@@ -384,15 +983,150 @@ def build_server_status(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
         'inference_stats': inference_stats,
+        'boot_error': boot_error,
     }
+    if server_id:
+        _SERVER_STATUS_CACHE[server_id] = dict(result)
+    return result
 
 
-def get_status_payload(servers: list[dict[str, Any]], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+def _any_proxy_generating(servers: list[dict[str, Any]]) -> bool:
+    from core.inference_stats import is_proxy_generating
+
+    for entry in servers:
+        sid = str((entry or {}).get('id') or '')
+        if sid and is_proxy_generating(sid):
+            return True
+    return False
+
+
+def _cached_external_gpu_loads() -> list[dict[str, Any]]:
+    with _STATUS_PAYLOAD_LOCK:
+        return [dict(row) for row in _STATUS_EXTERNAL_CACHE]
+
+
+def _cached_status_payload(include_external: bool) -> dict[str, Any] | None:
+    with _STATUS_PAYLOAD_LOCK:
+        cached = _STATUS_PAYLOAD_CACHE.get('payload')
+        if not isinstance(cached, dict):
+            return None
+        # Prefer an exact match; otherwise allow a previous external=0 snapshot.
+        if _STATUS_PAYLOAD_CACHE.get('include_external') == include_external:
+            return dict(cached)
+        if include_external is False:
+            return dict(cached)
+        # Status polling without external scans is frequent. Reuse its server
+        # snapshot while preserving the last known external GPU rows.
+        fallback = dict(cached)
+        fallback['external_gpu_loads'] = [dict(row) for row in _STATUS_EXTERNAL_CACHE]
+        return fallback
+    return None
+
+
+def _store_status_payload(payload: dict[str, Any], *, include_external: bool) -> None:
+    with _STATUS_PAYLOAD_LOCK:
+        snapshot = dict(payload)
+        if include_external:
+            rows = snapshot.get('external_gpu_loads')
+            _STATUS_EXTERNAL_CACHE.clear()
+            if isinstance(rows, list):
+                _STATUS_EXTERNAL_CACHE.extend(
+                    dict(row) for row in rows if isinstance(row, dict)
+                )
+        _STATUS_PAYLOAD_CACHE['payload'] = snapshot
+        _STATUS_PAYLOAD_CACHE['updated_at'] = float(payload.get('updated_at') or time.time())
+        _STATUS_PAYLOAD_CACHE['include_external'] = include_external
+
+
+def get_status_payload(
+    servers: list[dict[str, Any]],
+    *,
+    cfg: dict[str, Any] | None = None,
+    gpus: list[dict[str, Any]] | None = None,
+    include_external: bool = True,
+    allow_stale: bool = True,
+    max_stale_seconds: float = 2.0,
+) -> dict[str, Any]:
     enabled = [s for s in servers if s.get('enabled', True)]
     primary_id = enabled[0]['id'] if enabled else (servers[0]['id'] if servers else '')
-    return {
+
+    # Under active chat, return the last good snapshot immediately so the Engines
+    # page never blocks on nvidia-smi / netstat while llama-server is busy.
+    if allow_stale and _any_proxy_generating(servers):
+        stale = _cached_status_payload(include_external)
+        if stale is not None:
+            stale = dict(stale)
+            stale['stale'] = True
+            stale['updated_at'] = time.time()
+            # Still refresh per-server inference_stats for generating engines.
+            refreshed_servers = []
+            for entry in list(stale.get('servers') or []):
+                if not isinstance(entry, dict):
+                    continue
+                row = dict(entry)
+                sid = str(row.get('id') or '')
+                if sid and _any_proxy_generating([row]):
+                    row['inference_stats'] = _live_stats_during_generation(
+                        server_id=sid,
+                        api_url=str(row.get('api_url') or ''),
+                        configured_model_id=str(row.get('active_model_id') or row.get('model_id') or ''),
+                    )
+                refreshed_servers.append(row)
+            stale['servers'] = refreshed_servers
+            if include_external:
+                stale['external_gpu_loads'] = _cached_external_gpu_loads()
+            return stale
+
+    with _STATUS_PAYLOAD_LOCK:
+        cached_at = float(_STATUS_PAYLOAD_CACHE.get('updated_at') or 0.0)
+        cached_payload = _STATUS_PAYLOAD_CACHE.get('payload')
+        cache_matches = (
+            isinstance(cached_payload, dict)
+            and _STATUS_PAYLOAD_CACHE.get('include_external') == include_external
+            and (time.time() - cached_at) <= float(max_stale_seconds)
+        )
+    if allow_stale and cache_matches:
+        out = dict(cached_payload)
+        out['stale'] = True
+        return out
+
+    resolved_gpus = gpus if gpus is not None else query_gpu_devices()
+    from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
+
+    # Skip expensive VRAM process scans while any engine is generating.
+    if _any_proxy_generating(servers):
+        vram_map = {}
+    else:
+        vram_map = query_compute_vram_map()
+
+    def _build_one(entry: dict[str, Any]) -> dict[str, Any]:
+        sid = str(entry.get('id') or '')
+        try:
+            return build_server_status(entry, cfg=cfg, gpus=resolved_gpus, vram_map=vram_map)
+        except Exception:
+            cached = _SERVER_STATUS_CACHE.get(sid)
+            if isinstance(cached, dict):
+                return dict(cached)
+            raise
+
+    if len(servers) <= 1:
+        built = [_build_one(server) for server in servers]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(4, len(servers))) as pool:
+            built = list(pool.map(_build_one, servers))
+
+    payload = {
         'success': True,
-        'servers': [build_server_status(server, cfg=cfg) for server in servers],
+        'servers': built,
         'primary_server_id': primary_id,
-        'updated_at': __import__('time').time(),
+        'updated_at': time.time(),
+        'stale': False,
     }
+    if include_external and not _any_proxy_generating(servers):
+        payload['external_gpu_loads'] = get_external_gpu_loads(servers=servers, gpus=resolved_gpus, cfg=cfg)
+    else:
+        payload['external_gpu_loads'] = _cached_external_gpu_loads() if include_external else []
+    _store_status_payload(payload, include_external=include_external)
+    return payload

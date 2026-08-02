@@ -14,14 +14,72 @@ def test_visible_card_is_single_composite_when_loaded():
     cards = _build_visible_cards(
         stack,
         server_label='Gemma 4 12B AR',
+        display_name='Gemma 4 12B it qat dflash Q4',
         booting=False,
         loaded_models=['gemma-4-12b-it-qat'],
         progress=None,
     )
     assert len(cards) == 1
-    assert cards[0]['title'] == 'Gemma 4 12B AR'
+    assert cards[0]['title'] == 'Gemma 4 12B it qat dflash Q4'
     assert cards[0]['ejectable'] is True
-    assert len(cards[0]['stack_details']) == 1
+    assert cards[0]['size_gb'] == 6.5
+    assert cards[0]['dflash_stack'] is False
+
+
+def test_visible_card_marks_adhoc_gguf_as_plain_llm():
+    stack = _annotate_model_stack(
+        [
+            {'role': 'alias', 'id': 'gemma-4-12b-it-qat', 'label': 'API alias', 'source': 'api'},
+            {'role': 'target', 'id': 'gemma-4-12b-it-qat-q4-0', 'label': 'Target', 'path': r'C:\x\gemma.gguf', 'size_gb': 6.5, 'source': 'lmstudio'},
+            {'role': 'draft-dflash', 'id': 'draft', 'label': 'Draft', 'path': r'C:\x\draft.gguf', 'source': 'dflash'},
+        ],
+        booting=False,
+        loaded_models=['deepseek-v2-lite-q4-k-m'],
+        progress=None,
+    )
+    cards = _build_visible_cards(
+        stack,
+        server_label='Gemma 12B',
+        display_name='Gemma 4 12B it qat dflash Q4',
+        booting=False,
+        loaded_models=['deepseek-v2-lite-q4-k-m'],
+        progress=None,
+    )
+    assert len(cards) == 1
+    assert cards[0]['is_adhoc'] is True
+    assert cards[0]['plain_llm'] is True
+    assert cards[0]['dflash_stack'] is False
+    assert cards[0]['title'] == 'deepseek v2 lite q4 k m'
+
+
+def test_visible_card_uses_filename_when_api_returns_default_alias():
+    stack = _annotate_model_stack(
+        [
+            {'role': 'alias', 'id': 'default', 'label': 'API alias', 'source': 'api'},
+            {
+                'role': 'target',
+                'id': 'nomic-embed-text-v1.5.Q8_0.gguf',
+                'label': 'Nomic Embed v1.5',
+                'path': r'C:\models\nomic-embed-text-v1.5.Q8_0.gguf',
+                'size_gb': 0.14,
+                'source': 'onevoice',
+            },
+        ],
+        booting=False,
+        loaded_models=['default'],
+        progress=None,
+    )
+    cards = _build_visible_cards(
+        stack,
+        server_label='Nomic Embed',
+        display_name='nomic-embed-text-v1.5.Q8_0.gguf',
+        booting=False,
+        loaded_models=['nomic-embed-text-v1.5.Q8_0.gguf'],
+        progress=None,
+    )
+    assert len(cards) == 1
+    assert cards[0]['title'] == 'nomic-embed-text-v1.5.Q8_0.gguf'
+    assert cards[0].get('is_adhoc') is not True
 
 
 def test_api_base_url_strips_v1():

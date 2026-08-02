@@ -10,17 +10,125 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.config import get_dflash_root, normalize_load_settings, normalize_server
+from core.config import get_dflash_root, is_embedding_server, normalize_load_settings, normalize_server
 from core.gpu_devices import resolve_role_gpu_launch_params
+from core.log_utils import rotate_log
 from core.model_presets import infer_profile_from_path, model_id_from_path, preset_path_for, write_server_preset
 
 _started_launch: dict[int, dict[str, Any]] = {}
+_started_processes: dict[int, subprocess.Popen] = {}
 _boot_lock = threading.Lock()
+_port_locks: dict[int, threading.RLock] = {}
+_port_locks_guard = threading.Lock()
 _boot_attempt_at: dict[int, float] = {}
-_log_handles: dict[str, Any] = {}
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / 'logs'
+
+
+def register_started_launch(port: int, signature: dict[str, Any]) -> None:
+    _started_launch[int(port)] = dict(signature)
+
+
+def register_started_process(port: int, process: subprocess.Popen) -> None:
+    with _port_locks_guard:
+        _started_processes[int(port)] = process
+
+
+def get_started_process(port: int) -> subprocess.Popen | None:
+    with _port_locks_guard:
+        process = _started_processes.get(int(port))
+        if process is not None and process.poll() is not None:
+            _started_processes.pop(int(port), None)
+            return None
+        return process
+
+
+def forget_started_process(port: int) -> None:
+    with _port_locks_guard:
+        _started_processes.pop(int(port), None)
+
+
+def terminate_process_tree(process: subprocess.Popen | None) -> bool:
+    if process is None or process.poll() is not None:
+        return False
+    try:
+        if sys.platform == 'win32':
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        else:
+            os.killpg(process.pid, 15)
+        process.wait(timeout=10)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def terminate_started_process(port: int) -> bool:
+    process = get_started_process(port)
+    result = terminate_process_tree(process)
+    forget_started_process(port)
+    return result
+
+
+def _port_lock(port: int) -> threading.RLock:
+    with _port_locks_guard:
+        return _port_locks.setdefault(int(port), threading.RLock())
+
+
+def port_lock_for(port: int) -> threading.RLock:
+    return _port_lock(port)
+
+
+def wait_for_port_closed(host: str, port: int, *, timeout: float = 8.0) -> bool:
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    while time.monotonic() < deadline:
+        if not _tcp_port_open(host, port):
+            return True
+        time.sleep(0.1)
+    return not _tcp_port_open(host, port)
+
+
+def _cleanup_failed_process(port: int, host: str, process: subprocess.Popen | None = None) -> None:
+    terminate_process_tree(process or get_started_process(port))
+    forget_started_process(port)
+    wait_for_port_closed(host, port)
+
+
+def managed_process_identity(pid: int) -> bool:
+    """Return whether a Windows process looks like a managed llama engine."""
+    if sys.platform != 'win32':
+        return True
+    query = (
+        f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
+        "| Select-Object Name,CommandLine | ConvertTo-Json -Compress)"
+    )
+    try:
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', query],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        import json
+
+        details = json.loads(result.stdout)
+        command = str(details.get('CommandLine') or '').lower()
+        name = str(details.get('Name') or '').lower()
+        return (
+            'llama-server' in name
+            or 'llama-server' in command
+            or 'start_llama_server.ps1' in command
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
 
 
 def get_started_launch(port: int) -> dict[str, Any]:
@@ -29,6 +137,8 @@ def get_started_launch(port: int) -> dict[str, Any]:
 
 def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Track an engine process Console did not spawn (e.g. after Console restart)."""
+    from core.runtime import _fetch_models_payload
+
     entry = normalize_server(server)
     port = int(entry['port'] or 0)
     host = str(entry['host'] or '127.0.0.1')
@@ -36,13 +146,35 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         return {'success': False, 'adopted': False, 'error': 'invalid port'}
     if not _tcp_port_open(host, port):
         return {'success': False, 'adopted': False, 'port': port}
+    pid = listener_pid(host, port)
+    if pid is None or not managed_process_identity(pid):
+        return {
+            'success': False,
+            'adopted': False,
+            'port': port,
+            'error': 'configured port is open but is not owned by a managed llama engine',
+        }
+    api_url = str(entry.get('api_url') or '').strip()
+    if not api_url or not _fetch_models_payload(api_url):
+        return {
+            'success': False,
+            'adopted': False,
+            'port': port,
+            'error': 'configured port is open but does not expose a compatible model API',
+        }
 
     launch = resolve_role_gpu_launch_params(
         entry.get('gpu_device'),
         model_id=entry.get('model_id'),
         hardware=(cfg or {}).get('hardware_settings'),
+        context_size=entry.get('context_size'),
     )
-    signature = _launch_signature(entry, launch)
+    if is_embedding_server(entry):
+        from core.embedding_server import _launch_signature as embedding_launch_signature
+
+        signature = embedding_launch_signature(entry, launch)
+    else:
+        signature = _launch_signature(entry, launch)
     _started_launch[port] = dict(signature)
     note_boot_cycle_end(port)
     return {'success': True, 'adopted': True, 'port': port}
@@ -51,6 +183,7 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
 def clear_server_tracking(port: int) -> None:
     _started_launch.pop(int(port), None)
     _boot_attempt_at.pop(int(port), None)
+    forget_started_process(port)
 
 
 def note_boot_cycle_end(port: int) -> None:
@@ -73,6 +206,46 @@ def _tcp_port_open(host: str, port: int) -> bool:
         return False
 
 
+def listener_pid(host: str, port: int) -> int | None:
+    if port <= 0:
+        return None
+    try:
+        if sys.platform == 'win32':
+            result = subprocess.run(
+                ['netstat', '-ano', '-p', 'tcp'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            needle = f':{int(port)}'
+            for line in result.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) < 5 or 'LISTENING' not in parts[3]:
+                    continue
+                local_addr = parts[1]
+                if not local_addr.endswith(needle):
+                    continue
+                if local_addr.startswith(('127.0.0.1', '0.0.0.0', '[::]')):
+                    try:
+                        return int(parts[4])
+                    except (ValueError, IndexError):
+                        return None
+        else:
+            result = subprocess.run(
+                ['lsof', '-ti', f'tcp:{int(port)}'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.stdout.strip():
+                return int(result.stdout.strip().splitlines()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+    return None
+
+
 def _launch_signature(server: dict[str, Any], launch: dict[str, Any]) -> dict[str, Any]:
     idle_minutes = int(server.get('idle_unload_minutes') or 0)
     idle_seconds = 0 if idle_minutes <= 0 else idle_minutes * 60
@@ -89,12 +262,20 @@ def _launch_signature(server: dict[str, Any], launch: dict[str, Any]) -> dict[st
         'eval_batch_size': int(load.get('eval_batch_size') or 2048),
         'physical_batch_size': int(load.get('physical_batch_size') or 512),
         'flash_attention': bool(load.get('flash_attention', True)),
+        'parallel_slots': int(load.get('parallel_slots') or 4),
         'model_id': str(server.get('model_id') or ''),
         'router_mode': True,
     }
 
 
-def _spawn_detached(cmd: list[str], *, log_path: Path, cwd: Path, handle_key: str = '') -> None:
+def _spawn_detached(
+    cmd: list[str],
+    *,
+    log_path: Path,
+    cwd: Path,
+    handle_key: str = '',
+    port: int | None = None,
+) -> subprocess.Popen:
     """Start engine; break away from Console job so restarts do not kill it."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open('a', encoding='utf-8')
@@ -110,12 +291,24 @@ def _spawn_detached(cmd: list[str], *, log_path: Path, cwd: Path, handle_key: st
         popen_kwargs['creationflags'] = create_no_window | create_breakaway_from_job
     else:
         popen_kwargs['start_new_session'] = True
-    subprocess.Popen(cmd, **popen_kwargs)
-    key = handle_key or str(log_path)
-    _log_handles[key] = log_file
+    try:
+        process = subprocess.Popen(cmd, **popen_kwargs)
+    except Exception:
+        log_file.close()
+        raise
+    log_file.close()
+    if port is not None:
+        register_started_process(port, process)
+    return process
 
 
-def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[str, Any], log_path: Path) -> None:
+def _spawn_router(
+    entry: dict[str, Any],
+    *,
+    preset_path: Path,
+    signature: dict[str, Any],
+    log_path: Path,
+) -> subprocess.Popen:
     dflash_root = get_dflash_root()
     script = dflash_root / 'scripts' / 'start_llama_server.ps1'
     cmd = [
@@ -150,14 +343,79 @@ def _spawn_router(entry: dict[str, Any], *, preset_path: Path, signature: dict[s
         str(signature['physical_batch_size']),
         '-FlashAttention',
         'on' if signature['flash_attention'] else 'off',
+        '-Parallel',
+        str(signature.get('parallel_slots') or 4),
     ]
     if signature['tensor_split']:
         cmd.extend(['-TensorSplit', signature['tensor_split']])
 
-    _spawn_detached(cmd, log_path=log_path, cwd=dflash_root, handle_key=str(entry['id']))
+    return _spawn_detached(
+        cmd,
+        log_path=log_path,
+        cwd=dflash_root,
+        handle_key=str(entry['id']),
+        port=int(entry['port']),
+    )
+
+
+def _port_bindable(host: str, port: int) -> tuple[bool, str | None]:
+    import socket
+
+    if port <= 0:
+        return False, 'invalid port'
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, int(port)))
+        return True, None
+    except OSError as exc:
+        winerr = getattr(exc, 'winerror', None)
+        if winerr == 10013 or 'access' in str(exc).lower():
+            return False, (
+                f'Port {port} is blocked by Windows (Hyper-V reserved range). '
+                f'Change the engine port in config.json — try 8301+ or 8088.'
+            )
+        if _tcp_port_open(host, port):
+            return False, f'Port {port} is already in use'
+        return False, f'Port {port} cannot bind: {exc}'
+
+
+def _ensure_listener_port_free(entry: dict[str, Any]) -> bool:
+    from core.runtime import stop_server
+
+    port = int(entry.get('port') or 0)
+    host = str(entry.get('host') or '127.0.0.1')
+    api_url = str(entry.get('api_url') or '')
+    if port <= 0 or not _tcp_port_open(host, port):
+        return True
+    pid = listener_pid(host, port)
+    if pid is None or not managed_process_identity(pid):
+        return False
+    result = stop_server(port=port, host=host, api_url=api_url)
+    return bool(result.get('success')) and wait_for_port_closed(host, port)
 
 
 def start_router_listener(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    skip_preset_write: bool = False,
+) -> dict[str, Any]:
+    """Start one router listener at a time for each configured port."""
+    entry = normalize_server(server)
+    port = int(entry.get('port') or 0)
+    if port <= 0 or not entry.get('id'):
+        return {'success': False, 'error': 'invalid server'}
+    lock = _port_lock(port)
+    if not lock.acquire(blocking=False):
+        return {'success': False, 'error': 'boot already in progress', 'port': port}
+    try:
+        return _start_router_listener_locked(entry, cfg=cfg, skip_preset_write=skip_preset_write)
+    finally:
+        lock.release()
+
+
+def _start_router_listener_locked(
     server: dict[str, Any],
     *,
     cfg: dict[str, Any] | None = None,
@@ -172,10 +430,19 @@ def start_router_listener(
     if port <= 0 or not server_id:
         return {'success': False, 'error': 'invalid server'}
 
+    bindable, bind_error = _port_bindable(host, port)
+    if not bindable:
+        from core.load_progress import mark_boot_failed
+
+        mark_boot_failed(server_id, bind_error or f'port {port} unavailable')
+        note_boot_cycle_end(port)
+        return {'success': False, 'error': bind_error or f'port {port} unavailable', 'port': port}
+
     launch = resolve_role_gpu_launch_params(
         entry.get('gpu_device'),
         model_id=model_id,
         hardware=(cfg or {}).get('hardware_settings'),
+        context_size=entry.get('context_size'),
     )
     signature = _launch_signature(entry, launch)
 
@@ -196,14 +463,21 @@ def start_router_listener(
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f'{server_id}.log'
+    if not _ensure_listener_port_free(entry):
+        return {'success': False, 'error': f'could not free port {port}', 'port': port}
+    rotate_log(log_path)
     with log_path.open('a', encoding='utf-8') as log_file:
         log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 idle=1 ===\n")
         log_file.flush()
 
+    process: subprocess.Popen | None = None
     try:
-        _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
+        process = _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
     except Exception as exc:
+        _cleanup_failed_process(port, host, process)
         return {'success': False, 'error': str(exc), 'port': port}
+
+    from core.load_progress import boot_failure_message, mark_boot_failed, read_log_tail
 
     for _ in range(120):
         if _tcp_port_open(host, port):
@@ -212,8 +486,17 @@ def start_router_listener(
             _started_launch[port] = dict(signature)
             note_boot_cycle_end(port)
             return {'success': True, 'port': port, 'log_file': str(log_path), 'router_idle': True}
+        failure = boot_failure_message(read_log_tail(server_id))
+        if failure:
+            mark_boot_failed(server_id, failure)
+            _cleanup_failed_process(port, host, process)
+            note_boot_cycle_end(port)
+            return {'success': False, 'error': failure, 'port': port, 'log_file': str(log_path)}
         time.sleep(1.0)
 
+    mark_boot_failed(server_id, f'timed out waiting for port {port}')
+    _cleanup_failed_process(port, host, process)
+    note_boot_cycle_end(port)
     return {'success': False, 'error': f'timed out waiting for port {port}', 'port': port, 'log_file': str(log_path)}
 
 
@@ -246,9 +529,15 @@ def load_server_checkpoint(
     model_id: str | None = None,
 ) -> dict[str, Any]:
     """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
-    from core.runtime import _fetch_models_payload, load_model, probe_models, stop_server
+    from core.config import is_embedding_server
+    from core.embedding_server import start_embedding_server
 
     entry = normalize_server(server)
+    if is_embedding_server(entry):
+        return start_embedding_server(entry, cfg=cfg)
+
+    from core.runtime import _fetch_models_payload, load_model, probe_models, stop_server
+
     port = int(entry['port'] or 0)
     host = str(entry['host'] or '127.0.0.1')
     api_url = str(entry.get('api_url') or '')
@@ -272,6 +561,9 @@ def load_server_checkpoint(
             return {'success': False, 'error': str(exc), 'port': port}
 
         if _tcp_port_open(host, port):
+            adopted = adopt_running_engine(entry, cfg=cfg)
+            if not adopted.get('success'):
+                return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
             loaded = probe_models(api_url)
             if load_id in loaded:
                 note_boot_cycle_end(port)
@@ -310,6 +602,9 @@ def load_server_checkpoint(
     registered_ids.discard('')
 
     if _tcp_port_open(host, port):
+        adopted = adopt_running_engine(entry, cfg=cfg)
+        if not adopted.get('success'):
+            return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
         loaded = probe_models(api_url)
         if load_id in loaded:
             note_boot_cycle_end(port)
@@ -338,9 +633,28 @@ def load_server_checkpoint(
 
 
 def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    from core.runtime import load_model, probe_models, router_unload_available, stop_server
+    entry = normalize_server(server)
+    port = int(entry.get('port') or 0)
+    if port <= 0 or not entry.get('id'):
+        return {'success': False, 'error': 'invalid server'}
+    lock = _port_lock(port)
+    if not lock.acquire(blocking=False):
+        return {'success': False, 'error': 'boot already in progress', 'port': port}
+    try:
+        return _start_server_locked(entry, cfg=cfg)
+    finally:
+        lock.release()
+
+
+def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    from core.config import is_embedding_server
+    from core.embedding_server import start_embedding_server
+    from core.runtime import _fetch_models_payload, load_model, probe_models, router_unload_available, stop_server
 
     entry = normalize_server(server)
+    if is_embedding_server(entry):
+        return start_embedding_server(entry, cfg=cfg)
+
     server_id = entry['id']
     if not server_id:
         return {'success': False, 'error': 'server id required'}
@@ -358,11 +672,27 @@ def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -
         entry.get('gpu_device'),
         model_id=model_id,
         hardware=(cfg or {}).get('hardware_settings'),
+        context_size=entry.get('context_size'),
     )
     signature = _launch_signature(entry, launch)
-    loaded = probe_models(api_url) if _tcp_port_open(host, port) else []
+    port_open = _tcp_port_open(host, port)
+    if port_open:
+        pid = listener_pid(host, port)
+        if pid is None or not managed_process_identity(pid):
+            return {
+                'success': False,
+                'error': f'port {port} is in use by an unmanaged process',
+                'port': port,
+            }
+    if port_open and not _fetch_models_payload(api_url):
+        return {
+            'success': False,
+            'error': f'port {port} is in use by a server that does not expose the configured model API',
+            'port': port,
+        }
+    loaded = probe_models(api_url) if port_open else []
 
-    if _tcp_port_open(host, port) and not router_unload_available(api_url):
+    if port_open and not router_unload_available(api_url):
         stop_server(port=port, host=host, api_url=api_url)
         loaded = []
 
@@ -393,23 +723,33 @@ def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -
     try:
         preset_path = write_server_preset(entry, cfg=cfg)
     except ValueError as exc:
+        note_boot_cycle_end(port)
         return {'success': False, 'error': str(exc), 'port': port}
 
     dflash_root = get_dflash_root(cfg)
     script = dflash_root / 'scripts' / 'start_llama_server.ps1'
     if not script.is_file():
+        note_boot_cycle_end(port)
         return {'success': False, 'error': f'start script not found: {script}'}
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f'{server_id}.log'
+    if not _ensure_listener_port_free(entry):
+        note_boot_cycle_end(port)
+        return {'success': False, 'error': f'could not free port {port}', 'port': port}
+    rotate_log(log_path)
     with log_path.open('a', encoding='utf-8') as log_file:
         log_file.write(f"\n=== boot {time.strftime('%Y-%m-%d %H:%M:%S')} profile={entry['profile']} router=1 ===\n")
         log_file.flush()
 
+    process: subprocess.Popen | None = None
     try:
-        _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
+        process = _spawn_router(entry, preset_path=preset_path, signature=signature, log_path=log_path)
     except Exception as exc:
+        _cleanup_failed_process(port, host, process)
         return {'success': False, 'error': str(exc), 'port': port}
+
+    from core.load_progress import boot_failure_message, mark_boot_failed, read_log_tail
 
     for _ in range(120):
         if _tcp_port_open(host, port):
@@ -419,21 +759,42 @@ def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -
                 _started_launch[port] = dict(signature)
                 note_boot_cycle_end(port)
                 return {'success': True, 'port': port, 'log_file': str(log_path), 'loaded': True}
+            mark_boot_failed(server_id, load_result.get('error') or 'model load failed')
+            _cleanup_failed_process(port, host, process)
+            note_boot_cycle_end(port)
             return {
                 'success': False,
                 'error': load_result.get('error') or 'model load failed',
                 'port': port,
                 'log_file': str(log_path),
             }
+        failure = boot_failure_message(read_log_tail(server_id))
+        if failure:
+            mark_boot_failed(server_id, failure)
+            _cleanup_failed_process(port, host, process)
+            note_boot_cycle_end(port)
+            return {'success': False, 'error': failure, 'port': port, 'log_file': str(log_path)}
         time.sleep(1.0)
 
+    mark_boot_failed(server_id, f'timed out waiting for port {port}')
+    _cleanup_failed_process(port, host, process)
+    note_boot_cycle_end(port)
     return {'success': False, 'error': f'timed out waiting for port {port}', 'port': port, 'log_file': str(log_path)}
 
 
 def reload_server(server: dict[str, Any]) -> dict[str, Any]:
-    from core.runtime import stop_server
+    from core.config import is_embedding_server
+    from core.embedding_server import start_embedding_server, stop_embedding_server
 
     entry = normalize_server(server)
+    if is_embedding_server(entry):
+        stop_result = stop_embedding_server(entry)
+        if not stop_result.get('success'):
+            return stop_result
+        return start_embedding_server(entry)
+
+    from core.runtime import stop_server
+
     result = stop_server(port=int(entry['port']), host=str(entry['host']), api_url=entry.get('api_url'))
     if not result.get('success'):
         return result

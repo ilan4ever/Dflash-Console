@@ -49,9 +49,24 @@
       trigger.classList.toggle('is-disabled', select.disabled);
     }
 
+    function syncTriggerClasses() {
+      const selectClasses = [...select.classList].filter((c) => c !== 'df-select-native');
+      trigger.className = `${selectClasses.join(' ')} df-select-trigger`.trim();
+      syncDisabled();
+    }
+
     function buildMenu() {
       menu.innerHTML = '';
-      [...select.options].forEach((opt) => {
+      [...select.children].forEach((child) => {
+        if (child instanceof HTMLOptGroupElement) {
+          const heading = document.createElement('div');
+          heading.className = 'df-select-group-label';
+          heading.textContent = child.label;
+          menu.appendChild(heading);
+        }
+        const options = child instanceof HTMLOptGroupElement ? [...child.children] : [child];
+        options.forEach((opt) => {
+        if (!(opt instanceof HTMLOptionElement)) return;
         if (opt.disabled && !opt.value) return;
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -79,6 +94,7 @@
           trigger.setAttribute('aria-expanded', 'false');
         });
         menu.appendChild(btn);
+        });
       });
     }
 
@@ -112,15 +128,28 @@
     });
 
     select.addEventListener('change', syncTrigger);
-    new MutationObserver(syncTrigger).observe(select, { attributes: true, attributeFilter: ['disabled'] });
     new MutationObserver(() => {
+      syncTriggerClasses();
       if (menu.classList.contains('open')) buildMenu();
       syncTrigger();
-    }).observe(select, { childList: true, subtree: true, characterData: true });
+    }).observe(select, { attributes: true, attributeFilter: ['disabled', 'class'], childList: true, subtree: true, characterData: true });
 
     wrap.appendChild(trigger);
     wrap.appendChild(menu);
     syncTrigger();
+  }
+
+  function syncSelect(select) {
+    if (!(select instanceof HTMLSelectElement)) return;
+    const wrap = select.closest('.df-select-wrap');
+    const trigger = wrap?.querySelector('.df-select-trigger');
+    if (!trigger) return;
+    const selectClasses = [...select.classList].filter((c) => c !== 'df-select-native');
+    trigger.className = `${selectClasses.join(' ')} df-select-trigger`.trim();
+    trigger.disabled = select.disabled;
+    trigger.classList.toggle('is-disabled', select.disabled);
+    const opt = select.options[select.selectedIndex];
+    trigger.textContent = opt?.textContent?.trim() || 'Select…';
   }
 
   function enhanceAll(root) {
@@ -146,5 +175,5 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  window.DFlashSelectTheme = { enhanceAll, enhanceSelect };
+  window.DFlashSelectTheme = { enhanceAll, enhanceSelect, syncSelect };
 })();

@@ -4,12 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DFlash Console</title>
-  <link rel="stylesheet" href="/static/css/lm-studio-mockup.css">
+  <link rel="stylesheet" href="/static/css/dflash-console.css">
   <link rel="stylesheet" href="/static/css/dflash-shell.css">
 </head>
 <body class="df-shell">
   <div class="lm-app df-app">
     <aside class="df-sidenav" aria-label="Main navigation">
+      <button type="button" class="df-sidenav-collapse lm-icon-btn tiny" id="sidenavCollapseBtn" title="Hide sidebar" aria-label="Hide sidebar">◀</button>
+      <div class="df-sidenav-inner">
       <div class="df-brand">
         <img src="/assets/dflash_console_logo.png" alt="" class="df-brand-logo" width="80" height="80">
         <div class="df-brand-text">
@@ -28,13 +30,13 @@
           <span class="df-nav-icon" aria-hidden="true">▤</span>
           <span class="df-nav-label">Models</span>
         </button>
-        <button type="button" class="df-nav-item lm-tab" data-tab="chat">
-          <span class="df-nav-icon" aria-hidden="true">▷</span>
-          <span class="df-nav-label">Playground</span>
-        </button>
         <button type="button" class="df-nav-item lm-tab" data-tab="catalog">
           <span class="df-nav-icon" aria-hidden="true">⌕</span>
           <span class="df-nav-label">Model catalog</span>
+        </button>
+        <button type="button" class="df-nav-item lm-tab" data-tab="chat">
+          <span class="df-nav-icon" aria-hidden="true">▷</span>
+          <span class="df-nav-label">Playground</span>
         </button>
         <button type="button" class="df-nav-item lm-tab" data-tab="devices">
           <span class="df-nav-icon" aria-hidden="true">◎</span>
@@ -49,15 +51,10 @@
           <span class="df-nav-label">Documentation</span>
         </button>
       </nav>
-    </aside>
-
-    <div class="df-workspace">
-    <section class="lm-sysbar">
-      <div class="lm-sysbar-row">
-        <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
-        <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+      </div>
+      <div class="df-sidenav-footer">
         <div class="df-downloads-tray" id="dfDownloadsTray">
-          <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" aria-controls="dfDownloadsPanel" title="Model downloads">
+          <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" aria-controls="dfDownloadsPanel" title="Open downloading models in Model library">
             <span class="df-downloads-toggle-icon" aria-hidden="true">↓</span>
             <span class="df-downloads-toggle-label">Downloads</span>
             <span class="df-downloads-badge hidden" id="dfDownloadsBadge">0</span>
@@ -72,6 +69,18 @@
             </div>
           </div>
         </div>
+      </div>
+      <div class="df-sidenav-resize-handle" id="sidenavResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize navigation sidebar" tabindex="0"></div>
+    </aside>
+
+    <button type="button" class="df-sidenav-restore lm-icon-btn tiny hidden" id="sidenavRestoreBtn" title="Show sidebar" aria-label="Show sidebar">▶</button>
+
+    <div class="df-workspace">
+    <section class="lm-sysbar">
+      <div class="lm-sysbar-row">
+        <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
+        <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+        <div class="lm-server-link-badge online" id="serverLinkBadge" role="status" aria-live="polite" title="Console API connection">Online</div>
         <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Activity status">
           <span class="lm-status-feed-line" id="statusFeedPrimary">Ready</span>
           <span class="lm-status-feed-line secondary" id="statusFeedSecondary"></span>
@@ -80,7 +89,7 @@
     </section>
 
       <header class="df-pagehead">
-        <h1 class="df-page-title" id="dfPageTitle">Inference engines</h1>
+        <h1 class="df-page-title" id="dfPageTitle">Engines</h1>
         <div class="df-page-actions">
           <button class="lm-btn ghost small" data-action="toggle-inspector" title="Show/hide runtime panel">Runtime panel</button>
         </div>
@@ -98,6 +107,13 @@
     </header>
 
     <div class="lm-body">
+<script>
+try {
+  if (localStorage.getItem('dflashConsole.inspectorCollapsed') === '1') {
+    document.currentScript.parentElement.classList.add('inspector-collapsed');
+  }
+} catch (e) { /* ignore */ }
+</script>
       <div class="lm-main">
 
         <!-- Playground (chat) -->
@@ -109,24 +125,20 @@
             </aside>
             <div class="df-chat-main">
               <header class="df-chat-head">
-                <div class="df-chat-head-left">
+                <div class="df-chat-toolbar">
                   <div class="df-chat-load-row">
-                    <label class="df-chat-engine-label" for="chatEnginePick">Engine</label>
-                    <select class="lm-select" id="chatEnginePick" title="Target inference engine">
-                      <option value="">Select engine…</option>
+                    <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
+                    <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by source" disabled>
+                      <option value="">All sources</option>
                     </select>
-                  </div>
-                  <div class="df-chat-load-row">
+                    <select id="chatEnginePick" hidden aria-hidden="true"></select>
                     <label class="df-chat-engine-label" for="chatCheckpointPick">Model</label>
-                    <select class="lm-select df-chat-checkpoint-pick" id="chatCheckpointPick" title="Model to load">
-                      <option value="">Select model…</option>
+                    <select class="lm-select df-chat-checkpoint-pick is-loading" id="chatCheckpointPick" title="Choose the model file to load into the selected server" disabled>
+                      <option value="">Loading models…</option>
                     </select>
-                    <button type="button" class="lm-btn primary small" id="chatLoadBtn">Load</button>
                   </div>
                   <span class="df-chat-model-tag" id="chatModelTag" title="Model ready for chat">—</span>
-                </div>
-                <div class="df-chat-head-actions">
-                  <button type="button" class="lm-btn ghost small" id="chatClearBtn" title="Clear messages">Clear</button>
+                  <button type="button" class="lm-btn primary small df-chat-load-btn" id="chatLoadBtn" disabled>Load</button>
                 </div>
               </header>
               <div class="df-chat-body">
@@ -134,12 +146,22 @@
                 <div class="df-chat-welcome" id="chatWelcome">
                   <div class="df-chat-welcome-icon" aria-hidden="true">▷</div>
                   <h2>Playground</h2>
-                  <p>Pick an engine and model above, click <strong>Load</strong>, then chat to test prompts and speed.</p>
+                  <p>Pick a source and model above, click <strong>Load</strong>, then chat to test prompts and speed.</p>
                   <p class="lm-hint">Works with DFlash profiles, LM Studio files, and other local GGUF models.</p>
                 </div>
               </div>
               <footer class="df-chat-composer">
-                <textarea id="chatInput" class="df-chat-input" rows="1" placeholder="Message the model… (Enter to send, Shift+Enter for newline)" disabled></textarea>
+                <div class="df-chat-input-main">
+                  <div class="df-chat-attachment-tray hidden" id="chatAttachmentTray" aria-live="polite"></div>
+                  <div class="df-chat-input-shell">
+                    <input id="chatFilePick" type="file" accept="image/*,.txt,.md,.markdown,.json,.csv,.tsv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.xml,.yaml,.yml,.toml,.ini,.cfg,.sql,.sh,.ps1" multiple hidden>
+                    <textarea id="chatInput" class="df-chat-input" rows="1" placeholder="Message the model… (Enter to send, Shift+Enter for newline)" disabled></textarea>
+                    <div class="df-chat-input-actions">
+                      <button type="button" class="df-chat-input-icon df-chat-attach-btn" id="chatAttachBtn" title="Attach images or text files" aria-label="Attach files">📎</button>
+                      <button type="button" class="df-chat-input-icon df-chat-clear-btn" id="chatClearBtn" title="Clear this chat" aria-label="Clear this chat" disabled>×</button>
+                    </div>
+                  </div>
+                </div>
                 <button type="button" class="lm-btn primary df-chat-send" id="chatSendBtn" disabled aria-label="Send message">Send</button>
               </footer>
               <div class="df-chat-status" id="chatStatus" aria-live="polite"></div>
@@ -151,29 +173,54 @@
         <div class="lm-view active" data-view="server">
           <div class="lm-server-upper">
             <div class="lm-server-bar">
-              <div class="lm-server-left">
-                <label class="lm-toggle lm-engine-power-toggle" title="Start or stop engine">
-                  <input type="checkbox" id="serverRunningToggle">
-                  <span class="lm-toggle-track"></span>
-                </label>
-                <div class="lm-engine-status-labels">
-                  <span class="lm-status-label">Engine:</span>
-                  <span class="lm-status-running" id="serverStatusText">Stopped</span>
+              <div class="lm-server-bar-top">
+                <div class="lm-server-engine-meta">
+                  <button class="lm-icon-btn small lm-engine-settings-btn" type="button" data-action="open-settings-panel" data-settings-panel="gw-network" title="Engine settings" aria-label="Engine settings">
+                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7m7.43-2.53c.04-.32.07-.64.07-.97 0-.33-.03-.66-.07-1l2.11-1.63a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.1 7.1 0 0 0-1.73-1l-.38-2.65A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.49.42l-.38 2.65c-.62.24-1.21.56-1.73 1l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64L3.57 11c-.04.34-.07.67-.07 1 0 .33.03.65.07.97l-2.11 1.63a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.52.43 1.11.76 1.73 1l.38 2.65A.5.5 0 0 0 10 22h4a.5.5 0 0 0 .49-.42l.38-2.65c.62-.24 1.21-.56 1.73-1l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64z"/>
+                    </svg>
+                  </button>
+                  <label class="lm-toggle lm-engine-power-toggle" title="Start or stop engine">
+                    <input type="checkbox" id="serverRunningToggle">
+                    <span class="lm-toggle-track"></span>
+                  </label>
+                  <div class="lm-engine-status-labels">
+                    <span class="lm-status-label">Engine:</span>
+                    <span class="lm-status-running" id="serverStatusText">Stopped</span>
+                  </div>
                 </div>
-                <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="gw-network">Engine settings</button>
-              </div>
-              <div class="lm-server-right">
-                <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
-                <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy">⧉</button>
-                <div class="lm-engine-load-group">
-                  <select id="serverModelPick" class="lm-select lm-engine-model-pick" title="Models discovered on this machine">
-                    <option value="">Select model…</option>
-                  </select>
-                  <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
+                <div class="lm-server-bar-center">
+                  <div class="lm-engine-load-group">
+                    <select id="serverSourcePick" class="lm-select lm-engine-source-pick is-loading" title="Filter models by source" disabled>
+                      <option value="">All sources</option>
+                    </select>
+                    <select id="serverModelPick" class="lm-select lm-engine-model-pick is-loading" title="Choose a model to load on the DFlash Console Server" disabled>
+                      <option value="">Model to load</option>
+                    </select>
+                    <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
+                  </div>
+                </div>
+                <div class="lm-server-api">
+                  <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
+                  <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy API URL">⧉</button>
                 </div>
               </div>
             </div>
-            <div class="lm-section-label">Running models</div>
+            <div id="enginePageNotice" class="lm-engine-page-notice hidden" role="status" aria-live="polite">
+              <div class="lm-engine-page-notice-inner">
+                <span class="lm-engine-page-notice-spinner" aria-hidden="true"></span>
+                <div class="lm-engine-page-notice-copy">
+                  <strong id="enginePageNoticeTitle">Loading engines…</strong>
+                  <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail"></span>
+                </div>
+              </div>
+            </div>
+            <div class="lm-section-head lm-engine-cards-head">
+              <span class="lm-section-label" id="engineCardsSectionLabel">No models loaded on GPU</span>
+              <div class="lm-engine-cards-filters">
+                <button type="button" class="lm-filter-chip active" id="engineCardsFilterBtn" title="Show This app, External apps, or all models">All models</button>
+              </div>
+            </div>
             <div id="serverModelCards" class="lm-server-cards"></div>
             <div id="serverEmptyState" class="lm-server-empty">Engine stopped. Enable it or load a model.</div>
           </div>
@@ -224,24 +271,38 @@
           <div class="lm-models-toolbar">
             <div class="lm-models-toolbar-right">
               <div class="lm-models-filter" role="group" aria-label="Model filter">
-                <button type="button" class="lm-filter-chip" data-models-filter="all">All models</button>
-                <button type="button" class="lm-filter-chip active" data-models-filter="dflash">DFlash only</button>
-                <button type="button" class="lm-filter-chip" data-models-filter="downloading">Downloading</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="all" data-tooltip="Shows every local model, including regular GGUF files and DFlash profiles.">All models</button>
+                <button type="button" class="lm-filter-chip active" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash accelerator and ready to run.">DFlash stacks</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash or DSpark draft checkpoint files.">Accelerators</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="downloading" data-tooltip="Shows models currently downloading from Hugging Face.">Downloading</button>
               </div>
-              <input type="search" class="lm-search-input" id="modelsFilterInput" placeholder="Filter models… (Ctrl + F)">
+              <select class="lm-select lm-models-type-filter" id="modelsTypeFilter" aria-label="Filter model type" title="Filter the library by model type">
+                <option value="all">All model types</option>
+                <option value="llm">LLM / chat</option>
+                <option value="dflash">DFlash</option>
+                <option value="ocr">OCR</option>
+                <option value="translation">Translation</option>
+                <option value="speech-to-text">Speech-to-text</option>
+                <option value="text-to-speech">Text-to-speech</option>
+                <option value="embedding">Embeddings</option>
+                <option value="vision">Vision</option>
+                <option value="other">Other</option>
+              </select>
+              <input type="search" class="lm-search-input lm-models-search" id="modelsFilterInput" placeholder="Filter models… (Ctrl + F)">
+              <button type="button" class="lm-btn df-btn-accent small lm-models-create-btn" id="stackWizardOpenBtn" title="Create a new DFlash stack — pick a target model, pair it with a DFlash accelerator, and register a runnable engine profile.">+ Create DFlash stack</button>
             </div>
           </div>
           <div class="lm-models-table-wrap">
-            <table class="lm-models-table">
+            <table class="lm-models-table" data-resizable-columns data-resize-key="models-library">
               <thead>
                 <tr>
-                  <th class="lm-col-model">Model</th>
-                  <th>Family</th>
-                  <th>Scale</th>
-                  <th>Source</th>
-                  <th>Disk</th>
-                  <th>Updated</th>
-                  <th></th>
+                  <th class="lm-col-model" data-col-id="model" data-col-min="180">Model</th>
+                  <th class="lm-col-meta" data-col-id="family" data-col-min="48">Family</th>
+                  <th class="lm-col-meta" data-col-id="scale" data-col-min="40">Scale</th>
+                  <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
+                  <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
+                  <th class="lm-col-meta" data-col-id="updated" data-col-min="64">Updated</th>
+                  <th class="lm-col-action" data-col-id="action" data-col-min="56"></th>
                 </tr>
               </thead>
               <tbody id="modelsTableBody"></tbody>
@@ -280,46 +341,47 @@
         </div>
         <!-- Model catalog -->
         <div class="lm-view" data-view="catalog">
+          <div class="df-stack-catalog-return hidden" id="stackWizardCatalogReturn">
+            <button type="button" class="lm-btn ghost small" id="stackWizardCatalogReturnBtn">← Back to Create DFlash stack</button>
+            <span class="df-stack-catalog-return-hint" id="stackWizardCatalogReturnHint"></span>
+          </div>
           <div class="df-catalog-shell lm-search-dialog">
             <div class="lm-search-layout" id="hfSearchLayout">
           <div class="lm-search-left" id="hfSearchLeft">
             <input type="search" class="lm-search-input lm-search-input-modal" id="hfSearchInput" placeholder="Search Hugging Face models…" autocomplete="off">
             <div class="lm-search-list-header">
               <div class="df-catalog-toolbar">
-                <div class="df-catalog-toolbar-row">
-                  <div class="df-catalog-toolbar-group">
-                    <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
-                    <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
-                      <option value="dflash" selected>DFlash / speculative</option>
-                      <option value="text-generation">Text generation (GGUF)</option>
-                      <option value="all-gguf">All GGUF</option>
-                      <option value="text-to-speech">Text-to-speech</option>
-                      <option value="automatic-speech-recognition">Speech-to-text</option>
-                      <option value="image-to-text">OCR / image-to-text</option>
-                      <option value="feature-extraction">Embeddings</option>
-                    </select>
-                  </div>
-                  <div class="df-catalog-toolbar-group">
-                    <label class="df-catalog-filter-label" for="hfSearchSort">Filter by</label>
-                    <select class="lm-select small" id="hfSearchSort" aria-label="Filter by">
-                      <option value="downloads">Most downloads</option>
-                      <option value="lastModified">Recently updated</option>
-                      <option value="likes">Most liked</option>
-                    </select>
-                  </div>
+                <div class="df-catalog-toolbar-group">
+                  <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
+                  <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
+                    <option value="dflash" selected>DFlash / speculative</option>
+                    <option value="text-generation">Text generation (GGUF)</option>
+                    <option value="all-gguf">All GGUF</option>
+                    <option value="text-to-speech">Text-to-speech</option>
+                    <option value="automatic-speech-recognition">Speech-to-text</option>
+                    <option value="image-to-text">OCR / image-to-text</option>
+                    <option value="feature-extraction">Embeddings</option>
+                  </select>
                 </div>
-                <div class="df-catalog-toolbar-row df-catalog-toolbar-row-full">
-                  <div class="df-catalog-toolbar-group">
-                    <label class="df-catalog-filter-label" for="hfSearchCreator">Lab</label>
-                    <select class="lm-select small" id="hfSearchCreator" aria-label="Lab">
-                      <option value="">All labs</option>
-                    </select>
-                  </div>
+                <div class="df-catalog-toolbar-group">
+                  <label class="df-catalog-filter-label" for="hfSearchSort">Filter by</label>
+                  <select class="lm-select small" id="hfSearchSort" aria-label="Filter by">
+                    <option value="downloads">Most downloads</option>
+                    <option value="lastModified">Recently updated</option>
+                    <option value="likes">Most liked</option>
+                    <option value="installed">Installed only</option>
+                  </select>
+                </div>
+                <div class="df-catalog-toolbar-group df-catalog-toolbar-group-full">
+                  <label class="df-catalog-filter-label" for="hfSearchCreator">Lab</label>
+                  <select class="lm-select small" id="hfSearchCreator" aria-label="Lab">
+                    <option value="">All labs</option>
+                  </select>
                 </div>
               </div>
             </div>
             <div class="lm-search-list" id="hfSearchList">
-              <div class="lm-search-empty">Open search to browse GGUF models from Hugging Face.</div>
+              <div class="lm-search-empty">Open Model catalog to browse Hugging Face models.</div>
             </div>
           </div>
           <div class="lm-search-split-handle" id="hfSearchSplitHandle" role="separator" aria-orientation="vertical" aria-label="Resize model list" tabindex="0"></div>
@@ -567,12 +629,13 @@
 
       <aside class="lm-inspector">
         <div class="lm-inspector-resize-handle" id="inspectorResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0"></div>
-        <div class="lm-inspector-head">
-          <h2 id="inspectorHeadTitle">Select a model</h2>
-        </div>
         <div class="lm-inspector-tabs">
           <button class="lm-inspector-tab" data-inspector-tab="info">Details</button>
           <button class="lm-inspector-tab active" data-inspector-tab="load">Runtime</button>
+        </div>
+        <h2 id="inspectorHeadTitle" class="lm-inspector-model-title">Select a model</h2>
+        <div id="inspectorReloadNotice" class="lm-inspector-reload-notice hidden" role="status">
+          Reload this model to apply runtime changes. Settings stay saved in config until the next load.
         </div>
         <div class="lm-inspector-scroll">
           <div class="lm-inspector-panel" data-inspector-panel="info">
@@ -583,6 +646,11 @@
               <div class="lm-info-row"><span>Precision</span><strong id="inspectorInfoQuant">—</strong></div>
               <div class="lm-info-row"><span>Format</span><strong>GGUF</strong></div>
               <div class="lm-info-row"><span>File size</span><strong id="inspectorInfoSize">—</strong></div>
+              <div class="lm-info-row" id="inspectorInfoVramRow"><span>VRAM in use</span><strong id="inspectorInfoVram">—</strong></div>
+              <div class="lm-info-row" id="inspectorInfoGpuRow"><span>GPU</span><strong id="inspectorInfoGpu">—</strong></div>
+              <div class="lm-info-row" id="inspectorInfoPortRow"><span>Port</span><strong id="inspectorInfoPort">—</strong></div>
+              <div class="lm-info-row" id="inspectorInfoAppRow"><span>Source app</span><strong id="inspectorInfoApp">—</strong></div>
+              <div class="lm-info-row" id="inspectorInfoEmbeddingRow"><span>Embedding</span><strong id="inspectorInfoEmbedding">—</strong></div>
               <div class="lm-info-row"><span>Context limit</span><strong id="inspectorInfoContext">—</strong></div>
               <div class="lm-info-row"><span>Features</span><span id="inspectorInfoCaps"></span></div>
               <div class="lm-info-row" id="inspectorInfoDraftRow"><span>Accelerator pair</span><strong id="inspectorInfoDraft">—</strong></div>
@@ -591,6 +659,7 @@
             </section>
           </div>
           <div class="lm-inspector-panel active" data-inspector-panel="load">
+            <p id="inspectorExternalRuntimeNote" class="lm-inspector-external-note hidden">This model runs outside DFlash Console. Runtime settings here apply only when you load through this app.</p>
             <div class="lm-runtime-rec-bar">
               <p class="lm-rec-summary hidden" id="inspectorRecSummary"></p>
               <button class="lm-btn ghost small" type="button" id="inspectorApplyRecommended">Use recommended</button>
@@ -716,6 +785,30 @@
     </div>
   </div>
 
+  <!-- Create DFlash stack wizard -->
+  <div class="lm-modal" id="stackWizardModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-stack-wizard-dialog">
+        <div class="lm-scan-header">
+          <div>
+            <h2 id="stackWizardTitle">Create DFlash stack</h2>
+            <p class="lm-setting-desc" id="stackWizardSubtitle">Choose target model</p>
+            <div class="df-stack-steps" id="stackWizardSteps" aria-hidden="true"></div>
+          </div>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="df-stack-wizard-body" id="stackWizardBody"></div>
+        <div class="lm-scan-footer df-stack-wizard-footer">
+          <div class="df-stack-wizard-footer-left">
+            <button class="lm-btn ghost" type="button" id="stackWizardCancel">Cancel</button>
+            <button class="lm-btn ghost" type="button" id="stackWizardBack">Back</button>
+          </div>
+          <button class="lm-btn df-btn-accent" type="button" id="stackWizardNext">Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Library scan modal -->
   <div class="lm-modal" id="libraryScanModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -791,6 +884,7 @@
 
   <div id="modelsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="serverCardContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
+  <div id="chatSessionContextMenu" class="lm-context-menu df-chat-session-context-menu hidden" role="menu" aria-hidden="true"></div>
 
   <div class="lm-modal" id="modelMetadataModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -809,6 +903,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
+  <script src="/static/js/ui-layout-prefs.js"></script>
   <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/download-queue.js"></script>
   <script src="/static/js/server-reload-watch.js"></script>
@@ -821,11 +916,14 @@
   <script src="/static/js/runtime-steppers.js"></script>
   <script src="/static/js/runtime-recommendations.js"></script>
   <script src="/static/js/log-format.js"></script>
+  <script src="/static/js/model-catalog-groups.js"></script>
   <script src="/static/js/server-live.js"></script>
+  <script src="/static/js/table-column-resize.js"></script>
   <script src="/static/js/models-live.js"></script>
+  <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
-  <script src="/static/js/lm-studio-ui.js"></script>
+  <script src="/static/js/dflash-console-ui.js"></script>
   <script src="/static/js/select-theme.js"></script>
 </body>
 </html>
