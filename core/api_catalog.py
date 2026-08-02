@@ -154,7 +154,7 @@ def _overview_html(base: str) -> str:
 def _engine_endpoints() -> list[dict[str, Any]]:
     sid = '{server_id}'
     return [
-        {'method': 'GET', 'path': '/api/servers', 'summary': 'List engines with live status and inference stats.'},
+        {'method': 'GET', 'path': '/api/servers', 'summary': 'List engines with live status and inference stats. Each server includes model_id, status, loaded_models, active_model_id, and ready_for_chat (true only when status is loaded).'},
         {'method': 'GET', 'path': f'/api/servers/{sid}/status', 'summary': 'Status for one engine profile.'},
         {
             'method': 'PATCH',
@@ -189,8 +189,8 @@ def _engine_endpoints() -> list[dict[str, Any]]:
         {
             'method': 'POST',
             'path': f'/api/servers/{sid}/v1/chat/completions',
-            'summary': 'Proxy chat to engine; updates inference-stats from response timings.',
-            'body': {'model': 'model-id', 'messages': [{'role': 'user', 'content': 'Hello'}], 'max_tokens': 512},
+            'summary': 'Proxy chat to engine; supports stream:true SSE passthrough. Requires status loaded — POST /load first if running idle.',
+            'body': {'model': 'model-id', 'messages': [{'role': 'user', 'content': 'Hello'}], 'max_tokens': 512, 'stream': True},
         },
         {'method': 'GET', 'path': f'/api/logs/{sid}?tail=200', 'summary': 'Tail engine logs.'},
         {'method': 'DELETE', 'path': f'/api/logs/{sid}', 'summary': 'Clear engine log file.'},

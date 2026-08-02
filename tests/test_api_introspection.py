@@ -30,12 +30,20 @@ def test_list_app_endpoints_shape():
         endpoint = None
 
     class _App:
-        routes = [_Route()]
+        class _BlankEndpointRoute:
+            methods = {'GET'}
+            path = '/api/blank'
+            name = 'blank'
+            summary = ''
+            tags = []
+            endpoint = lambda: None
+
+        routes = [_Route(), _BlankEndpointRoute()]
 
     payload = list_app_endpoints(_App(), console_base='http://127.0.0.1:8900')
     assert payload['success'] is True
-    assert payload['count'] == 1
-    assert payload['endpoints'][0]['path'] == '/api/health'
+    assert payload['count'] == 2
+    assert {row['path'] for row in payload['endpoints']} == {'/api/health', '/api/blank'}
 
 
 def test_installed_payload_has_providers():

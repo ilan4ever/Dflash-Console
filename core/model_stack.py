@@ -27,21 +27,51 @@ def _basename_id(path: Path) -> str:
     return stem.replace('_', '-').lower()[:80]
 
 
-def _find_gemma12_target() -> Path | None:
-    candidates = [
+def _gemma12_target_rank(path: Path) -> tuple[int, str]:
+    from core.stack_match import is_target_candidate
+
+    name = path.name.lower()
+    rank = 0
+    if 'qat' in name:
+        rank += 100
+    if 'translategemma' in name:
+        rank += 1000
+    if not is_target_candidate(path):
+        rank += 10000
+    return (rank, name)
+
+
+def _find_gemma12_target(*, cfg: dict[str, Any] | None = None) -> Path | None:
+    from core.stack_match import is_target_candidate
+
+    root = get_dflash_root(cfg)
+    candidates: list[Path] = [
+        root / 'models' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
+        _lmstudio_models_dir() / 'bartowski' / 'gemma-4-12B-it-GGUF' / 'gemma-4-12B-it-Q4_K_M.gguf',
         _lmstudio_models_dir() / 'google' / 'gemma-4-12B-it-qat-q4_0-gguf' / 'gemma-4-12B_q4_0-it.gguf',
+        _lmstudio_models_dir() / 'google' / 'gemma-4-12b-it-qat-q4_0-gguf' / 'gemma-4-12b-it-qat-q4_0.gguf',
         _lmstudio_models_dir() / 'google' / 'gemma-4-12b-it-qat-q4_0-gguf' / 'gemma-4-12b_q4_0-it.gguf',
     ]
+    found: list[Path] = []
     for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+        if candidate.is_file() and is_target_candidate(candidate):
+            found.append(candidate)
     google_dir = _lmstudio_models_dir() / 'google'
     if google_dir.is_dir():
         for hit in google_dir.rglob('*.gguf'):
             name = hit.name.lower()
-            if '12' in name and 'gemma' in name:
-                return hit
-    return None
+            if '12' in name and 'gemma' in name and is_target_candidate(hit):
+                found.append(hit)
+    bart_dir = _lmstudio_models_dir() / 'bartowski'
+    if bart_dir.is_dir():
+        for hit in bart_dir.rglob('*.gguf'):
+            name = hit.name.lower()
+            if '12' in name and 'gemma' in name and is_target_candidate(hit):
+                found.append(hit)
+    if not found:
+        return None
+    found = sorted(set(found), key=_gemma12_target_rank)
+    return found[0]
 
 
 def _stack_entry(
@@ -67,6 +97,38 @@ def _stack_entry(
 
 def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Return ordered model stack for a server profile (target, optional draft, alias)."""
+    custom_target = str(server.get('target_path') or '').strip()
+    custom_draft = str(server.get('draft_path') or '').strip()
+    alias = str(server.get('model_id') or '').strip()
+
+    if custom_target:
+        stack: list[dict[str, Any]] = []
+        if alias:
+            stack.append(_stack_entry(
+                role='alias',
+                label='API alias',
+                path=None,
+                source='api',
+                api_id=alias,
+            ))
+        target_path = Path(custom_target)
+        stack.append(_stack_entry(
+            role='target',
+            label=target_path.name,
+            path=target_path,
+            source='custom',
+        ))
+        if custom_draft:
+            draft_path = Path(custom_draft)
+            role = 'draft-dspark' if 'dspark' in draft_path.name.lower() else 'draft-dflash'
+            stack.append(_stack_entry(
+                role=role,
+                label=draft_path.name,
+                path=draft_path,
+                source='custom',
+            ))
+        return stack
+
     root = get_dflash_root(cfg)
     profile = str(server.get('profile') or 'gemma-chat').strip()
     alias = str(server.get('model_id') or '').strip()
@@ -79,7 +141,7 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
     bonsai_root = root / 'bonsai-27b'
     bonsai_target = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-Q2_0.gguf'
     bonsai_draft = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-dspark-Q4_1.gguf'
-    gemma12 = _find_gemma12_target()
+    gemma12 = _find_gemma12_target(cfg=cfg)
 
     if profile in ('gemma-chat', 'gemma-ar'):
         target = _stack_entry(
@@ -166,4 +228,24 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
             stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
         return stack
 
+    if profile == 'nomic-embed':
+        embed_path = _resolve_nomic_embed_path(server, cfg=cfg)
+        stack = [
+            _stack_entry(
+                role='target',
+                label='Nomic Embed v1.5',
+                path=embed_path,
+                source='onevoice' if 'onevoice' in str(embed_path).lower() else 'dflash',
+            ),
+        ]
+        if alias:
+            stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
+        return stack
+
     return []
+
+
+def _resolve_nomic_embed_path(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> Path:
+    from core.embedding_server import resolve_embedding_model_path
+
+    return resolve_embedding_model_path(server, cfg=cfg)

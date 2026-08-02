@@ -34,3 +34,12 @@ After backend restart, the same watcher reloads on a new `boot_id`. No manual re
 Confirm the API is up (HTTP 200 from `http://127.0.0.1:8900/` or the configured `ui_port`). Do not ask the user to restart manually when you can run the script yourself.
 
 When verifying UI work yourself, reload or open the Console in the browser rather than assuming the user already sees your changes.
+
+## Browser verification (required after UI changes)
+
+After **any** change under `static/**`, `static/css/**`, or `assets/**`:
+
+1. Open `http://127.0.0.1:8900/` (Models tab → DFlash stacks when relevant).
+2. Wait for auto-refresh (~2s) or navigate fresh.
+3. **Take a browser screenshot** and confirm the change is visible (e.g. gold frame on ready-to-load stacks, deep green on selected rows).
+4. Do **not** tell the user a UI fix is done until the screenshot shows it working.

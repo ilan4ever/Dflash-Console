@@ -1,8 +1,8 @@
 # DFlash Console — Full Build Plan
 
 **Location:** `C:\dev\Dflash-Console` (UI/backend) · binaries/models in `C:\dev\Dflash`  
-**Status:** **In progress — v1 Server + Models tabs working; handoff ready**  
-**Last updated:** 2026-07-29  
+**Status:** **In progress — local deployment hardening in progress**
+**Last updated:** 2026-08-03
 **UI URL:** http://127.0.0.1:8900/
 
 ---
@@ -13,13 +13,13 @@
 
 | Area | Done |
 |------|------|
-| **Backend** | FastAPI on **8900**, `config.json`, GPU scan, server start/stop/unload/reload |
+| **Backend** | FastAPI on **8900**, validated `config.json`, GPU scan, server start/stop/unload/reload |
 | **Router mode** | llama-server starts with `--models-preset` + `--no-models-autoload`; load/unload via `/models/load` and `/models/unload` |
 | **Legacy fallback** | If port has old **direct `-m`** process (LM Studio / old PS1 profile), **Eject** stops it and restarts **router idle** (server stays up, no model) |
 | **Server tab** | LM Studio–style layout: status toggle, load settings (context, GPU layers, threads, batches), composite model card, **Eject**, developer logs |
 | **Models tab** | Scans `~/.lmstudio/models` + DFlash models dir; **2 loadable profiles** pinned (from `config.json`); row **Load** button; inspector binding |
 | **Status logic** | `probe_models` respects router `status.value` (loaded/unloaded/loading); no false LOADING after eject when router is idle |
-| **Verified** | Browser: load Gemma 12B AR → Eject → **Running (idle)**, card gone, server still on 8092 |
+| **Verified** | Browser: load Gemma 12B AR → Eject → **Running (idle)**, card gone, server remains ready |
 
 ### Configured servers (`config.json`)
 
@@ -38,16 +38,13 @@
 3. **Eject** → `POST /models/unload` (router) or legacy migrate → router idle.
 4. **Non-DFlash GGUF** in the Models list is not wired unless you add a new server block + profile in PS1/config.
 
-### Known issues / next chat priorities
+### Remaining deployment work
 
-1. **Dual-model load (8090 + 8092)** — User reports loading two models at once: GPU activity but UI looks stuck / unclear if both loaded. **Investigate:** parallel boots, status polling per-server, VRAM contention, boot progress for two servers, primary vs active server selection in UI.
-2. **Gemma 31B DFlash load** — May fail on draft path case mismatch (`gemma-4-31B-it-DFlash-Q4_K_M.gguf` vs actual filename). Verify paths in preset / `start_llama_server.ps1` / model_stack.
-3. **Legacy servers** — Anything started outside Console with `-m` breaks unload until migrated; Console now migrates on Eject and replaces legacy on Start, but LM Studio can still grab ports.
-4. **Chat tab** — Not implemented (placeholder only).
-5. **GPU sysbar** — Shows `— / GB`; no live VRAM polling yet.
-6. **Qwen DFlash** — Disabled; enable in config when models/paths verified.
-7. **Tests** — Minimal; expand runtime/router/eject tests.
-8. **README** — Still says unload = stop server; update to match router eject behavior.
+1. **Release packaging** — Run `python scripts/release-preflight.py` and include all intentional assets, scripts, and UI files in the release archive.
+2. **External engine compatibility** — Keep the configured DFlash root and llama-server build in sync with the checked-in profiles.
+3. **Embedding exception** — Embedding engines must remain loaded while listening; use Stop to release their GPU memory.
+4. **Network scope** — The Console is intentionally loopback-only. Do not expose port 8900 through a LAN binding or reverse proxy without adding authentication.
+5. **Operational checks** — Run the full pytest suite and PowerShell/asset syntax checks before packaging.
 
 ### Key files (recent work)
 

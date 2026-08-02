@@ -2,7 +2,7 @@
   "ui_port": 8900,
   "dflash_root": "C:\\dev\\Dflash",
   "hardware_settings": {
-    "gpu_strategy": "split_evenly",
+    "gpu_strategy": "single_largest",
     "enabled_gpu_indices": [],
     "limit_offload_dedicated_vram": true,
     "offload_kv_cache_to_gpu": true
@@ -10,7 +10,7 @@
   "servers": [
     {
       "id": "gemma-31b-dflash",
-      "label": "Gemma 4 31B DFlash",
+      "label": "Gemma 31B",
       "profile": "gemma-chat",
       "port": 8090,
       "host": "127.0.0.1",
@@ -44,5 +44,25 @@
       "preset": "dflash",
       "download_default": true
     }
-  ]
+  ],
+  "ui_layout": {
+    "sidenav_width": 200,
+    "inspector_width": 320,
+    "logs_height": 220,
+    "logs_hidden": false,
+    "sidenav_hidden": false,
+    "hf_search_left_width": 280,
+    "engines_card_filter": "both",
+    "table_columns": {
+      "models-library": {
+        "model": 420,
+        "family": 74,
+        "scale": 42,
+        "source": 88,
+        "disk": 61,
+        "updated": 87,
+        "action": 72
+      }
+    }
+  }
 }

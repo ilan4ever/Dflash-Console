@@ -347,7 +347,7 @@ def _card_description(card: dict[str, Any] | None) -> str:
     return str(data.get('short_description') or data.get('description') or '').strip()
 
 
-def _fetch_readme_head(repo_id: str, *, max_chars: int = 8000, timeout: float = 5.0) -> str:
+def _fetch_readme_head(repo_id: str, *, max_chars: int = 8000, timeout: float = 1.0) -> str:
     repo = str(repo_id or '').strip().strip('/')
     if not repo:
         return ''
@@ -528,7 +528,23 @@ def search_models(
             -int(row.get('downloads') or 0),
         ),
     )
-    models = _enrich_models_from_readme(models)
+    from core.config import load_config
+    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
+
+    config = load_config()
+    for row in models:
+        repo_id = str(row.get('id') or '')
+        tags = list(row.get('tags') or [])
+        installs = find_repo_local_installs(repo_id, cfg=config)
+        loadable = [item for item in installs if item.get('loadable')]
+        row['local_ready'] = bool(installs)
+        row['local_loadable'] = bool(loadable)
+        row['catalog_ready_to_load'] = is_catalog_ready_to_load(
+            repo_id,
+            title=str(row.get('title') or row.get('label') or repo_id),
+            tags=tags,
+            cfg=config,
+        )
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
@@ -573,11 +589,12 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
             description = _description_from_readme(readme, limit=320)
 
     from core.config import load_config
-    from core.hf_local_match import local_installs_for_files
+    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load, local_installs_for_files
 
     config = load_config()
     filenames = [str(item.get('filename') or '') for item in files if item.get('filename')]
     local_installs = local_installs_for_files(repo, filenames, cfg=config)
+    repo_installs = find_repo_local_installs(repo, cfg=config)
 
     return {
         'success': True,
@@ -589,7 +606,9 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
             'gguf_files': gguf_files,
             'download_files': files,
             'local_installs': local_installs,
-            'readme': readme[:12000],
+            'local_ready': bool(repo_installs),
+            'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
+            'readme': readme,
             'url': f'{HF_BASE}/{repo}',
             'gated': bool(raw.get('gated')),
             'private': bool(raw.get('private')),
@@ -633,6 +652,21 @@ def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> No
                 job['status'] = 'done'
                 job['path'] = str(dest)
                 job['progress'] = 100.0
+        post_action = None
+        with _jobs_lock:
+            post_action = (_download_jobs.get(job_id) or {}).get('post_action')
+        if isinstance(post_action, dict) and post_action.get('type') == 'wire_vision':
+            try:
+                from core.vision_setup import wire_vision_after_download
+
+                wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
+            except Exception as exc:
+                with _jobs_lock:
+                    job = _download_jobs.get(job_id)
+                    if job:
+                        job['post_action_error'] = str(exc)
+        from core.local_models import invalidate_model_catalog_cache
+        invalidate_model_catalog_cache()
     except Exception as exc:
         with _jobs_lock:
             job = _download_jobs.get(job_id)
@@ -646,6 +680,8 @@ def start_download(
     filename: str,
     *,
     library_id: str | None = None,
+    dest_path: str | None = None,
+    post_action: dict[str, Any] | None = None,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = cfg or load_config()
@@ -654,22 +690,30 @@ def start_download(
     lower = name.lower()
     if not repo or '/' not in repo or not any(lower.endswith(ext) for ext in _DOWNLOAD_EXTENSIONS):
         return {'success': False, 'error': 'repo_id and downloadable filename required'}
-    library = get_library_by_id(library_id, config) if library_id else None
-    root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()
-    author, repo_name = repo.split('/', 1)
-    dest = root / author / repo_name / Path(name).name
+    if dest_path:
+        dest = Path(str(dest_path)).expanduser().resolve()
+    else:
+        library = get_library_by_id(library_id, config) if library_id else None
+        root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()
+        author, repo_name = repo.split('/', 1)
+        dest = root / author / repo_name / Path(name).name
     from core.hf_local_match import find_local_matches
 
-    existing = find_local_matches(repo, name, cfg=config)
-    if existing:
-        return {
-            'success': False,
-            'error': 'This model file is already installed on this PC',
-            'already_installed': True,
-            'matches': existing,
-            'path': existing[0].get('path'),
-        }
     if dest.is_file():
+        if post_action and post_action.get('type') == 'wire_vision':
+            try:
+                from core.vision_setup import wire_vision_after_download
+
+                wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
+            except Exception as exc:
+                return {'success': False, 'error': str(exc), 'path': str(dest)}
+            return {
+                'success': True,
+                'already_installed': True,
+                'path': str(dest),
+                'wired': True,
+                'message': 'Vision projector already present; wired to engine.',
+            }
         return {
             'success': False,
             'error': 'This model file is already installed on this PC',
@@ -677,12 +721,23 @@ def start_download(
             'matches': [{
                 'path': str(dest.resolve()),
                 'filename': dest.name,
-                'library_label': str((library or {}).get('label') or 'Models'),
+                'library_label': 'local',
                 'match_type': 'exact_path',
             }],
             'path': str(dest.resolve()),
         }
-    job_id = f'{int(time.time())}-{abs(hash(repo + name)) % 1_000_000:06d}'
+    if not dest_path:
+        existing = find_local_matches(repo, name, cfg=config)
+        if existing:
+            return {
+                'success': False,
+                'error': 'This model file is already installed on this PC',
+                'already_installed': True,
+                'matches': existing,
+                'path': existing[0].get('path'),
+            }
+    suffix = abs(hash(repo + name + str(dest))) % 1_000_000
+    job_id = f'{int(time.time())}-{suffix:06d}'
     with _jobs_lock:
         _download_jobs[job_id] = {
             'id': job_id,
@@ -693,12 +748,19 @@ def start_download(
             'bytes_read': 0,
             'bytes_total': None,
             'path': str(dest),
-            'library_id': (library or {}).get('id') or '',
+            'library_id': (library_id or '') if not dest_path else '',
             'started_at': time.time(),
+            'post_action': post_action,
+            'kind': 'vision' if isinstance(post_action, dict) else '',
         }
     thread = threading.Thread(target=_download_worker, args=(job_id, repo, name, dest), daemon=True)
     thread.start()
-    return {'success': True, 'job_id': job_id, 'path': str(dest), 'library_id': (library or {}).get('id') or ''}
+    return {
+        'success': True,
+        'job_id': job_id,
+        'path': str(dest),
+        'library_id': (library_id or '') if not dest_path else '',
+    }
 
 
 def get_download_job(job_id: str) -> dict[str, Any]:

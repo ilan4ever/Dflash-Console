@@ -1,4 +1,4 @@
-/** Global Hugging Face download queue — visible from the main sysbar on every tab. */
+/** Global Hugging Face download queue — pinned to the left sidebar footer. */
 (function () {
   const { api } = window.ConsoleApi;
 
@@ -185,7 +185,7 @@
     }
   }
 
-  function track(meta) {
+  function track(meta, { navigate = true } = {}) {
     const jobId = String(meta?.jobId || meta?.job_id || '').trim();
     if (!jobId) return;
     if (meta?.label) labels.set(jobId, String(meta.label));
@@ -200,7 +200,7 @@
     });
     ensurePolling();
     void refresh();
-    openPanel();
+    if (navigate) openPanel();
     emit();
   }
 
@@ -219,10 +219,14 @@
     return () => listeners.delete(fn);
   }
 
+  function openDownloadsView() {
+    closePanel();
+    window.DFlashShell?.setView?.('models');
+    window.DFlashModelsLive?.setTypeFilter?.('downloading');
+  }
+
   function openPanel() {
-    panelOpen = true;
-    panelEl()?.classList.remove('hidden');
-    toggleEl()?.setAttribute('aria-expanded', 'true');
+    openDownloadsView();
   }
 
   function closePanel() {
@@ -239,7 +243,7 @@
   function bind() {
     toggleEl()?.addEventListener('click', (event) => {
       event.stopPropagation();
-      togglePanel();
+      openDownloadsView();
     });
     document.addEventListener('click', (event) => {
       if (!panelOpen) return;

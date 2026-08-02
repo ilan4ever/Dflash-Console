@@ -8,6 +8,7 @@ venv/
 
 # Local config (copy config.example.json → config.json)
 config.json
+config.json.lock
 
 # Runtime logs
 logs/

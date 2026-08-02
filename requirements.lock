@@ -1,0 +1,4 @@
+# Runtime packages verified in the deployment environment.
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
