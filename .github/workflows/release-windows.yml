@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,6 +25,8 @@ jobs:
     steps:
       - name: Check out release tag
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -37,7 +45,7 @@ jobs:
       - name: Verify tag and package versions
         shell: pwsh
         run: |
-          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+          $tagVersion = "${{ inputs.release_tag || github.ref_name }}".TrimStart('v')
           $packageVersion = node -p "require('./package.json').version"
           if ($tagVersion -ne $packageVersion) {
             throw "Git tag v$tagVersion does not match package.json version $packageVersion."
@@ -48,7 +56,7 @@ jobs:
         run: python scripts/release-preflight.py
 
       - name: Build NSIS installer and portable package
-        run: npm run dist
+        run: npm run dist -- --publish never
 
       - name: Generate SHA-256 checksums
         shell: pwsh
