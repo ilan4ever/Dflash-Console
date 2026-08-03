@@ -65,6 +65,7 @@ def bump(part: str, set_version: str | None = None) -> str:
             r'## Recent improvements \(v\d+\.\d+\.\d+\)',
             f'## Recent improvements (v{next_version})',
             text,
+            count=1,
         )
         readme.write_text(text, encoding='utf-8')
 

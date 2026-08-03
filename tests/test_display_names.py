@@ -15,7 +15,7 @@ def test_build_model_catalog_gemma_12b_q4():
         {
             'role': 'target',
             'id': 'gemma-4-12b-it-qat-q4-0',
-            'path': r'C:\Users\ilanp\.lmstudio\models\google\gemma-4-12B-it-qat-q4_0-gguf\gemma-4-12B_q4_0-it.gguf',
+            'path': r'C:\Users\example\.lmstudio\models\google\gemma-4-12B-it-qat-q4_0-gguf\gemma-4-12B_q4_0-it.gguf',
             'source': 'lmstudio',
             'label': 'Gemma 4 12B (target)',
         },

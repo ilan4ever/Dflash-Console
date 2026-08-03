@@ -29,18 +29,16 @@ from core.server_boot import (
     wait_for_port_closed,
 )
 
-ROOT = Path(__file__).resolve().parent.parent
-
-
 def llama_server_binary(*, cfg: dict[str, Any] | None = None) -> Path:
     root = get_dflash_root(cfg)
     binary = root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server.exe'
     if binary.is_file():
         return binary
-    onevoice = Path(os.environ.get('ONEVOICE_ROOT', r'C:\dev\OneVoice'))
-    fallback = onevoice / '.tmp' / 'llama-b8418-win-cuda12' / 'llama-server.exe'
-    if fallback.is_file():
-        return fallback
+    onevoice_root = str(os.environ.get('ONEVOICE_ROOT') or '').strip()
+    if onevoice_root:
+        fallback = Path(onevoice_root).expanduser() / '.tmp' / 'llama-b8418-win-cuda12' / 'llama-server.exe'
+        if fallback.is_file():
+            return fallback
     return binary
 
 
@@ -53,15 +51,19 @@ def resolve_embedding_model_path(server: dict[str, Any], *, cfg: dict[str, Any] 
             return path
         raise ValueError(f'embedding model not found: {target}')
 
-    onevoice = Path(os.environ.get('ONEVOICE_ROOT', r'C:\dev\OneVoice'))
+    onevoice_root = str(os.environ.get('ONEVOICE_ROOT') or '').strip()
     from core.model_paths import get_models_root
 
     models_root = get_models_root(cfg)
     candidates = [
         models_root / 'embeddings' / 'nomic-embed-text-v1.5.Q8_0.gguf',
-        onevoice / 'models' / 'nomic-embed' / 'nomic-embed-text-v1.5.Q8_0.gguf',
         get_dflash_root(cfg) / 'models' / 'embeddings' / 'nomic-embed-text-v1.5.Q8_0.gguf',
     ]
+    if onevoice_root:
+        candidates.insert(
+            1,
+            Path(onevoice_root).expanduser() / 'models' / 'nomic-embed' / 'nomic-embed-text-v1.5.Q8_0.gguf',
+        )
     for candidate in candidates:
         if candidate.is_file():
             return candidate

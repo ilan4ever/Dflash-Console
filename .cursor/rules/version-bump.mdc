@@ -42,8 +42,8 @@ Default install folder for the dedicated NSIS installer:
 Reasons:
 - Per-user install (no admin required)
 - Standard Electron / electron-builder layout
-- Keeps the desktop shell separate from the large models/backend tree at `C:\dev\Dflash-Console`
+- Keeps the desktop shell separate from the large models/backend data tree
 
-The installed shell should point at the Console data root (`C:\dev\Dflash-Console` on this machine, or `DFLASH_CONSOLE_ROOT`) for `server.ps1`, models, and config.
+The installed shell should point at the Console data root (or `DFLASH_CONSOLE_ROOT`) for `server.ps1`, models, and config.
 
 Do **not** ship or bump without updating every version source listed above.

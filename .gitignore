@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
 
 # Local config (copy config.example.json → config.json)
 config.json
@@ -24,10 +29,16 @@ logs/
 # Secrets
 .env
 .env.*
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Node / Electron
 node_modules/
 dist-electron/
+build/
+dist/
 npm-debug.log*
 yarn-error.log*
 
