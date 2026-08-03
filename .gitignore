@@ -10,6 +10,13 @@ venv/
 config.json
 config.json.lock
 
+# Local model weights (developer checkout keeps them under ./models)
+models/*
+!models/.gitkeep
+
+# Native llama.cpp build outputs stay outside source control.
+llama.cpp/build/
+
 # Runtime logs
 logs/
 *.log

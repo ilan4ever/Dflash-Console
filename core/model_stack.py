@@ -7,10 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_dflash_root
+from core.model_paths import get_models_root
 
 
 def _lmstudio_models_dir() -> Path:
     return Path(os.path.expanduser('~')) / '.lmstudio' / 'models'
+
+
+def _console_models_dir(cfg: dict[str, Any] | None = None) -> Path:
+    return get_models_root(cfg)
 
 
 def _file_size_gb(path: Path) -> float | None:
@@ -45,7 +50,9 @@ def _find_gemma12_target(*, cfg: dict[str, Any] | None = None) -> Path | None:
     from core.stack_match import is_target_candidate
 
     root = get_dflash_root(cfg)
+    models = _console_models_dir(cfg)
     candidates: list[Path] = [
+        models / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
         root / 'models' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
         _lmstudio_models_dir() / 'bartowski' / 'gemma-4-12B-it-GGUF' / 'gemma-4-12B-it-Q4_K_M.gguf',
         _lmstudio_models_dir() / 'google' / 'gemma-4-12B-it-qat-q4_0-gguf' / 'gemma-4-12B_q4_0-it.gguf',
@@ -130,14 +137,25 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         return stack
 
     root = get_dflash_root(cfg)
+    models = _console_models_dir(cfg)
     profile = str(server.get('profile') or 'gemma-chat').strip()
     alias = str(server.get('model_id') or '').strip()
 
-    gemma_target = _lmstudio_models_dir() / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
-    gemma_draft = root / 'models' / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
-    gemma12_draft = root / 'models' / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
-    qwen_target = root / 'models' / 'Qwen3.5-27B-Q4_K_M.gguf'
-    qwen_draft = root / 'models' / 'Qwen3.5-27B-DFlash-F16.gguf'
+    gemma_target = models / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
+    if not gemma_target.is_file():
+        gemma_target = _lmstudio_models_dir() / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
+    gemma_draft = models / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+    if not gemma_draft.is_file():
+        gemma_draft = root / 'models' / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+    gemma12_draft = models / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
+    if not gemma12_draft.is_file():
+        gemma12_draft = root / 'models' / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
+    qwen_target = models / 'Qwen3.5-27B-Q4_K_M.gguf'
+    if not qwen_target.is_file():
+        qwen_target = root / 'models' / 'Qwen3.5-27B-Q4_K_M.gguf'
+    qwen_draft = models / 'Qwen3.5-27B-DFlash-F16.gguf'
+    if not qwen_draft.is_file():
+        qwen_draft = root / 'models' / 'Qwen3.5-27B-DFlash-F16.gguf'
     bonsai_root = root / 'bonsai-27b'
     bonsai_target = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-Q2_0.gguf'
     bonsai_draft = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-dspark-Q4_1.gguf'

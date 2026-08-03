@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
             original = cfg.CONFIG_PATH
             cfg.CONFIG_PATH = path
             try:
-                payload = {'ui_port': 8900, 'dflash_root': r'C:\dev\Dflash', 'servers': []}
+                payload = {'ui_port': 8900, 'dflash_root': r'C:\dev\Dflash-Console', 'servers': []}
                 cfg.save_config(payload)
                 loaded = cfg.load_config()
                 self.assertEqual(loaded['ui_port'], 8900)
@@ -45,6 +45,18 @@ class ConfigTests(unittest.TestCase):
             cfg.validate_config({
                 'ui_port': 8900,
                 'servers': [{'id': 'one', 'port': 8090, 'host': '0.0.0.0'}],
+            })
+
+    def test_validate_config_rejects_non_loopback_api_urls(self):
+        with self.assertRaisesRegex(ValueError, 'api_url.*loopback'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [{
+                    'id': 'one',
+                    'port': 8090,
+                    'host': '127.0.0.1',
+                    'api_url': 'http://192.168.1.20:8090/v1',
+                }],
             })
 
     def test_config_root_wins_unless_explicit_override_is_set(self):

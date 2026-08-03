@@ -4,7 +4,7 @@
 
 > **Status:** Private development repository. Open-source release planned; not published yet.
 
-**UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.24
+**UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.27
 
 ---
 
@@ -25,7 +25,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 
 ---
 
-## Recent improvements (v0.0.24)
+## Recent improvements (v0.0.27)
 
 | Feature | Description |
 |---------|-------------|
@@ -35,7 +35,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 | **Playground** | Load models from catalog via engine + model picker |
 | **UI polish** | Themed dropdowns, settings/docs as main views, terminology cleanup (checkpoint → model) |
 
-## Recent improvements (v0.0.23)
+## Recent improvements (v0.0.27)
 
 | Feature | Description |
 |---------|-------------|
@@ -104,7 +104,12 @@ auto-refreshes when the API restarts (`/api/health` boot id).
 ### Desktop app (Electron)
 
 The desktop shell opens the same Console UI in a native window and starts
-the local API if it is not already running:
+the local API if it is not already running. The Windows installer is a
+desktop shell; the Console data root remains separate so model weights and
+llama-server binaries are not copied into every install. Set
+`DFLASH_CONSOLE_ROOT` to a checkout containing `server.ps1`, `api`, and
+`static`, or choose that folder when the packaged app first starts. The data
+root still requires Python 3.10+ and PowerShell 7+.
 
 ```powershell
 .\scripts\run-electron.ps1
@@ -116,9 +121,10 @@ Build Windows packages (NSIS installer + portable exe):
 .\scripts\run-electron.ps1 -Build
 ```
 
-Output lands in `dist-electron/`. The shell talks to `http://127.0.0.1:8900/`
-so the look and behavior match the browser. Closing the window leaves the
-Console API and engines running, same as closing a browser tab.
+Output lands in `dist-electron/`. The shell uses the configured `ui_port`
+(8900 by default) and talks to loopback, so the look and behavior match the
+browser. Closing the window leaves the Console API and engines running, same
+as closing a browser tab.
 
 ---
 
@@ -141,6 +147,7 @@ See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or op
 | Variable / file | Purpose |
 |-----------------|--------|
 | `config.json` | Local settings (not committed — copy from `config.example.json`) |
+| `models_root` / `./models` | Developer model library inside the Console app folder |
 | `DFLASH_ROOT_OVERRIDE` | Optional explicit override for the configured DFlash root |
 | `config.json` → `dflash_root` | Path to DFlash repo with llama-server binaries and launch scripts |
 | `config.json` → `servers[]` | Engine profiles: port, GPU layers, context, idle unload |
@@ -208,7 +215,7 @@ Cursor agents: see `.cursor/rules/dev-server-restart.mdc` — restart the API af
 ## Related projects
 
 - **DFlash** — speculative decoding stack and llama-server profiles this console manages
-- Binaries, draft models, and `start_llama_server.ps1` live under `DFLASH_ROOT`, not in this repo
+- Binaries, models, and `start_llama_server.ps1` live under this repo (`DFLASH_ROOT` defaults to the Console folder)
 
 ---
 

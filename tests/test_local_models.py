@@ -51,7 +51,7 @@ def test_plain_gguf_catalog_entry_is_loadable(tmp_path: Path, monkeypatch):
             'model_types': ['gguf'],
         }],
     }
-    monkeypatch.setattr(lm, 'enabled_scan_roots', lambda _cfg: [(root, 'library')])
+    monkeypatch.setattr(lm, 'disk_scan_roots', lambda _cfg: [(root, 'library')])
     monkeypatch.setattr(lm, '_profile_catalog', lambda _cfg: {})
     monkeypatch.setattr(lm, '_dflash_stack_supplement', lambda *args, **kwargs: [])
     lm.invalidate_model_catalog_cache()

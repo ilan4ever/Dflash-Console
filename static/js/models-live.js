@@ -6,6 +6,8 @@
   let meta = {};
   let selectedKey = localStorage.getItem('dflashConsole.selectedModelKey') || '';
   let loadedServerIds = new Set();
+  let loadedPathKeys = new Set();
+  let loadedModelIds = new Set();
   let bootingServers = {};
   let contextModel = null;
   let stackPreflight = { key: '', status: 'idle', result: null };
@@ -67,15 +69,74 @@
     return tags.join('');
   }
 
+  function normalizeModelPath(path) {
+    return String(path || '').replace(/\\/g, '/').trim().toLowerCase();
+  }
+
   function serverHasModelOnGpu(server) {
     if (!server) return false;
     if (server.status === 'loaded') return true;
     const loaded = server.loaded_models;
-    return Array.isArray(loaded) && loaded.length > 0;
+    if (Array.isArray(loaded) && loaded.length > 0) return true;
+    const cards = Array.isArray(server.visible_cards) ? server.visible_cards : [];
+    return cards.some((card) => {
+      const state = String(card?.card_state || '').toLowerCase();
+      return state === 'ready' || state === 'loading' || state === 'loaded';
+    });
+  }
+
+  function collectLoadedMarkers(serversData) {
+    const serverIds = new Set();
+    const pathKeys = new Set();
+    const modelIds = new Set();
+    const addPath = (value) => {
+      const key = normalizeModelPath(value);
+      if (key) pathKeys.add(key);
+    };
+    const addId = (value) => {
+      const id = String(value || '').trim().toLowerCase();
+      if (id) modelIds.add(id);
+    };
+
+    for (const server of serversData?.servers || []) {
+      if (!serverHasModelOnGpu(server)) continue;
+      if (server.id) serverIds.add(server.id);
+      for (const modelId of server.loaded_models || []) {
+        addId(modelId);
+        addPath(modelId);
+      }
+      addId(server.active_model_id);
+      addPath(server.model_catalog?.target_path);
+      addPath(server.target_path);
+      for (const card of server.visible_cards || []) {
+        addPath(card?.path || card?.model_path);
+        addId(card?.id || card?.model_id);
+      }
+      for (const layer of server.model_stack || []) {
+        if (layer?.role === 'target' || layer?.role === 'draft-dflash') {
+          addPath(layer.path);
+        }
+      }
+    }
+
+    for (const row of serversData?.external_gpu_loads || []) {
+      addPath(row?.model_path || row?.path);
+      addId(row?.model_id || row?.model_name);
+    }
+
+    return { serverIds, pathKeys, modelIds };
   }
 
   function isStackLoadedOnGpu(model) {
-    return !!(model.server_id && loadedServerIds.has(model.server_id));
+    if (!model) return false;
+    if (model.runtime_loaded || model.loaded_on_gpu) return true;
+    if (model.server_id && loadedServerIds.has(model.server_id)) return true;
+    const pathKey = normalizeModelPath(model.path);
+    if (pathKey && loadedPathKeys.has(pathKey)) return true;
+    const ids = [model.id, model.model_id, model.filename]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    return ids.some((id) => loadedModelIds.has(id));
   }
 
   function isModelReadyToLoad(model) {
@@ -156,7 +217,10 @@
   }
 
   function isDflashStack(model) {
-    return !!model.dflash_stack || isDflashModel(model);
+    if (model?.dflash_stack) return true;
+    if (!isDflashModel(model)) return false;
+    // Stacks need a target/draft pairing (accelerator ready or profile-backed).
+    return !!(model.loadable || model.draft_path || model.server_id);
   }
 
   function stackStatusTag(model) {
@@ -181,7 +245,12 @@
   function duplicateTag(model) {
     if (!model.duplicate_group) return '';
     const count = model.duplicate_count || 2;
-    return `<span class="lm-tag yellow" title="This exact filename exists in ${count} folders on disk. Pick one copy for your stack; delete or ignore the rest.">duplicate ×${count}</span>`;
+    const paths = Array.isArray(model.duplicate_paths) ? model.duplicate_paths : [];
+    const uniquePaths = new Set(paths.map((path) => normalizeModelPath(path)).filter(Boolean));
+    const title = uniquePaths.size <= 1
+      ? 'Same file is listed more than once in the library (for example stack + plain GGUF). Prefer the stack card.'
+      : `This exact filename exists in ${count} folders on disk. Pick one copy for your stack; delete or ignore the rest.`;
+    return `<span class="lm-tag yellow" title="${escapeHtml(title)}">duplicate ×${count}</span>`;
   }
 
   function weakMatchTag(model) {
@@ -226,13 +295,13 @@
 
   function mergeModelsWithState(catalogModels, serversData, browsePrefs) {
     const serverMap = {};
-    loadedServerIds = new Set();
+    const markers = collectLoadedMarkers(serversData);
+    loadedServerIds = markers.serverIds;
+    loadedPathKeys = markers.pathKeys;
+    loadedModelIds = markers.modelIds;
     bootingServers = {};
     for (const server of serversData.servers || []) {
       serverMap[server.id] = server;
-      if (serverHasModelOnGpu(server)) {
-        loadedServerIds.add(server.id);
-      }
       if (server.status === 'booting') {
         bootingServers[server.id] = {
           progress: server.load_progress,
@@ -251,7 +320,7 @@
           load_settings: { ...(merged.load_settings || {}), ...(server.load_settings || {}) },
           inference_settings: { ...(merged.inference_settings || {}), ...(server.inference_settings || {}) },
           runtime_status: server.status,
-          runtime_loaded: serverHasModelOnGpu(server),
+          runtime_loaded: serverHasModelOnGpu(server) || isStackLoadedOnGpu(merged),
           runtime_booting: server.status === 'booting',
           runtime_progress: server.load_progress,
         };
@@ -265,6 +334,7 @@
             inference_settings: { ...(merged.inference_settings || {}), ...(prefs.inference_settings || {}) },
           };
         }
+        merged.runtime_loaded = isStackLoadedOnGpu(merged);
       }
       return merged;
     });
@@ -923,12 +993,12 @@
       hint.textContent = typeFilter === 'downloading'
         ? 'Active Hugging Face downloads from Model catalog appear here with live progress.'
         : typeFilter === 'loaded'
-          ? 'Only models currently loaded on the GPU. Use Unload on a row to free VRAM.'
+          ? 'Only models currently on the GPU (matched by engine profile or file path). Use Unload to free VRAM.'
           : typeFilter === 'accelerators'
           ? 'DFlash/DSpark draft files only (name contains DFlash or DSpark) — small checkpoints paired with a full target for speculative decoding. Full target GGUFs belong under All models.'
           : typeFilter === 'dflash'
-            ? 'Green background = installed. Gold DFlash label = speculative stack. Loaded ribbon + Unload = on GPU now.'
-            : 'Green background = installed. Gold DFlash label = speculative stack. Loaded ribbon = on GPU.';
+            ? 'DFlash stacks with target + accelerator pairing. Green = ready. Gold label = speculative stack.'
+            : 'All discovered GGUF files from Console libraries and common model folders on this PC.';
     }
   }
 
@@ -1043,11 +1113,24 @@
     }
   }
 
-  async function refresh({ rebindInspector = false } = {}) {
+  async function fetchServersForLibrary() {
+    try {
+      return await api('/api/servers?include_external=true', { timeoutMs: 20000 });
+    } catch (_err) {
+      try {
+        return await api('/api/servers?include_external=false', { timeoutMs: 12000 });
+      } catch (_err2) {
+        return { servers: [], external_gpu_loads: [] };
+      }
+    }
+  }
+
+  async function refresh({ rebindInspector = false, forceCatalogRefresh = false } = {}) {
     const filter = document.getElementById('modelsFilterInput')?.value || '';
+    const modelsPath = forceCatalogRefresh ? '/api/models?refresh=1' : '/api/models';
     const [data, serversData] = await Promise.all([
-      api('/api/models'),
-      api('/api/servers').catch(() => ({ servers: [] })),
+      api(modelsPath, { timeoutMs: 45000 }),
+      fetchServersForLibrary(),
     ]);
     models = mergeModelsWithState(data.models || [], serversData, loadBrowsePrefs());
     renderFooter(data);
@@ -1070,6 +1153,7 @@
   }
 
   function setTypeFilter(next, { allowEmptyDownloading = false } = {}) {
+    const previous = typeFilter;
     typeFilter = normalizeTypeFilter(next, { allowEmptyDownloading });
     localStorage.setItem(TYPE_FILTER_KEY, typeFilter);
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
@@ -1077,6 +1161,11 @@
     });
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     renderFooter(meta);
+    if (typeFilter === 'all' && previous !== 'all') {
+      void refresh({ forceCatalogRefresh: true }).catch(() => {});
+    } else if (typeFilter === 'loaded') {
+      void refresh().catch(() => {});
+    }
   }
 
   function onDownloadQueueUpdate() {

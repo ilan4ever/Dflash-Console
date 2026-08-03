@@ -142,7 +142,7 @@ if ($Port -le 0) {
 if ($cfg -and $cfg.dflash_root) {
     $env:DFLASH_ROOT = [string]$cfg.dflash_root
 } elseif (-not $env:DFLASH_ROOT) {
-    $env:DFLASH_ROOT = 'C:\dev\Dflash'
+    $env:DFLASH_ROOT = $Root
 }
 
 if (-not (Test-Path $env:DFLASH_ROOT -PathType Container)) {

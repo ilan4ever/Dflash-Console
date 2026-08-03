@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections import defaultdict
@@ -9,15 +10,26 @@ from pathlib import Path
 from typing import Any
 
 from core.config import list_servers, load_config, normalize_server
-from core.model_paths import enabled_scan_roots, get_download_dir, get_model_libraries, storage_presets
+from core.model_paths import disk_scan_roots, get_download_dir, get_model_libraries, storage_presets
 from core.model_stack import resolve_model_stack
 
 _CATALOG_CACHE: dict[str, Any] | None = None
 _CATALOG_CACHE_AT: float = 0.0
+_CATALOG_CACHE_KEY = ''
+_CATALOG_CACHE_PLAIN: dict[str, Any] | None = None
+_CATALOG_CACHE_PLAIN_AT: float = 0.0
+_CATALOG_CACHE_PLAIN_KEY = ''
 _CATALOG_TTL_SECONDS = 120.0
 
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
+
+
+def _catalog_cache_key(config: dict[str, Any]) -> str:
+    try:
+        return json.dumps(config, sort_keys=True, default=str, separators=(',', ':'))
+    except (TypeError, ValueError):
+        return repr(config)
 
 
 def _guess_arch(name: str) -> str:
@@ -108,30 +120,35 @@ def _append_vision_capability(caps: list[str], path: Path | None, *, mmproj_path
         caps.append('vision')
 
 
-def _scan_gguf(root: Path, *, source: str) -> list[dict[str, Any]]:
+def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     rows: list[dict[str, Any]] = []
-    for path in sorted(root.rglob('*.gguf')):
-        name = path.name
-        if name.lower().startswith('mmproj'):
-            continue
-        row = {
-            'id': path.stem.replace('_', '-').lower()[:120],
-            'path': str(path),
-            'filename': name,
-            'arch': _guess_arch(name),
-            'params': _guess_params(name),
-            'publisher': _publisher(path),
-            'quant': _guess_quant(name),
-            'size_gb': _size_gb(path),
-            'modified': _modified_label(path),
-            'source': source,
-            'capabilities': [],
-        }
-        caps = row['capabilities']
-        _append_vision_capability(caps, path)
-        rows.append(row)
+    try:
+        for path in root.rglob('*.gguf'):
+            if len(rows) >= max_files:
+                break
+            name = path.name
+            if name.lower().startswith('mmproj'):
+                continue
+            row = {
+                'id': path.stem.replace('_', '-').lower()[:120],
+                'path': str(path),
+                'filename': name,
+                'arch': _guess_arch(name),
+                'params': _guess_params(name),
+                'publisher': _publisher(path),
+                'quant': _guess_quant(name),
+                'size_gb': _size_gb(path),
+                'modified': _modified_label(path),
+                'source': source,
+                'capabilities': [],
+            }
+            caps = row['capabilities']
+            _append_vision_capability(caps, path)
+            rows.append(row)
+    except OSError:
+        pass
     return rows
 
 
@@ -368,9 +385,14 @@ def _build_models_payload(
 
 
 def invalidate_model_catalog_cache() -> None:
-    global _CATALOG_CACHE, _CATALOG_CACHE_AT
+    global _CATALOG_CACHE, _CATALOG_CACHE_AT, _CATALOG_CACHE_KEY
+    global _CATALOG_CACHE_PLAIN, _CATALOG_CACHE_PLAIN_AT, _CATALOG_CACHE_PLAIN_KEY
     _CATALOG_CACHE = None
     _CATALOG_CACHE_AT = 0.0
+    _CATALOG_CACHE_KEY = ''
+    _CATALOG_CACHE_PLAIN = None
+    _CATALOG_CACHE_PLAIN_AT = 0.0
+    _CATALOG_CACHE_PLAIN_KEY = ''
 
 
 def warm_model_catalog(*, cfg: dict[str, Any] | None = None) -> None:
@@ -385,30 +407,41 @@ def list_local_models(
     force_refresh: bool = False,
     include_dflash_stacks: bool = True,
 ) -> dict[str, Any]:
-    global _CATALOG_CACHE, _CATALOG_CACHE_AT
+    global _CATALOG_CACHE, _CATALOG_CACHE_AT, _CATALOG_CACHE_KEY
+    global _CATALOG_CACHE_PLAIN, _CATALOG_CACHE_PLAIN_AT, _CATALOG_CACHE_PLAIN_KEY
     config = cfg or load_config()
     catalog = _profile_catalog(config)
+    cache_key = _catalog_cache_key(config)
 
     if not scan_disk:
         return _build_models_payload(config, catalog, [], partial=True)
 
     now = time.time()
-    if (
-        include_dflash_stacks
-        and not force_refresh
-        and _CATALOG_CACHE
-        and (now - _CATALOG_CACHE_AT) < _CATALOG_TTL_SECONDS
+    if include_dflash_stacks:
+        if (
+            not force_refresh
+            and _CATALOG_CACHE
+            and _CATALOG_CACHE_KEY == cache_key
+            and (now - _CATALOG_CACHE_AT) < _CATALOG_TTL_SECONDS
+        ):
+            return _CATALOG_CACHE
+    elif (
+        not force_refresh
+        and _CATALOG_CACHE_PLAIN
+        and _CATALOG_CACHE_PLAIN_KEY == cache_key
+        and (now - _CATALOG_CACHE_PLAIN_AT) < _CATALOG_TTL_SECONDS
     ):
-        return _CATALOG_CACHE
+        return _CATALOG_CACHE_PLAIN
 
     scanned: list[dict[str, Any]] = []
-    for root, source in enabled_scan_roots(config):
+    for root, source in disk_scan_roots(config):
         scanned.extend(_scan_gguf(root, source=source))
 
     extras: list[dict[str, Any]] = []
     known_paths = {str(row.get('path') or '').lower() for row in catalog.values()}
     for row in scanned:
-        if str(row.get('path') or '').lower() in known_paths:
+        path_key = str(row.get('path') or '').lower()
+        if path_key in known_paths:
             continue
         caps = list(row.get('capabilities') or [])
         if 'instruct' not in caps:
@@ -430,10 +463,25 @@ def list_local_models(
         row['stack_status'] = ''
         row['plain_gguf'] = True
         extras.append(row)
+        known_paths.add(path_key)
 
-    stack_rows = _dflash_stack_supplement(config, catalog, cfg=config) if include_dflash_stacks else []
+    if not include_dflash_stacks:
+        payload = _build_models_payload(config, catalog, extras)
+        _CATALOG_CACHE_PLAIN = payload
+        _CATALOG_CACHE_PLAIN_AT = now
+        _CATALOG_CACHE_PLAIN_KEY = cache_key
+        return payload
+
+    stack_rows = _dflash_stack_supplement(config, catalog, cfg=config)
+    # Prefer stack cards over plain GGUF rows for the same target path.
+    stack_paths = {str(row.get('path') or '').lower() for row in stack_rows if row.get('path')}
+    if stack_paths:
+        extras = [
+            row for row in extras
+            if str(row.get('path') or '').lower() not in stack_paths
+        ]
     payload = _build_models_payload(config, catalog, stack_rows + extras)
-    if include_dflash_stacks:
-        _CATALOG_CACHE = payload
-        _CATALOG_CACHE_AT = now
+    _CATALOG_CACHE = payload
+    _CATALOG_CACHE_AT = now
+    _CATALOG_CACHE_KEY = cache_key
     return payload

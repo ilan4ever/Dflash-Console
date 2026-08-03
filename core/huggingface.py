@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import load_config
-from core.model_paths import get_download_dir, get_library_by_id
+from core.model_paths import allowed_model_roots, get_download_dir, get_library_by_id
 
 HF_API = 'https://huggingface.co/api'
 HF_BASE = 'https://huggingface.co'
@@ -68,6 +68,20 @@ _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml'
 
 _download_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+
+
+def _is_under_allowed_model_root(path: Path, cfg: dict[str, Any]) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return False
+    for root in allowed_model_roots(cfg):
+        try:
+            if resolved.is_relative_to(root.expanduser().resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _request_json(url: str, *, timeout: float = 20.0) -> Any:
@@ -692,6 +706,14 @@ def start_download(
         return {'success': False, 'error': 'repo_id and downloadable filename required'}
     if dest_path:
         dest = Path(str(dest_path)).expanduser().resolve()
+        if not _is_under_allowed_model_root(dest, config):
+            return {'success': False, 'error': 'download destination is not under an allowed model directory'}
+        if isinstance(post_action, dict) and post_action.get('type') == 'wire_vision':
+            target = Path(str(post_action.get('model_path') or '')).expanduser().resolve()
+            if not target.is_file() or not _is_under_allowed_model_root(target, config):
+                return {'success': False, 'error': 'vision model path is not under an allowed model directory'}
+            if dest.parent != target.parent:
+                return {'success': False, 'error': 'vision projector must be downloaded next to the model'}
     else:
         library = get_library_by_id(library_id, config) if library_id else None
         root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()

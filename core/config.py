@@ -10,6 +10,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / 'config.json'
@@ -77,6 +78,17 @@ def is_loopback_host(value: Any) -> bool:
         return False
 
 
+def is_loopback_url(value: Any) -> bool:
+    url = str(value or '').strip()
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        return False
+    return is_loopback_host(parsed.hostname)
+
+
 def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cfg, dict):
         raise ValueError('config.json must be a JSON object')
@@ -112,6 +124,9 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         seen_ports[port] = server_id
         if not is_loopback_host(row.get('host')):
             raise ValueError(f'servers[{index}].host must be loopback-only')
+        api_url = row.get('api_url') or f"http://{row.get('host') or '127.0.0.1'}:{port}/v1"
+        if not is_loopback_url(api_url):
+            raise ValueError(f'servers[{index}].api_url must be loopback-only')
 
     return cfg
 
@@ -255,14 +270,14 @@ def get_dflash_root(cfg: dict[str, Any] | None = None) -> Path:
         os.environ.get('DFLASH_ROOT_OVERRIDE')
         or config.get('dflash_root')
         or os.environ.get('DFLASH_ROOT')
-        or r'C:\dev\Dflash'
+        or ROOT
     )
     return Path(str(raw)).resolve()
 
 
 def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.is_file():
-        return {'ui_port': 8900, 'dflash_root': r'C:\dev\Dflash', 'servers': []}
+        return {'ui_port': 8900, 'dflash_root': str(ROOT), 'servers': []}
     with CONFIG_PATH.open(encoding='utf-8') as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
