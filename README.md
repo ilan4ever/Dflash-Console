@@ -101,6 +101,25 @@ This is a gentle API restart. It preserves engine listeners, then the new
 Console process adopts them and leaves router models unloaded. The UI
 auto-refreshes when the API restarts (`/api/health` boot id).
 
+### Desktop app (Electron)
+
+The desktop shell opens the same Console UI in a native window and starts
+the local API if it is not already running:
+
+```powershell
+.\scripts\run-electron.ps1
+```
+
+Build Windows packages (NSIS installer + portable exe):
+
+```powershell
+.\scripts\run-electron.ps1 -Build
+```
+
+Output lands in `dist-electron/`. The shell talks to `http://127.0.0.1:8900/`
+so the look and behavior match the browser. Closing the window leaves the
+Console API and engines running, same as closing a browser tab.
+
 ---
 
 ## Using the app
@@ -138,12 +157,14 @@ Dflash-Console/
 ├── api/app.py              # FastAPI routes
 ├── core/                   # Config, runtime, model discovery, HF, GPU, inference stats
 ├── static/                 # UI (HTML, CSS, JS)
-├── scripts/                # Server start / restart helpers
+├── electron/               # Desktop shell (Electron)
+├── scripts/                # Server start / restart / Electron helpers
 ├── tests/                  # pytest suite
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
 │   └── ui/                 # UI panel design notes
 ├── run.ps1                 # Full reset and background API startup
+├── package.json            # Electron desktop packaging
 ├── config.example.json     # Template configuration
 └── DFLASH-CONSOLE-PLAN.md  # Detailed build plan & handoff notes
 ```

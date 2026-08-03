@@ -7,8 +7,8 @@ This guide walks you through everyday use of DFlash Console: starting engines, l
 ## 1. First launch
 
 1. Copy `config.example.json` to `config.json` and set your **DFlash root** path and engine profiles.
-2. Run `.\run.ps1` from PowerShell.
-3. Open **http://127.0.0.1:8900/** in your browser.
+2. Run `.\run.ps1` from PowerShell, or `.\scripts\run-electron.ps1` for the desktop window.
+3. Open **http://127.0.0.1:8900/** in your browser if you started the API without Electron.
 
 The sidebar shows the main areas: **Engines**, **Checkpoints**, **Playground**, **Nodes**, **Model catalog**, **Settings**, and **Documentation**.
 
