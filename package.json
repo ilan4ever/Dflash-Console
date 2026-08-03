@@ -1,0 +1,71 @@
+{
+  "name": "dflash-console",
+  "productName": "DFlash Console",
+  "version": "0.0.24",
+  "description": "Desktop shell for the DFlash Console local control panel",
+  "main": "electron/main.js",
+  "author": "DFlash",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "electron": "electron .",
+    "electron:dev": "electron .",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.dflash.console",
+    "productName": "DFlash Console",
+    "copyright": "Copyright © DFlash",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "assets/dflash_console_logo*.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/start-console-server.ps1",
+        "to": "scripts/start-console-server.ps1"
+      },
+      {
+        "from": "server.ps1",
+        "to": "server.ps1"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/dflash_console_logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DFlash Console",
+      "artifactName": "DFlash-Console-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "DFlash-Console-Portable-${version}-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  }
+}
