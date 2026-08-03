@@ -1,33 +1,37 @@
-# Models View
+# Models view
 
 ## Layout
-- **Left:** "My Models" table (scrollable)
-- **Right:** Inspector for selected model (same Load/Inference tabs as Server)
+- **Main:** scrollable local model table
+- **Right:** Runtime inspector for the selected model (when enabled)
+- The view is populated from configured model libraries and current engine state.
 
 ## Table columns
 | Column | Example |
 |--------|---------|
-| Arch | gemma4, qwen35moe |
-| Params | 31B, 12B |
-| Publisher | google, bartowski |
-| LLM | model name + capability tags (instruct, chat, tools) |
-| Quant | Q4_0, Q4_K_S |
-| Size | 17.7 GB |
-| Modified | 10 days ago |
-| Actions | ⋯ menu, gear |
+| Model | Display name and load state |
+| Family | Model family |
+| Scale | Parameter scale |
+| Source | Library or provider |
+| Disk | File size |
+| Updated | Last file update |
+| Actions | Load, details, or menu actions |
 
-## Mock models (5 rows)
-1. gemma-4-31b-it-dflash — google — 31B — Q4_0 — 17.7 GB
-2. gemma-4-12b-it-qat — google — 12B — Q4_0 — 7.2 GB *(selected)*
-3. qwen3.5-9b — qwen — 9B — Q4_K_S — 6.5 GB
-4. deepseek-v2-lite — deepseekv2 — 12B — Q8_0 — 12.1 GB
-5. laguna-8b — laguna — 9B — Q4_0 — 5.0 GB
+## Filters
+
+- **All models** — every discovered local model.
+- **DFlash stacks** — runnable target-plus-accelerator pairs.
+- **Accelerators** — draft checkpoint files.
+- **Downloading** — active Hugging Face transfers.
+- **Loaded** — models currently loaded on an engine.
+- Model type filters include LLM/chat, DFlash, OCR, translation,
+  speech-to-text, text-to-speech, embeddings, vision, and other.
 
 ## Toolbar
-- Filter models search (Ctrl+F)
-- Model Search button (opens HF modal)
-- Downloads tray icon
+- Filter models search (`Ctrl+F`)
+- **Create DFlash stack** wizard
+- Model catalog and download tray are available from the sidebar
 
 ## Footer
-- "You have N local models, taking up X GB"
-- Models directory path
+- Library model count and total disk usage
+- Current model library path
+- Filter or scan status

@@ -1,14 +1,8 @@
-# Settings — LM Link
+# Settings — Remote nodes
 
-Preview feature — remote local models.
+Remote nodes are not available in the current build. The **Nodes** sidebar view
+is a clearly marked planned surface with disabled actions.
 
-## Account
-- Login state (Signed out / Signed in)
-- Link to Devices tab onboarding
-
-## Mock fields
-| Setting | Notes |
-|---------|-------|
-| Enable LM Link | Toggle (preview) |
-| End-to-end encryption info | Read-only |
-| Trusted devices list | Empty in mock |
+Future remote-node work may include authenticated pairing, encrypted transport,
+trusted-device management, and workload routing. None of those controls should
+be treated as operational today.

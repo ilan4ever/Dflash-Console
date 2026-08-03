@@ -1,10 +1,10 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.0.27",
+  "version": "0.0.30",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
-  "author": "DFlash",
+  "author": "ILAN AVIV",
   "repository": "github:ilan4ever/Dflash-Console",
   "bugs": "https://github.com/ilan4ever/Dflash-Console/issues",
   "homepage": "https://github.com/ilan4ever/Dflash-Console#readme",
@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.dflash.console",
     "productName": "DFlash Console",
-    "copyright": "Copyright \u00a9 DFlash",
+    "copyright": "Copyright \u00a9 2026 ILAN AVIV",
     "directories": {
       "output": "dist-electron"
     },

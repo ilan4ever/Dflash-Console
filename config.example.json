@@ -20,7 +20,7 @@
       "gpu_device": "auto",
       "context_size": 65536,
       "idle_unload_minutes": 60,
-      "enabled": true,
+      "enabled": false,
       "load_settings": {
         "gpu_layers": 97,
         "cpu_threads": 9,

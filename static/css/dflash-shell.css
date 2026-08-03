@@ -1774,6 +1774,147 @@ body.lm-resizing-table-col {
   display: none;
 }
 
+.df-shell .df-about-page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 28px 48px;
+  overflow-y: auto;
+}
+
+.df-shell .df-about-hero {
+  margin-bottom: 18px;
+  padding: 30px 32px;
+  border: 1px solid rgba(61, 143, 111, 0.3);
+  border-radius: 16px;
+  background:
+    radial-gradient(ellipse 70% 90% at 0% 0%, rgba(61, 143, 111, 0.2), transparent 62%),
+    radial-gradient(ellipse 60% 80% at 100% 100%, rgba(59, 130, 246, 0.1), transparent 62%),
+    linear-gradient(150deg, #141821 0%, #0e1014 100%);
+}
+
+.df-shell .df-about-eyebrow {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: #8fd4b8;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.df-shell .df-about-hero h1 {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+}
+
+.df-shell .df-about-lead {
+  max-width: 660px;
+  margin: 0 0 20px;
+  color: #c3c8d2;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.df-shell .df-about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.df-shell .df-about-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.df-shell .df-about-meta-card {
+  display: flex;
+  min-height: 88px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.df-shell .df-about-meta-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.df-shell .df-about-meta-card strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.df-shell .df-about-meta-card span:last-child,
+.df-shell .df-about-meta-card a {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.df-shell .df-about-meta-card a:hover,
+.df-shell .df-about-footer a:hover {
+  color: #8fd4b8;
+  text-decoration: underline;
+}
+
+.df-shell .df-about-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.df-shell .df-about-page .df-docs-section-block {
+  margin-bottom: 12px;
+}
+
+.df-shell .df-about-page .df-docs-section-block h2 {
+  margin: 0 0 9px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.df-shell .df-about-page .df-docs-section-block p {
+  font-size: 12px;
+}
+
+.df-shell .df-about-runtime {
+  margin-bottom: 18px !important;
+}
+
+.df-shell .df-about-muted {
+  margin-top: 10px !important;
+  color: var(--text-dim) !important;
+}
+
+.df-shell .df-about-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.df-shell .df-about-footer a {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
 /* —— Overview hero —— */
 .df-shell .df-docs-hero {
   margin: -4px -4px 24px;
@@ -3993,6 +4134,20 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   .df-nav-item {
     justify-content: center;
     padding: 10px 8px;
+  }
+}
+
+@media (max-width: 680px) {
+  .df-shell .df-about-page {
+    padding: 16px 14px 32px;
+  }
+
+  .df-shell .df-about-hero {
+    padding: 24px 20px;
+  }
+
+  .df-shell .df-about-columns {
+    grid-template-columns: 1fr;
   }
 }
 

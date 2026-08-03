@@ -1,22 +1,15 @@
-# Settings — Chat
+# Playground
 
-## Chat Settings
-| Setting | Default |
-|---------|---------|
-| Allow only one new empty chat | On |
-| When selecting a model to load, unload current ones | On |
-| Move deleted chats and folders to Trash | Off (warn: force delete) |
-| Double click on a chat message to edit | On |
-| Show token count in chat listings | On |
-| Always show prompt template in Chat sidebar | On |
-| Double click chat/folder renames | Off |
-| Sidebar sort | Date created + Asc/Desc |
+Chat preferences are not a separate Settings panel in the current build. The
+Playground provides the supported controls directly:
 
-## Keyboard Shortcuts
-| Setting | Default |
-|---------|---------|
-| Use Shift + Enter to send message | Off |
-| Use Ctrl + R to regenerate last message | On |
+- Create and switch between local chat sessions.
+- Choose a source, engine, and model.
+- Load the selected model before sending a prompt.
+- Attach images or text/code files.
+- Press **Enter** to send and **Shift+Enter** for a newline.
+- Clear the active conversation.
 
-## Conversation Auto-Naming
-**AI-generated Chat Names:** Never | Auto | Always — default **Auto**
+The Playground works with DFlash profiles, LM Studio files, and other local
+GGUF models. Chat requests use the Console proxy and display streaming output
+when the selected engine supports it.

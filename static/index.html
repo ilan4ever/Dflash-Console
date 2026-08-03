@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.27</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.30</span>
           </div>
         </div>
       </div>
@@ -49,6 +49,10 @@
         <button type="button" class="df-nav-item lm-tab" data-tab="docs">
           <span class="df-nav-icon" aria-hidden="true">📖</span>
           <span class="df-nav-label">Documentation</span>
+        </button>
+        <button type="button" class="df-nav-item lm-tab" data-tab="about">
+          <span class="df-nav-icon" aria-hidden="true">ⓘ</span>
+          <span class="df-nav-label">About</span>
         </button>
       </nav>
       </div>
@@ -338,6 +342,90 @@ try {
             <article class="df-docs-body" id="docsBody">
               <p class="lm-hint">Loading documentation…</p>
             </article>
+          </div>
+        </div>
+        <!-- About -->
+        <div class="lm-view" data-view="about">
+          <div class="df-about-page">
+            <section class="df-about-hero">
+              <span class="df-about-eyebrow">Local AI infrastructure</span>
+              <h1>DFlash Console</h1>
+              <p class="df-about-lead">
+                A focused control panel for llama-server engines, DFlash
+                speculative decoding, local model libraries, and live runtime
+                diagnostics.
+              </p>
+              <div class="df-about-actions">
+                <a class="df-docs-pill primary" href="#/docs">Open documentation</a>
+                <a class="df-docs-pill" href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener noreferrer">View source</a>
+              </div>
+            </section>
+
+            <section class="df-about-meta-grid" aria-label="Application details">
+              <article class="df-about-meta-card">
+                <span class="df-about-meta-label">Developer</span>
+                <strong>ILAN AVIV</strong>
+                <a href="https://github.com/ilan4ever" target="_blank" rel="noopener noreferrer">@ilan4ever on GitHub</a>
+              </article>
+              <article class="df-about-meta-card">
+                <span class="df-about-meta-label">Version</span>
+                <strong id="dfAboutVersion">v0.0.30</strong>
+                <span>Current Console release</span>
+              </article>
+              <article class="df-about-meta-card">
+                <span class="df-about-meta-label">License</span>
+                <strong>MIT License</strong>
+                <a href="https://github.com/ilan4ever/Dflash-Console/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Read the license</a>
+              </article>
+              <article class="df-about-meta-card">
+                <span class="df-about-meta-label">Runtime</span>
+                <strong>FastAPI + llama-server</strong>
+                <span>Electron shell available for Windows</span>
+              </article>
+            </section>
+
+            <div class="df-about-columns">
+              <section class="df-docs-section-block">
+                <h2>What this app does</h2>
+                <p>
+                  DFlash Console starts and monitors local engine profiles,
+                  loads and unloads GGUF models, tracks GPU and token
+                  statistics, searches Hugging Face, and exposes
+                  OpenAI-compatible local endpoints.
+                </p>
+              </section>
+              <section class="df-docs-section-block">
+                <h2>Security and privacy</h2>
+                <p>
+                  The Console is designed for one trusted user on one
+                  machine. It binds to loopback by default and does not
+                  provide multi-user authentication. Do not expose it beyond
+                  loopback without adding an authenticated access layer.
+                </p>
+              </section>
+            </div>
+
+            <section class="df-docs-section-block df-about-runtime">
+              <h2>Desktop runtime</h2>
+              <p>
+                The Windows installer is a thin Electron shell. The backend,
+                documentation, model files, logs, and native llama-server
+                binaries remain in the selected Console data root so large
+                runtime assets are not copied into every installation.
+              </p>
+              <p class="df-about-muted">
+                Configure <code>DFLASH_CONSOLE_ROOT</code> or choose the data
+                root when the packaged app first starts.
+              </p>
+            </section>
+
+            <footer class="df-about-footer">
+              <span>DFlash Console</span>
+              <span aria-hidden="true">·</span>
+              <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener noreferrer">Source repository</a>
+              <span aria-hidden="true">·</span>
+              <a href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener noreferrer">DFlash project</a>
+            </footer>
           </div>
         </div>
         <!-- Model catalog -->
@@ -923,6 +1011,7 @@ try {
   <script src="/static/js/models-live.js"></script>
   <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
+  <script src="/static/js/about-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
   <script src="/static/js/dflash-console-ui.js"></script>
   <script src="/static/js/select-theme.js"></script>

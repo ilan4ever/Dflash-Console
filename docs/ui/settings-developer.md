@@ -1,30 +1,13 @@
-# Settings — Developer
+# Developer diagnostics
 
-## Developer Mode
-- **Developer mode:** Toggle — shows advanced controls (default On in dev build)
+There is no separate Developer settings panel. Developer-facing diagnostics
+are available in the **Engines** view:
 
-## On-Demand Loading and Model TTL
-| Setting | Control | Default |
-|---------|---------|---------|
-| JIT models auto-evict | Toggle | Off |
-| Max idle TTL | Minutes input | 60 |
+- Engine lifecycle, model activity, inference, warning, and error log filters
+- Copy, refresh, clear, hide, and resize controls for engine logs
+- Live token count, speed, generation timer, and runtime inspector
+- Direct API documentation under **Documentation**
 
-## Local LLM Service (headless)
-- **Enable Local LLM Service:** Toggle — run server without app open
-
-## Runtime Settings
-| Setting | Default |
-|---------|---------|
-| Use LM Studio Engine Protocol | On |
-| Llama.cpp Engine Log Level | Info (default) |
-| Extension Packs Download Channel | Stable |
-| Auto-update selected Runtime Extension Packs | On |
-| Auto-delete least recently used Extension Packs | On |
-
-## Experimental
-| Setting | Default |
-|---------|---------|
-| Show debug info blocks in chat | On |
-| Show Resource Consumption Widget | On |
-| Enable model load configuration in presets | On |
-| Separate reasoning_content and content in API | On |
+The backend can also be run in foreground mode with `.\server.ps1 -Foreground`
+when terminal logs are needed. Runtime limits and launch presets are configured
+under Settings rather than a hidden developer-mode switch.

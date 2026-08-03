@@ -3,6 +3,7 @@
 DFlash Console is a local control plane for llama.cpp-compatible inference
 engines. It combines a FastAPI service with a static HTML/CSS/JavaScript UI.
 The optional Electron shell opens the same UI and starts the local service.
+The project is developed and maintained by **ILAN AVIV** under the MIT License.
 
 ## Components
 
@@ -24,7 +25,7 @@ Browser or Electron shell
   routes.
 - `core/` contains configuration validation, model discovery, Hugging Face
   integration, engine lifecycle, GPU inspection, and inference statistics.
-- `static/` contains the browser UI and in-app documentation.
+- `static/` contains the browser UI, in-app documentation, and About page.
 - `scripts/` contains Windows startup, restart, release, and engine helpers.
 - `electron/` contains the sandboxed desktop shell.
 
@@ -38,6 +39,10 @@ weights, logs, and credentials are intentionally not part of the repository.
 The Electron installer is a thin shell. A packaged launch uses
 `DFLASH_CONSOLE_ROOT` or asks the user to select a Console data root. This
 keeps large model files and native binaries out of the installer.
+
+The browser and Electron UI are the same application. Documentation and About
+content are served from the selected Console data root, so both surfaces show
+the same release metadata and runtime behavior.
 
 ## Engine lifecycle
 

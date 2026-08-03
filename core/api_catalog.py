@@ -121,13 +121,23 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
-    <li>Live <strong>Generating</strong> timer and token speed on loaded engine cards</li>
-    <li>Parallel model loading without blocking other engines</li>
-    <li>Click loaded cards for runtime inspector; right-click context menu</li>
-    <li>Accurate CPU meter aligned with Task Manager</li>
-    <li>Locations panel with config and preset backup</li>
-    <li>Clear engine logs from the developer log header</li>
+    <li>About page with ILAN AVIV attribution, version, MIT license, and project links</li>
+    <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
+    <li>Model library filters for DFlash stacks, accelerators, downloads, and loaded models</li>
+    <li>Hugging Face catalog with README details, install detection, and download progress</li>
+    <li>Locations panel with config, preset, and model-library management</li>
+    <li>Loopback validation and an external Console data root for the Electron shell</li>
   </ul>
+</section>
+
+<section class="df-docs-section-block">
+  <h3>Maintainer and public project</h3>
+  <p>
+    DFlash Console is developed and maintained by <strong>ILAN AVIV</strong> under the MIT License.
+    Visit the <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener">source repository</a>,
+    <a href="https://github.com/ilan4ever" target="_blank" rel="noopener">developer profile</a>, or
+    <a href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>.
+  </p>
 </section>
 
 <section class="df-docs-section-block">

@@ -1,0 +1,38 @@
+name: Question
+description: Ask for setup or usage help.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping keep support searchable. Please search existing discussions first.
+  - type: input
+    id: version
+    attributes:
+      label: Console version
+      description: Find this on the About page.
+      placeholder: v0.0.30
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Python 3.13, PowerShell 7.5, NVIDIA GPU
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you need help with?
+      placeholder: Describe the goal, what you tried, and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Remove tokens, credentials, private paths, and model URLs before posting.
+      render: text

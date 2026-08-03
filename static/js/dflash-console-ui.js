@@ -17,6 +17,7 @@
     docs: 'Docs',
     catalog: 'Hugging Face',
     settings: 'Preferences',
+    about: 'About',
   };
 
   const pageTitles = {
@@ -27,10 +28,11 @@
     docs: 'Documentation',
     catalog: 'Model catalog',
     settings: 'Settings',
+    about: 'About DFlash Console',
   };
 
   const inspectorFor = new Set(['server', 'models']);
-  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'settings']);
+  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'settings', 'about']);
 
   const ROUTE_TO_TAB = {
     engines: 'server',
@@ -45,6 +47,7 @@
     docs: 'docs',
     catalog: 'catalog',
     settings: 'settings',
+    about: 'about',
   };
 
   const TAB_TO_PATH = {
@@ -55,6 +58,7 @@
     docs: '/docs',
     catalog: '/catalog',
     settings: '/settings',
+    about: '/about',
   };
 
   function onViewEnter(tab) {
@@ -63,6 +67,7 @@
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
     if (tab === 'chat') void window.DFlashChatLive?.onViewEnter?.();
+    if (tab === 'about') window.DFlashAboutLive?.syncVersion?.();
   }
 
   function onViewLeave(tab) {

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question or get setup help
+    url: https://github.com/ilan4ever/Dflash-Console/discussions
+    about: Use Discussions for questions, troubleshooting, and general feedback.
+  - name: Report a security vulnerability privately
+    url: https://github.com/ilan4ever/Dflash-Console/security/advisories/new
+    about: Do not publish exploit details, credentials, or private logs in an issue.
+  - name: Read the support guide
+    url: https://github.com/ilan4ever/Dflash-Console/blob/main/SUPPORT.md
+    about: Choose the right public or private contact channel.

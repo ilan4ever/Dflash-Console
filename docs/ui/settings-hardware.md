@@ -1,26 +1,26 @@
 # Settings — Hardware
 
-## CPU
-- Compatibility badge
-- Name, architecture badges (x86_64, AVX, AVX2)
+## System summary
+- CPU name, architecture, and live utilization
+- Total RAM and current memory usage
+- Total VRAM reported by the local GPU inventory
 
-## Memory Capacity
-- RAM total, VRAM total
-
-## GPUs
-- Strategy dropdown: Split evenly / Primary first / …
-- Per-GPU card: name, VRAM, CUDA deviceId, enable toggle
+## GPU devices
+- Per-GPU name, VRAM, index, and utilization
+- Enable or disable devices used by managed engines
 - **Limit Model Offload to Dedicated GPU Memory:** Toggle
 - **Offload KV Cache to GPU Memory:** Toggle
 
-## Resource Monitor
+## Multi-GPU rules
+- **Single largest** — use the largest enabled GPU
+- **Split evenly** — distribute layers evenly
+- **Split by VRAM** — distribute according to available VRAM
+
+## Live monitor
 - RAM + VRAM usage bar
 - CPU usage bar
+- Per-GPU utilization and memory readings
+- Refreshes while Settings is open
 
-## Guardrails
-Same radio group as Model Defaults: OFF | Relaxed | Balanced | Strict | Custom
-
-## Mock hardware (this machine)
-- Intel Core Ultra 9 285K
-- RTX 4090 D (48 GB), TITAN RTX (24 GB)
-- 127 GB RAM
+Hardware values come from the current machine through the backend. The
+documentation intentionally does not contain fixed example hardware.

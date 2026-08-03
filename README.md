@@ -1,10 +1,10 @@
 # DFlash Console
 
-**Local control panel for DFlash speculative-decoding stacks** — manage llama-server engines, checkpoint libraries, Hugging Face downloads, and GPU settings from a single web UI.
+**Local control panel for DFlash speculative-decoding stacks** — manage llama-server engines, model libraries, Hugging Face downloads, and GPU settings from a single web UI.
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.27
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.30
 
 ---
 
@@ -14,18 +14,19 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 
 | Area | Highlights |
 |------|------------|
-| **Engines** | Start/stop llama-server routers, load & eject checkpoints in parallel, live boot progress, token stats on cards, developer logs with clear button |
-| **Checkpoints** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
+| **Engines** | Start/stop llama-server routers, load & eject models in parallel, live boot progress, token stats on cards, developer logs with clear button |
+| **Models** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
-| **Settings** | GPU strategy, checkpoint storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
-| **Documentation** | In-app API reference, runtime JSON shapes, and user guide |
+| **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
+| **Documentation** | In-app API reference, runtime JSON shapes, user guide, and release notes |
+| **About** | Developer attribution, version, license, runtime boundary, and public project links |
 | **Discovery** | **Scan PC** finds model folders; **Add folder** opens a drive-aware browser (C:, D:, …) |
 
 Router mode uses `--models-preset` with load/unload over HTTP so engines stay listening while models swap.
 
 ---
 
-## Recent improvements (v0.0.24)
+## Recent improvements (v0.0.30)
 
 | Feature | Description |
 |---------|-------------|
@@ -34,6 +35,8 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 | **External API** | `/api/endpoints`, `/api/installed`, `/api/console/logs`, and request logging for integrations |
 | **Playground** | Load models from catalog via engine + model picker |
 | **UI polish** | Themed dropdowns, settings/docs as main views, terminology cleanup (checkpoint → model) |
+| **Portable runtime** | Electron uses an external Console data root so the installer stays small and model files remain local |
+| **Production boundary** | Loopback validation, path-safe model/projector handling, release preflight, and public repository security policy |
 
 ## Earlier improvements (v0.0.23)
 
@@ -56,6 +59,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 - **Windows** (primary target; PowerShell startup scripts)
 - **Python 3.10+**
 - **PowerShell 7+** (`pwsh`)
+- **Node.js 22.12+** (Electron shell and packaging)
 - Built **llama-server** and compatible model files in the configured `DFLASH_ROOT`
 - NVIDIA GPU optional but recommended for multi-GPU load settings
 
@@ -69,11 +73,15 @@ cd Dflash-Console
 
 # First-time setup
 copy config.example.json config.json
-# Edit config.json — set dflash_root, server ports, and model paths.
+# Edit config.json — set dflash_root, server ports, model paths, and enable a server profile.
 # Keep model weights, logs, and local credentials out of Git.
 
 .\server.ps1
 ```
+
+The example server profile is disabled until you point it at a model available
+on your machine. This prevents a fresh public checkout from trying to launch
+excluded model assets.
 
 Open **http://127.0.0.1:8900/** in your browser.
 
@@ -132,15 +140,16 @@ publishers should sign them before distributing outside a trusted team.
 
 ## Using the app
 
-See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or open **Documentation → User guide** in the sidebar.
+See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or open **Documentation → User guide** in the sidebar. The **About** page is available in both the browser UI and the Electron desktop app.
 
 **Typical workflow:**
 
 1. Open **Engines** and turn on an engine profile (toggle or **Load**).
-2. Pick a checkpoint from the dropdown and click **Load**, or load from the **Checkpoints** tab.
+2. Pick a model from the dropdown and click **Load**, or load from the **Models** tab.
 3. Watch boot progress and live stats on the card; click the card for runtime settings in the side panel.
 4. Point your app at the engine OpenAI URL shown on the card, or use the console proxy at `/api/servers/{id}/v1/chat/completions`.
 5. Use **Settings → Locations** to back up or restore `config.json` and launch presets.
+6. Open **About** for the current release, developer attribution, license, and public project links.
 
 ---
 
@@ -186,11 +195,13 @@ Dflash-Console/
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
 │   ├── ARCHITECTURE.md     # Public architecture overview
+│   ├── RELEASING.md        # GitHub and Windows release process
 │   └── ui/                 # UI panel design notes
 ├── run.ps1                 # Full reset and background API startup
 ├── package.json            # Electron desktop packaging
 ├── config.example.json     # Template configuration
 ├── CONTRIBUTING.md         # Contribution workflow
+├── SUPPORT.md              # Questions, bugs, and contact channels
 ├── SECURITY.md             # Vulnerability reporting
 └── LICENSE                 # MIT license
 ```
@@ -203,7 +214,7 @@ Dflash-Console/
 |--------|----------|-------------|
 | `GET` | `/api/health` | Liveness + `boot_id` (UI reload watch) |
 | `GET` | `/api/servers` | All engine statuses + inference stats |
-| `POST` | `/api/servers/{id}/load` | Load checkpoint (optional runtime JSON body) |
+| `POST` | `/api/servers/{id}/load` | Load model (optional runtime JSON body) |
 | `POST` | `/api/servers/{id}/unload` | Eject model (router stays up) |
 | `POST` | `/api/servers/{id}/v1/chat/completions` | Proxy chat; updates live token stats |
 | `GET` | `/api/models` | Local catalog from enabled libraries |
@@ -238,9 +249,36 @@ Cursor agents: see `.cursor/rules/dev-server-restart.mdc` — restart the API af
 
 ---
 
+## Community and support
+
+Use the repository's public channels so questions and fixes are easy for other
+users to find:
+
+- **Questions and setup help:** [GitHub Discussions](https://github.com/ilan4ever/Dflash-Console/discussions)
+- **Bug reports:** [Issue tracker](https://github.com/ilan4ever/Dflash-Console/issues/new?template=bug_report.yml)
+- **Feature ideas:** [Feature request](https://github.com/ilan4ever/Dflash-Console/issues/new?template=feature_request.yml)
+- **Security vulnerabilities:** follow [SECURITY.md](./SECURITY.md) and use
+  GitHub's private reporting channel; do not post exploit details publicly.
+- **Developer:** [ILAN AVIV](https://github.com/ilan4ever)
+
+Please include the Console version from **About**, Windows and Python versions,
+the relevant logs with secrets removed, and a minimal reproduction. Never
+include `config.json`, access tokens, model weights, or private logs.
+
+---
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE).
+
+---
+
+## Credits
+
+DFlash Console is developed and maintained by **ILAN AVIV**. The project is
+open source under the MIT License. See the [developer profile](https://github.com/ilan4ever),
+[source repository](https://github.com/ilan4ever/Dflash-Console), and related
+[DFlash project](https://github.com/ilan4ever/Dflash).
 
 ---
 

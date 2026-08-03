@@ -55,6 +55,11 @@ def bump(part: str, set_version: str | None = None) -> str:
         rf'\g<1>v{next_version}',
         html,
     )
+    html = re.sub(
+        r'(id="dfAboutVersion"[^>]*>)v\d+\.\d+\.\d+',
+        rf'\g<1>v{next_version}',
+        html,
+    )
     html_path.write_text(html, encoding='utf-8')
 
     readme = ROOT / 'README.md'

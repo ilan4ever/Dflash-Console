@@ -1,17 +1,14 @@
-# Devices View (LM Link)
+# Nodes view
 
 ## Layout
-Centered marketing/onboarding page (no sidebar inspector).
+Centered planned-feature page (no sidebar inspector).
 
 ## Content
-- Badge: **AVAILABLE IN PREVIEW**
-- Illustration: two laptops connected
-- Headline: "Use your local models, remotely."
-- Body: LM Link — load models on remote machines, E2E encrypted
-- **Login & Enable LM Link** (primary)
-- **Learn how it works** (secondary)
-- Link: "Why do I need to log in?"
-- Footer mascot + "LM Link is in Preview."
+- Badge: **PLANNED**
+- Headline: "Remote inference nodes"
+- Body: Connect additional machines running DFlash engines in a future release.
+- Disabled **Add node** and **Documentation** actions
+- Footer: Remote nodes are not available in this build.
 
 ## Top nav title
-Center title: **LM Link**
+Center title: **Nodes**

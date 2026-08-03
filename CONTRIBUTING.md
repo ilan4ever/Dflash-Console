@@ -12,7 +12,7 @@ Thanks for helping improve DFlash Console.
 ## Development setup
 
 The supported development environment is Windows with Python 3.10+,
-PowerShell 7+, and Node.js for the Electron shell.
+PowerShell 7+, and Node.js 22.12+ for the Electron shell.
 
 ```powershell
 python -m venv .venv
@@ -21,6 +21,7 @@ pip install -r requirements-dev.txt
 pytest -q
 python scripts/release-preflight.py
 node --check electron/main.js
+npm audit --audit-level=high
 ```
 
 The Console is local-only by design. Keep test engines bound to loopback and

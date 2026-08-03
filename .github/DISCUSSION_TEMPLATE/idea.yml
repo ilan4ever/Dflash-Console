@@ -1,0 +1,28 @@
+name: Feature idea
+description: Propose an improvement or discuss a workflow.
+title: "[Idea]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem first. For a ready-to-implement request, use the feature issue form.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What is difficult or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed workflow
+      description: Explain how the Console should behave.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

@@ -3,7 +3,8 @@
 ## Supported versions
 
 Only the latest public release and the `main` branch receive security fixes.
-Older packaged artifacts are unsupported.
+Older packaged artifacts are unsupported. The release shown on the in-app
+About page and in `package.json` is the authoritative current version.
 
 ## Reporting a vulnerability
 
@@ -13,7 +14,8 @@ details, credentials, model URLs with embedded tokens, or private logs.
 
 Include the affected version, operating system, reproduction steps, impact,
 and any suggested mitigation. The maintainers will acknowledge reports as
-soon as practical and will coordinate disclosure after a fix is available.
+soon as practical and will coordinate disclosure after a fix is available. The
+project is maintained by **ILAN AVIV**.
 
 ## Security boundary
 

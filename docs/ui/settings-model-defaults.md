@@ -1,14 +1,14 @@
-# Settings — Model Defaults
+# Settings — Model defaults
 
-## Image Input
-- **Never exceed N px:** Toggle + number (default 8192) — resize longest edge, keep aspect
+There is no separate Model Defaults panel in the current build. Runtime
+defaults are configured per engine in `config.json` and can be adjusted from
+the engine runtime inspector before loading:
 
-## Default Context Length
-- Warning: higher context uses more memory
-- **Custom value** (default 131072) OR **Model maximum**
+- Context size
+- GPU layers, CPU threads, and batch settings
+- Flash attention and related load settings
+- Temperature, top-p, top-k, repeat penalty, and max tokens
 
-## Model Loading Guardrails
-Radio: OFF (not recommended) | Relaxed | Balanced | Strict | Custom — default **Relaxed**
-
-## Bypass Memory Load Warnings
-- Toggle — skip warnings when loading large models
+The Console applies these values through the engine load and inference APIs.
+Image resizing, memory guardrail profiles, and global model defaults remain
+future work.
