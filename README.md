@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.30
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.31
 
 ---
 
@@ -26,7 +26,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 
 ---
 
-## Recent improvements (v0.0.30)
+## Recent improvements (v0.0.31)
 
 | Feature | Description |
 |---------|-------------|
@@ -279,6 +279,12 @@ DFlash Console is developed and maintained by **ILAN AVIV**. The project is
 open source under the MIT License. See the [developer profile](https://github.com/ilan4ever),
 [source repository](https://github.com/ilan4ever/Dflash-Console), and related
 [DFlash project](https://github.com/ilan4ever/Dflash).
+
+The MIT license requires redistributors to retain the copyright and license
+notice. When you redistribute or build on DFlash Console, please also include
+a link to the [DFlash Console source repository](https://github.com/ilan4ever/Dflash-Console)
+in your README, About page, or other project documentation. This link is an
+attribution request and does not add conditions to the MIT license.
 
 ---
 

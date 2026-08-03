@@ -137,6 +137,10 @@ def _overview_html(base: str) -> str:
     Visit the <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener">source repository</a>,
     <a href="https://github.com/ilan4ever" target="_blank" rel="noopener">developer profile</a>, or
     <a href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>.
+    The MIT license requires retaining the copyright and license notice. When
+    redistributing or building on this project, please also link the source
+    repository in your README, About page, or project documentation. This is
+    an attribution request, not an additional MIT license condition.
   </p>
 </section>
 
