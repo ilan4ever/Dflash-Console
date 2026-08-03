@@ -41,7 +41,7 @@ class ModelStackTests(unittest.TestCase):
             standard.mkdir(parents=True)
             standard_file = standard / 'gemma-4-12B-it-Q4_K_M.gguf'
             standard_file.write_bytes(b'standard')
-            cfg = {'dflash_root': str(root)}
+            cfg = {'dflash_root': str(root), 'models_root': str(root / 'models')}
             with patch('core.model_stack.get_dflash_root', return_value=root):
                 with patch('core.model_stack._lmstudio_models_dir', return_value=root / 'lmstudio'):
                     picked = _find_gemma12_target(cfg=cfg)

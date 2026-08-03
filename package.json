@@ -1,7 +1,7 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.0.24",
+  "version": "0.0.27",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "DFlash",
@@ -16,7 +16,7 @@
   "build": {
     "appId": "com.dflash.console",
     "productName": "DFlash Console",
-    "copyright": "Copyright © DFlash",
+    "copyright": "Copyright \u00a9 DFlash",
     "directories": {
       "output": "dist-electron"
     },
@@ -54,10 +54,13 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "DFlash Console",
+      "uninstallDisplayName": "DFlash Console",
       "artifactName": "DFlash-Console-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
@@ -65,7 +68,7 @@
     }
   },
   "devDependencies": {
-    "electron": "^37.2.0",
+    "electron": "^43.2.0",
     "electron-builder": "^26.0.12"
   }
 }

@@ -15,27 +15,80 @@ const POLL_MS = 500;
 let mainWindow = null;
 let spawnedServer = null;
 let startedByApp = false;
+let activePort = DEFAULT_PORT;
+
+function isConsoleRoot(candidate) {
+  if (!candidate) return false;
+  return (
+    fs.existsSync(path.join(candidate, 'server.ps1')) &&
+    fs.existsSync(path.join(candidate, 'api', 'app.py')) &&
+    fs.existsSync(path.join(candidate, 'static', 'index.html'))
+  );
+}
 
 function repoRoot() {
   const override = String(process.env.DFLASH_CONSOLE_ROOT || '').trim();
-  if (override && fs.existsSync(path.join(override, 'server.ps1'))) {
+  if (override && isConsoleRoot(override)) {
     return path.resolve(override);
   }
+
+  const candidates = [];
   if (app.isPackaged) {
     const nearExe = path.dirname(app.getPath('exe'));
-    const candidates = [
+    candidates.push(
       nearExe,
       path.resolve(nearExe, '..'),
       path.resolve(nearExe, '..', '..'),
       path.resolve(process.resourcesPath, '..'),
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(path.join(candidate, 'server.ps1'))) {
-        return candidate;
-      }
+      process.resourcesPath,
+    );
+  } else {
+    candidates.push(path.resolve(__dirname, '..'));
+  }
+  for (const candidate of candidates) {
+    if (isConsoleRoot(candidate)) {
+      return path.resolve(candidate);
     }
   }
-  return path.resolve(__dirname, '..');
+  return null;
+}
+
+function configuredPort(root) {
+  if (!root) return DEFAULT_PORT;
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8'));
+    const port = Number(config && config.ui_port);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      return port;
+    }
+  } catch (_err) {
+    // Fall back to the documented default when config is unavailable.
+  }
+  return DEFAULT_PORT;
+}
+
+async function chooseDataRoot() {
+  const existing = repoRoot();
+  if (existing) return existing;
+
+  const result = await dialog.showOpenDialog({
+    title: 'Choose DFlash Console data folder',
+    message: 'Select the folder containing server.ps1, api, and static.',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths[0]) {
+    throw new Error(
+      'No Console data folder was selected. Set DFLASH_CONSOLE_ROOT and try again.',
+    );
+  }
+  const selected = path.resolve(result.filePaths[0]);
+  if (!isConsoleRoot(selected)) {
+    throw new Error(
+      'The selected folder is not a DFlash Console data root. It must contain server.ps1, api, and static.',
+    );
+  }
+  process.env.DFLASH_CONSOLE_ROOT = selected;
+  return selected;
 }
 
 function consoleUrl(port = DEFAULT_PORT) {
@@ -47,10 +100,11 @@ function healthUrl(port = DEFAULT_PORT) {
 }
 
 function iconPath() {
+  const root = repoRoot();
   const candidates = [
-    path.join(repoRoot(), 'assets', 'dflash_console_logo.png'),
+    root ? path.join(root, 'assets', 'dflash_console_logo.png') : null,
     path.join(__dirname, '..', 'assets', 'dflash_console_logo.png'),
-  ];
+  ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || undefined;
 }
 
@@ -120,6 +174,9 @@ function findPwsh() {
 
 function startConsoleServer(port = DEFAULT_PORT) {
   const root = repoRoot();
+  if (!root) {
+    throw new Error('DFlash Console data root is not configured.');
+  }
   const serverScript = path.join(root, 'server.ps1');
   if (!fs.existsSync(serverScript)) {
     throw new Error(`server.ps1 not found at ${serverScript}`);
@@ -143,12 +200,25 @@ function startConsoleServer(port = DEFAULT_PORT) {
   return child;
 }
 
-async function ensureBackend(port = DEFAULT_PORT) {
-  const existing = await fetchHealth(port);
+async function ensureBackend() {
+  let root = repoRoot();
+  let port = configuredPort(root);
+  let existing = await fetchHealth(port);
   if (existing) {
+    activePort = port;
     startedByApp = false;
     return existing;
   }
+
+  root = await chooseDataRoot();
+  port = configuredPort(root);
+  existing = await fetchHealth(port);
+  if (existing) {
+    activePort = port;
+    startedByApp = false;
+    return existing;
+  }
+
   startConsoleServer(port);
   const health = await waitForHealthy(port);
   if (!health) {
@@ -156,6 +226,7 @@ async function ensureBackend(port = DEFAULT_PORT) {
       `DFlash Console API did not become ready on ${consoleUrl(port)}. Check logs\\startup.log.`,
     );
   }
+  activePort = port;
   return health;
 }
 
@@ -174,7 +245,7 @@ function buildMenu() {
         {
           label: 'Open in Browser',
           click: () => {
-            void shell.openExternal(consoleUrl());
+            void shell.openExternal(consoleUrl(activePort));
           },
         },
         { type: 'separator' },
@@ -199,7 +270,7 @@ function buildMenu() {
         {
           label: 'API Health',
           click: async () => {
-            const health = await fetchHealth();
+            const health = await fetchHealth(activePort);
             dialog.showMessageBox(mainWindow || undefined, {
               type: health ? 'info' : 'warning',
               title: 'DFlash Console',
@@ -248,13 +319,13 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  await mainWindow.loadURL(consoleUrl());
+  await mainWindow.loadURL(consoleUrl(activePort));
 }
 
 async function boot() {
   buildMenu();
   try {
-    await ensureBackend(DEFAULT_PORT);
+    await ensureBackend();
   } catch (err) {
     dialog.showErrorBox('DFlash Console', String(err && err.message ? err.message : err));
     app.quit();

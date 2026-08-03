@@ -9,6 +9,7 @@ from typing import Any
 from core.config import get_server, load_config, normalize_server, save_config
 from core.local_models import _has_vision_support, invalidate_model_catalog_cache
 from core.model_presets import write_server_preset
+from core.model_paths import allowed_model_roots
 
 _MMPROJ_RE = re.compile(r'mmproj', re.I)
 
@@ -90,6 +91,20 @@ def _mmproj_rank(name: str) -> tuple[int, int, str]:
     return (penalty, len(name), lower)
 
 
+def _is_allowed_model_path(path: Path, cfg: dict[str, Any]) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return False
+    for root in allowed_model_roots(cfg):
+        try:
+            if resolved.is_relative_to(root.expanduser().resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def pick_mmproj_filename(repo_id: str, model_path: str | Path) -> str | None:
     names = _fetch_mmproj_filenames(repo_id)
     if not names:
@@ -114,18 +129,21 @@ def pick_mmproj_filename(repo_id: str, model_path: str | Path) -> str | None:
 
 
 def resolve_mmproj_path(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
+    config = cfg or load_config()
     explicit = str(server.get('mmproj_path') or '').strip()
-    if explicit and Path(explicit).is_file():
-        return explicit
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.is_file() and _is_allowed_model_path(explicit_path, config):
+            return str(explicit_path.resolve())
     target_path = str(server.get('target_path') or '').strip()
     if not target_path:
         from core.model_stack import resolve_model_stack
 
-        stack = resolve_model_stack(server, cfg=cfg or load_config())
+        stack = resolve_model_stack(server, cfg=config)
         target = next((row for row in stack if row.get('role') == 'target'), None)
         target_path = str(target.get('path') or '') if target else ''
-    if target_path:
-        siblings = _mmproj_siblings(Path(target_path))
+    if target_path and _is_allowed_model_path(Path(target_path), config):
+        siblings = _mmproj_siblings(Path(target_path).expanduser())
         if siblings:
             return str(siblings[0])
     return ''
@@ -133,9 +151,15 @@ def resolve_mmproj_path(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
 
 def vision_plan(*, model_path: str, server_id: str | None = None, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     config = cfg or load_config()
-    path = Path(str(model_path or '').strip()).expanduser()
+    path = Path(str(model_path or '').strip()).expanduser().resolve()
     if not path.is_file():
         return {'success': False, 'error': f'model file not found: {model_path}'}
+    if not _is_allowed_model_path(path, config):
+        return {
+            'success': False,
+            'error': 'model path not under an allowed model directory',
+            'model_path': str(path),
+        }
 
     server = normalize_server(get_server(config, server_id) or {}) if server_id else {}
     if server_id and not server.get('id'):
@@ -202,12 +226,20 @@ def wire_vision(
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = cfg or load_config()
-    target = Path(str(model_path or '').strip()).expanduser()
-    projector = Path(str(mmproj_path or '').strip()).expanduser()
+    target = Path(str(model_path or '').strip()).expanduser().resolve()
+    projector = Path(str(mmproj_path or '').strip()).expanduser().resolve()
     if not target.is_file():
         return {'success': False, 'error': f'model file not found: {model_path}'}
+    if not _is_allowed_model_path(target, config):
+        return {'success': False, 'error': 'model path not under an allowed model directory'}
     if not projector.is_file():
         return {'success': False, 'error': f'projector file not found: {mmproj_path}'}
+    if not _is_allowed_model_path(projector, config):
+        return {'success': False, 'error': 'projector path not under an allowed model directory'}
+    if projector.parent != target.parent:
+        return {'success': False, 'error': 'projector must be next to the model'}
+    if not _is_mmproj_name(projector.name):
+        return {'success': False, 'error': 'projector filename must contain mmproj and use GGUF format'}
 
     if server_id:
         servers = config.get('servers') or []
@@ -215,6 +247,13 @@ def wire_vision(
         for idx, entry in enumerate(servers):
             if not isinstance(entry, dict) or str(entry.get('id') or '') != server_id:
                 continue
+            configured_target = str(entry.get('target_path') or '').strip()
+            if configured_target:
+                try:
+                    if Path(configured_target).expanduser().resolve() != target:
+                        return {'success': False, 'error': 'model does not match the selected server'}
+                except OSError:
+                    return {'success': False, 'error': 'configured server model path is invalid'}
             merged = {**entry, 'mmproj_path': str(projector.resolve())}
             servers[idx] = merged
             config['servers'] = servers

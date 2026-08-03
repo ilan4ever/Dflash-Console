@@ -1,0 +1,49 @@
+---
+description: Always bump DFlash Console version before packaging or after shipped feature/fix batches
+alwaysApply: true
+---
+
+# Version bump (required)
+
+Whenever you finish a batch of user-facing or packaging-related changes, or whenever the user asks to rebuild the Windows installer / exe:
+
+1. **Bump the version first** (patch by default) before building.
+2. Keep these sources in sync on every bump:
+   - `package.json` → `version`
+   - `package-lock.json` → top-level `version` and `packages[""].version`
+   - `core/version.py` → `APP_VERSION`
+   - `static/index.html` → `#dfAppVersion` text (`vX.Y.Z`)
+   - `README.md` version badges / “Recent improvements” heading when present
+3. Prefer the helper script from repo root:
+
+```powershell
+.\scripts\bump-version.ps1          # patch: 0.0.24 -> 0.0.25
+.\scripts\bump-version.ps1 -Part minor
+.\scripts\bump-version.ps1 -SetVersion 1.0.0
+```
+
+4. After bumping, rebuild the dedicated Windows installer:
+
+```powershell
+.\scripts\run-electron.ps1 -Build
+```
+
+Artifacts land in `dist-electron\`:
+- `DFlash-Console-Setup-<version>-x64.exe` (NSIS installer — use this for install)
+- `DFlash-Console-Portable-<version>-x64.exe` (portable)
+
+## Install location (Windows decision)
+
+Default install folder for the dedicated NSIS installer:
+
+`%LOCALAPPDATA%\Programs\DFlash Console`
+→ typically `C:\Users\<user>\AppData\Local\Programs\DFlash Console`
+
+Reasons:
+- Per-user install (no admin required)
+- Standard Electron / electron-builder layout
+- Keeps the desktop shell separate from the large models/backend tree at `C:\dev\Dflash-Console`
+
+The installed shell should point at the Console data root (`C:\dev\Dflash-Console` on this machine, or `DFLASH_CONSOLE_ROOT`) for `server.ps1`, models, and config.
+
+Do **not** ship or bump without updating every version source listed above.

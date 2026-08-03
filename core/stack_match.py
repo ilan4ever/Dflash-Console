@@ -240,8 +240,25 @@ def preflight_stack_target(target_path: str | Path, *, cfg: dict[str, Any] | Non
 def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     config = cfg or load_config()
     catalog = list_local_models(cfg=config, scan_disk=True, force_refresh=False, include_dflash_stacks=False)
+    models = list(catalog.get('models') or [])
+
+    def _resolved_key(path: Path) -> str:
+        try:
+            return str(path.resolve()).lower()
+        except OSError:
+            return str(path).lower()
+
+    accelerators: list[tuple[Path, str, dict[str, Any]]] = []
+    for model in models:
+        path_text = str(model.get('path') or '').strip()
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if path.is_file() and is_accelerator_path(path):
+            accelerators.append((path, _resolved_key(path), model))
+
     rows: list[dict[str, Any]] = []
-    for model in catalog.get('models') or []:
+    for model in models:
         # Plain scanned GGUFs are marked loadable so they can be sent to an
         # engine, but they are still valid targets for a new DFlash stack.
         if model.get('loadable') and not model.get('plain_gguf'):
@@ -252,15 +269,35 @@ def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
         path = Path(path_text)
         if not path.is_file() or not is_target_candidate(path):
             continue
-        accelerators = find_local_accelerators(path, cfg=config, limit=5)
-        if not accelerators:
+        target_key = _resolved_key(path)
+        scored: list[dict[str, Any]] = []
+        for accel_path, accel_key, accel_model in accelerators:
+            if accel_key == target_key:
+                continue
+            score = score_accelerator_pair(path, accel_path)
+            if score <= 0:
+                continue
+            scored.append({
+                'path': str(accel_path),
+                'filename': accel_path.name,
+                'label': accel_model.get('label') or accel_path.name,
+                'size_gb': accel_model.get('size_gb'),
+                'score': round(score, 2),
+            })
+        if not scored:
+            # Keep the public matching seam usable for external or mocked
+            # accelerator sources that are not present in the plain catalog.
+            scored = find_local_accelerators(path, cfg=config, limit=5)
+        scored.sort(key=lambda row: (-float(row.get('score') or 0), row.get('filename') or ''))
+        scored = scored[:5]
+        if not scored:
             continue
-        best = accelerators[0]
+        best = scored[0]
         best_score = float(best.get('score') or 0)
         if not is_viable_stack_pair(path, best.get('path') or '', best_score):
             continue
         rows.append({
-            'path': str(path.resolve()),
+            'path': str(path),
             'filename': path.name,
             'label': model.get('label') or path.name,
             'size_gb': model.get('size_gb'),
@@ -269,7 +306,7 @@ def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
             'params': model.get('params'),
             'quant': model.get('quant'),
             'modified': model.get('modified'),
-            'accelerator_count': len(accelerators),
+            'accelerator_count': len(scored),
             'best_accelerator': best.get('filename'),
             'draft_path': best.get('path'),
             'draft_filename': best.get('filename'),

@@ -54,7 +54,11 @@ def resolve_embedding_model_path(server: dict[str, Any], *, cfg: dict[str, Any] 
         raise ValueError(f'embedding model not found: {target}')
 
     onevoice = Path(os.environ.get('ONEVOICE_ROOT', r'C:\dev\OneVoice'))
+    from core.model_paths import get_models_root
+
+    models_root = get_models_root(cfg)
     candidates = [
+        models_root / 'embeddings' / 'nomic-embed-text-v1.5.Q8_0.gguf',
         onevoice / 'models' / 'nomic-embed' / 'nomic-embed-text-v1.5.Q8_0.gguf',
         get_dflash_root(cfg) / 'models' / 'embeddings' / 'nomic-embed-text-v1.5.Q8_0.gguf',
     ]

@@ -9,6 +9,21 @@ from typing import Any
 
 from core.config import get_dflash_root, load_config
 
+CONSOLE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_models_root(cfg: dict[str, Any] | None = None) -> Path:
+    """Developer checkout keeps models under the Console app folder."""
+    config = cfg if cfg is not None else load_config()
+    raw = str(config.get('models_root') or '').strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    env = str(os.environ.get('DFLASH_CONSOLE_MODELS') or '').strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return (CONSOLE_ROOT / 'models').resolve()
+
+
 _STORAGE_PRESETS: dict[str, dict[str, str]] = {
     'dflash': {
         'label': 'DFlash checkpoints',
@@ -58,18 +73,18 @@ def _slug(value: str) -> str:
 
 
 def _preset_path(preset: str, cfg: dict[str, Any]) -> Path:
-    dflash_root = get_dflash_root(cfg)
+    models_root = get_models_root(cfg)
     home = Path.home()
     mapping = {
-        'dflash': dflash_root / 'models',
-        'gguf': dflash_root / 'models',
+        'dflash': models_root,
+        'gguf': models_root,
         'lmstudio': home / '.lmstudio' / 'models',
-        'speech': dflash_root / 'models' / 'speech',
-        'tts': dflash_root / 'models' / 'tts',
-        'ocr': dflash_root / 'models' / 'ocr',
-        'embeddings': dflash_root / 'models' / 'embeddings',
+        'speech': models_root / 'speech',
+        'tts': models_root / 'tts',
+        'ocr': models_root / 'ocr',
+        'embeddings': models_root / 'embeddings',
     }
-    return mapping.get(preset, dflash_root / 'models').expanduser()
+    return mapping.get(preset, models_root).expanduser()
 
 
 def _source_for_preset(preset: str) -> str:
@@ -199,6 +214,65 @@ def enabled_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, st
         preset = str(row.get('preset') or 'custom')
         roots.append((path, _source_for_preset(preset)))
     return roots
+
+
+def _source_for_seed_root(path: Path) -> str:
+    text = str(path).replace('\\', '/').lower()
+    if '/.lmstudio/' in text or text.endswith('/.lmstudio/models'):
+        return 'lmstudio'
+    if 'huggingface' in text:
+        return 'library'
+    if 'onevoice' in text:
+        return 'library'
+    return 'library'
+
+
+def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]:
+    """Library roots for All models: enabled libraries plus common on-disk model folders.
+
+    Skips broad home folders and huge caches (Documents/Downloads/HF hub).
+    Those stay available via Settings → Scan PC / Add folder.
+    """
+    config = cfg if cfg is not None else load_config()
+    roots = list(enabled_scan_roots(config))
+    seen: set[str] = set()
+    ordered: list[tuple[Path, str]] = []
+    for path, source in roots:
+        try:
+            key = str(path.expanduser().resolve()).lower()
+        except OSError:
+            key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append((path, source))
+
+    home = Path.home()
+    local = Path(os.environ.get('LOCALAPPDATA') or '')
+    roaming = Path(os.environ.get('APPDATA') or '')
+    candidates = [
+        get_models_root(config),
+        home / '.lmstudio' / 'models',
+        local / 'OneVoiceSpeakData' / 'models',
+        roaming / 'OneVoice-Speak' / 'models',
+        roaming / 'onevoice-speak' / 'models',
+        roaming / 'onevoice-speak-dev' / 'models',
+        home / 'models',
+    ]
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        if not resolved.is_dir():
+            continue
+        seen.add(key)
+        ordered.append((resolved, _source_for_seed_root(resolved)))
+    return ordered
 
 
 def allowed_model_roots(cfg: dict[str, Any] | None = None) -> list[Path]:

@@ -1,6 +1,7 @@
 {
   "ui_port": 8900,
-  "dflash_root": "C:\\dev\\Dflash",
+  "dflash_root": ".",
+  "models_root": ".\\models",
   "hardware_settings": {
     "gpu_strategy": "single_largest",
     "enabled_gpu_indices": [],
@@ -38,8 +39,8 @@
   "model_libraries": [
     {
       "id": "dflash-checkpoints",
-      "label": "DFlash checkpoints",
-      "path": "C:\\dev\\Dflash\\models",
+      "label": "DFlash Console models",
+      "path": ".\\models",
       "enabled": true,
       "preset": "dflash",
       "download_default": true

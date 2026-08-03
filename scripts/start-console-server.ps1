@@ -10,7 +10,7 @@ if (-not $Root) {
 Set-Location $Root
 
 if (-not $env:DFLASH_ROOT) {
-    $env:DFLASH_ROOT = 'C:\dev\Dflash'
+    $env:DFLASH_ROOT = $Root
 }
 $env:PYTHONPATH = $Root
 

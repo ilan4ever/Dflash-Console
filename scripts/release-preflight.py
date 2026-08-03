@@ -54,6 +54,7 @@ def main() -> int:
         'config.example.json',
         'api/app.py',
         'scripts/start-console-server.ps1',
+        'scripts/start_llama_server.ps1',
         'scripts/restart-console-server.ps1',
         'scripts/release-managed-gpu.py',
         'scripts/release-preflight.py',
