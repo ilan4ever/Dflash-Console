@@ -2,7 +2,7 @@
 
 **Local control panel for DFlash speculative-decoding stacks** — manage llama-server engines, checkpoint libraries, Hugging Face downloads, and GPU settings from a single web UI.
 
-> **Status:** Private development repository. Open-source release planned; not published yet.
+> **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
 **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.27
 
@@ -10,7 +10,7 @@
 
 ## What it does
 
-DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside your [DFlash](https://github.com/ilan4ever/Dflash) install. It gives you an LM Studio–style workbench focused on **your** engine profiles—not a generic chat client.
+DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside your [DFlash](https://github.com/ilan4ever/Dflash) installation. It gives you an LM Studio–style workbench focused on **your** engine profiles—not a generic chat client.
 
 | Area | Highlights |
 |------|------------|
@@ -25,7 +25,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 
 ---
 
-## Recent improvements (v0.0.27)
+## Recent improvements (v0.0.24)
 
 | Feature | Description |
 |---------|-------------|
@@ -35,7 +35,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 | **Playground** | Load models from catalog via engine + model picker |
 | **UI polish** | Themed dropdowns, settings/docs as main views, terminology cleanup (checkpoint → model) |
 
-## Recent improvements (v0.0.27)
+## Earlier improvements (v0.0.23)
 
 | Feature | Description |
 |---------|-------------|
@@ -56,7 +56,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 - **Windows** (primary target; PowerShell startup scripts)
 - **Python 3.10+**
 - **PowerShell 7+** (`pwsh`)
-- Built **llama-server** under your DFlash tree (see `DFLASH_ROOT`)
+- Built **llama-server** and compatible model files in the configured `DFLASH_ROOT`
 - NVIDIA GPU optional but recommended for multi-GPU load settings
 
 ---
@@ -69,7 +69,8 @@ cd Dflash-Console
 
 # First-time setup
 copy config.example.json config.json
-# Edit config.json — set dflash_root, server ports, and model paths
+# Edit config.json — set dflash_root, server ports, and model paths.
+# Keep model weights, logs, and local credentials out of Git.
 
 .\server.ps1
 ```
@@ -124,7 +125,8 @@ Build Windows packages (NSIS installer + portable exe):
 Output lands in `dist-electron/`. The shell uses the configured `ui_port`
 (8900 by default) and talks to loopback, so the look and behavior match the
 browser. Closing the window leaves the Console API and engines running, same
-as closing a browser tab.
+as closing a browser tab. Windows artifacts are not code-signed by default;
+publishers should sign them before distributing outside a trusted team.
 
 ---
 
@@ -157,6 +159,20 @@ Default UI port is **8900**. Engine ports (e.g. 8090, 8092) are configured per s
 
 ---
 
+## Security boundary
+
+The Console binds to loopback by default and validates configured engine URLs
+as loopback-only. It is designed for one trusted user on one machine; it does
+not provide multi-user authentication or CSRF protection. Do not expose the
+Console or engine ports to a LAN, reverse proxy, or public network without
+adding an authenticated access layer.
+
+Hugging Face downloads use `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` when private
+repositories require them. Keep those values in the process environment, never
+in `config.json` or committed files.
+
+---
+
 ## Project layout
 
 ```
@@ -169,11 +185,14 @@ Dflash-Console/
 ├── tests/                  # pytest suite
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
+│   ├── ARCHITECTURE.md     # Public architecture overview
 │   └── ui/                 # UI panel design notes
 ├── run.ps1                 # Full reset and background API startup
 ├── package.json            # Electron desktop packaging
 ├── config.example.json     # Template configuration
-└── DFLASH-CONSOLE-PLAN.md  # Detailed build plan & handoff notes
+├── CONTRIBUTING.md         # Contribution workflow
+├── SECURITY.md             # Vulnerability reporting
+└── LICENSE                 # MIT license
 ```
 
 ---
@@ -215,18 +234,19 @@ Cursor agents: see `.cursor/rules/dev-server-restart.mdc` — restart the API af
 ## Related projects
 
 - **DFlash** — speculative decoding stack and llama-server profiles this console manages
-- Binaries, models, and `start_llama_server.ps1` live under this repo (`DFLASH_ROOT` defaults to the Console folder)
+- Model weights and native build outputs are intentionally excluded from this repository.
 
 ---
 
 ## License
 
-Not yet published for open source. License will be added before public release.
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 
 ---
 
 ## Roadmap
 
-See [DFLASH-CONSOLE-PLAN.md](./DFLASH-CONSOLE-PLAN.md) for architecture and
-handoff notes. Run `python scripts/release-preflight.py` before packaging a
-checkout.
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the public architecture
+overview. Run `python scripts/release-preflight.py` before packaging a
+checkout. Public release discussions and roadmap items belong in the
+[GitHub issue tracker](https://github.com/ilan4ever/Dflash-Console/issues).

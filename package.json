@@ -5,7 +5,10 @@
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "DFlash",
-  "license": "UNLICENSED",
+  "repository": "github:ilan4ever/Dflash-Console",
+  "bugs": "https://github.com/ilan4ever/Dflash-Console/issues",
+  "homepage": "https://github.com/ilan4ever/Dflash-Console#readme",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "electron": "electron .",
