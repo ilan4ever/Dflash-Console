@@ -253,7 +253,7 @@ def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
         path_text = str(model.get('path') or '').strip()
         if not path_text:
             continue
-        path = Path(path_text)
+        path = Path(path_text).expanduser().resolve()
         if path.is_file() and is_accelerator_path(path):
             accelerators.append((path, _resolved_key(path), model))
 
@@ -266,7 +266,7 @@ def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
         path_text = str(model.get('path') or '').strip()
         if not path_text:
             continue
-        path = Path(path_text)
+        path = Path(path_text).expanduser().resolve()
         if not path.is_file() or not is_target_candidate(path):
             continue
         target_key = _resolved_key(path)
