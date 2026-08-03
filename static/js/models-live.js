@@ -539,6 +539,7 @@
     const rows = models.filter((model) => {
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
+      if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (typeFilter === 'downloading') return false;
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
@@ -570,6 +571,7 @@
     const catalogRows = models.filter((model) => {
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
+      if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (typeFilter === 'downloading') return false;
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
@@ -600,18 +602,20 @@
       return;
     }
 
-    if (!catalogRows.length && !activeDownloads.length) {
+    if (!catalogRows.length && !(typeFilter === 'loaded' ? [] : activeDownloads).length) {
       const emptyLabel = typeFilter === 'dflash'
         ? 'No DFlash stacks found. Use Create DFlash stack or check Settings → model folders.'
         : typeFilter === 'accelerators'
           ? 'No accelerator files found. They are small DFlash/DSpark draft checkpoints on disk.'
-          : 'No models match this filter.';
+          : typeFilter === 'loaded'
+            ? 'No models are loaded on the GPU right now. Use Load on a model row or the Engines tab.'
+            : 'No models match this filter.';
       body.innerHTML = `<tr><td colspan="7" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
       return;
     }
 
     body.innerHTML = [
-      ...activeDownloads.map((job) => renderDownloadingRow(job)),
+      ...(typeFilter === 'loaded' ? [] : activeDownloads.map((job) => renderDownloadingRow(job))),
       ...catalogRows.map((model) => {
       const key = modelKey(model);
       const selected = key === selectedKey;
@@ -899,13 +903,17 @@
           ? models.filter(isDflashStack).length
           : typeFilter === 'accelerators'
             ? models.filter(isDflashAccelerator).length
-            : models.length;
+            : typeFilter === 'loaded'
+              ? models.filter(isStackLoadedOnGpu).length
+              : models.length;
         const readyStacks = models.filter((model) => isDflashStack(model) && model.loadable).length;
         const filterNote = typeFilter === 'dflash'
           ? ` · showing ${shown} DFlash stacks (${readyStacks} ready to load)`
           : typeFilter === 'accelerators'
             ? ` · showing ${shown} accelerators`
-            : '';
+            : typeFilter === 'loaded'
+              ? ` · showing ${shown} loaded on GPU`
+              : '';
         const downloadNote = activeCount ? ` · ${activeCount} downloading` : '';
         stats.textContent = `${meta.total_count || models.length} models (${meta.loadable_count || 0} engine profiles), ${meta.total_size_gb || 0} GB total${filterNote}${downloadNote}`;
       }
@@ -914,7 +922,9 @@
     if (hint) {
       hint.textContent = typeFilter === 'downloading'
         ? 'Active Hugging Face downloads from Model catalog appear here with live progress.'
-        : typeFilter === 'accelerators'
+        : typeFilter === 'loaded'
+          ? 'Only models currently loaded on the GPU. Use Unload on a row to free VRAM.'
+          : typeFilter === 'accelerators'
           ? 'DFlash/DSpark draft files only (name contains DFlash or DSpark) — small checkpoints paired with a full target for speculative decoding. Full target GGUFs belong under All models.'
           : typeFilter === 'dflash'
             ? 'Green background = installed. Gold DFlash label = speculative stack. Loaded ribbon + Unload = on GPU now.'
@@ -1052,7 +1062,7 @@
   }
 
   function normalizeTypeFilter(next, { allowEmptyDownloading = false } = {}) {
-    const filter = ['all', 'dflash', 'accelerators', 'downloading'].includes(next) ? next : 'all';
+    const filter = ['all', 'dflash', 'accelerators', 'downloading', 'loaded'].includes(next) ? next : 'all';
     if (filter === 'downloading' && !allowEmptyDownloading && !getActiveDownloadJobs().length) {
       return 'dflash';
     }
