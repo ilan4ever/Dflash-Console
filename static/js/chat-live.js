@@ -15,6 +15,9 @@
   let sending = false;
   let loadingCheckpoint = false;
   let pollTimer = null;
+  let generationPollTimer = null;
+  let generationPollInFlight = false;
+  let chatRenderFrame = null;
   let pendingAttachments = [];
 
   const MAX_ATTACHMENTS = 5;
@@ -238,7 +241,6 @@
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
     if (model.loadable && model.port) parts.push(`:${model.port}`);
-    else if (model.path && !model.server_id) parts.push('load on active engine');
     return parts.join(' · ');
   }
 
@@ -254,12 +256,20 @@
     const pick = document.getElementById('chatEnginePick');
     const serverId = pick?.value || '';
     const server = serverById.get(serverId);
-    if (!server || server.status !== 'loaded' || !server.loaded_models?.length) return null;
+    if (!server || server.status !== 'loaded') return null;
+    const loadedModels = Array.isArray(server.loaded_models) ? server.loaded_models : [];
+    const modelId = String(
+      server.active_model_id
+      || loadedModels[0]
+      || server.model_id
+      || '',
+    ).trim();
+    if (!modelId) return null;
     return {
       id: server.id,
       label: server.label || server.id,
       port: server.port,
-      modelId: server.loaded_models[0],
+      modelId,
       inference: server.inference_settings || {},
     };
   }
@@ -318,6 +328,16 @@
 
   function selectedCatalogModel() {
     return catalogModels.find((m) => modelCatalogKey(m) === selectedCheckpointKey) || null;
+  }
+
+  function syncEngineToModel(model = selectedCatalogModel()) {
+    const serverId = String(model?.server_id || '').trim();
+    if (!serverId || !serverById.has(serverId)) return '';
+    const enginePick = document.getElementById('chatEnginePick');
+    if (enginePick) enginePick.value = serverId;
+    const session = activeSession();
+    if (session) session.serverId = serverId;
+    return serverId;
   }
 
   let catalogRefreshGen = 0;
@@ -397,8 +417,8 @@
 
     try {
       const [profilesData, quickModelsData] = await Promise.all([
-        api('/api/servers/profiles'),
-        api('/api/models'),
+        api('/api/servers/profiles', { timeoutMs: 15000 }),
+        api('/api/models?quick=1', { timeoutMs: 15000 }),
       ]);
       if (gen !== catalogRefreshGen) return;
       applyServersData(profilesData);
@@ -426,8 +446,8 @@
 
     try {
       const [serversData, modelsData] = await Promise.all([
-        api('/api/servers'),
-        api('/api/models'),
+        api('/api/servers?include_external=0', { timeoutMs: 15000 }),
+        api('/api/models', { timeoutMs: 30000 }),
       ]);
       if (gen !== catalogRefreshGen) return;
       applyServersData(serversData);
@@ -450,9 +470,12 @@
     }
   }
 
-  async function refreshStatus() {
+  async function refreshStatus({ fresh = false } = {}) {
     try {
-      const serversData = await api('/api/servers');
+      const serversData = await api(
+        `/api/servers?include_external=0${fresh ? '&fresh=1' : ''}`,
+        { timeoutMs: fresh ? 30000 : 15000 },
+      );
       applyServersData(serversData);
       renderEnginePicker();
       renderModelTag();
@@ -747,14 +770,31 @@
       const stats = msg.stats
         ? `<div class="df-chat-msg-stats">${escapeHtml(msg.stats)}</div>`
         : '';
-      const pending = msg.pending ? '<span class="df-chat-typing"><span>.</span><span>.</span><span>.</span></span>' : '';
-      return `<article class="df-chat-msg df-chat-msg-${role}" data-msg-idx="${idx}">
+      const pending = msg.pending
+        ? '<span class="df-chat-typing"><span class="df-chat-typing-label">Generating</span><span>.</span><span>.</span><span>.</span></span>'
+        : '';
+      const pendingClass = msg.pending ? ' is-generating' : '';
+      return `<article class="df-chat-msg df-chat-msg-${role}${pendingClass}" data-msg-idx="${idx}"${msg.pending ? ' aria-live="polite"' : ''}>
         <div class="df-chat-msg-label">${role === 'user' ? 'You' : 'Assistant'}</div>
         <div class="df-chat-bubble">${body}${pending}${stats}</div>
       </article>`;
     }).join('');
 
     box.scrollTop = box.scrollHeight;
+  }
+
+  function queueChatRender() {
+    if (chatRenderFrame != null) return;
+    const render = () => {
+      chatRenderFrame = null;
+      renderMessages();
+      updateComposerState();
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+      chatRenderFrame = window.requestAnimationFrame(render);
+    } else {
+      chatRenderFrame = window.setTimeout(render, 0);
+    }
   }
 
   function setStatus(text) {
@@ -790,6 +830,75 @@
     renderModelTag();
   }
 
+  function formatInferenceStats(stats, { live = false } = {}) {
+    const source = stats && typeof stats === 'object' ? stats : {};
+    const parts = [];
+    const generating = live || source.generating === true;
+    if (generating) parts.push('Generating');
+
+    const tokens = generating ? source.generating_tokens : source.generation_tokens;
+    const tps = generating
+      ? source.generating_tokens_per_second
+      : source.tokens_per_second;
+    if (tokens != null) parts.push(`${Number(tokens) || 0} tok`);
+    if (tps != null && Number.isFinite(Number(tps))) {
+      parts.push(`${Number(tps).toFixed(1)} t/s`);
+    } else if (generating && source.prefill_tokens != null && Number(tokens || 0) <= 0) {
+      parts.push(`${Number(source.prefill_tokens) || 0} prefill`);
+    }
+    return parts.join(' · ');
+  }
+
+  function updatePendingAssistantStats(stats) {
+    const session = activeSession();
+    const pending = [...(session?.messages || [])].reverse().find((msg) => msg?.pending);
+    if (!pending) return;
+    const label = formatInferenceStats(stats, { live: true }) || 'Generating';
+    pending.stats = label;
+    if (stats?.generating) setStatus(label);
+    queueChatRender();
+  }
+
+  async function refreshInferenceStats(serverId, { render = true } = {}) {
+    if (!serverId) return null;
+    const data = await api(
+      `/api/servers/${encodeURIComponent(serverId)}/inference-stats`,
+      { timeoutMs: 2500 },
+    );
+    const stats = data?.inference_stats && typeof data.inference_stats === 'object'
+      ? data.inference_stats
+      : {};
+    const server = serverById.get(serverId);
+    if (server) server.inference_stats = stats;
+    if (render && sending) updatePendingAssistantStats(stats);
+    return stats;
+  }
+
+  function stopGenerationPolling() {
+    if (generationPollTimer) {
+      window.clearInterval(generationPollTimer);
+      generationPollTimer = null;
+    }
+    generationPollInFlight = false;
+  }
+
+  function startGenerationPolling(serverId) {
+    stopGenerationPolling();
+    const poll = async () => {
+      if (!sending || generationPollInFlight) return;
+      generationPollInFlight = true;
+      try {
+        await refreshInferenceStats(serverId);
+      } catch {
+        /* The stream itself remains authoritative if slot polling is unavailable. */
+      } finally {
+        generationPollInFlight = false;
+      }
+    };
+    void poll();
+    generationPollTimer = window.setInterval(poll, 500);
+  }
+
   function renderAll() {
     renderSessionList();
     renderPickers();
@@ -819,8 +928,9 @@
   }
 
   async function loadCheckpoint() {
-    const serverId = document.getElementById('chatEnginePick')?.value;
     const model = selectedCatalogModel();
+    const serverId = syncEngineToModel(model)
+      || document.getElementById('chatEnginePick')?.value;
     if (!serverId || !model) {
       toast('Select an engine and model', false);
       return;
@@ -835,7 +945,7 @@
     renderAll();
     try {
       await window.DFlashServerLive.loadModelOnServer(serverId, model);
-      await refreshStatus();
+      await refreshStatus({ fresh: true });
       syncSessionEngine();
       setStatus('Model loaded — you can chat now');
     } catch (err) {
@@ -845,6 +955,118 @@
       loadingCheckpoint = false;
       renderAll();
     }
+  }
+
+  function responseText(value) {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          return String(part?.text || part?.content || '');
+        })
+        .join('');
+    }
+    if (value && typeof value === 'object') {
+      return String(value.text || value.content || '');
+    }
+    return '';
+  }
+
+  function streamDeltaText(payload) {
+    const choice = payload?.choices?.[0] || {};
+    const delta = choice.delta || {};
+    return responseText(delta.content ?? delta.text ?? choice.text ?? choice.message?.content);
+  }
+
+  function streamMessageText(payload) {
+    const choice = payload?.choices?.[0] || {};
+    return responseText(choice.message?.content ?? choice.text ?? payload?.content);
+  }
+
+  function parseSseBlock(block) {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+    if (!data || data === '[DONE]') return null;
+    try {
+      const parsed = JSON.parse(data);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function readChatResponse(resp, onDelta) {
+    const contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+    const isStream = contentType.includes('text/event-stream')
+      && resp.body
+      && typeof resp.body.getReader === 'function';
+    if (!isStream) {
+      let payload = null;
+      try {
+        payload = await resp.json();
+      } catch {
+        payload = {};
+      }
+      return {
+        payload,
+        content: streamMessageText(payload),
+        usage: payload?.usage || null,
+        timings: payload?.timings || null,
+      };
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let usage = null;
+    let timings = null;
+
+    const consume = (block) => {
+      const payload = parseSseBlock(block);
+      if (!payload) return;
+      if (payload.usage && typeof payload.usage === 'object') usage = payload.usage;
+      if (payload.timings && typeof payload.timings === 'object') timings = payload.timings;
+      const delta = streamDeltaText(payload);
+      if (delta) {
+        content += delta;
+        onDelta?.(content, delta, payload);
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || '';
+      blocks.forEach(consume);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consume(buffer);
+
+    return { payload: null, content, usage, timings };
+  }
+
+  async function responseError(resp) {
+    let payload = null;
+    try {
+      payload = await resp.json();
+    } catch {
+      try {
+        const text = await resp.text();
+        payload = text ? { error: text } : null;
+      } catch {
+        payload = null;
+      }
+    }
+    const detail = payload?.detail || payload?.error?.message || payload?.error || `HTTP ${resp.status}`;
+    return typeof detail === 'string' ? detail : JSON.stringify(detail);
   }
 
   async function sendMessage() {
@@ -884,7 +1106,8 @@
     const history = session.messages
       .filter((m) => !m.pending && m.content)
       .map((m) => ({ role: m.role, content: m.content }));
-    session.messages.push({ role: 'assistant', content: '', pending: true });
+    const assistantMessage = { role: 'assistant', content: '', pending: true };
+    session.messages.push(assistantMessage);
     input.value = '';
     pendingAttachments = [];
     renderAttachmentTray();
@@ -899,51 +1122,57 @@
       max_tokens: Number(engine.inference?.max_tokens) || 2048,
       temperature: Number(engine.inference?.temperature ?? 0.7),
       top_p: Number(engine.inference?.top_p ?? 0.9),
+      stream: true,
     };
 
+    startGenerationPolling(engine.id);
     try {
       const resp = await fetch(`/api/servers/${encodeURIComponent(engine.id)}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        cache: 'no-store',
       });
-      let payload = null;
-      try {
-        payload = await resp.json();
-      } catch {
-        payload = null;
-      }
-      session.messages.pop();
       if (!resp.ok) {
-        const detail = payload?.detail || payload?.error?.message || payload?.error || `HTTP ${resp.status}`;
-        const errText = typeof detail === 'string' ? detail : JSON.stringify(detail);
-        session.messages.push({ role: 'assistant', content: `**Error:** ${errText}` });
-        toast('Chat request failed', false);
-      } else {
-        const choice = payload?.choices?.[0]?.message?.content || '';
-        const usage = payload?.usage || {};
-        const timings = payload?.timings || {};
-        const gen = usage.completion_tokens;
-        const tps = timings.predicted_per_second != null
-          ? Number(timings.predicted_per_second).toFixed(1)
-          : null;
-        const statsParts = [];
-        if (gen != null) statsParts.push(`${gen} tok`);
-        if (tps) statsParts.push(`${tps} t/s`);
-        session.messages.push({
-          role: 'assistant',
-          content: choice || '(empty response)',
-          stats: statsParts.join(' · ') || undefined,
-        });
-        setStatus(statsParts.length ? `Last reply · ${statsParts.join(' · ')}` : '');
-        void refreshStatus();
-        void window.DFlashServerLive?.refresh?.();
+        const errText = await responseError(resp);
+        throw new Error(errText);
       }
+
+      const result = await readChatResponse(resp, (partialText) => {
+        assistantMessage.content = partialText;
+        assistantMessage.stats = assistantMessage.stats || 'Generating';
+        queueChatRender();
+      });
+      const choice = result.content || streamMessageText(result.payload) || '';
+      const usage = result.usage || result.payload?.usage || {};
+      const timings = result.timings || result.payload?.timings || {};
+      const gen = usage.completion_tokens;
+      const tps = timings.predicted_per_second != null
+        ? Number(timings.predicted_per_second).toFixed(1)
+        : null;
+      const statsParts = [];
+      if (gen != null) statsParts.push(`${gen} tok`);
+      if (tps) statsParts.push(`${tps} t/s`);
+      if (!statsParts.length) {
+        const completedStats = formatInferenceStats(
+          serverById.get(engine.id)?.inference_stats,
+          { live: false },
+        ).replace(/^Generating\s*·?\s*/, '');
+        if (completedStats) statsParts.push(completedStats);
+      }
+      assistantMessage.pending = false;
+      assistantMessage.content = choice || '(empty response)';
+      assistantMessage.stats = statsParts.join(' · ') || undefined;
+      setStatus(statsParts.length ? `Last reply · ${statsParts.join(' · ')}` : 'Reply complete');
+      void refreshStatus();
+      void window.DFlashServerLive?.refresh?.();
     } catch (err) {
-      session.messages.pop();
-      session.messages.push({ role: 'assistant', content: `**Error:** ${err.message || 'Request failed'}` });
+      assistantMessage.pending = false;
+      assistantMessage.content = `**Error:** ${err.message || 'Request failed'}`;
+      assistantMessage.stats = undefined;
       toast(err.message || 'Chat failed', false);
     } finally {
+      stopGenerationPolling();
       sending = false;
       persist();
       renderAll();
@@ -985,6 +1214,7 @@
 
     document.getElementById('chatCheckpointPick')?.addEventListener('change', (e) => {
       selectedCheckpointKey = e.target.value || '';
+      syncEngineToModel();
       persist();
       updateComposerState();
     });
@@ -1010,6 +1240,7 @@
 
   async function onViewEnter() {
     await refreshCatalog({ force: !catalogLoaded });
+    syncEngineToModel();
     syncSessionEngine();
     renderAll();
     startPolling();

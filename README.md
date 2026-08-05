@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.31
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.0.49
 
 ---
 
@@ -26,7 +26,7 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 
 ---
 
-## Recent improvements (v0.0.31)
+## Recent improvements (v0.0.49)
 
 | Feature | Description |
 |---------|-------------|
@@ -150,6 +150,22 @@ See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or op
 4. Point your app at the engine OpenAI URL shown on the card, or use the console proxy at `/api/servers/{id}/v1/chat/completions`.
 5. Use **Settings → Locations** to back up or restore `config.json` and launch presets.
 6. Open **About** for the current release, developer attribution, license, and public project links.
+
+---
+
+## Third-party model libraries and trademarks
+
+DFlash Console can scan model folders that the user explicitly enables, including
+local LM Studio libraries. It reads and loads model files already present on the
+user's machine; it does not include, copy, or redistribute the LM Studio
+application or model weights.
+
+“LM Studio library” identifies the detected folder source only. LM Studio is a
+trademark of Element Labs, Inc.; DFlash Console is independent and is not
+affiliated with or endorsed by LM Studio. Model files remain subject to the
+licenses and terms provided by their respective model authors or distributors.
+Users are responsible for checking those terms before copying, publishing, or
+commercially deploying model files.
 
 ---
 

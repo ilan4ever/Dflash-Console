@@ -25,6 +25,32 @@
 - **Loaded** — models currently loaded on an engine.
 - Model type filters include LLM/chat, DFlash, OCR, translation,
   speech-to-text, text-to-speech, embeddings, vision, and other.
+- **HF accelerators available** — local target models with a compatible DFlash
+  or DSpark accelerator currently listed in the Hugging Face catalog.
+
+The Hugging Face filter checks the live catalog when selected. It requires
+network access and never treats a standalone accelerator file as a target
+model. It includes models discovered from browse-only folders, such as an
+unconfigured LM Studio folder. The context menu can open the stack wizard for
+these entries, where you can choose an installed accelerator or download the
+matching Hugging Face accelerator.
+
+Models from different enabled libraries are shown as separate rows so users can
+distinguish DFlash Console files from LM Studio files. The Source column and
+source badges identify the library origin; a DFlash stack keeps its DFlash
+badge, while a model found under LM Studio is labeled “LM Studio library.”
+
+When identical model files exist in more than one enabled library, each retained
+row is marked with the number of copies and the relevant source names. The
+Console does not delete or move any file. Same-path duplicates are still
+deduplicated.
+
+The library label describes the detected folder source only. LM Studio is a
+trademark of Element Labs, Inc.; DFlash Console is independent and is not
+affiliated with or endorsed by LM Studio. Model files remain subject to the
+licenses and terms provided by their respective authors or distributors. The
+Console scans only user-enabled folders and does not redistribute model
+weights.
 
 ## Toolbar
 - Filter models search (`Ctrl+F`)

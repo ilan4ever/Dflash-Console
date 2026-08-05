@@ -82,6 +82,29 @@ def test_visible_card_uses_filename_when_api_returns_default_alias():
     assert cards[0].get('is_adhoc') is not True
 
 
+def test_visible_cards_keep_all_loaded_models_when_router_reports_multiple():
+    stack = _annotate_model_stack(
+        [
+            {'role': 'alias', 'id': 'main', 'label': 'API alias', 'source': 'api'},
+            {'role': 'target', 'id': 'main-target', 'label': 'Target', 'source': 'dflash'},
+        ],
+        booting=False,
+        loaded_models=['main', 'vision-model'],
+        progress=None,
+    )
+    cards = _build_visible_cards(
+        stack,
+        server_label='Main engine',
+        display_name='Main engine',
+        booting=False,
+        loaded_models=['main', 'vision-model'],
+        progress=None,
+    )
+    assert [card['id'] for card in cards] == ['main', 'vision-model']
+    assert cards[1]['role'] == 'loaded-model'
+    assert cards[1]['is_adhoc'] is True
+
+
 def test_api_base_url_strips_v1():
     from core.runtime import api_base_url
 

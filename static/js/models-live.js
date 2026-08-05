@@ -11,6 +11,10 @@
   let bootingServers = {};
   let contextModel = null;
   let stackPreflight = { key: '', status: 'idle', result: null };
+  let hfAcceleratorCatalog = [];
+  let hfAcceleratorStatus = 'idle';
+  let hfAcceleratorRequest = null;
+  let hfAcceleratorRevision = 0;
 
   const PINNED_KEY = 'dflashConsole.pinnedModels';
 
@@ -50,6 +54,40 @@
   function dflashLogoLabel(label = 'DFlash') {
     const safeLabel = escapeHtml(label);
     return `<span class="lm-tag gold dflash-logo-label" role="img" aria-label="${safeLabel}" title="${safeLabel}"></span>`;
+  }
+
+  function acceleratorBadge() {
+    return '<span class="lm-tag orange" title="Draft accelerator; not a target model">Accelerator</span>';
+  }
+
+  function hfAcceleratorBadge() {
+    return '<span class="lm-tag blue" title="A compatible DFlash accelerator is listed on Hugging Face">HF accelerator</span>';
+  }
+
+  function splitShardBadge(model) {
+    const count = Number(model?.split_count || 0);
+    return count > 1
+      ? `<span class="lm-tag purple" title="This GGUF model is stored across ${count} shard files">${count} shards</span>`
+      : '';
+  }
+
+  function dflashCompatibilityBadge() {
+    return '<span class="lm-tag gold" title="This model has a matching DFlash accelerator and can be converted from the Models tab">DFlash compatible</span>';
+  }
+
+  function isDflashConvertible(model) {
+    return !!(
+      model
+      && !isDflashAccelerator(model)
+      && (
+        (
+          isDflashStack(model)
+          && model.stack_status === 'unregistered'
+          && model.draft_path
+        )
+        || isHfAcceleratorAvailable(model)
+      )
+    );
   }
 
   function capabilityTags(caps, { loadable = false, port = 0 } = {}) {
@@ -140,7 +178,7 @@
   }
 
   function isModelReadyToLoad(model) {
-    return !!(model?.loadable && !isStackLoadedOnGpu(model) && !isStackBooting(model));
+    return !!(model?.loadable && !isDflashAccelerator(model) && !isStackLoadedOnGpu(model) && !isStackBooting(model));
   }
 
   function isStackReadyToLoad(model) {
@@ -177,13 +215,20 @@
 
   function capTags(model) {
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
+    const compatibility = isDflashConvertible(model) ? dflashCompatibilityBadge() : '';
+    const accelerator = isDflashAccelerator(model) ? acceleratorBadge() : '';
+    const hfAccelerator = isHfAcceleratorAvailable(model) ? hfAcceleratorBadge() : '';
+    const split = splitShardBadge(model);
     const dup = duplicateTag(model);
     const weak = weakMatchTag(model);
-    const caps = capabilityTags(model.capabilities, { loadable: model.loadable, port: model.port });
+    const caps = capabilityTags(model.capabilities, {
+      loadable: model.loadable && !isDflashAccelerator(model),
+      port: model.port,
+    });
     if (isDflashStack(model)) {
-      return status + caps + dup + weak;
+      return status + compatibility + accelerator + hfAccelerator + split + caps + dup + weak;
     }
-    return status + dup + weak + caps;
+    return status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
   }
 
   function stackActionButton(model) {
@@ -192,6 +237,9 @@
     }
     if (isStackLoadedOnGpu(model)) {
       return '<button class="lm-btn ghost tiny" type="button" data-action="unload-model" title="Remove model from GPU">Unload</button>';
+    }
+    if (isDflashAccelerator(model)) {
+      return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
     }
     if (model.loadable) {
       return '<button class="lm-btn ghost tiny" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
@@ -247,10 +295,14 @@
     const count = model.duplicate_count || 2;
     const paths = Array.isArray(model.duplicate_paths) ? model.duplicate_paths : [];
     const uniquePaths = new Set(paths.map((path) => normalizeModelPath(path)).filter(Boolean));
-    const title = uniquePaths.size <= 1
-      ? 'Same file is listed more than once in the library (for example stack + plain GGUF). Prefer the stack card.'
-      : `This exact filename exists in ${count} folders on disk. Pick one copy for your stack; delete or ignore the rest.`;
-    return `<span class="lm-tag yellow" title="${escapeHtml(title)}">duplicate ×${count}</span>`;
+    const identical = model.duplicate_identical !== false;
+    const title = identical
+      ? `This model has ${count} identical copies on disk. Console shows one preferred entry; no files were deleted.`
+      : uniquePaths.size <= 1
+        ? 'Same file is listed more than once in the library (for example stack + plain GGUF). Prefer the stack card.'
+        : `This exact filename exists in ${count} folders on disk. Pick the copy you want for this stack.`;
+    const label = identical ? `${count} copies` : `same name ×${count}`;
+    return `<span class="lm-tag yellow" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
   }
 
   function weakMatchTag(model) {
@@ -341,7 +393,7 @@
   }
 
   function modelIdentifier(model) {
-    return model.server_id || model.path || model.id || '';
+    return model.model_id || model.id || model.server_id || model.filename || model.path || '';
   }
 
   function stackTargetIssue(model) {
@@ -387,6 +439,14 @@
     return stackPreflight;
   }
 
+  function canStartHfStack(model, result) {
+    return (
+      !isDflashAccelerator(model)
+      && isHfAcceleratorAvailable(model)
+      && ['no-accelerator', 'weak-match'].includes(result?.reason_code)
+    );
+  }
+
   function stackMenuActionHtml(model) {
     const state = stackMenuState(model);
     const result = state.result || {};
@@ -404,6 +464,20 @@
           Create DFlash stack…
         </button>
         <div class="df-stack-preflight df-model-stack-preflight is-ready">Ready to pair with ${escapeHtml(accelerator)}.</div>`;
+    }
+    if (canStartHfStack(model, result)) {
+      return `
+        <button type="button" data-cmd="create-stack" title="Open the DFlash stack wizard">
+          Create DFlash stack…
+        </button>
+        <div class="df-stack-preflight df-model-stack-preflight is-ready">A matching Hugging Face accelerator is available. Continue in the wizard to download or choose it.</div>`;
+    }
+    if (result.reason_code === 'path-not-allowed') {
+      return `
+        <button type="button" data-cmd="create-stack" disabled title="Enable this model folder in Settings first">
+          Model folder not enabled
+        </button>
+        <div class="df-stack-preflight df-model-stack-preflight is-unavailable">${escapeHtml(result.reason)}</div>`;
     }
     return `
       <button type="button" data-cmd="create-stack" disabled title="${escapeHtml(result.reason || 'DFlash stack is not available')}">
@@ -440,12 +514,16 @@
       updateStackMenuAction(model);
     } catch (err) {
       if (contextModel !== model || stackPreflight.key !== key) return;
+      const message = err.message || 'Could not check this model for DFlash compatibility.';
+      const pathNotAllowed = /path not under allowed model directories/i.test(message);
       stackPreflight = {
         key,
         status: 'unavailable',
         result: {
-          reason_code: 'check-failed',
-          reason: err.message || 'Could not check this model for DFlash compatibility.',
+          reason_code: pathNotAllowed ? 'path-not-allowed' : 'check-failed',
+          reason: pathNotAllowed
+            ? 'This model is scanned from outside the allowed model libraries. Add its folder in Settings → model libraries before creating a DFlash stack.'
+            : message,
         },
       };
       updateStackMenuAction(model);
@@ -572,6 +650,7 @@
     'embedding',
     'vision',
     'other',
+    'hf-accelerator',
   ]);
   let modelTypeFilter = localStorage.getItem(MODEL_TYPE_FILTER_KEY) || 'all';
   if (!MODEL_TYPE_FILTERS.has(modelTypeFilter)) modelTypeFilter = 'all';
@@ -600,7 +679,109 @@
     return 'other';
   }
 
+  function hfTargetText(model) {
+    const pathName = String(model?.path || '').split(/[/\\]/).pop();
+    return [model?.filename, model?.label, pathName].filter(Boolean).join(' ');
+  }
+
+  function hfIdentityTokens(value) {
+    return new Set(
+      String(value || '')
+        .toLowerCase()
+        .replace(/\b(?:dflash|dspark|gguf|draft|model|speculative|decoding|quantized|llama|cpp|instruct|chat|it)\b/g, ' ')
+        .replace(/\b(?:q\d+(?:_[a-z0-9]+)*|iq\d+(?:_[a-z0-9]+)*|f16|f32|bf16)\b/g, ' ')
+        .replace(/[^a-z0-9.]+/g, ' ')
+        .split(/\s+/)
+        .filter((token) => token.length > 1),
+    );
+  }
+
+  function hfFamily(value) {
+    const text = String(value || '').toLowerCase();
+    for (const [family, pattern] of [
+      ['deepseek', /deepseek/],
+      ['qwen', /qwen/],
+      ['gemma', /gemma/],
+      ['bonsai', /bonsai/],
+      ['ornith', /ornith/],
+      ['laguna', /laguna/],
+      ['llama', /llama/],
+      ['mistral', /mistral/],
+      ['phi', /(?:^|[^a-z])phi(?:[^a-z]|$)/],
+      ['gpt', /(?:^|[^a-z])gpt(?:[^a-z]|$)/],
+    ]) {
+      if (pattern.test(text)) return family;
+    }
+    return '';
+  }
+
+  function hfParameter(value) {
+    const match = String(value || '').match(/(?:^|[^a-z])(\d+(?:\.\d+)?)\s*b(?:\b|[^a-z])/i);
+    return match ? `${match[1].toLowerCase()}b` : '';
+  }
+
+  function hfAcceleratorMatchesTarget(target, accelerator) {
+    if (!target || isDflashAccelerator(target)) return false;
+    const targetText = hfTargetText(target);
+    const acceleratorText = [
+      accelerator?.id,
+      accelerator?.title,
+      accelerator?.label,
+      ...(Array.isArray(accelerator?.tags) ? accelerator.tags : []),
+    ].filter(Boolean).join(' ');
+    if (!/dflash|dspark/i.test(acceleratorText)) return false;
+
+    const targetFamily = hfFamily(targetText);
+    const acceleratorFamily = hfFamily(acceleratorText);
+    if (targetFamily && acceleratorFamily && targetFamily !== acceleratorFamily) return false;
+
+    const targetParam = hfParameter(targetText);
+    const acceleratorParam = hfParameter(acceleratorText);
+    if (targetParam && acceleratorParam && targetParam !== acceleratorParam) return false;
+
+    const targetTokens = hfIdentityTokens(targetText);
+    const acceleratorTokens = hfIdentityTokens(acceleratorText);
+    const overlap = [...targetTokens].filter((token) => acceleratorTokens.has(token)).length;
+    return overlap >= 2;
+  }
+
+  function isHfAcceleratorAvailable(model) {
+    if (hfAcceleratorStatus !== 'ready' || isDflashAccelerator(model)) return false;
+    return hfAcceleratorCatalog.some((accelerator) => hfAcceleratorMatchesTarget(model, accelerator));
+  }
+
+  function ensureHfAcceleratorCatalog() {
+    if (hfAcceleratorStatus === 'ready') return Promise.resolve();
+    if (hfAcceleratorRequest) return hfAcceleratorRequest;
+
+    hfAcceleratorStatus = 'loading';
+    hfAcceleratorRevision += 1;
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    hfAcceleratorRequest = api('/api/hf/search?q=dflash&limit=50&category=dflash', { timeoutMs: 45000 })
+      .then((data) => {
+        if (!data?.success) throw new Error(data?.error || 'Hugging Face search failed');
+        hfAcceleratorCatalog = Array.isArray(data.models) ? data.models : [];
+        hfAcceleratorStatus = 'ready';
+      })
+      .catch((error) => {
+        hfAcceleratorCatalog = [];
+        hfAcceleratorStatus = 'error';
+        if (modelTypeFilter === 'hf-accelerator') {
+          toast(`Could not check Hugging Face accelerators: ${error.message}`, false);
+        }
+      })
+      .finally(() => {
+        hfAcceleratorRequest = null;
+        hfAcceleratorRevision += 1;
+        if (modelTypeFilter === 'hf-accelerator' || document.body.dataset.activeView === 'models') {
+          renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+        }
+      });
+    return hfAcceleratorRequest;
+  }
+
   function matchesModelType(model) {
+    if (modelTypeFilter === 'hf-accelerator') return isHfAcceleratorAvailable(model);
     return modelTypeFilter === 'all' || modelType(model) === modelTypeFilter;
   }
 
@@ -626,7 +807,7 @@
       model.duplicate_group,
       model.match_score,
     ].join(':')).join('|');
-    return `${typeFilter}:${modelTypeFilter}:${selectedKey}:${needle}:${rows}`;
+    return `${typeFilter}:${modelTypeFilter}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
   }
 
   function renderTable(filterText, { force = false } = {}) {
@@ -638,6 +819,7 @@
     const needle = String(filterText || '').trim().toLowerCase();
     const pinned = loadPinnedSet();
     const activeDownloads = filterDownloadJobs(getActiveDownloadJobs(), needle);
+    const visibleDownloads = modelTypeFilter === 'hf-accelerator' ? [] : activeDownloads;
     const catalogRows = models.filter((model) => {
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
@@ -672,8 +854,14 @@
       return;
     }
 
-    if (!catalogRows.length && !(typeFilter === 'loaded' ? [] : activeDownloads).length) {
-      const emptyLabel = typeFilter === 'dflash'
+    if (!catalogRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
+      const emptyLabel = modelTypeFilter === 'hf-accelerator'
+        ? hfAcceleratorStatus === 'loading'
+          ? 'Checking Hugging Face for compatible DFlash accelerators…'
+          : hfAcceleratorStatus === 'error'
+            ? 'Hugging Face could not be checked. Try this filter again when online.'
+            : 'No local target models have a matching accelerator listed on Hugging Face.'
+        : typeFilter === 'dflash'
         ? 'No DFlash stacks found. Use Create DFlash stack or check Settings → model folders.'
         : typeFilter === 'accelerators'
           ? 'No accelerator files found. They are small DFlash/DSpark draft checkpoints on disk.'
@@ -685,7 +873,7 @@
     }
 
     body.innerHTML = [
-      ...(typeFilter === 'loaded' ? [] : activeDownloads.map((job) => renderDownloadingRow(job))),
+      ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
       ...catalogRows.map((model) => {
       const key = modelKey(model);
       const selected = key === selectedKey;
@@ -723,7 +911,7 @@
       });
       row.addEventListener('dblclick', () => {
         const model = models.find((entry) => modelKey(entry) === row.dataset.modelKey);
-        if (model?.loadable) void loadModel(model);
+        if (model?.loadable && !isDflashAccelerator(model)) void loadModel(model);
       });
       row.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -867,7 +1055,9 @@
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="Download vision projector from Hugging Face and wire it to this model">Add vision support…</button>
       <hr>
       <div id="modelsStackAction">${stackMenuActionHtml(model)}</div>
-      <button type="button" data-cmd="load"${model.loadable ? '' : ' disabled'}>Load to Server</button>
+      ${isDflashAccelerator(model)
+        ? '<div class="df-stack-preflight df-model-stack-preflight is-unavailable">Accelerators are loaded only with a full target model.</div>'
+        : `<button type="button" data-cmd="load"${model.loadable ? '' : ' disabled'}>Load to Server</button>`}
       <button type="button" data-cmd="delete"${canDelete ? '' : ' disabled'}>Delete</button>`;
 
     menu.classList.remove('hidden');
@@ -883,6 +1073,11 @@
       });
     });
     if (!targetIssue) void checkStackPreflight(model);
+    if (!isDflashAccelerator(model) && hfAcceleratorStatus !== 'ready') {
+      void ensureHfAcceleratorCatalog().then(() => {
+        if (contextModel === model) updateStackMenuAction(model);
+      });
+    }
   }
 
   async function runContextCommand(cmd, model) {
@@ -924,7 +1119,8 @@
     }
     if (cmd === 'create-stack') {
       const check = stackPreflight.key === key ? stackPreflight.result : null;
-      if (stackPreflight.status !== 'ready' || !check?.eligible) {
+      const hfStack = canStartHfStack(model, check);
+      if ((stackPreflight.status !== 'ready' || !check?.eligible) && !hfStack) {
         toast(check?.reason || 'This model is not ready for a DFlash stack', false);
         return;
       }
@@ -934,10 +1130,15 @@
         targetLabel: accel ? '' : (model.label || model.filename),
         draftPath: accel ? model.path : '',
         draftLabel: accel ? (model.filename || model.label) : '',
+        allowHfAccelerator: hfStack,
       });
       return;
     }
     if (cmd === 'load') {
+      if (isDflashAccelerator(model)) {
+        toast('Choose the full target model; accelerators are stack-only.', false);
+        return;
+      }
       if (model.loadable) await loadModel(model);
       return;
     }
@@ -1085,6 +1286,10 @@
   }
 
   async function loadModel(model) {
+    if (isDflashAccelerator(model)) {
+      toast('Choose the full target model; accelerators are stack-only.', false);
+      return;
+    }
     if (!window.DFlashServerLive?.loadModelOnServer) {
       toast('Engine panel is not ready yet.', false);
       return;
@@ -1136,7 +1341,7 @@
     renderFooter(data);
     renderTable(filter, { force: true });
     if (!selectedKey || !models.some((m) => modelKey(m) === selectedKey)) {
-      const firstConfigured = models.find((m) => m.loadable);
+      const firstConfigured = models.find((m) => m.loadable && !isDflashAccelerator(m));
       if (firstConfigured) await selectModel(modelKey(firstConfigured), { applyInspector: true });
       else if (models[0]) await selectModel(modelKey(models[0]), { applyInspector: true });
     } else if (rebindInspector) {
@@ -1155,6 +1360,13 @@
   function setTypeFilter(next, { allowEmptyDownloading = false } = {}) {
     const previous = typeFilter;
     typeFilter = normalizeTypeFilter(next, { allowEmptyDownloading });
+    if (typeFilter === 'accelerators' && modelTypeFilter !== 'all') {
+      // HF accelerator availability applies to target models, never to draft files.
+      modelTypeFilter = 'all';
+      localStorage.setItem(MODEL_TYPE_FILTER_KEY, modelTypeFilter);
+      const modelTypePick = document.getElementById('modelsTypeFilter');
+      if (modelTypePick) modelTypePick.value = modelTypeFilter;
+    }
     localStorage.setItem(TYPE_FILTER_KEY, typeFilter);
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.modelsFilter === typeFilter);
@@ -1188,13 +1400,22 @@
         const next = MODEL_TYPE_FILTERS.has(event.target.value) ? event.target.value : 'all';
         modelTypeFilter = next;
         localStorage.setItem(MODEL_TYPE_FILTER_KEY, next);
+        if (next === 'hf-accelerator' && typeFilter !== 'all') {
+          typeFilter = 'all';
+          localStorage.setItem(TYPE_FILTER_KEY, typeFilter);
+          document.querySelectorAll('[data-models-filter]').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.modelsFilter === typeFilter);
+          });
+        }
         renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+        if (next === 'hf-accelerator') void ensureHfAcceleratorCatalog();
       });
     }
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
       btn.addEventListener('click', () => setTypeFilter(btn.dataset.modelsFilter, { allowEmptyDownloading: true }));
     });
     setTypeFilter(typeFilter);
+    void ensureHfAcceleratorCatalog();
     window.DFlashDownloadQueue?.subscribe?.(onDownloadQueueUpdate);
 
     document.addEventListener('click', hideContextMenu);
