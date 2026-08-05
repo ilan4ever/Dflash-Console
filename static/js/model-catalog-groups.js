@@ -93,7 +93,6 @@
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
     if (model.loadable && model.port) parts.push(`port :${model.port}`);
-    else if (model.path && !model.server_id) parts.push('load on active engine');
     return parts.join(' · ');
   }
 

@@ -319,12 +319,26 @@
     return '<span class="lm-tag gold dflash-logo-label catalog-installed-logo" role="img" aria-label="Installed" title="Installed"></span>';
   }
 
-  function catalogBadge(label, tone = 'blue') {
-    return `<span class="lm-tag ${tone}">${escapeHtml(label)}</span>`;
+  function catalogBadge(label, tone = 'blue', title = '') {
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+    return `<span class="lm-tag ${tone}"${titleAttr}>${escapeHtml(label)}</span>`;
   }
 
   function catalogDflashLabel() {
     return '<span class="lm-tag gold dflash-logo-label" role="img" aria-label="DFlash" title="DFlash speculative decoding stack"></span>';
+  }
+
+  function catalogDflashCompatible(model) {
+    const category = String(model?.category || currentCategory()).toLowerCase();
+    return category === 'dflash' || /dflash|dspark/i.test(catalogHaystack(model));
+  }
+
+  function catalogDflashCompatibleBadge() {
+    return catalogBadge(
+      'DFlash compatible',
+      'gold',
+      'Download a GGUF file first, then create the DFlash stack from the Models tab',
+    );
   }
 
   function catalogHaystack(model) {
@@ -348,6 +362,7 @@
     const hasTag = (pattern) => hfTags.some((tag) => pattern.test(tag));
     const hasText = (pattern) => pattern.test(haystack);
 
+    if (catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
     if (hasText(/dflash|dspark/)) badges.push(catalogDflashLabel());
     if (catalogReadyToLoad(model)) badges.push(catalogBadge('ready to load', 'gold'));
     if (hasTag(/vision|multimodal|image-text|mmproj/) || hasText(/-vl-|mmproj|vision|multimodal/)) {
@@ -544,6 +559,7 @@
     list.innerHTML = visible.map((model) => {
       const selected = model.id === selectedId ? ' selected' : '';
       const ready = catalogReadyToLoad(model) ? ' ready-to-load' : '';
+      const compatible = catalogDflashCompatible(model) ? catalogDflashCompatibleBadge() : '';
       const description = modelDescription(model);
       const labName = modelLab(model);
       const descLine = description
@@ -567,7 +583,7 @@
             ${metaLine}
           </div>
           <div class="lm-search-item-aside">
-            <div class="lm-search-item-badge-slot">${catalogInstalled(model) ? catalogInstalledBadge() : ''}</div>
+            <div class="lm-search-item-badge-slot">${catalogInstalled(model) ? catalogInstalledBadge() : ''}${compatible}</div>
             <div class="lm-search-item-stats">
               <span class="lm-search-item-stat">${escapeHtml(listSizeLabel(model))}</span>
               <span class="lm-search-item-stat">${escapeHtml(listAgeLabel(model))}</span>

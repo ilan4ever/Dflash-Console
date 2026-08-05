@@ -30,6 +30,14 @@ class ModelStackTests(unittest.TestCase):
         self.assertIn('target', roles)
         self.assertNotIn('draft-dflash', roles)
 
+    def test_generic_ar_exposes_configured_alias(self):
+        stack = resolve_model_stack({
+            'profile': 'generic-ar',
+            'model_id': 'newly-loaded-model',
+        })
+        self.assertEqual([row['role'] for row in stack], ['alias'])
+        self.assertEqual(stack[0]['id'], 'newly-loaded-model')
+
     def test_find_gemma12_target_prefers_standard_it_over_qat(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

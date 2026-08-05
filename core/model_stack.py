@@ -246,6 +246,17 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
             stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
         return stack
 
+    if profile == 'generic-ar':
+        return [
+            _stack_entry(
+                role='alias',
+                label='API alias',
+                path=None,
+                source='api',
+                api_id=alias,
+            ),
+        ] if alias else []
+
     if profile == 'nomic-embed':
         embed_path = _resolve_nomic_embed_path(server, cfg=cfg)
         stack = [

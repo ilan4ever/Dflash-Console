@@ -123,7 +123,7 @@ def _overview_html(base: str) -> str:
   <ul class="df-docs-checklist">
     <li>About page with ILAN AVIV attribution, version, MIT license, and project links</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li>Model library filters for DFlash stacks, accelerators, downloads, and loaded models</li>
+    <li>Model library filters for DFlash stacks, accelerators, Hugging Face accelerator availability, downloads, and loaded models</li>
     <li>Hugging Face catalog with README details, install detection, and download progress</li>
     <li>Locations panel with config, preset, and model-library management</li>
     <li>Loopback validation and an external Console data root for the Electron shell</li>

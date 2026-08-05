@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import uuid
@@ -16,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from core.config import get_dflash_root, get_server, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
-from core.model_paths import allowed_model_roots
+from core.model_paths import allowed_model_roots, disk_scan_roots
 from core.gpu_devices import get_gpu_devices_payload
 from core.local_models import invalidate_model_catalog_cache, list_local_models, warm_model_catalog
 from core.runtime import get_status_payload, stop_server, tcp_port_open, unload_model
@@ -28,6 +29,11 @@ ASSETS_DIR = ROOT / 'assets'
 
 _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
+_SERVERS_STATUS_LOCK = asyncio.Lock()
+_SYSTEM_STATS_LOCK = asyncio.Lock()
+_SYSTEM_STATS_CACHE: dict[str, Any] | None = None
+_SYSTEM_STATS_CACHE_AT = 0.0
+_SYSTEM_STATS_CACHE_TTL = 2.0
 
 
 @asynccontextmanager
@@ -258,6 +264,12 @@ def _require_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any]:
     return normalize_server(server)
 
 
+def _invalidate_status_cache() -> None:
+    from core.runtime import invalidate_status_payload_cache
+
+    invalidate_status_payload_cache()
+
+
 def _save_config_checked(cfg: dict[str, Any]) -> None:
     try:
         save_config(cfg)
@@ -266,7 +278,7 @@ def _save_config_checked(cfg: dict[str, Any]) -> None:
 
 
 @app.get('/api/health')
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     return {
         'success': True,
         'app': 'DFlash Console',
@@ -283,10 +295,25 @@ def gpu_devices() -> dict[str, Any]:
 
 
 @app.get('/api/system-stats')
-def system_stats() -> dict[str, Any]:
+async def system_stats() -> dict[str, Any]:
+    global _SYSTEM_STATS_CACHE, _SYSTEM_STATS_CACHE_AT
     from core.system_stats import get_system_stats_payload
 
-    return get_system_stats_payload()
+    now = time.monotonic()
+    if _SYSTEM_STATS_CACHE is not None and now - _SYSTEM_STATS_CACHE_AT < _SYSTEM_STATS_CACHE_TTL:
+        return dict(_SYSTEM_STATS_CACHE)
+
+    # System stats invoke nvidia-smi and PowerShell on Windows. Keep those
+    # blocking probes off the event loop and serialize them so a slow probe
+    # cannot consume the entire request worker pool.
+    async with _SYSTEM_STATS_LOCK:
+        now = time.monotonic()
+        if _SYSTEM_STATS_CACHE is not None and now - _SYSTEM_STATS_CACHE_AT < _SYSTEM_STATS_CACHE_TTL:
+            return dict(_SYSTEM_STATS_CACHE)
+        payload = await asyncio.to_thread(get_system_stats_payload)
+        _SYSTEM_STATS_CACHE = dict(payload)
+        _SYSTEM_STATS_CACHE_AT = time.monotonic()
+        return payload
 
 
 @app.get('/api/config')
@@ -605,21 +632,45 @@ def server_profiles() -> dict[str, Any]:
 
 
 @app.get('/api/servers')
-async def servers_status(include_external: bool = Query(default=True)) -> dict[str, Any]:
-    import asyncio
+async def servers_status(
+    include_external: bool = Query(default=True),
+    fresh: bool = Query(default=False),
+) -> dict[str, Any]:
+    from core.runtime import _cached_status_payload
 
-    cfg = load_config()
-    enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
-    gpus = get_gpu_devices_payload().get('gpus') or []
+    # External GPU discovery can legitimately take several seconds. Once a
+    # snapshot exists, status refreshes should remain responsive while that
+    # scan is in progress instead of queueing every UI poll behind it.
+    if _SERVERS_STATUS_LOCK.locked() and not fresh:
+        cached = _cached_status_payload(include_external)
+        if cached is not None:
+            cached['stale'] = True
+            snapshot_at = float(cached.get('updated_at') or 0.0)
+            if snapshot_at:
+                cached['stale_age_ms'] = max(0, int((time.time() - snapshot_at) * 1000))
+            return cached
 
     def _build_payload() -> dict[str, Any]:
-        payload = get_status_payload(enabled, cfg=cfg, gpus=gpus, include_external=include_external)
+        cfg = load_config()
+        enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
+        gpus = get_gpu_devices_payload().get('gpus') or []
+        payload = get_status_payload(
+            enabled,
+            cfg=cfg,
+            gpus=gpus,
+            include_external=include_external,
+            allow_stale=not fresh,
+        )
         payload['gpus'] = gpus
         payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
         payload['external_scan_skipped'] = not include_external
         return payload
 
-    return await asyncio.to_thread(_build_payload)
+    # Several UI surfaces consume the same status snapshot. Only one expensive
+    # status build may run at a time; other callers wait without occupying an
+    # anyio worker thread and then receive the fresh cached snapshot.
+    async with _SERVERS_STATUS_LOCK:
+        return await asyncio.to_thread(_build_payload)
 
 
 @app.get('/api/servers/{server_id}/status')
@@ -724,6 +775,7 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
     note_engine_idle(server_id)
     update_server_runtime(server_id, loaded_by=_request_client_label(request))
+    _invalidate_status_cache()
     return result
 
 
@@ -788,6 +840,7 @@ def _ensure_server_ready_for_chat(server_id: str, server: dict[str, Any], cfg: d
         )
 
     note_engine_loaded(server_id, loaded_by=client_label)
+    _invalidate_status_cache()
     return _wait_until_loaded()
 
 
@@ -815,6 +868,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+    _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
     return result
@@ -829,12 +883,16 @@ def server_inference_stats(server_id: str) -> dict[str, Any]:
     server = _require_server(cfg, server_id)
     # Always hit /slots directly. Never route through build_server_status — that
     # path returns a frozen cache while proxy inference is active.
+    cached = _SERVER_STATUS_CACHE.get(server_id) or {}
     stats = fetch_inference_stats(
         str(server.get('api_url') or ''),
         server_id=server_id,
-        model_id=str(server.get('model_id') or ''),
+        model_id=str(
+            cached.get('active_model_id')
+            or server.get('model_id')
+            or '',
+        ),
     )
-    cached = _SERVER_STATUS_CACHE.get(server_id) or {}
     status_label = str(cached.get('status') or ('loaded' if cached.get('loaded_models') else 'unknown'))
     return {
         'success': True,
@@ -982,6 +1040,7 @@ def server_start(server_id: str, request: Request) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'start failed')
     note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+    _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
     return result
@@ -1000,6 +1059,7 @@ def server_stop(server_id: str) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'stop failed')
     note_user_stopped(server_id)
+    _invalidate_status_cache()
     return result
 
 
@@ -1027,6 +1087,7 @@ def server_unload(server_id: str) -> dict[str, Any]:
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
+    _invalidate_status_cache()
     host = str(server.get('host') or '127.0.0.1')
     port = int(server.get('port') or 0)
     api_url = str(server.get('api_url') or '')
@@ -1115,6 +1176,7 @@ def server_reload(server_id: str) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'reload failed')
     note_engine_loaded(server_id)
+    _invalidate_status_cache()
     return result
 
 
@@ -1157,11 +1219,37 @@ def _allowed_model_roots(cfg: dict[str, Any]) -> list[Path]:
     return allowed_model_roots(cfg)
 
 
-def _validate_gguf_under_allowed_roots(path_text: str, cfg: dict[str, Any]) -> Path:
+def _stack_model_roots(cfg: dict[str, Any]) -> list[Path]:
+    """Return configured and recognized browse roots usable as stack targets."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+    try:
+        scan_roots = disk_scan_roots(cfg)
+    except OSError:
+        scan_roots = []
+    candidates = [*_allowed_model_roots(cfg), *(path for path, _source in scan_roots)]
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(resolved)
+    return roots
+
+
+def _validate_gguf_under_allowed_roots(
+    path_text: str,
+    cfg: dict[str, Any],
+    *,
+    roots: list[Path] | None = None,
+) -> Path:
     target = Path(path_text).expanduser().resolve()
     if target.suffix.lower() != '.gguf' or not target.is_file():
         raise HTTPException(status_code=400, detail='not a GGUF file')
-    allowed = _allowed_model_roots(cfg)
+    allowed = roots if roots is not None else _allowed_model_roots(cfg)
     if not allowed or not any(target.is_relative_to(root) for root in allowed):
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
     return target
@@ -1179,7 +1267,7 @@ def stacks_preflight(target_path: str = Query(..., min_length=1)) -> dict[str, A
     from core.stack_match import preflight_stack_target
 
     cfg = load_config()
-    _validate_gguf_under_allowed_roots(target_path, cfg)
+    _validate_gguf_under_allowed_roots(target_path, cfg, roots=_stack_model_roots(cfg))
     return preflight_stack_target(target_path, cfg=cfg)
 
 
@@ -1188,7 +1276,7 @@ def stacks_match(target_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     from core.stack_match import match_stack_for_target
 
     cfg = load_config()
-    _validate_gguf_under_allowed_roots(target_path, cfg)
+    _validate_gguf_under_allowed_roots(target_path, cfg, roots=_stack_model_roots(cfg))
     return match_stack_for_target(target_path, cfg=cfg)
 
 
@@ -1212,8 +1300,9 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
     )
 
     cfg = load_config()
-    target = _validate_gguf_under_allowed_roots(body.target_path, cfg)
-    draft = _validate_gguf_under_allowed_roots(body.draft_path, cfg)
+    stack_roots = _stack_model_roots(cfg)
+    target = _validate_gguf_under_allowed_roots(body.target_path, cfg, roots=stack_roots)
+    draft = _validate_gguf_under_allowed_roots(body.draft_path, cfg, roots=stack_roots)
     if not is_target_candidate(target):
         raise HTTPException(
             status_code=400,

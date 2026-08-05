@@ -19,6 +19,7 @@ _STATUS_PAYLOAD_CACHE: dict[str, Any] = {
     'updated_at': 0.0,
     'include_external': None,
 }
+_STATUS_PAYLOAD_REVISION = 0
 _STATUS_EXTERNAL_CACHE: list[dict[str, Any]] = []
 _STATUS_PAYLOAD_LOCK = threading.Lock()
 _ROUTER_UNLOAD_CACHE: dict[str, tuple[bool, float]] = {}
@@ -403,6 +404,34 @@ def _stack_has_dflash_draft(parts: list[dict[str, Any]]) -> bool:
     return any(str(row.get('role') or '').startswith('draft') for row in parts)
 
 
+def _fallback_loaded_card(
+    model_id: str,
+    *,
+    booting: bool,
+    progress: float | None,
+) -> dict[str, Any]:
+    """Keep a loaded model visible even when no configured stack resolves."""
+    token = str(model_id or '').strip()
+    normalized = token.replace('\\', '/')
+    title = normalized.rsplit('/', 1)[-1] if '/' in normalized else token.replace('-', ' ')
+    return {
+        'role': 'loaded-model',
+        'label': title or 'Loaded model',
+        'id': token or 'loaded-model',
+        'title': title or 'Loaded model',
+        'subtitle': f'API: {token}' if token else '',
+        'path': token if normalized.lower().endswith('.gguf') else '',
+        'stack_details': [],
+        'size_gb': None,
+        'card_state': 'loading' if booting else 'ready',
+        'progress': progress if booting else None,
+        'ejectable': True,
+        'dflash_stack': False,
+        'plain_llm': True,
+        'is_adhoc': True,
+    }
+
+
 def _build_visible_cards(
     model_stack: list[dict[str, Any]],
     *,
@@ -451,7 +480,12 @@ def _build_visible_cards(
                 'plain_llm': True,
                 'is_adhoc': True,
             }
-            return [composite]
+            extras = [
+                _fallback_loaded_card(model_id, booting=False, progress=None)
+                for model_id in loaded_models[1:]
+                if str(model_id or '').strip() and str(model_id) != loaded_id
+            ]
+            return [composite, *extras]
         parts = [row for row in model_stack if row.get('role') != 'alias']
         composite = {
             **alias,
@@ -464,7 +498,12 @@ def _build_visible_cards(
             'ejectable': True,
             'dflash_stack': _stack_has_dflash_draft(parts),
         }
-        return [composite]
+        extras = [
+            _fallback_loaded_card(model_id, booting=False, progress=None)
+            for model_id in loaded_models[1:]
+            if str(model_id or '').strip() and str(model_id) != loaded_id
+        ]
+        return [composite, *extras]
 
     if booting and alias:
         parts = [row for row in model_stack if row.get('role') != 'alias']
@@ -480,6 +519,13 @@ def _build_visible_cards(
             'dflash_stack': _stack_has_dflash_draft(parts),
         }
         return [composite]
+
+    if loaded_models:
+        return [
+            _fallback_loaded_card(model_id, booting=booting, progress=progress)
+            for model_id in loaded_models
+            if str(model_id or '').strip()
+        ]
 
     return [row for row in model_stack if row.get('card_state') in ('ready', 'loading')]
 
@@ -605,15 +651,15 @@ def _build_embedding_server_status(
         or 'Embedding model'
     )
     loaded_by = str(entry.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
-    card_detail = (
-        f"{meta.get('parameters')} · {meta.get('embedding_dimensions')}d · "
-        f"{meta.get('pooling')} pooling · {meta.get('quantization')}"
-        if embed_file_name
-        else (
-            f"Embedding · {meta.get('model_family')} {meta.get('model_version')} · "
-            f"{meta.get('parameters')} · {meta.get('embedding_dimensions')}d · "
-            f"{meta.get('pooling')} pooling · {meta.get('quantization')}"
+    embedding_dimensions = meta.get('embedding_dimensions') or meta.get('dimensions')
+    card_detail = ' · '.join(
+        str(part)
+        for part in (
+            meta.get('parameters'),
+            f'{embedding_dimensions}d' if embedding_dimensions else '',
+            meta.get('quantization'),
         )
+        if str(part or '').strip()
     )
     for card in visible_cards:
         card['gpu_display'] = gpu_display
@@ -1023,8 +1069,19 @@ def _cached_status_payload(include_external: bool) -> dict[str, Any] | None:
     return None
 
 
-def _store_status_payload(payload: dict[str, Any], *, include_external: bool) -> None:
+def invalidate_status_payload_cache() -> None:
+    """Force aggregate status to observe a server lifecycle/model change."""
     with _STATUS_PAYLOAD_LOCK:
+        _STATUS_PAYLOAD_CACHE['payload'] = None
+        _STATUS_PAYLOAD_CACHE['updated_at'] = 0.0
+        _STATUS_PAYLOAD_CACHE['include_external'] = None
+
+
+def _store_status_payload(payload: dict[str, Any], *, include_external: bool) -> None:
+    global _STATUS_PAYLOAD_REVISION
+    with _STATUS_PAYLOAD_LOCK:
+        _STATUS_PAYLOAD_REVISION += 1
+        payload['snapshot_revision'] = _STATUS_PAYLOAD_REVISION
         snapshot = dict(payload)
         if include_external:
             rows = snapshot.get('external_gpu_loads')
@@ -1057,7 +1114,9 @@ def get_status_payload(
         if stale is not None:
             stale = dict(stale)
             stale['stale'] = True
-            stale['updated_at'] = time.time()
+            snapshot_at = float(stale.get('updated_at') or 0.0)
+            if snapshot_at:
+                stale['stale_age_ms'] = max(0, int((time.time() - snapshot_at) * 1000))
             # Still refresh per-server inference_stats for generating engines.
             refreshed_servers = []
             for entry in list(stale.get('servers') or []):
@@ -1088,6 +1147,8 @@ def get_status_payload(
     if allow_stale and cache_matches:
         out = dict(cached_payload)
         out['stale'] = True
+        if cached_at:
+            out['stale_age_ms'] = max(0, int((time.time() - cached_at) * 1000))
         return out
 
     resolved_gpus = gpus if gpus is not None else query_gpu_devices()

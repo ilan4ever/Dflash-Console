@@ -435,9 +435,15 @@
       if (options.targetPath) {
         const inList = capableTargets.some((row) => samePath(row.path, options.targetPath));
         if (!inList && !isAcceleratorPath(options.draftPath)) {
-          state.targetNotice = 'No compatible DFlash accelerator was found on this PC. Download one first, then reopen the wizard.';
-          state.targetPath = '';
-          state.targetLabel = '';
+          if (options.allowHfAccelerator) {
+            if (!state.targetLabel) {
+              state.targetLabel = options.targetPath.split(/[/\\]/).pop() || '';
+            }
+          } else {
+            state.targetNotice = 'No compatible DFlash accelerator was found on this PC. Download one first, then reopen the wizard.';
+            state.targetPath = '';
+            state.targetLabel = '';
+          }
         } else if (!state.targetLabel) {
           const model = capableTargets.find((row) => samePath(row.path, options.targetPath));
           state.targetLabel = model?.label || model?.filename || options.targetPath.split(/[/\\]/).pop() || '';

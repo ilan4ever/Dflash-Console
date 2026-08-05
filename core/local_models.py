@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from collections import defaultdict
@@ -10,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from core.config import list_servers, load_config, normalize_server
-from core.model_paths import disk_scan_roots, get_download_dir, get_model_libraries, storage_presets
+from core.model_paths import (
+    allowed_model_roots,
+    disk_scan_roots,
+    get_download_dir,
+    get_model_libraries,
+    storage_presets,
+)
 from core.model_stack import resolve_model_stack
 
 _CATALOG_CACHE: dict[str, Any] | None = None
@@ -23,6 +30,7 @@ _CATALOG_TTL_SECONDS = 120.0
 
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
+_SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
 
 
 def _catalog_cache_key(config: dict[str, Any]) -> str:
@@ -150,6 +158,35 @@ def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[st
     except OSError:
         pass
     return rows
+
+
+def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Represent a multi-file GGUF model as one row with its combined size."""
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in models:
+        path = Path(str(row.get('path') or ''))
+        match = _SPLIT_SHARD_RE.match(path.name)
+        if not match:
+            continue
+        groups[(str(path.parent).lower(), match.group('prefix').lower(), int(match.group('total')))].append(row)
+
+    hidden: set[int] = set()
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        rows.sort(key=lambda row: int(_SPLIT_SHARD_RE.match(Path(str(row.get('path') or '')).name).group('part')))
+        survivor = rows[0]
+        files = [str(row.get('path') or '') for row in rows]
+        known_sizes = [float(row['size_gb']) for row in rows if row.get('size_gb') is not None]
+        survivor['split_files'] = files
+        survivor['split_count'] = len(files)
+        survivor['split_total'] = int(_SPLIT_SHARD_RE.match(Path(files[0]).name).group('total'))
+        survivor['size_gb'] = round(sum(known_sizes), 2) if known_sizes else None
+        survivor['label'] = survivor.get('label') or survivor.get('filename')
+        for row in rows[1:]:
+            hidden.add(id(row))
+
+    return [row for row in models if id(row) not in hidden]
 
 
 def _resolve_stack_pair(server: dict[str, Any], *, cfg: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -312,6 +349,65 @@ def _dflash_stack_supplement(config: dict[str, Any], catalog: dict[str, dict[str
     return rows
 
 
+_DUPLICATE_SAMPLE_BYTES = 64 * 1024
+
+
+def _duplicate_file_fingerprint(path: Path) -> str | None:
+    """Return a cheap content fingerprint for files sharing a name and size."""
+    try:
+        stat = path.stat()
+        with path.open('rb') as handle:
+            digest = hashlib.blake2b(digest_size=16)
+            digest.update(handle.read(_DUPLICATE_SAMPLE_BYTES))
+            if stat.st_size > _DUPLICATE_SAMPLE_BYTES:
+                handle.seek(max(0, stat.st_size - _DUPLICATE_SAMPLE_BYTES))
+                digest.update(handle.read(_DUPLICATE_SAMPLE_BYTES))
+        return f'{stat.st_size}:{digest.hexdigest()}'
+    except OSError:
+        return None
+
+
+def _collapse_identical_files(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one catalog row when the same file exists in multiple scan roots."""
+    candidates: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for index, row in enumerate(models):
+        path_text = str(row.get('path') or '').strip()
+        filename = str(row.get('filename') or Path(path_text).name).strip().lower()
+        if not path_text or not filename:
+            continue
+        try:
+            size = Path(path_text).stat().st_size
+        except OSError:
+            continue
+        candidates[(filename, size)].append(index)
+
+    hidden: set[int] = set()
+    for indices in candidates.values():
+        if len(indices) < 2:
+            continue
+        fingerprints: dict[str, list[int]] = defaultdict(list)
+        for index in indices:
+            fingerprint = _duplicate_file_fingerprint(Path(str(models[index].get('path') or '')))
+            if fingerprint:
+                fingerprints[fingerprint].append(index)
+        for matching in fingerprints.values():
+            if len(matching) < 2:
+                continue
+            # Catalog order already prefers configured profiles and the first
+            # configured/scanned root, so keep that row as the canonical entry.
+            survivor = matching[0]
+            paths = [str(models[index].get('path') or '') for index in matching]
+            models[survivor]['duplicate_group'] = (
+                f"dup:{str(models[survivor].get('filename') or '').lower()}"
+            )
+            models[survivor]['duplicate_count'] = len(paths)
+            models[survivor]['duplicate_paths'] = paths
+            models[survivor]['duplicate_identical'] = True
+            hidden.update(matching[1:])
+
+    return [row for index, row in enumerate(models) if index not in hidden]
+
+
 def _mark_duplicate_files(models: list[dict[str, Any]]) -> None:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in models:
@@ -331,6 +427,26 @@ def _mark_duplicate_files(models: list[dict[str, Any]]) -> None:
             row['duplicate_group'] = group_id
             row['duplicate_count'] = len(group)
             row['duplicate_paths'] = paths
+            row['duplicate_identical'] = False
+
+
+def _mark_stack_path_access(models: list[dict[str, Any]], config: dict[str, Any]) -> None:
+    roots: list[Path] = []
+    for root in allowed_model_roots(config):
+        try:
+            roots.append(root.expanduser().resolve())
+        except OSError:
+            continue
+    for row in models:
+        path_text = str(row.get('path') or '').strip()
+        if not path_text or not roots:
+            row['stack_path_allowed'] = False
+            continue
+        try:
+            path = Path(path_text).expanduser().resolve()
+            row['stack_path_allowed'] = any(path.is_relative_to(root) for root in roots)
+        except (OSError, ValueError):
+            row['stack_path_allowed'] = False
 
 
 def _context_max_for_profile(profile: str) -> int:
@@ -363,7 +479,10 @@ def _build_models_payload(
     partial: bool = False,
 ) -> dict[str, Any]:
     models = list(catalog.values()) + sorted(extras, key=lambda r: (r.get('label') or '').lower())
+    models = _collapse_split_shards(models)
+    models = _collapse_identical_files(models)
     _mark_duplicate_files(models)
+    _mark_stack_path_access(models, config)
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))

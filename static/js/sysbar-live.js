@@ -3,6 +3,7 @@
   const { api } = window.ConsoleApi;
   const track = document.getElementById('sysbarTrack');
   let pollTimer = null;
+  let refreshInFlight = false;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -64,6 +65,8 @@
   }
 
   async function refresh() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     try {
       const data = await api('/api/system-stats');
       render(data);
@@ -71,6 +74,8 @@
       if (track && !track.innerHTML) {
         track.innerHTML = metricCard('RAM', null, 'ram', 0, 'Stats unavailable');
       }
+    } finally {
+      refreshInFlight = false;
     }
   }
 
@@ -78,7 +83,7 @@
     if (pollTimer) return;
     pollTimer = window.setInterval(() => {
       void refresh();
-    }, 3000);
+    }, 5000);
   }
 
   document.addEventListener('DOMContentLoaded', () => {

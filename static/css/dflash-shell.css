@@ -1290,9 +1290,9 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-top:has(.has-token-row) {
-  min-height: 42px;
-  padding-top: 3px;
-  padding-bottom: 3px;
+  min-height: 46px;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-center-row {
@@ -1310,17 +1310,16 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-card-compact .lm-model-card-title-row .lm-model-path {
   display: block;
+  flex: 0 1 42%;
   max-width: 42%;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-labels {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  position: static;
+  flex: 1 1 auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
   min-width: 0;
   max-width: 100%;
@@ -1452,6 +1451,12 @@ body.lm-resizing-table-col {
 .df-shell .lm-model-card-compact .lm-badge {
   flex-shrink: 0;
   min-width: 44px;
+  height: 15px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   text-align: center;
 }
 
@@ -1520,14 +1525,16 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-card.generating {
-  border-color: rgba(45, 212, 191, 0.72);
+  border-color: rgba(74, 222, 128, 0.95);
   background:
     linear-gradient(105deg, rgba(20, 184, 166, 0.14), rgba(15, 23, 42, 0.22) 48%, rgba(45, 212, 191, 0.08)),
     var(--bg-card);
   box-shadow:
-    0 0 0 1px rgba(45, 212, 191, 0.12),
+    inset 0 0 0 2px rgba(74, 222, 128, 0.9),
+    0 0 0 1px rgba(74, 222, 128, 0.42),
+    0 0 18px rgba(34, 197, 94, 0.32),
     0 8px 24px rgba(20, 184, 166, 0.12);
-  animation: lm-model-card-generating 2.4s ease-in-out infinite;
+  animation: lm-model-card-generating 1.5s ease-in-out infinite;
 }
 
 .df-shell .lm-model-card.generating .lm-badge.generating {
@@ -1538,8 +1545,22 @@ body.lm-resizing-table-col {
 }
 
 @keyframes lm-model-card-generating {
-  0%, 100% { box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.1), 0 8px 24px rgba(20, 184, 166, 0.08); }
-  50% { box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.26), 0 8px 28px rgba(20, 184, 166, 0.18); }
+  0%, 100% {
+    border-color: rgba(74, 222, 128, 0.72);
+    box-shadow:
+      inset 0 0 0 2px rgba(74, 222, 128, 0.72),
+      0 0 0 1px rgba(74, 222, 128, 0.28),
+      0 0 12px rgba(34, 197, 94, 0.2),
+      0 8px 24px rgba(20, 184, 166, 0.08);
+  }
+  50% {
+    border-color: rgba(134, 239, 172, 1);
+    box-shadow:
+      inset 0 0 0 2px rgba(134, 239, 172, 1),
+      0 0 0 2px rgba(74, 222, 128, 0.55),
+      0 0 24px rgba(34, 197, 94, 0.5),
+      0 8px 28px rgba(20, 184, 166, 0.18);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1583,6 +1604,11 @@ body.lm-resizing-table-col {
   flex-shrink: 0;
   font-size: 10px;
   padding: 1px 5px;
+}
+
+.df-shell .lm-tag-external-app {
+  color: #e5e7eb !important;
+  background: rgba(100, 116, 139, 0.32) !important;
 }
 
 .df-shell .lm-model-card-compact .lm-model-stats {
@@ -3755,11 +3781,24 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   font-variant-numeric: tabular-nums;
 }
 
+.df-shell .df-chat-msg-assistant.is-generating .df-chat-bubble {
+  border-color: rgba(110, 231, 183, 0.42);
+  box-shadow: 0 0 0 1px rgba(110, 231, 183, 0.08);
+}
+
 .df-shell .df-chat-typing {
   display: inline-flex;
   gap: 2px;
   margin-top: 4px;
   color: var(--text-dim);
+}
+
+.df-shell .df-chat-typing-label {
+  margin-right: 3px;
+  color: #8fd4b8;
+  font-size: 10px;
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
 }
 
 .df-shell .df-chat-typing span {

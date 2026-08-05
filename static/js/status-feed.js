@@ -5,6 +5,9 @@
   let transient = null;
   let transientTimer = null;
   let serversSnapshot = [];
+  let externalSnapshot = [];
+  let pollInFlight = false;
+  let latestSnapshotRevision = 0;
   /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
   let pendingLoadsSnapshot = {};
 
@@ -41,7 +44,28 @@
     return server.label || server.id || 'Model';
   }
 
-  function buildFromServers(servers) {
+  function externalModelLabel(row) {
+    const path = String(row?.model_path || row?.path || '').replace(/\\/g, '/');
+    const basename = path.split('/').pop();
+    return row?.title || row?.model_name || basename || row?.app_label || 'External model';
+  }
+
+  function loadedModelLabels(server) {
+    const cards = Array.isArray(server?.visible_cards)
+      ? server.visible_cards.filter((row) => row?.card_state !== 'loading')
+      : [];
+    if (cards.length) {
+      return cards.map((row) => row.title || row.display_name_full || row.label || row.id || 'Model');
+    }
+    const loadedIds = (Array.isArray(server?.loaded_models) ? server.loaded_models : [])
+      .map((modelId) => String(modelId || '').replace(/-/g, ' '))
+      .filter(Boolean);
+    return loadedIds.length
+      ? loadedIds
+      : [server?.active_model_id || server?.label || server?.id || 'Model'];
+  }
+
+  function buildFromServers(servers, externalRows = []) {
     const loading = [];
     const loaded = [];
     const idle = [];
@@ -61,15 +85,16 @@
         const pct = server.load_progress != null ? ` · ${Math.round(server.load_progress)}%` : '';
         loading.push(`Loading ${label}${pct}`);
       } else if (server.status === 'loaded') {
-        const readyLabel = server.visible_cards?.[0]?.title
-          || (server.active_model_id ? String(server.active_model_id).replace(/-/g, ' ') : null)
-          || server.label
-          || server.id
-          || 'Model';
-        loaded.push(`${readyLabel} ready on :${server.port || '—'}`);
+        loadedModelLabels(server).forEach((readyLabel) => {
+          loaded.push(`${readyLabel} ready on :${server.port || '—'}`);
+        });
       } else if (server.running) {
         idle.push(`${server.label || server.id || 'Model'} listening :${server.port || '—'}`);
       }
+    }
+    for (const row of Array.isArray(externalRows) ? externalRows : []) {
+      const port = row?.listen_port || row?.port || '—';
+      loaded.push(`${externalModelLabel(row)} ready${port !== '—' ? ` on :${port}` : ''}`);
     }
     if (loading.length) {
       return {
@@ -85,7 +110,7 @@
     if (loaded.length > 1) {
       return {
         primary: `${loaded.length} models loaded`,
-        secondary: loaded.slice(0, 2).join(' · '),
+        secondary: `${loaded.slice(0, 3).join(' · ')}${loaded.length > 3 ? ` · +${loaded.length - 3} more` : ''}`,
       };
     }
     if (idle.length === 1) {
@@ -98,7 +123,7 @@
   }
 
   function refreshDisplay() {
-    const built = buildFromServers(serversSnapshot);
+    const built = buildFromServers(serversSnapshot, externalSnapshot);
     const hasLiveActivity = built.primary !== 'Ready' || !!built.secondary;
     if (hasLiveActivity) {
       if (transientTimer) {
@@ -132,18 +157,28 @@
   }
 
   async function poll() {
+    if (pollInFlight) return;
+    pollInFlight = true;
     try {
-      const data = await api('/api/servers?include_external=0');
+      const data = await api('/api/servers?include_external=1', { timeoutMs: 12000 });
+      const revision = Number(data?.snapshot_revision || 0);
+      if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) return;
+      if (revision > 0) latestSnapshotRevision = revision;
       serversSnapshot = data.servers || [];
+      if (Array.isArray(data.external_gpu_loads)) {
+        externalSnapshot = data.external_gpu_loads;
+      }
       refreshDisplay();
     } catch {
-      if (!transient) render('Ready', '');
+      // Keep the last successful engine/model state during a slow poll.
+    } finally {
+      pollInFlight = false;
     }
   }
 
   function startPolling() {
     void poll();
-    window.setInterval(poll, 2500);
+    window.setInterval(poll, 5000);
   }
 
   document.addEventListener('DOMContentLoaded', startPolling);

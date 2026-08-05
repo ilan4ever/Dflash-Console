@@ -1,11 +1,14 @@
 /** Reload the page when the Console API restarts or static UI files change. */
 (function () {
-  const POLL_MS = 1000;
+  const POLL_MS = 5000;
+  const HEALTH_TIMEOUT_MS = 2500;
 
   let bootId = null;
   let uiVersion = null;
   let offline = false;
   let reloading = false;
+  let checking = false;
+  let timer = null;
   let badgeEl = null;
   const bootStorageKey = 'dflashConsole.lastSeenBootId';
 
@@ -24,9 +27,12 @@
   }
 
   async function check() {
-    if (reloading) return;
+    if (reloading || checking) return;
+    checking = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
     try {
-      const resp = await fetch('/api/health', { cache: 'no-store' });
+      const resp = await fetch('/api/health', { cache: 'no-store', signal: controller.signal });
       if (!resp.ok) throw new Error('health unavailable');
       const data = await resp.json();
       const nextId = data?.boot_id ? String(data.boot_id) : '';
@@ -55,13 +61,25 @@
     } catch {
       offline = true;
       setConnectionBadge(false);
+    } finally {
+      window.clearTimeout(timeout);
+      checking = false;
     }
+  }
+
+  function scheduleNextCheck() {
+    if (reloading) return;
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(async () => {
+      timer = null;
+      await check();
+      scheduleNextCheck();
+    }, POLL_MS);
   }
 
   function start() {
     setConnectionBadge(false);
-    void check();
-    window.setInterval(check, POLL_MS);
+    void check().finally(scheduleNextCheck);
   }
 
   document.addEventListener('DOMContentLoaded', start);

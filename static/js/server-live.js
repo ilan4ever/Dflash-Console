@@ -43,6 +43,7 @@
   let statusFetchPending = false;
   let initialStatusSettled = false;
   let pollInFlight = false;
+  let latestStatusRevision = 0;
   let externalFetchPending = false;
   let externalInitialFetchDone = false;
   let externalMissingPolls = 0;
@@ -317,8 +318,12 @@
     pollTimer = window.setInterval(() => void pollTick(), pollIntervalMs());
   }
 
-  function serversStatusUrl(includeExternal = false) {
-    return includeExternal ? '/api/servers' : '/api/servers?include_external=0';
+  function serversStatusUrl(includeExternal = false, fresh = false) {
+    const params = new URLSearchParams();
+    if (!includeExternal) params.set('include_external', '0');
+    if (fresh) params.set('fresh', '1');
+    const query = params.toString();
+    return query ? `/api/servers?${query}` : '/api/servers';
   }
 
   function hasVisibleGpuCards() {
@@ -390,12 +395,18 @@
   }
 
   function applyServersPayload(data, { mergeExternal = true } = {}) {
+    const revision = Number(data?.snapshot_revision || 0);
+    if (revision > 0 && latestStatusRevision > 0 && revision < latestStatusRevision) {
+      return false;
+    }
+    if (revision > 0) latestStatusRevision = revision;
     servers = data.servers || [];
     allServers = data.all_servers || servers;
     if (mergeExternal) {
       mergeExternalGpuLoads(data.external_gpu_loads);
     }
     gpus = data.gpus || gpus;
+    return true;
   }
 
   function mergeExternalGpuLoads(rows) {
@@ -765,8 +776,8 @@
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
-      <button type="button" data-cmd="unload"${ready && row.ejectable && !isEmbedding ? '' : ' disabled'}${isEmbedding ? ' title="Embedding engines must be stopped instead of unloaded"' : ''}>Unload</button>
-      <button type="button" data-cmd="cancel"${loading && row.ejectable && !isEmbedding ? '' : ' disabled'}>Cancel load</button>`;
+      <button type="button" data-cmd="unload"${ready && row.ejectable ? '' : ' disabled'} title="${isEmbedding ? 'Stop embedding engine and unload its model' : 'Unload model'}">Unload</button>
+      <button type="button" data-cmd="cancel"${loading && row.ejectable ? '' : ' disabled'}>Cancel load</button>`;
 
     menu.classList.remove('hidden');
     menu.setAttribute('aria-hidden', 'false');
@@ -818,7 +829,7 @@
     }
     if (cmd === 'unload') {
       if (server.engine_mode === 'embedding' || server.model_kind === 'embedding' || row.model_kind === 'embedding' || EMBEDDING_PROFILES.has(server.profile)) {
-        toast('Embedding engines must be stopped instead of unloaded', false);
+        await stopServer(server.id);
         return;
       }
       await ejectServer(server.id);
@@ -831,6 +842,47 @@
 
   function loadedServerCount() {
     return servers.filter((s) => s.status === 'loaded').length + externalGpuLoads.length;
+  }
+
+  function fallbackLoadedRow(server, modelId) {
+    const token = String(modelId || '').trim();
+    const normalized = token.replace(/\\/g, '/');
+    const basename = normalized.split('/').pop() || token;
+    return {
+      role: 'loaded-model',
+      id: token,
+      model_id: token,
+      label: basename || server?.label || 'Loaded model',
+      title: basename || token.replace(/-/g, ' ') || server?.label || 'Loaded model',
+      subtitle: token ? `API: ${token}` : '',
+      path: /\.gguf$/i.test(basename) || normalized.includes('/') ? token : '',
+      card_state: server?.status === 'booting' ? 'loading' : 'ready',
+      progress: server?.load_progress ?? null,
+      ejectable: true,
+      plain_llm: true,
+      is_adhoc: true,
+      inference_stats: server?.inference_stats || {},
+    };
+  }
+
+  function loadedRowsForServer(server) {
+    const cards = Array.isArray(server?.visible_cards) ? server.visible_cards.slice() : [];
+    const loaded = Array.isArray(server?.loaded_models) ? server.loaded_models : [];
+    if (!loaded.length) return cards;
+    const represented = new Set(
+      cards
+        .flatMap((row) => [row?.id, row?.model_id, row?.path, row?.model_path])
+        .map((value) => String(value || '').replace(/\\/g, '/').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    for (const modelId of loaded) {
+      const key = String(modelId || '').replace(/\\/g, '/').trim().toLowerCase();
+      if (key && !represented.has(key)) {
+        cards.push(fallbackLoadedRow(server, modelId));
+        represented.add(key);
+      }
+    }
+    return cards;
   }
 
   function entryForCard(card) {
@@ -857,13 +909,14 @@
 
     const server = servers.find((s) => s.id === serverId);
     if (!server) return null;
-    let row = server.visible_cards?.find((entry) => entry.role === role);
+    let row = loadedRowsForServer(server).find((entry) => entry.role === role);
     if (!row) row = pendingLoadRow(serverId);
     return row ? { server, row } : null;
   }
 
   function loadedCardKey(server, row) {
     if (row?.external || server?.external) return `external-${row.pid}`;
+    if (row?.role === 'loaded-model') return `${server?.id || ''}::${row.id || row.model_id || ''}`;
     return server?.id || '';
   }
 
@@ -874,7 +927,7 @@
   function collectLoadedEntries() {
     const entries = [];
     for (const server of servers) {
-      const cards = Array.isArray(server.visible_cards) ? server.visible_cards : [];
+      const cards = loadedRowsForServer(server);
       for (const row of cards) {
         entries.push({ server, row });
       }
@@ -1114,6 +1167,10 @@
     return `<span class="lm-tag gold dflash-logo-label" role="img" aria-label="${safeLabel}" title="${safeLabel}"></span>`;
   }
 
+  function acceleratorBadge(title = 'Draft accelerator; not a target model') {
+    return `<span class="lm-tag orange" title="${escapeHtml(title)}">Accelerator</span>`;
+  }
+
   function modelKindBadge(row) {
     const inferred = inferModelKind(row);
     if (!inferred) return '';
@@ -1146,17 +1203,17 @@
   function roleBadge(row) {
     if (row.external) {
       const label = escapeHtml(cardAppLabel(row));
-      return `<span class="lm-tag orange" title="Loaded outside DFlash Console">External · ${label}</span>`;
+      return `<span class="lm-tag orange lm-tag-external-app" title="Loaded outside DFlash Console">External · ${label}</span>`;
     }
     const loadedBy = row?.loaded_by || row?.app_label || '';
-    const appBadge = loadedBy && loadedBy !== 'DFlash Console'
+    const appBadge = loadedBy
       ? `<span class="lm-tag orange" title="Requested by ${escapeHtml(loadedBy)}">${escapeHtml(loadedBy)}</span>`
       : '';
     if (row.role === 'draft-dflash') {
-      return `${dflashLogoLabel('DFlash draft model')}${appBadge}`;
+      return `${dflashLogoLabel('DFlash accelerator')}${acceleratorBadge('DFlash draft accelerator; not a target model')}${appBadge}`;
     }
     if (row.role === 'draft-dspark') {
-      return `<span class="lm-tag yellow" title="dspark draft model">dspark draft</span>${appBadge}`;
+      return `<span class="lm-tag yellow" title="dspark draft accelerator">dspark draft</span>${acceleratorBadge('DSpark draft accelerator; not a target model')}${appBadge}`;
     }
     const kind = inferModelKind(row);
     if (kind?.kind === 'embedding') {
@@ -1382,9 +1439,11 @@
         || row.model_kind === 'embedding'
         || EMBEDDING_PROFILES.has(server.profile);
       let action = '';
-      if (row.ejectable && !ejecting && !isEmbedding) {
+      if (row.ejectable && !ejecting) {
         action = ready
-          ? '<button class="lm-btn ghost small" data-action="eject" title="Unload model">Unload</button>'
+          ? isEmbedding
+            ? '<button class="lm-btn ghost small" data-action="stop" title="Stop embedding engine and unload its model">Unload</button>'
+            : '<button class="lm-btn ghost small" data-action="eject" title="Unload model">Unload</button>'
           : '<button class="lm-btn ghost small" data-action="cancel-load">Cancel</button>';
       }
       const isSelected = actionKey === selectedLoadedKey;
@@ -1455,6 +1514,14 @@
         if (serverId) void stopServer(serverId);
       });
     });
+    wrap.querySelectorAll('[data-action="stop"]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const card = e.target.closest('[data-server-id]');
+        const serverId = card?.getAttribute('data-server-id');
+        if (serverId) void stopServer(serverId);
+      });
+    });
 
     wrap.querySelectorAll('.lm-model-card').forEach((card) => {
       const activate = (event) => {
@@ -1495,7 +1562,6 @@
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
     if (model.loadable && model.port) parts.push(`port :${model.port}`);
-    else if (model.path && !model.server_id) parts.push('load on active engine');
     return parts.join(' · ');
   }
 
@@ -1979,7 +2045,7 @@
       if (!inspectorDirty && !inspectorFilling) {
         fillInspectorLoadSettings(server);
       }
-      const row = server.visible_cards?.[0] || {};
+      const row = loadedRowsForServer(server)[0] || {};
       const boundModel = modelFromLoadedEntry(server, row);
       fillInspectorInfo({ ...boundModel, server_id: server.id, loaded_on_gpu: server.status === 'loaded' });
       syncInspectorLoadedState({ ...boundModel, server_id: server.id, loaded_on_gpu: server.status === 'loaded' });
@@ -1988,7 +2054,7 @@
 
     if (document.body.dataset.activeView !== 'server') return;
 
-    const model = modelFromLoadedEntry(server, server.visible_cards?.[0] || {});
+    const model = modelFromLoadedEntry(server, loadedRowsForServer(server)[0] || {});
     fillInspectorInfo(model);
     if (!inspectorDirty && !inspectorFilling) {
       fillInspectorLoadSettings(getMergedLoadSettings(model));
@@ -2087,11 +2153,11 @@
 
     try {
       const [data, modelsData] = await Promise.all([
-        api(serversStatusUrl(false), { timeoutMs: 6000 }),
-        api('/api/models', { timeoutMs: 6000 }).catch(() => ({ models: [] })),
+        api(serversStatusUrl(false), { timeoutMs: 15000 }),
+        api('/api/models', { timeoutMs: 30000 }).catch(() => ({ models: [] })),
       ]);
       if (gen !== catalogRefreshGen) return;
-      applyServersPayload(data, { mergeExternal: false });
+      if (!applyServersPayload(data, { mergeExternal: false })) return;
       initialStatusSettled = true;
       const nextModels = modelsData.models || [];
       const modelsChanged = catalogSignature(nextModels) !== catalogSignature(catalogModels);
@@ -2127,10 +2193,13 @@
     });
   }
 
-  async function refreshStatus(shouldRender = true, { includeExternal = false } = {}) {
+  async function refreshStatus(
+    shouldRender = true,
+    { includeExternal = false, fresh = false } = {},
+  ) {
     try {
-      const data = await api(serversStatusUrl(includeExternal));
-      applyServersPayload(data, { mergeExternal: includeExternal });
+      const data = await api(serversStatusUrl(includeExternal, fresh), { timeoutMs: fresh ? 30000 : 15000 });
+      if (!applyServersPayload(data, { mergeExternal: includeExternal })) return;
       initialStatusSettled = true;
       syncActiveIdFromLiveState();
       if (shouldRender) {
@@ -2143,18 +2212,18 @@
     }
   }
 
-  async function refresh(shouldRender = true) {
+  async function refresh(shouldRender = true, { fresh = false } = {}) {
     if (!catalogLoaded) {
       await refreshCatalog({ shouldRender });
     } else {
-      await refreshStatus(shouldRender);
+      await refreshStatus(shouldRender, { fresh });
     }
     reschedulePoll();
   }
 
   async function refreshAfterUnload() {
     await new Promise((resolve) => window.setTimeout(resolve, 350));
-    await refreshStatus(true, { includeExternal: true });
+    await refreshStatus(true, { includeExternal: true, fresh: true });
     reschedulePoll();
   }
 
@@ -2213,7 +2282,7 @@
       await api(`/api/servers/${encodeURIComponent(server.id)}/listen`, { method: 'POST' });
       toast('Engine started');
       window.DFlashStatusFeed?.note('Engine listening', `Port :${server.port} · no model loaded yet`);
-      await refresh();
+      await refresh(true, { fresh: true });
     } catch (err) {
       toast(err.message, false);
     } finally {
@@ -2269,7 +2338,7 @@
       if (result?.already_loaded) {
         toast('Model already loaded');
         window.DFlashStatusFeed?.note(`${label} ready`, `Port :${result.port || '—'}`);
-        await refresh();
+        await refresh(true, { fresh: true });
         return;
       }
       const loaded = await waitUntilModelLoaded(serverId);
@@ -2287,7 +2356,7 @@
       setServerAction(serverId, null);
       resetEngineModelPicker();
       renderAll();
-      await refresh();
+      await refresh(true, { fresh: true });
     }
   }
 
@@ -2377,7 +2446,7 @@
       await api(`/api/servers/${encodeURIComponent(serverId)}/stop`, { method: 'POST' });
       toast('Server stopped');
       pendingLoads.delete(serverId);
-      await refresh();
+      await refresh(true, { fresh: true });
     } catch (err) {
       toast(err.message, false);
     } finally {

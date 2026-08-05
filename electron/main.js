@@ -102,8 +102,8 @@ function healthUrl(port = DEFAULT_PORT) {
 function iconPath() {
   const root = repoRoot();
   const candidates = [
-    root ? path.join(root, 'assets', 'dflash_console_logo.png') : null,
-    path.join(__dirname, '..', 'assets', 'dflash_console_logo.png'),
+    root ? path.join(root, 'assets', 'dflash_console_logo_only_clear.png') : null,
+    path.join(__dirname, '..', 'assets', 'dflash_console_logo_only_clear.png'),
   ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || undefined;
 }
