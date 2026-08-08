@@ -411,6 +411,11 @@
     if (catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
     if (hasText(/dflash|dspark/)) badges.push(catalogDflashLabel());
     if (catalogReadyToLoad(model)) badges.push(catalogBadge('ready to load', 'gold'));
+    if (model?.runnable) {
+      badges.push(catalogBadge('runnable', 'green', 'Runnable in DFlash Console'));
+    } else if (model?.downloadable && model?.modality && model?.modality !== 'llm') {
+      badges.push(catalogBadge('download-only', 'yellow', 'Downloadable, but no Console runtime is installed for this modality yet'));
+    }
     if (hasTag(/vision|multimodal|image-text|mmproj/) || hasText(/-vl-|mmproj|vision|multimodal/)) {
       badges.push(catalogBadge('vision', 'purple'));
     }

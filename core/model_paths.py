@@ -291,3 +291,33 @@ def allowed_model_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
     if not roots:
         roots.append(get_download_dir(cfg))
     return roots
+
+
+def validate_model_path(
+    path_text: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    allowed_extensions: tuple[str, ...] = ('.gguf',),
+    allowed_dirs: list[Path] | None = None,
+    require_file: bool = True,
+) -> Path:
+    """Resolve and validate a model path against allowed extensions and roots.
+
+    Used by load/delete endpoints. Extends the old GGUF-only check to cover
+    future formats (Piper voices, Whisper folders, ...) without loosening the
+    existing root allowlist.
+
+    Raises ``ValueError`` with a clear message when the path is not allowed.
+    """
+    target = Path(path_text).expanduser().resolve()
+    if require_file and not target.is_file():
+        raise ValueError('not a GGUF file')
+    if target.is_file() and allowed_extensions and target.suffix.lower() not in allowed_extensions:
+        raise ValueError(
+            'unsupported file type: %s (allowed: %s)'
+            % (target.suffix or '(none)', ', '.join(allowed_extensions))
+        )
+    roots = allowed_dirs if allowed_dirs is not None else allowed_model_roots(cfg)
+    if roots and not any(target.is_relative_to(root) for root in roots):
+        raise ValueError('path not under allowed model directories')
+    return target

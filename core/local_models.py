@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from core.config import ROOT, list_servers, load_config, normalize_server
+from core.config import EMBEDDING_PROFILES, ROOT, list_servers, load_config, normalize_server
 from core.model_paths import (
     allowed_model_roots,
     disk_scan_roots,
@@ -526,6 +526,60 @@ def _annotate_path_status(row: dict[str, Any]) -> None:
         row['loadable'] = False
 
 
+def _annotate_runtime_fields(row: dict[str, Any]) -> None:
+    """Phase 0: add modality/runtime_id/kind/flags to a catalog row.
+
+    Modality is inferred from the engine mode/profile plus the same filename
+    heuristics the Models tab previously used, so the backend ``modality`` is
+    authoritative and filter chips wire to it (not client-side guesses).
+    Every current row maps to llama-server; non-GGUF formats get wired to their
+    adapter in later phases when the corresponding adapter ships.
+    """
+    caps = list(row.get('capabilities') or [])
+    profile = str(row.get('profile') or '').lower()
+    engine_mode = str(row.get('engine_mode') or '').lower()
+    haystack = ' '.join(
+        str(row.get(key) or '')
+        for key in ('label', 'filename', 'path', 'publisher', 'id')
+    ).lower()
+    if engine_mode == 'embedding' or profile in EMBEDDING_PROFILES:
+        modality = 'embedding'
+    elif 'vision' in caps or re.search(r'vision|multimodal|[-_]vl[-_]|mmproj|image', haystack):
+        modality = 'vision'
+    elif re.search(r'ocr|chandra|ovis|paddleocr|olmocr', haystack):
+        modality = 'ocr'
+    elif re.search(r'whisper|speech|asr|parakeet|wav2vec|faster[-_]whisper', haystack):
+        modality = 'speech-to-text'
+    elif re.search(r'text.?to.?speech|tts|piper|kokoro|bark', haystack):
+        modality = 'text-to-speech'
+    elif re.search(r'translat|nllb|madlad|seamless|tower', haystack):
+        modality = 'translation'
+    elif re.search(r'embed|embedding|nomic|bge[-_]|e5[-_]|gte[-_]', haystack):
+        modality = 'embedding'
+    else:
+        modality = 'llm'
+    row.setdefault('modality', modality)
+    row.setdefault('runtime_id', 'llama-server')
+    row.setdefault('kind', 'file')
+    row.setdefault('catalog_visible', True)
+    row.setdefault('downloadable', True)
+    row.setdefault('runnable', row.get('loadable') is True)
+    size_gb = row.get('size_gb')
+    if isinstance(size_gb, (int, float)) and size_gb > 0:
+        row.setdefault('size_bytes', int(size_gb * (1024 ** 3)))
+    row.setdefault('estimated_vram_mb', None)
+    row.setdefault('runtime_min_version', '')
+    row.setdefault('family', str(row.get('arch') or row.get('label') or '').strip())
+    row.setdefault('task', {
+        'embedding': 'embed',
+        'vision': 'vision',
+        'ocr': 'ocr',
+        'speech-to-text': 'transcribe',
+        'text-to-speech': 'speech',
+        'translation': 'translate',
+    }.get(modality, 'chat'))
+
+
 def _mark_stack_path_access(models: list[dict[str, Any]], config: dict[str, Any]) -> None:
     roots: list[Path] = []
     for root in allowed_model_roots(config):
@@ -581,6 +635,8 @@ def _build_models_payload(
     for row in models:
         _annotate_path_status(row)
     _mark_stack_path_access(models, config)
+    for row in models:
+        _annotate_runtime_fields(row)
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))

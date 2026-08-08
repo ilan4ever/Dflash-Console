@@ -20,6 +20,7 @@ from core.config import (
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.log_utils import rotate_log
 from core.model_presets import infer_profile_from_path, model_id_from_path, preset_path_for, write_server_preset
+from core.runtimes import runtime_process_identity_tokens
 
 _started_launch: dict[int, dict[str, Any]] = {}
 _started_processes: dict[int, subprocess.Popen] = {}
@@ -106,7 +107,11 @@ def _cleanup_failed_process(port: int, host: str, process: subprocess.Popen | No
 
 
 def managed_process_identity(pid: int) -> bool:
-    """Return whether a Windows process looks like a managed llama engine."""
+    """Return whether a Windows process looks like a Console-managed engine.
+
+    Matches the shared runtime process-identity token set (llama-server by
+    default, plus tokens contributed by registered adapters such as Piper).
+    """
     if sys.platform != 'win32':
         return True
     query = (
@@ -128,10 +133,9 @@ def managed_process_identity(pid: int) -> bool:
         details = json.loads(result.stdout)
         command = str(details.get('CommandLine') or '').lower()
         name = str(details.get('Name') or '').lower()
-        return (
-            'llama-server' in name
-            or 'llama-server' in command
-            or 'start_llama_server.ps1' in command
+        return any(
+            token in name or token in command
+            for token in runtime_process_identity_tokens()
         )
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return False
