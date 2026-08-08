@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.config import get_dflash_root, get_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
+from core.config import get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
 from core.model_paths import allowed_model_roots, disk_scan_roots, validate_model_path
 from core.gpu_devices import get_gpu_devices_payload
@@ -236,6 +236,15 @@ class HfDownloadRequest(BaseModel):
 class VisionSetupRequest(BaseModel):
     model_path: str = Field(..., min_length=1)
     server_id: str | None = None
+
+
+class ModelLoadRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    server_id: str | None = None
+    model_id: str | None = None
+    context_size: int | None = Field(default=None, ge=2048, le=1048576)
+    load_settings: dict[str, Any] | None = None
+    inference_settings: dict[str, Any] | None = None
 
 
 class LibraryImportRequest(BaseModel):
@@ -632,6 +641,32 @@ def hf_downloads(active: bool = Query(default=False)) -> dict[str, Any]:
     return list_download_jobs(active_only=active)
 
 
+def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
+    """How to load a catalog row through the API (used by the docs + UI)."""
+    path = str(row.get('path') or '')
+    modality = str(row.get('modality') or 'llm')
+    runtime_id = str(row.get('runtime_id') or 'llama-server')
+    body: dict[str, Any] = {'path': path}
+    server_id = str(row.get('server_id') or '')
+    if runtime_id == 'llama-server' and server_id:
+        return {
+            'method': 'POST',
+            'path': f'/api/servers/{server_id}/load',
+            'body': {'model_path': path},
+            'hint': f'loads on server {server_id}; then use /api/servers/{server_id}/v1/chat/completions',
+        }
+    return {
+        'method': 'POST',
+        'path': '/api/models/load',
+        'body': body,
+        'hint': {
+            'speech-to-text': 'then POST /api/runtimes/stt/v1/audio/transcriptions (multipart file=audio)',
+            'text-to-speech': 'then POST /api/runtimes/piper/v1/audio/speech {"input": "...", "voice": "..."}',
+            'embedding': 'then POST /api/servers/{server_id}/v1/embeddings {"input": [...]}',
+        }.get(modality, ''),
+    }
+
+
 @app.get('/api/models')
 def models_catalog(quick: bool = Query(default=False), refresh: bool = Query(default=False)) -> dict[str, Any]:
     from core.local_models import invalidate_model_catalog_cache
@@ -639,8 +674,122 @@ def models_catalog(quick: bool = Query(default=False), refresh: bool = Query(def
     cfg = load_config()
     if refresh:
         invalidate_model_catalog_cache()
-        return list_local_models(cfg=cfg, scan_disk=not quick, force_refresh=True)
-    return list_local_models(cfg=cfg, scan_disk=not quick)
+        payload = list_local_models(cfg=cfg, scan_disk=not quick, force_refresh=True)
+    else:
+        payload = list_local_models(cfg=cfg, scan_disk=not quick)
+    for row in payload.get('models') or []:
+        if isinstance(row, dict):
+            row['load_route'] = _model_load_route(row)
+    return payload
+
+
+@app.post('/api/models/load')
+def model_load(body: ModelLoadRequest) -> dict[str, Any]:
+    """Unified loader — load ANY catalog model by path.
+
+    Dispatches by the catalog row's modality/runtime_id:
+      - speech-to-text -> whisper runtime (runtimes/stt)
+      - text-to-speech -> piper runtime (voice ready; synthesis via proxy)
+      - llm / embedding / vision / ocr / translation -> a llama-server engine
+    For llama-server loads you may pass ``server_id`` to pick the engine;
+    otherwise the first enabled engine that matches the modality is used.
+    """
+    from core.engine_state import note_engine_loaded
+    from core.memory_guardrails import assess_load
+
+    cfg = load_config()
+    catalog = list_local_models(cfg=cfg)
+    models = catalog.get('models') or []
+    path = str(body.path or '').strip()
+    target = next(
+        (m for m in models if isinstance(m, dict) and str(m.get('path') or '') == path),
+        None,
+    )
+    if target is None and body.model_id:
+        target = next(
+            (m for m in models if isinstance(m, dict) and str(m.get('model_id') or '') == str(body.model_id)),
+            None,
+        )
+    if target is None:
+        raise HTTPException(status_code=404, detail='model not found in the local catalog (use path or model_id from GET /api/models)')
+    modality = str(target.get('modality') or 'llm')
+    runtime_id = str(target.get('runtime_id') or 'llama-server')
+    resolved_path = str(target.get('path') or path)
+
+    from core.runtimes import get_runtime_adapter
+
+    if runtime_id == 'stt':
+        adapter = get_runtime_adapter('stt')
+        result = adapter.load({'path': resolved_path})
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'STT load failed')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'stt',
+            'loaded': True,
+            'how_to_use': 'POST /api/runtimes/stt/v1/audio/transcriptions (multipart: file=<audio>)',
+            **result,
+        }
+    if runtime_id == 'piper':
+        adapter = get_runtime_adapter('piper')
+        result = adapter.load({'path': resolved_path})
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'TTS load failed')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'piper',
+            'loaded': True,
+            'how_to_use': 'POST /api/runtimes/piper/v1/audio/speech {"input": "...", "voice": "en_US-lessac-medium"}',
+            **result,
+        }
+
+    # llama-server family: llm / embedding / vision / ocr / translation.
+    server = None
+    if body.server_id:
+        server = get_server(cfg, body.server_id)
+        if server is None:
+            raise HTTPException(status_code=404, detail=f'unknown server_id: {body.server_id}')
+    else:
+        candidates = [s for s in list_servers(cfg) if s.get('enabled', True)]
+        if modality == 'embedding':
+            server = next((s for s in candidates if is_embedding_server(s)), None)
+        else:
+            server = next((s for s in candidates if not is_embedding_server(s)), None)
+    if server is None:
+        raise HTTPException(status_code=409, detail=f'no enabled server can run a {modality} model — pass server_id')
+
+    server = normalize_server(dict(server))
+    candidate = {**server, 'adhoc_model_path': resolved_path}
+    if body.context_size is not None:
+        candidate['context_size'] = int(body.context_size)
+    if body.load_settings:
+        candidate['load_settings'] = normalize_load_settings(body.load_settings)
+    if body.inference_settings:
+        candidate['inference_settings'] = normalize_inference_settings(body.inference_settings)
+
+    check = assess_load(candidate, cfg=cfg)
+    if check.get('level') == 'block':
+        raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+    result = load_server_checkpoint(server, cfg=cfg, model_path=resolved_path, model_id=body.model_id)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
+    note_engine_loaded(str(server.get('id') or ''), loaded_by='api:/api/models/load')
+    _invalidate_status_cache()
+    if modality == 'embedding':
+        how_to_use = f'POST /api/servers/{server["id"]}/v1/embeddings {{"input": ["text", ...]}}'
+    else:
+        how_to_use = f'POST /api/servers/{server["id"]}/v1/chat/completions'
+    return {
+        'success': True,
+        'modality': modality,
+        'runtime_id': 'llama-server',
+        'server_id': str(server.get('id') or ''),
+        'loaded': True,
+        'how_to_use': how_to_use,
+        **result,
+    }
 
 
 @app.get('/api/models/vision/plan')
@@ -896,6 +1045,39 @@ def runtime_unload(runtime_id: str) -> dict[str, Any]:
     if not callable(unload_fn):
         raise HTTPException(status_code=400, detail='adapter does not support unload')
     return {'success': True, 'runtime_id': runtime_id, **unload_fn()}
+
+
+@app.post('/api/runtimes/{runtime_id}/start')
+def runtime_start(runtime_id: str) -> dict[str, Any]:
+    """Bring up a server-mode runtime process (whisper). CLI runtimes (piper)
+    are always ready and report ``started: false`` with no error."""
+    adapter = _require_runtime_adapter(runtime_id)
+    start_fn = getattr(adapter, 'start', None)
+    if not callable(start_fn):
+        return {'success': True, 'runtime_id': runtime_id, 'started': False, 'message': 'adapter has no persistent process (CLI mode is always ready)'}
+    profile: dict[str, Any] = {}
+    for entry in list_runtimes(load_config()):
+        if str(entry.get('runtime_id') or '') == runtime_id:
+            profile = entry
+            break
+    result = start_fn(profile)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'start failed')
+    return {'success': True, 'runtime_id': runtime_id, 'started': True, **result}
+
+
+@app.post('/api/runtimes/{runtime_id}/stop')
+def runtime_stop(runtime_id: str) -> dict[str, Any]:
+    """Stop a server-mode runtime process (whisper). CLI runtimes (piper) have
+    no persistent process and report ``stopped: true`` with no error."""
+    adapter = _require_runtime_adapter(runtime_id)
+    stop_fn = getattr(adapter, 'stop', None)
+    if not callable(stop_fn):
+        return {'success': True, 'runtime_id': runtime_id, 'stopped': True, 'message': 'adapter has no persistent process'}
+    result = stop_fn()
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'stop failed')
+    return {'success': True, 'runtime_id': runtime_id, 'stopped': True, **result}
 
 
 @app.post('/api/runtimes/{runtime_id}/v1/audio/speech')

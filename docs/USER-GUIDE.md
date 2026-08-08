@@ -220,6 +220,83 @@ POST http://127.0.0.1:8900/api/servers/{server_id}/v1/chat/completions
 
 Use the same JSON body as the OpenAI Chat Completions API. Response `usage` and `timings` fields feed the token stats on the card.
 
+### API quick start — load and use every model type
+
+The console exposes one catalog (`GET /api/models`) and one unified loader:
+**`POST /api/models/load`**. Pass the `path` of any model from the catalog and
+the backend detects its modality and dispatches to the right runtime. Every row
+in `GET /api/models` also carries a `load_route` field with the exact call to
+use.
+
+#### 1. LLM / chat (llama-server)
+
+```bash
+# load any GGUF onto an engine (or let it pick the first enabled non-embedding engine)
+curl -X POST http://127.0.0.1:8900/api/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\gemma-4-12b-it-qat-q4_0.gguf"}'
+
+# then chat through the console proxy
+curl -X POST http://127.0.0.1:8900/api/servers/gemma-12b-ar/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+#### 2. Text to speech (Piper)
+
+```bash
+# TTS voices don't need a long load — verify the runtime is ready, then speak
+curl -X POST http://127.0.0.1:8900/api/runtimes/piper/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello from the console", "voice": "en_US-lessac-medium", "speed": 1.0}' \
+  -o speech.wav
+# list voices:  GET /api/runtimes/piper/voices
+```
+
+#### 3. Speech to text (Whisper)
+
+```bash
+# load a whisper model
+curl -X POST http://127.0.0.1:8900/api/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\whisper-large-v3-q8_0.gguf"}'
+
+# transcribe an audio file (multipart)
+curl -X POST http://127.0.0.1:8900/api/runtimes/stt/v1/audio/transcriptions \
+  -F "file=@meeting.wav" -F "model=whisper-1"
+```
+
+#### 4. Embeddings
+
+```bash
+# load the embedding engine (nomic profile), then embed
+curl -X POST http://127.0.0.1:8900/api/servers/nomic-embed/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": ["first document", "second document"], "model": "nomic-embed"}'
+# batch + JSONL export:  POST /api/servers/nomic-embed/embed/batch
+```
+
+#### 5. Vision / OCR
+
+```bash
+# plan mmproj wiring for a multimodal model, then chat with an image
+curl "http://127.0.0.1:8900/api/models/vision/plan?path=C%3A%5Cmodels%5Cgemma-4-12b-it-qat-q4_0.gguf&server_id=gemma-12b-ar"
+```
+
+#### Runtime lifecycle
+
+```bash
+# server-mode runtimes (whisper) can be started/stopped like engines
+POST /api/runtimes/stt/start
+POST /api/runtimes/stt/stop
+POST /api/runtimes/stt/unload    # free GPU memory
+GET  /api/runtimes               # list runtimes + adapters + process tokens
+GET  /api/gpu/contention         # who holds VRAM right now
+```
+
+The full reference is in **Documentation → Multi-modal runtimes**, or browse
+the interactive Swagger UI at `http://127.0.0.1:8900/docs`.
+
 ---
 
 ## 9. Documentation tab
@@ -230,6 +307,7 @@ Open **Documentation** in the sidebar for:
 - **User guide** — this document
 - **Engine control** — REST endpoints for load/unload/stop
 - **Runtime JSON shapes** — load and inference settings fields
+- **Multi-modal runtimes (TTS · STT · Embed)** — Piper / Whisper / embeddings API + the unified `/api/models/load`
 - **Engine OpenAI API** — direct llama-server routes
 - **Console — models, hardware, libraries** — catalog and hardware APIs
 
