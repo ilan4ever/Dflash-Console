@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import socket
 import threading
 import time
 import uuid
@@ -40,6 +41,7 @@ _SYSTEM_STATS_CACHE_TTL = 2.0
 # OpenAI gateway server (thread inside this process; see api/gateway.py).
 _GATEWAY_SERVER: Any = None
 _GATEWAY_THREAD: threading.Thread | None = None
+_GATEWAY_ERROR = ''
 
 
 @asynccontextmanager
@@ -56,7 +58,8 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def _start_gateway_server() -> None:
     """Spawn the OpenAI gateway on gateway_port (default 8001) in a daemon thread."""
-    global _GATEWAY_SERVER, _GATEWAY_THREAD
+    global _GATEWAY_SERVER, _GATEWAY_THREAD, _GATEWAY_ERROR
+    _GATEWAY_ERROR = ''
     try:
         import uvicorn
 
@@ -64,12 +67,32 @@ def _start_gateway_server() -> None:
 
         cfg = load_config()
         port = int(cfg.get('gateway_port') or 8001)
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(('127.0.0.1', port))
+        except OSError as exc:
+            _GATEWAY_ERROR = f'gateway port {port} is unavailable: {exc}'
+            _GATEWAY_SERVER = None
+            _GATEWAY_THREAD = None
+            return
+        finally:
+            probe.close()
         server = uvicorn.Server(uvicorn.Config(gateway_app, host='127.0.0.1', port=port, log_level='warning'))
         _GATEWAY_SERVER = server
-        thread = threading.Thread(target=server.run, name='console-gateway', daemon=True)
+        def run_gateway() -> None:
+            global _GATEWAY_ERROR
+            try:
+                server.run()
+                if not getattr(server, 'started', False) and not server.should_exit:
+                    _GATEWAY_ERROR = f'gateway stopped before becoming ready on port {port}'
+            except Exception as exc:
+                _GATEWAY_ERROR = str(exc)
+
+        thread = threading.Thread(target=run_gateway, name='console-gateway', daemon=True)
         thread.start()
         _GATEWAY_THREAD = thread
-    except Exception:
+    except Exception as exc:
+        _GATEWAY_ERROR = str(exc)
         # The gateway is a convenience; never block console boot on it.
         _GATEWAY_SERVER = None
         _GATEWAY_THREAD = None
@@ -445,6 +468,7 @@ def gateway_status() -> dict[str, Any]:
         'url': f'http://127.0.0.1:{port}/v1',
         'running': bool(_GATEWAY_THREAD is not None and _GATEWAY_THREAD.is_alive()),
         'default_server_id': str(cfg.get('gateway_server_id') or ''),
+        'error': _GATEWAY_ERROR,
         'routes': routes,
     }
 

@@ -18,6 +18,7 @@ $items = @(
     'server.ps1',
     'run.ps1',
     'requirements.txt',
+    'requirements.lock',
     'config.example.json'
 )
 

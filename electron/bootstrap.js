@@ -11,6 +11,7 @@ const RUNTIME_ITEMS = [
   'server.ps1',
   'run.ps1',
   'requirements.txt',
+  'requirements.lock',
   'config.example.json',
 ];
 
@@ -94,7 +95,8 @@ function ensureRuntimeTree(destRoot, resourcesPath) {
     ? String(fs.readFileSync(stampPath, 'utf8')).trim()
     : '';
 
-  if (isConsoleRoot(destRoot) && installedVersion === bundledVersion) {
+  const runtimeComplete = RUNTIME_ITEMS.every((item) => fs.existsSync(path.join(destRoot, item)));
+  if (isConsoleRoot(destRoot) && installedVersion === bundledVersion && runtimeComplete) {
     return destRoot;
   }
 
