@@ -27,6 +27,7 @@ same `static/` application, so the views and documentation are shared.
 | Model storage / Locations | [settings-general.md](./settings-general.md) |
 | Hardware | [settings-hardware.md](./settings-hardware.md) |
 | Network / Runtime / Presets | [settings-runtime.md](./settings-runtime.md) |
+| Speech & runtimes (Piper / Whisper) | [settings-runtimes.md](./settings-runtimes.md) |
 | MCP & clients | [settings-integrations.md](./settings-integrations.md) |
 | Developer diagnostics | [settings-developer.md](./settings-developer.md) |
 | Appearance | [settings-appearance.md](./settings-appearance.md) |
