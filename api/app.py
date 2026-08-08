@@ -213,6 +213,8 @@ class ConfigPatch(BaseModel):
     dflash_root: str | None = None
     servers: list[dict[str, Any]] | None = None
     runtimes: list[dict[str, Any]] | None = None
+    runtime_stop_others_on_load: bool | None = None
+    cpu_slow_warn: bool | None = None
     hardware_settings: dict[str, Any] | None = None
     model_libraries: list[dict[str, Any]] | None = None
     ui_layout: dict[str, Any] | None = None
@@ -787,6 +789,8 @@ def runtimes_status() -> dict[str, Any]:
             'host': str(runtime.get('host') or '127.0.0.1'),
             'api_url': str(runtime.get('api_url') or ''),
             'device_policy': str(runtime.get('device_policy') or 'auto'),
+            'default_voice': str(runtime.get('default_voice') or ''),
+            'default_model': str(runtime.get('default_model') or ''),
             'vram_budget_mb': runtime.get('vram_budget_mb'),
             'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
             'enabled': runtime.get('enabled', True) is not False,
@@ -1138,6 +1142,42 @@ def _ensure_server_ready_for_chat(server_id: str, server: dict[str, Any], cfg: d
     return _wait_until_loaded()
 
 
+def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list[str]:
+    """When ``runtime_stop_others_on_load`` is enabled, unload other running
+    Console engines first so the target can load without VRAM contention.
+
+    Only acts on a ``stop-others`` GPU-contention recommendation and only on
+    Console-owned (llama) servers — never embedding engines, never external
+    apps. Returns the ids that were unloaded.
+    """
+    if cfg.get('runtime_stop_others_on_load') is not True:
+        return []
+    from core.config import is_embedding_server
+    from core.runtimes.contention import gpu_contention_report
+
+    try:
+        report = gpu_contention_report(cfg=cfg)
+    except Exception:
+        return []
+    if report.get('recommendation') != 'stop-others':
+        return []
+    stopped: list[str] = []
+    for row in report.get('console_runtimes') or []:
+        other_id = str(row.get('id') or '')
+        if not other_id or other_id == target_server_id or not row.get('running'):
+            continue
+        server = _require_server(cfg, other_id)
+        if is_embedding_server(server):
+            continue
+        try:
+            result = server_unload(other_id)
+        except HTTPException:
+            continue
+        if result.get('success'):
+            stopped.append(other_id)
+    return stopped
+
+
 @app.get('/api/servers/{server_id}/load-plan')
 def server_load_plan(
     server_id: str,
@@ -1180,6 +1220,8 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+    if _auto_stop_other_servers(cfg, server_id):
+        _invalidate_status_cache()
     result = load_server_checkpoint(server, cfg=cfg, model_path=model_path, model_id=model_id)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
@@ -1490,6 +1532,8 @@ def server_start(server_id: str, request: Request) -> dict[str, Any]:
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+    if _auto_stop_other_servers(cfg, server_id):
+        _invalidate_status_cache()
     result = start_server(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'start failed')

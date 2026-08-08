@@ -690,43 +690,111 @@
   // --- Speech & runtimes panel -------------------------------------------
 
   let runtimeDraft = [];
+  let runtimeRefreshInFlight = null;
+
+  async function loadRuntimeVoices(runtimeId) {
+    try {
+      const data = await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/voices`, { timeoutMs: 8000 });
+      return Array.isArray(data?.voices) ? data.voices : [];
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  async function loadRuntimeSttModels() {
+    try {
+      const data = await api('/api/models', { timeoutMs: 20000 });
+      return (Array.isArray(data?.models) ? data.models : []).filter((m) => {
+        const name = String(m.filename || m.label || m.path || '').toLowerCase();
+        return String(m.modality || '') === 'speech-to-text' || /whisper|faster-whisper/.test(name);
+      });
+    } catch (_err) {
+      return [];
+    }
+  }
 
   async function refreshRuntimesPanel() {
     const listEl = document.getElementById('runtimeSettingsList');
     const summaryEl = document.getElementById('runtimeContentionSummary');
     if (!listEl) return;
-    listEl.innerHTML = '<p class="lm-setting-desc">Loading runtimes…</p>';
-    try {
-      const [runtimesData, manifestsData, contentionData] = await Promise.all([
-        api('/api/runtimes', { timeoutMs: 10000 }),
-        api('/api/runtimes/manifests', { timeoutMs: 8000 }),
-        api('/api/gpu/contention', { timeoutMs: 12000 }),
-      ]);
-      const runtimes = (Array.isArray(runtimesData?.runtimes) ? runtimesData.runtimes : [])
-        .filter((row) => row.kind === 'runtime');
-      const manifests = {};
-      for (const item of Array.isArray(manifestsData?.manifests) ? manifestsData.manifests : []) {
-        manifests[item.runtime_id] = item.manifest;
-      }
-      runtimeDraft = runtimes.map((row) => ({
-        id: row.id,
-        runtime_id: row.runtime_id,
-        label: row.label || row.runtime_id,
-        port: row.port || 0,
-        device_policy: row.device_policy || 'auto',
-        allow_cpu_fallback: row.allow_cpu_fallback !== false,
-        vram_budget_mb: Number(row.vram_budget_mb) || 0,
-        adapter_installed: row.adapter_installed === true,
-        manifest: manifests[row.runtime_id] || null,
-      }));
-      if (!runtimeDraft.length) {
-        listEl.innerHTML = '<p class="lm-setting-desc">No non-llama runtimes configured. Add a <code>runtimes[]</code> entry to config.json.</p>';
-      } else {
-        listEl.innerHTML = runtimeDraft.map((rt, index) => {
-          const installedTag = rt.adapter_installed
-            ? '<span class="lm-tag green">Installed</span>'
-            : '<span class="lm-tag yellow">Not installed</span>';
-          return `
+    // Re-entrancy guard: the panel is refreshed from multiple hooks (nav,
+    // showPanel, save), so coalesce concurrent calls into one run. Without
+    // this, shared runtimeDraft gets interleaved pushes (duplicated cards).
+    if (runtimeRefreshInFlight) return runtimeRefreshInFlight;
+    const run = (async () => {
+      listEl.innerHTML = '<p class="lm-setting-desc">Loading runtimes…</p>';
+      try {
+        const [runtimesData, manifestsData, contentionData, configData] = await Promise.all([
+          api('/api/runtimes', { timeoutMs: 10000 }),
+          api('/api/runtimes/manifests', { timeoutMs: 8000 }),
+          api('/api/gpu/contention', { timeoutMs: 12000 }),
+          api('/api/config', { timeoutMs: 8000 }),
+        ]);
+        const runtimes = (Array.isArray(runtimesData?.runtimes) ? runtimesData.runtimes : [])
+          .filter((row) => row.kind === 'runtime');
+        const manifests = {};
+        for (const item of Array.isArray(manifestsData?.manifests) ? manifestsData.manifests : []) {
+          manifests[item.runtime_id] = item.manifest;
+        }
+        const cfg = configData?.config || {};
+        const stopToggle = document.getElementById('runtimeStopOthersToggle');
+        const cpuToggle = document.getElementById('runtimeCpuWarnToggle');
+        if (stopToggle) stopToggle.checked = cfg.runtime_stop_others_on_load === true;
+        if (cpuToggle) cpuToggle.checked = cfg.cpu_slow_warn !== false;
+        const draft = [];
+        for (const row of runtimes) {
+          const rt = {
+            id: row.id,
+            runtime_id: row.runtime_id,
+            label: row.label || row.runtime_id,
+            port: row.port || 0,
+            device_policy: row.device_policy || 'auto',
+            default_voice: row.default_voice || '',
+            default_model: row.default_model || '',
+            allow_cpu_fallback: row.allow_cpu_fallback !== false,
+            vram_budget_mb: Number(row.vram_budget_mb) || 0,
+            adapter_installed: row.adapter_installed === true,
+            manifest: manifests[row.runtime_id] || null,
+          };
+          rt._voices = rt.runtime_id === 'piper' ? await loadRuntimeVoices(rt.runtime_id) : [];
+          rt._models = rt.runtime_id === 'stt' ? await loadRuntimeSttModels() : [];
+          draft.push(rt);
+        }
+        runtimeDraft = draft;
+        if (!runtimeDraft.length) {
+          listEl.innerHTML = '<p class="lm-setting-desc">No non-llama runtimes configured. Add a <code>runtimes[]</code> entry to config.json.</p>';
+        } else {
+          listEl.innerHTML = runtimeDraft.map((rt, index) => {
+            const installedTag = rt.adapter_installed
+              ? '<span class="lm-tag green">Installed</span>'
+              : '<span class="lm-tag yellow">Not installed</span>';
+            const voiceOptions = (rt._voices || []).map((v) => {
+              const id = v.id || '';
+              return `<option value="${escapeHtml(id)}" ${rt.default_voice === id ? 'selected' : ''}>${escapeHtml(v.label || id)}</option>`;
+            }).join('');
+            const modelOptions = (rt._models || []).map((m) => {
+              const path = m.path || '';
+              return `<option value="${escapeHtml(path)}" ${rt.default_model === path ? 'selected' : ''}>${escapeHtml(m.filename || m.label || path)}</option>`;
+            }).join('');
+            const defaultVoiceRow = rt.runtime_id === 'piper'
+              ? `<div class="lm-setting-row">
+                <div><strong>Default voice</strong><p class="lm-setting-desc">Piper voice used by the Playground Speak tab</p></div>
+                <select class="lm-select" data-rt-field="default_voice" data-rt-index="${index}">
+                  <option value="">Default (first)</option>
+                  ${voiceOptions}
+                </select>
+              </div>`
+              : '';
+            const defaultModelRow = rt.runtime_id === 'stt'
+              ? `<div class="lm-setting-row">
+                <div><strong>Default STT model</strong><p class="lm-setting-desc">Whisper model used by the Playground Transcribe tab</p></div>
+                <select class="lm-select" data-rt-field="default_model" data-rt-index="${index}">
+                  <option value="">Default (first)</option>
+                  ${modelOptions}
+                </select>
+              </div>`
+              : '';
+            return `
             <div class="lm-runtime-settings-card">
               <div class="lm-runtime-settings-head">
                 <strong>${escapeHtml(rt.label)}</strong>
@@ -741,6 +809,8 @@
                   <option value="cpu" ${rt.device_policy === 'cpu' ? 'selected' : ''}>CPU</option>
                 </select>
               </div>
+              ${defaultVoiceRow}
+              ${defaultModelRow}
               <div class="lm-setting-row">
                 <div><strong>Allow CPU fallback</strong><p class="lm-setting-desc">Fall back to CPU when GPU memory is tight</p></div>
                 <label class="lm-toggle"><input type="checkbox" data-rt-field="allow_cpu_fallback" data-rt-index="${index}" ${rt.allow_cpu_fallback ? 'checked' : ''}><span class="lm-toggle-track"></span></label>
@@ -751,23 +821,30 @@
               </div>
               ${rt.manifest ? `<div class="lm-setting-desc">Manifest: ${escapeHtml(rt.manifest.binary || rt.runtime_id)} · version ${escapeHtml(rt.manifest.version)}</div>` : ''}
             </div>`;
-        }).join('');
+          }).join('');
+        }
+        if (summaryEl) {
+          const c = contentionData || {};
+          const rec = c.recommendation || 'none';
+          const recLabel = rec === 'stop-others'
+            ? 'Console runtimes hold VRAM — stop others before loading'
+            : rec === 'warn-external'
+              ? 'External apps hold VRAM — warn by name'
+              : 'No significant GPU contention';
+          const running = (c.console_runtimes || []).filter((r) => r.running).map((r) => r.label).join(', ') || 'none';
+          const external = (c.external || []).map((e) => e.title).slice(0, 4).join(', ') || 'none';
+          summaryEl.innerHTML = `<span class="lm-tag ${rec === 'none' ? 'green' : 'yellow'}">${escapeHtml(recLabel)}</span>
+            <div class="lm-setting-desc">Console: ${escapeHtml(running)} · External: ${escapeHtml(external)}</div>`;
+        }
+      } catch (err) {
+        listEl.innerHTML = `<p class="lm-setting-desc">${escapeHtml(err.message || 'Could not load runtimes.')}</p>`;
       }
-      if (summaryEl) {
-        const c = contentionData || {};
-        const rec = c.recommendation || 'none';
-        const recLabel = rec === 'stop-others'
-          ? 'Console runtimes hold VRAM — stop others before loading'
-          : rec === 'warn-external'
-            ? 'External apps hold VRAM — warn by name'
-            : 'No significant GPU contention';
-        const running = (c.console_runtimes || []).filter((r) => r.running).map((r) => r.label).join(', ') || 'none';
-        const external = (c.external || []).map((e) => e.title).slice(0, 4).join(', ') || 'none';
-        summaryEl.innerHTML = `<span class="lm-tag ${rec === 'none' ? 'green' : 'yellow'}">${escapeHtml(recLabel)}</span>
-          <div class="lm-setting-desc">Console: ${escapeHtml(running)} · External: ${escapeHtml(external)}</div>`;
-      }
-    } catch (err) {
-      listEl.innerHTML = `<p class="lm-setting-desc">${escapeHtml(err.message || 'Could not load runtimes.')}</p>`;
+    })();
+    runtimeRefreshInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (runtimeRefreshInFlight === run) runtimeRefreshInFlight = null;
     }
   }
 
@@ -778,6 +855,8 @@
       const row = runtimeDraft[index];
       if (!row) return;
       if (field === 'device_policy') row.device_policy = el.value;
+      else if (field === 'default_voice') row.default_voice = el.value;
+      else if (field === 'default_model') row.default_model = el.value;
       else if (field === 'allow_cpu_fallback') row.allow_cpu_fallback = el.checked;
       else if (field === 'vram_budget_mb') row.vram_budget_mb = Math.max(0, Number(el.value) || 0);
     });
@@ -787,14 +866,21 @@
       label: row.label,
       port: row.port,
       device_policy: row.device_policy,
+      default_voice: row.default_voice,
+      default_model: row.default_model,
       allow_cpu_fallback: row.allow_cpu_fallback,
       vram_budget_mb: row.vram_budget_mb,
     }));
+    const body = { runtimes: payload };
+    const stopToggle = document.getElementById('runtimeStopOthersToggle');
+    const cpuToggle = document.getElementById('runtimeCpuWarnToggle');
+    if (stopToggle) body.runtime_stop_others_on_load = stopToggle.checked;
+    if (cpuToggle) body.cpu_slow_warn = cpuToggle.checked;
     try {
       const result = await api('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runtimes: payload }),
+        body: JSON.stringify(body),
         timeoutMs: 10000,
       });
       toast(result?.success ? 'Runtime settings saved.' : 'Could not save runtime settings.', !!result?.success);

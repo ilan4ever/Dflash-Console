@@ -208,8 +208,14 @@ try {
                   <input type="text" id="transcribeLanguage" class="lm-input" placeholder="auto" size="12" title="Optional ISO language code, e.g. en">
                   <button type="button" class="lm-btn primary" id="transcribeBtn">Transcribe</button>
                 </div>
+                <div class="df-speak-toolbar">
+                  <label class="df-chat-engine-label">Mic</label>
+                  <button type="button" class="lm-btn" id="micRecordBtn">Record from mic</button>
+                  <span class="df-speak-speed-label" id="micRecordStatus"></span>
+                </div>
                 <textarea id="transcribeResult" class="df-chat-input df-speak-input" rows="6" readonly placeholder="Transcript will appear here…"></textarea>
                 <div class="df-chat-status" id="transcribeStatus" aria-live="polite"></div>
+              </section>
               <section class="df-speak-panel hidden" id="embedPanel" aria-label="Embeddings">
                 <div class="df-speak-toolbar">
                   <label class="df-chat-engine-label" for="embedServerPick">Server</label>
@@ -898,6 +904,21 @@ try {
                   <p class="lm-setting-desc">Which Console runtimes or external apps are holding VRAM right now</p>
                 </div>
                 <div id="runtimeContentionSummary" class="lm-setting-desc">Checking…</div>
+              </section>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Loading behavior</strong>
+                  <p class="lm-setting-desc">Optional guards when VRAM is busy</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Auto-stop other Console runtimes on load</strong><p class="lm-setting-desc">When GPU contention recommends it, unload other Console engines before loading the target</p></div>
+                  <label class="lm-toggle"><input type="checkbox" id="runtimeStopOthersToggle"><span class="lm-toggle-track"></span></label>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Warn when a runtime runs on CPU</strong><p class="lm-setting-desc">Show a reminder in the Playground when the active TTS/STT runtime is set to CPU</p></div>
+                  <label class="lm-toggle"><input type="checkbox" id="runtimeCpuWarnToggle"><span class="lm-toggle-track"></span></label>
+                </div>
               </section>
 
               <section class="lm-settings-section">
