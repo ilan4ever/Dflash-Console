@@ -302,6 +302,7 @@ def normalize_ui_layout(raw: Any) -> dict[str, Any]:
         'ws-checkpoints', 'ws-locations',
         'hw-system', 'hw-gpus', 'hw-strategy', 'hw-live',
         'gw-engines', 'gw-network', 'gw-behavior', 'gw-preset',
+        'rt-runtimes',
         'int-mcp',
     }
     if 'settings_panel' in raw:

@@ -581,6 +581,9 @@ try {
             <div class="lm-settings-nav-section">Engines</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-engines">Engine profiles</button>
 
+            <div class="lm-settings-nav-section">Runtimes</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="rt-runtimes">Speech &amp; runtimes</button>
+
             <div class="lm-settings-nav-section">Integrations</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">API clients</button>
           </nav>
@@ -874,6 +877,34 @@ try {
                   <p class="lm-setting-desc">Starter config for Cursor, Claude Desktop, or other MCP-aware apps</p>
                 </div>
                 <pre class="lm-metadata-pre lm-mcp-json" id="settingsMcpJson">{}</pre>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="rt-runtimes">
+              <div class="lm-settings-header"><h2>Speech &amp; runtimes</h2></div>
+              <p class="lm-setting-desc">Manage non-llama runtimes — Piper TTS, Whisper STT — installed as native bundles under <code>runtimes/</code>. Each writes a <code>manifest.json</code> at boot; device rules here are per-runtime (llama stacks use global hardware settings).</p>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Installed runtimes</strong>
+                  <p class="lm-setting-desc">Device policy, CPU fallback, and memory budget per runtime</p>
+                </div>
+                <div id="runtimeSettingsList" class="lm-runtime-settings-list"><p class="lm-setting-desc">Loading…</p></div>
+              </section>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>GPU contention</strong>
+                  <p class="lm-setting-desc">Which Console runtimes or external apps are holding VRAM right now</p>
+                </div>
+                <div id="runtimeContentionSummary" class="lm-setting-desc">Checking…</div>
+              </section>
+
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Save runtime settings</strong><p class="lm-setting-desc">Writes <code>runtimes[]</code> back to <code>config.json</code></p></div>
+                  <button class="lm-btn primary" type="button" id="runtimeSettingsSave">Save runtimes</button>
+                </div>
               </section>
             </div>
           </div>

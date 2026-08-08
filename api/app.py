@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.config import get_dflash_root, get_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
+from core.config import get_dflash_root, get_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
 from core.model_paths import allowed_model_roots, disk_scan_roots, validate_model_path
 from core.gpu_devices import get_gpu_devices_payload
@@ -393,6 +393,13 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
         cfg['model_libraries'] = normalize_model_libraries(data['model_libraries'], cfg=cfg)
         data.pop('model_libraries')
         invalidate_model_catalog_cache()
+    if 'runtimes' in data and isinstance(data['runtimes'], list):
+        cfg['runtimes'] = [
+            normalize_runtime(entry)
+            for entry in data['runtimes']
+            if isinstance(entry, dict)
+        ]
+        data.pop('runtimes')
     if 'ui_layout' in data and isinstance(data['ui_layout'], dict):
         current = normalize_ui_layout(cfg.get('ui_layout'))
         incoming = normalize_ui_layout(data['ui_layout'])
