@@ -101,11 +101,20 @@ jobs:
             throw "Hostinger SSH repository secrets are required to publish the automatic-update feed."
           }
 
-      - name: Build NSIS installer and portable package
+      - name: Build portable package and branded installer
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: npx electron-builder --win --publish never
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          npx electron-builder --win portable --publish never
+          if ($LASTEXITCODE -ne 0) { throw 'Portable package build failed.' }
+          .\scripts\build-fast-installer.ps1 -SkipStage
+          if ($LASTEXITCODE -ne 0) { throw 'Branded installer build failed.' }
+          .\scripts\sign-windows-artifact.ps1 `
+            -Artifact ("dist-electron/DFlash-Console-Setup-" + (node -p "require('./package.json').version") + "-x64.exe")
 
       - name: Verify release signatures
         shell: pwsh
@@ -121,6 +130,31 @@ jobs:
               throw "Release artifact is not validly signed: $artifact ($($signature.Status))"
             }
           }
+
+      - name: Generate Electron update metadata for branded installer
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $fileName = "DFlash-Console-Setup-$version-x64.exe"
+          $filePath = "dist-electron/$fileName"
+          $sha512 = [Security.Cryptography.SHA512]::Create()
+          try {
+            $digest = [Convert]::ToBase64String($sha512.ComputeHash([IO.File]::ReadAllBytes($filePath)))
+          } finally {
+            $sha512.Dispose()
+          }
+          $size = (Get-Item $filePath).Length
+          $releaseDate = (Get-Date).ToUniversalTime().ToString('o')
+          @"
+          version: $version
+          files:
+            - url: $fileName
+              sha512: $digest
+              size: $size
+          path: $fileName
+          sha512: $digest
+          releaseDate: '$releaseDate'
+          "@ | Set-Content 'dist-electron/latest.yml' -Encoding UTF8
 
       - name: Sign DFlash update manifest
         shell: pwsh
@@ -159,7 +193,6 @@ jobs:
           $version = node -p "require('./package.json').version"
           $files = @(
             "dist-electron/DFlash-Console-Setup-$version-x64.exe",
-            "dist-electron/DFlash-Console-Setup-$version-x64.exe.blockmap",
             "dist-electron/DFlash-Console-Portable-$version-x64.exe",
             "dist-electron/latest.yml"
           )
@@ -181,7 +214,6 @@ jobs:
           $version = node -p "require('./package.json').version"
           $assets = @(
             "dist-electron/DFlash-Console-Setup-$version-x64.exe",
-            "dist-electron/DFlash-Console-Setup-$version-x64.exe.blockmap",
             "dist-electron/DFlash-Console-Portable-$version-x64.exe",
             "dist-electron/latest.yml",
             "dist-electron/SHA256SUMS.txt"
