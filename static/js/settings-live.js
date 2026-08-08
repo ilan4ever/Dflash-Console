@@ -640,19 +640,68 @@
       updateGatewayApiUrl();
       void window.DFlashDocsLive?.renderSettingsList?.();
     });
+    void renderGatewayConfig();
   }
 
-  function buildMcpJson(servers) {
+  async function renderGatewayConfig() {
+    const portEl = document.getElementById('settingsGatewayPort');
+    const serverEl = document.getElementById('settingsGatewayServer');
+    if (!portEl || !serverEl) return;
+    try {
+      const [cfgData, serversData] = await Promise.all([
+        api('/api/config', { timeoutMs: 8000 }),
+        api('/api/servers/profiles', { timeoutMs: 10000 }),
+      ]);
+      const cfg = cfgData?.config || {};
+      const servers = (Array.isArray(serversData?.all_servers) ? serversData.all_servers : [])
+        .filter((s) => s.enabled !== false);
+      portEl.value = cfg.gateway_port || 8001;
+      const current = String(cfg.gateway_server_id || '');
+      serverEl.innerHTML = '<option value="">Auto (first enabled)</option>' +
+        servers.map((s) => `<option value="${escapeHtml(s.id)}" ${current === s.id ? 'selected' : ''}>${escapeHtml(s.label || s.id)}</option>`).join('');
+      updateGatewayUrl();
+    } catch (_err) { /* keep defaults */ }
+  }
+
+  function updateGatewayUrl() {
+    const urlEl = document.getElementById('settingsGatewayUrl');
+    const portEl = document.getElementById('settingsGatewayPort');
+    if (urlEl) urlEl.textContent = `http://127.0.0.1:${portEl?.value || 8001}/v1`;
+  }
+
+  async function saveGatewayConfig() {
+    const portEl = document.getElementById('settingsGatewayPort');
+    const serverEl = document.getElementById('settingsGatewayServer');
+    if (!portEl) return;
+    const port = Math.max(1, Math.min(65535, Number(portEl.value) || 8001));
+    const body = { gateway_port: port };
+    if (serverEl) body.gateway_server_id = serverEl.value;
+    try {
+      const result = await api('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        timeoutMs: 10000,
+      });
+      toast(result?.success ? 'Gateway settings saved — restart applies a new port.' : 'Could not save gateway settings.', !!result?.success);
+      if (result?.success) updateGatewayUrl();
+    } catch (err) {
+      toast(err.message || 'Could not save gateway settings.', false);
+    }
+  }
+
+  function buildMcpJson(servers, gatewayUrl) {
     const engines = (servers || []).map((server) => ({
       id: server.id,
       label: server.label || server.id,
-      openai_base_url: server.api_url || server.reachable_url || `http://${server.host || '127.0.0.1'}:${server.port || 0}/v1`,
+      openai_base_url: gatewayUrl,
+      model: server.id || '',
       enabled: server.enabled !== false,
     }));
     return {
       mcpServers: {},
       dflashConsole: {
-        note: 'MCP host is not active in DFlash Console yet. Use openai_base_url values with OpenAI-compatible clients.',
+        note: 'MCP host is not active in DFlash Console yet. Point OpenAI-compatible clients at openai_base_url (the Console OpenAI gateway); send "model" = the engine id.',
         engines,
       },
     };
@@ -664,23 +713,27 @@
     if (!listEl || !jsonEl) return;
     listEl.innerHTML = '<p class="lm-setting-desc">Loading engine list…</p>';
     try {
-      const data = await api('/api/servers');
+      const [data, configData] = await Promise.all([
+        api('/api/servers'),
+        api('/api/config', { timeoutMs: 8000 }).catch(() => ({ config: {} })),
+      ]);
+      const gatewayUrl = `http://127.0.0.1:${Number(configData?.config?.gateway_port) || 8001}/v1`;
       const servers = (data.all_servers || data.servers || []).filter((row) => row.enabled !== false);
       if (!servers.length) {
         listEl.innerHTML = '<p class="lm-setting-desc">No engine profiles configured.</p>';
       } else {
         listEl.innerHTML = servers.map((server) => {
-          const url = server.api_url || server.reachable_url || `http://${server.host || '127.0.0.1'}:${server.port || 0}/v1`;
+          const url = gatewayUrl;
           const status = server.status === 'loaded' ? 'Loaded' : server.running ? 'Running' : 'Stopped';
           const statusClass = server.status === 'loaded' || server.running ? 'green' : 'dim';
           return `
             <div class="lm-mcp-engine-card">
               <div><strong>${escapeHtml(server.label || server.id)}</strong> <span class="lm-tag ${statusClass}">${escapeHtml(status)}</span></div>
-              <code>${escapeHtml(url)}</code>
+              <code>${escapeHtml(url)}</code> <span class="lm-mcp-model">model: ${escapeHtml(server.id || '')}</span>
             </div>`;
         }).join('');
       }
-      jsonEl.textContent = JSON.stringify(buildMcpJson(servers), null, 2);
+      jsonEl.textContent = JSON.stringify(buildMcpJson(servers, gatewayUrl), null, 2);
     } catch (err) {
       listEl.innerHTML = `<p class="lm-setting-desc">${escapeHtml(err.message)}</p>`;
       jsonEl.textContent = '{}';
@@ -1068,6 +1121,18 @@
       el.addEventListener('input', () => {
         if (id === 'serverSettingsPort' || id === 'serverSettingsHost') updateGatewayApiUrl();
       });
+    });
+
+    ['settingsGatewayPort', 'settingsGatewayServer'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        if (id === 'settingsGatewayPort') updateGatewayUrl();
+        void saveGatewayConfig();
+      });
+      if (id === 'settingsGatewayPort') {
+        el.addEventListener('input', updateGatewayUrl);
+      }
     });
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', () => {

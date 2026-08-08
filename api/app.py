@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -36,15 +37,51 @@ _SYSTEM_STATS_CACHE: dict[str, Any] | None = None
 _SYSTEM_STATS_CACHE_AT = 0.0
 _SYSTEM_STATS_CACHE_TTL = 2.0
 
+# OpenAI gateway server (thread inside this process; see api/gateway.py).
+_GATEWAY_SERVER: Any = None
+_GATEWAY_THREAD: threading.Thread | None = None
+
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _write_runtime_process_manifest()
     _start_background_tasks()
+    _start_gateway_server()
     try:
         yield
     finally:
+        _stop_gateway_server()
         _release_gpu_on_shutdown()
+
+
+def _start_gateway_server() -> None:
+    """Spawn the OpenAI gateway on gateway_port (default 8001) in a daemon thread."""
+    global _GATEWAY_SERVER, _GATEWAY_THREAD
+    try:
+        import uvicorn
+
+        from api.gateway import gateway_app
+
+        cfg = load_config()
+        port = int(cfg.get('gateway_port') or 8001)
+        server = uvicorn.Server(uvicorn.Config(gateway_app, host='127.0.0.1', port=port, log_level='warning'))
+        _GATEWAY_SERVER = server
+        thread = threading.Thread(target=server.run, name='console-gateway', daemon=True)
+        thread.start()
+        _GATEWAY_THREAD = thread
+    except Exception:
+        # The gateway is a convenience; never block console boot on it.
+        _GATEWAY_SERVER = None
+        _GATEWAY_THREAD = None
+
+
+def _stop_gateway_server() -> None:
+    server = _GATEWAY_SERVER
+    if server is not None:
+        try:
+            server.should_exit = True
+        except Exception:
+            pass
 
 
 def _write_runtime_process_manifest() -> None:
@@ -210,6 +247,8 @@ class ServerPatch(BaseModel):
 
 class ConfigPatch(BaseModel):
     ui_port: int | None = None
+    gateway_port: int | None = Field(default=None, ge=1, le=65535)
+    gateway_server_id: str | None = None
     dflash_root: str | None = None
     servers: list[dict[str, Any]] | None = None
     runtimes: list[dict[str, Any]] | None = None
@@ -386,6 +425,28 @@ async def system_stats() -> dict[str, Any]:
 @app.get('/api/config')
 def get_config() -> dict[str, Any]:
     return {'success': True, 'config': load_config()}
+
+
+@app.get('/api/gateway')
+def gateway_status() -> dict[str, Any]:
+    """OpenAI gateway info: port, base URL, default engine, and live routes."""
+    cfg = load_config()
+    port = int(cfg.get('gateway_port') or 8001)
+    from api.gateway import gateway_app
+
+    routes = sorted({
+        str(getattr(route, 'path', ''))
+        for route in gateway_app.routes
+        if str(getattr(route, 'path', '')).startswith('/')
+    })
+    return {
+        'success': True,
+        'port': port,
+        'url': f'http://127.0.0.1:{port}/v1',
+        'running': bool(_GATEWAY_THREAD is not None and _GATEWAY_THREAD.is_alive()),
+        'default_server_id': str(cfg.get('gateway_server_id') or ''),
+        'routes': routes,
+    }
 
 
 @app.put('/api/config')

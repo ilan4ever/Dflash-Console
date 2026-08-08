@@ -12,6 +12,23 @@ behavior. It does not download or update llama.cpp runtime packs.
 
 Configured URLs are validated as loopback-only by the backend.
 
+## Console OpenAI gateway
+
+**Settings → Engine profiles → Console OpenAI gateway** configures the
+OpenAI-compatible gateway (see [USER-GUIDE §8 — gateway](../USER-GUIDE.md)):
+
+- **Gateway port** (`gateway_port`, default `8001`) — the friendly port apps
+  point at: `http://127.0.0.1:8001/v1`. Must differ from the Console UI port
+  and is excluded from other engine/runtime port allocation
+  (`reserved_ports()`).
+- **Default chat engine** (`gateway_server_id`) — which enabled engine serves
+  `/v1/chat/completions`; falls back to the first enabled non-embedding engine.
+
+The gateway accepts **any model name** and rewrites it to the resolved engine's
+actual checkpoint id, so clients can send the engine id, the model id, or any
+alias. Changing the port takes effect after the console restarts (the gateway
+starts/stops with the Console process).
+
 ## Runtime limits
 
 - Idle unload behavior for managed engines

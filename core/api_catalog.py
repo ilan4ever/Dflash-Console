@@ -45,6 +45,12 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'endpoints': _multimodal_endpoints(),
             },
             {
+                'id': 'gateway',
+                'title': 'Console OpenAI gateway (port 8001)',
+                'markdown': _gateway_guide_md(),
+                'endpoints': _gateway_endpoints(),
+            },
+            {
                 'id': 'engine-openai',
                 'title': 'Engine OpenAI API',
                 'endpoints': _engine_openai_endpoints(),
@@ -303,4 +309,37 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
         {'method': 'POST', 'path': f'/api/servers/{sid}/embed/batch', 'summary': 'Batch embed + export .jsonl.', 'body': {'input': ['one item per line', '…'], 'model': 'nomic-embed'}},
         {'method': 'GET', 'path': '/api/gpu/contention', 'summary': 'Which Console runtimes / external apps hold VRAM right now.'},
         {'method': 'GET', 'path': '/api/runtimes/{runtime_id}/logs', 'summary': 'Tail the per-runtime log file.'},
+    ]
+
+
+def _gateway_guide_md() -> str:
+    return (
+        '**One OpenAI-compatible port for everything.** The Console OpenAI gateway listens on '
+        '`gateway_port` (**default 8001**) and proxies chat, embeddings, TTS and STT to whichever '
+        'engine is loaded — so any OpenAI-compatible app (OpenAI SDKs, LangChain, Cursor, VS Code, '
+        'SillyTavern, …) can point at one stable base URL::\n\n'
+        '```\nbase_url = http://127.0.0.1:8001/v1\napi_key  = anything (ignored)\n```\n\n'
+        '**Model names are tolerant (LM-Studio style).** Send the engine id (`gemma-12b-ar`), the '
+        'real checkpoint id (`gemma-4-12b-it-qat`), or any alias (e.g. `gpt-4o`) — the gateway '
+        'resolves it to the configured chat engine and rewrites the request for you. `GET /v1/models` '
+        'lists every enabled engine so clients can discover them.\n\n'
+        'The default chat engine is `config.json -> gateway_server_id` (falls back to the first '
+        'enabled non-embedding engine). Set it in **Settings → Engine profiles → Console OpenAI gateway**, '
+        'or in the API via `GET/PATCH /api/config` (`gateway_port`, `gateway_server_id`).\n\n'
+        'Chat auto-loads the model on first use (JIT) and streams with Server-Sent Events when '
+        '`"stream": true`; the engine\'s VRAM guard still protects against over-commit. The gateway '
+        'starts and stops together with the Console (check `GET /api/gateway` or `GET http://127.0.0.1:{port}/health`).'
+    )
+
+
+def _gateway_endpoints() -> list[dict[str, Any]]:
+    return [
+        {'method': 'GET', 'path': '/api/gateway', 'summary': 'Console-side status of the gateway: port, url, running flag, default server id, routes.'},
+        {'method': 'GET', 'path': '/health', 'summary': 'Gateway health (checks the Console is reachable).'},
+        {'method': 'GET', 'path': '/', 'summary': 'Gateway info banner with the /v1 base URL.'},
+        {'method': 'GET', 'path': '/v1/models', 'summary': 'List every enabled engine as an OpenAI model (id = engine id; meta carries engine, embedding, model_id).'},
+        {'method': 'POST', 'path': '/v1/chat/completions', 'summary': 'Chat on the default engine; any model name accepted; streaming when stream=true; JIT-loads the model.', 'body': {'model': 'any-name', 'messages': [{'role': 'user', 'content': 'Hello'}]}},
+        {'method': 'POST', 'path': '/v1/embeddings', 'summary': 'Embed text on the default embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
+        {'method': 'POST', 'path': '/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
+        {'method': 'POST', 'path': '/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1'}},
     ]

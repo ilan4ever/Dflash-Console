@@ -378,6 +378,91 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(started['started'])
         self.assertTrue(stopped['stopped'])
 
+    def test_gateway_port_rules(self):
+        # Valid gateway_port accepted; colliding with ui_port rejected; out of
+        # range rejected; 0 means "use default" (accepted, normalized to 8001).
+        cfg.validate_config({'ui_port': 8900, 'gateway_port': 8001, 'servers': []})
+        with self.assertRaisesRegex(ValueError, 'must differ from ui_port'):
+            cfg.validate_config({'ui_port': 8900, 'gateway_port': 8900, 'servers': []})
+        with self.assertRaisesRegex(ValueError, 'must be between'):
+            cfg.validate_config({'ui_port': 8900, 'gateway_port': 70000, 'servers': []})
+        cfg.validate_config({'ui_port': 8900, 'gateway_port': 0, 'servers': []})
+
+    def test_reserved_ports_includes_gateway(self):
+        ports = cfg.reserved_ports({'ui_port': 8900, 'gateway_port': 8001, 'servers': []})
+        self.assertEqual(ports[8900], 'ui_port')
+        self.assertEqual(ports[8001], 'gateway_port')
+
+    def test_config_patch_round_trips_gateway(self):
+        from api.app import ConfigPatch
+
+        patch = ConfigPatch(gateway_port=8001, gateway_server_id='gemma-12b-ar')
+        dumped = patch.model_dump(exclude_none=True)
+        self.assertEqual(dumped['gateway_port'], 8001)
+        self.assertEqual(dumped['gateway_server_id'], 'gemma-12b-ar')
+
+    def test_put_config_persists_gateway(self):
+        from api.app import ConfigPatch, put_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            original = cfg.CONFIG_PATH
+            cfg.CONFIG_PATH = path
+            cfg.save_config({'ui_port': 8900, 'gateway_port': 8001, 'servers': []})
+            try:
+                body = ConfigPatch(gateway_port=8001, gateway_server_id='gemma-12b-ar')
+                result = put_config(body)
+                self.assertTrue(result['success'])
+                reloaded = cfg.load_config()
+                self.assertEqual(reloaded['gateway_port'], 8001)
+                self.assertEqual(reloaded['gateway_server_id'], 'gemma-12b-ar')
+            finally:
+                cfg.CONFIG_PATH = original
+
+    def test_gateway_chat_server_picks_configured_default(self):
+        from api.gateway import _chat_server
+
+        cfg_payload = {
+            'ui_port': 8900,
+            'gateway_server_id': 'gemma-12b-ar',
+            'servers': [
+                {'id': 'gemma-31b-dflash', 'enabled': True, 'port': 8091},
+                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301},
+                {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'engine_mode': 'embedding'},
+            ],
+        }
+        self.assertEqual(_chat_server(cfg_payload)['id'], 'gemma-12b-ar')
+
+    def test_gateway_chat_server_auto_falls_back_to_first(self):
+        from api.gateway import _chat_server
+
+        cfg_payload = {
+            'ui_port': 8900,
+            'gateway_server_id': '',
+            'servers': [
+                {'id': 'gemma-31b-dflash', 'enabled': True, 'port': 8091},
+                {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'engine_mode': 'embedding'},
+            ],
+        }
+        self.assertEqual(_chat_server(cfg_payload)['id'], 'gemma-31b-dflash')
+
+    def test_gateway_list_models_lists_engines(self):
+        import asyncio
+
+        from api.gateway import list_models
+
+        with patch('api.gateway.load_config', return_value={
+            'ui_port': 8900,
+            'gateway_port': 8001,
+            'servers': [
+                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B'},
+                {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'label': 'Nomic Embed', 'engine_mode': 'embedding'},
+            ],
+        }):
+            result = asyncio.run(list_models())
+        ids = {m['id'] for m in result['data']}
+        self.assertEqual(ids, {'gemma-12b-ar', 'nomic-embed'})
+
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.
         with self.assertRaisesRegex(ValueError, 'already used by one'):

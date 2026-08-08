@@ -83,6 +83,15 @@ Children stay on internal loopback ports; clients only talk to the Console:
 | `/api/servers/{id}/v1/embeddings` | llama-server embedding profile |
 | `/api/servers/{id}/embed/batch` | batch embed + `.jsonl` export |
 
+### Console OpenAI gateway (port 8001)
+
+Point any OpenAI-compatible app at one stable base URL —
+`http://127.0.0.1:8001/v1` — and the gateway proxies to the loaded engine
+(chat, embeddings, TTS, STT). Model names are tolerant (engine id, checkpoint
+id, or any alias like `gpt-4o`); chat JIT-loads and streams SSE. Configure in
+**Settings → Engine profiles → Console OpenAI gateway**
+(`gateway_port`, `gateway_server_id`); see [USER-GUIDE §8](docs/USER-GUIDE.md).
+
 ### Process identity & cleanup
 
 Every adapter contributes **path-specific** process-identity tokens
@@ -342,6 +351,8 @@ Dflash-Console/
 | `POST` | `/api/runtimes/piper/v1/audio/speech` | Text → speech (Piper, OpenAI shape) |
 | `POST` | `/api/runtimes/stt/v1/audio/transcriptions` | Audio → text (whisper.cpp, OpenAI shape) |
 | `GET` | `/api/models` | Local catalog from enabled libraries |
+| `POST` | `/api/models/load` | Unified loader — load ANY catalog model by path; dispatches by modality |
+| `GET` | `/api/gateway` | Console OpenAI gateway status (port, url, running, default server, routes) |
 | `GET` | `/api/docs/catalog` | In-app documentation JSON |
 | `GET` | `/api/model-libraries/scan` | PC scan for model folders |
 | `GET` | `/api/fs/browse` | Folder picker for library paths |
