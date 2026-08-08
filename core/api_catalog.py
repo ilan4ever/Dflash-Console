@@ -39,6 +39,12 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'markdown': _runtime_json_doc(),
             },
             {
+                'id': 'multi-modal',
+                'title': 'Multi-modal runtimes (TTS · STT · Embed)',
+                'markdown': _multimodal_guide_md(),
+                'endpoints': _multimodal_endpoints(),
+            },
+            {
                 'id': 'engine-openai',
                 'title': 'Engine OpenAI API',
                 'endpoints': _engine_openai_endpoints(),
@@ -127,6 +133,7 @@ def _overview_html(base: str) -> str:
     <li>Hugging Face catalog with README details, install detection, and download progress</li>
     <li>Locations panel with config, preset, and model-library management</li>
     <li>Loopback validation and an external Console data root for the Electron shell</li>
+    <li><strong>Multi-modal runtimes</strong> — Piper TTS, Whisper STT, and embeddings with a unified <code>POST /api/models/load</code> that loads any model type by path</li>
   </ul>
 </section>
 
@@ -250,3 +257,50 @@ def _runtime_json_doc() -> str:
         '**context_size** — context window in tokens.\n\n'
         'Use in PATCH /api/servers/{id}, POST /api/servers/{id}/load, or override in chat/completions.'
     )
+
+
+def _multimodal_guide_md() -> str:
+    return (
+        '**Load any model with one call** — `POST /api/models/load` with `{"path": "<catalog path>"}`. '
+        'The console looks the model up in the catalog, detects its modality, and dispatches to the '
+        'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, llama-server '
+        'for llm/embedding/vision/ocr — pass `server_id` to choose the engine).\n\n'
+        'Every row of `GET /api/models` now carries a `load_route` field with the exact call to use '
+        '(method + path + body).\n\n'
+        '### By model type\n'
+        '- **LLM / chat** — `POST /api/models/load {"path": "…"}` (or `POST /api/servers/{id}/load {"model_path": "…"}`), '
+        'then `POST /api/servers/{id}/v1/chat/completions`.\n'
+        '- **Text to speech (Piper)** — `POST /api/models/load {"path": "<voice .onnx>"}` then '
+        '`POST /api/runtimes/piper/v1/audio/speech {"input": "hello", "voice": "en_US-lessac-medium"}` → WAV bytes.\n'
+        '- **Speech to text (Whisper)** — `POST /api/models/load {"path": "<whisper .gguf>"}` then '
+        '`POST /api/runtimes/stt/v1/audio/transcriptions` (multipart `file=<audio>`).\n'
+        '- **Embeddings** — load an embedding engine (`POST /api/models/load` or the nomic profile), then '
+        '`POST /api/servers/{id}/v1/embeddings {"input": ["text", …]}` or `POST /api/servers/{id}/embed/batch` for JSONL export.\n'
+        '- **Vision / OCR** — `GET /api/models/vision/plan?path=…` to plan mmproj wiring, then chat with an '
+        'image via `/api/servers/{id}/v1/chat/completions` on the vision engine.\n\n'
+        'Runtimes run as native bundles under `runtimes/` with a per-runtime `manifest.json`; device policy, '
+        'CPU fallback, VRAM budget, default voice/model, and loading-behavior toggles are configured in '
+        '**Settings → Speech & runtimes** (`config.json` → `runtimes[]`).'
+    )
+
+
+def _multimodal_endpoints() -> list[dict[str, Any]]:
+    rid = '{runtime_id}'
+    sid = '{server_id}'
+    return [
+        {'method': 'GET', 'path': '/api/runtimes', 'summary': 'List non-llama runtimes + adapters (piper, stt) and every runtime_id, modality, execution mode.'},
+        {'method': 'GET', 'path': '/api/runtimes/manifests', 'summary': 'Aggregated bundle manifests + process identity tokens.'},
+        {'method': 'GET', 'path': f'/api/runtimes/{rid}', 'summary': 'Runtime health: running, port, active model.'},
+        {'method': 'GET', 'path': f'/api/runtimes/{rid}/voices', 'summary': 'Available Piper voices (id + label).'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/start', 'summary': 'Start a server-mode runtime (whisper). CLI runtimes (piper) report started:false (always ready).'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/stop', 'summary': 'Stop a server-mode runtime process.'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/unload', 'summary': 'Unload the active model and free GPU memory.'},
+        {'method': 'POST', 'path': f'/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1', 'language': 'en'}},
+        {'method': 'POST', 'path': f'/api/servers/{sid}/v1/embeddings', 'summary': 'Embed text on an embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
+        {'method': 'POST', 'path': f'/api/servers/{sid}/embed/batch', 'summary': 'Batch embed + export .jsonl.', 'body': {'input': ['one item per line', '…'], 'model': 'nomic-embed'}},
+        {'method': 'GET', 'path': '/api/gpu/contention', 'summary': 'Which Console runtimes / external apps hold VRAM right now.'},
+        {'method': 'GET', 'path': '/api/runtimes/{runtime_id}/logs', 'summary': 'Tail the per-runtime log file.'},
+    ]

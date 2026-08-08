@@ -301,6 +301,83 @@ class ConfigTests(unittest.TestCase):
                 break
         self.assertTrue(found, 'load-plan route not registered')
 
+    def test_models_catalog_adds_load_route(self):
+        from api.app import models_catalog
+
+        rows = [
+            {'path': r'C:\models\whisper\w.gguf', 'modality': 'speech-to-text', 'runtime_id': 'stt'},
+            {'path': r'C:\models\llm\l.gguf', 'modality': 'llm', 'runtime_id': 'llama-server', 'server_id': 'srv'},
+        ]
+        with patch('api.app.list_local_models', return_value={'models': rows}):
+            payload = models_catalog()
+        routes = {m['path']: m['load_route'] for m in payload['models']}
+        self.assertEqual(routes[r'C:\models\whisper\w.gguf']['path'], '/api/models/load')
+        self.assertEqual(routes[r'C:\models\llm\l.gguf']['path'], '/api/servers/srv/load')
+
+    def test_model_load_404_for_unknown_path(self):
+        from fastapi import HTTPException
+
+        from api.app import ModelLoadRequest, model_load
+
+        with patch('api.app.list_local_models', return_value={'models': [
+            {'path': r'C:\known\model.gguf', 'modality': 'llm', 'runtime_id': 'llama-server'},
+        ]}):
+            with self.assertRaises(HTTPException) as ctx:
+                model_load(ModelLoadRequest(path=r'Z:\unknown\model.gguf'))
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_model_load_dispatches_stt(self):
+        from types import SimpleNamespace
+
+        from api.app import ModelLoadRequest, model_load
+
+        fake = SimpleNamespace(load=lambda model: {'success': True, 'loaded': True, 'port': 8910})
+        stt_path = r'C:\models\whisper\model_q4_k.gguf'
+        with patch('api.app.list_local_models', return_value={'models': [
+            {'path': stt_path, 'modality': 'speech-to-text', 'runtime_id': 'stt'},
+        ]}):
+            with patch('core.runtimes.get_runtime_adapter', return_value=fake) as ga:
+                result = model_load(ModelLoadRequest(path=stt_path))
+        self.assertTrue(result['success'])
+        self.assertEqual(result['runtime_id'], 'stt')
+        ga.assert_called_once_with('stt')
+
+    def test_model_load_dispatches_llama(self):
+        from types import SimpleNamespace
+
+        from api.app import ModelLoadRequest, model_load
+
+        llm_path = r'C:\models\gemma\model.gguf'
+        server_entry = {'id': 'srv', 'port': 8090, 'host': '127.0.0.1', 'label': 'Srv'}
+        with patch('api.app.list_local_models', return_value={'models': [
+            {'path': llm_path, 'modality': 'llm', 'runtime_id': 'llama-server'},
+        ]}):
+            with patch('api.app.list_servers', return_value=[server_entry]):
+                with patch('core.memory_guardrails.assess_load', return_value={'level': 'ok'}):
+                    with patch('api.app.load_server_checkpoint', return_value={'success': True, 'loaded': True}) as load_fn:
+                        result = model_load(ModelLoadRequest(path=llm_path))
+        self.assertTrue(result['success'])
+        self.assertEqual(result['runtime_id'], 'llama-server')
+        self.assertEqual(result['server_id'], 'srv')
+        load_fn.assert_called_once()
+        self.assertEqual(load_fn.call_args.kwargs.get('model_path'), llm_path)
+
+    def test_runtime_start_stop_endpoints(self):
+        from types import SimpleNamespace
+
+        from api.app import runtime_start, runtime_stop
+
+        fake = SimpleNamespace(
+            start=lambda profile: {'success': True, 'started': True},
+            stop=lambda: {'success': True, 'stopped': True},
+        )
+        with patch('core.runtimes.get_runtime_adapter', return_value=fake):
+            with patch('api.app.list_runtimes', return_value=[]):
+                started = runtime_start('stt')
+                stopped = runtime_stop('stt')
+        self.assertTrue(started['started'])
+        self.assertTrue(stopped['stopped'])
+
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.
         with self.assertRaisesRegex(ValueError, 'already used by one'):
