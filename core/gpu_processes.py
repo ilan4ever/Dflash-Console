@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 from core.gpu_devices import format_gpu_display_name
 from core.runtime import (
-    _fetch_models_payload,
     _loaded_model_ids,
     api_base_url,
     router_unload_available,
@@ -660,6 +659,14 @@ def _display_name_from_path(path: str) -> str:
 
 _STT_MODEL_CACHE: tuple[float, str] = (0.0, '')
 
+# The STT debug log is append-heavy transcription JSONL and can be multi-GB
+# (OneVoiceSpeak's speak_stt.debug.log is ~2.4 GB here). Reading the whole file
+# to find the last model event added ~13s to every external-GPU status poll.
+# Scan backward from the end instead: the most recent model event is what we
+# want, and it typically sits well within a bounded window.
+_STT_LOG_SCAN_BYTES = 512 * 1024 * 1024
+_STT_LOG_SCAN_CHUNK = 4 * 1024 * 1024
+
 
 def _speak_stt_log_paths() -> list[Path]:
     return [
@@ -668,25 +675,52 @@ def _speak_stt_log_paths() -> list[Path]:
 
 
 def _read_last_json_log_model(log_path: Path, *, events: tuple[str, ...]) -> str:
-    """Return the model field from the last matching JSON log event."""
+    """Return the model field from the last matching JSON log event.
+
+    Scans backward from the end of the file in bounded chunks so a multi-GB
+    debug log costs milliseconds instead of a full sequential read. Only
+    complete JSON lines whose ``detail`` carries a ``model``/``model_id`` are
+    considered, so a keyword inside transcription preview text never matches.
+    """
     if not log_path.is_file():
         return ''
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return ''
+    cap = min(size, _STT_LOG_SCAN_BYTES)
     model = ''
     try:
-        with log_path.open('r', encoding='utf-8', errors='replace') as handle:
-            for line in handle:
-                if not any(event in line for event in events):
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                detail = row.get('detail') if isinstance(row, dict) else None
-                if not isinstance(detail, dict):
-                    continue
-                candidate = str(detail.get('model') or detail.get('model_id') or '').strip()
-                if candidate:
-                    model = candidate
+        with log_path.open('rb') as handle:
+            pos = size
+            carry = b''
+            scanned = 0
+            while pos > 0 and scanned < cap:
+                take = min(_STT_LOG_SCAN_CHUNK, pos, cap - scanned)
+                pos -= take
+                scanned += take
+                handle.seek(pos)
+                data = (handle.read(take) + carry).decode('utf-8', errors='replace')
+                lines = data.split('\n')
+                # lines[0] may be a partial line whose head lives in the older
+                # chunk; carry it forward and only scan complete lines.
+                carry = lines[0].encode('utf-8', errors='replace')
+                for line in reversed(lines[1:]):
+                    if not any(event in line for event in events):
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    detail = row.get('detail') if isinstance(row, dict) else None
+                    if not isinstance(detail, dict):
+                        continue
+                    candidate = str(detail.get('model') or detail.get('model_id') or '').strip()
+                    if candidate:
+                        model = candidate
+                        break
+                if model:
+                    break
     except OSError:
         return ''
     return model
@@ -843,23 +877,54 @@ def _resolve_external_model_name(
     return model_name, model_path
 
 
+def _probe_models_fast(api_url: str) -> tuple[list[dict[str, Any]], bool]:
+    """Fetch ``/models`` with a short 1s timeout.
+
+    Returns ``(entries, timed_out)``. ``timed_out=True`` means the port accepted
+    the TCP connection but never answered HTTP (e.g. an engine busy mid-load) —
+    the caller should skip further probing of that port instead of waiting on
+    another full timeout.
+    """
+    url = f"{str(api_url or '').strip().rstrip('/')}/models"
+    try:
+        with urllib.request.urlopen(url, timeout=1.0) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    except TimeoutError:
+        return [], True
+    except (urllib.error.URLError, json.JSONDecodeError, ValueError, ConnectionResetError, OSError):
+        return [], False
+    models = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return [], False
+    return [entry for entry in models if isinstance(entry, dict)], False
+
+
 def _probe_loaded_model(host: str, port: int) -> dict[str, Any]:
-    for suffix in ('/v1', ''):
-        api_url = f'http://{host}:{int(port)}{suffix}'
-        entries = _fetch_models_payload(api_url)
-        if not entries:
-            continue
-        router = router_unload_available(api_url)
-        loaded = _loaded_model_ids(entries, router=router)
-        if loaded:
-            return {
-                'api_url': api_base_url(api_url),
-                'model_id': loaded[0],
-                'unload_via_api': router,
-            }
-        # Router listening but idle — still useful metadata.
-        if router:
-            return {'api_url': api_base_url(api_url), 'model_id': '', 'unload_via_api': True}
+    # Skip dead ports instantly instead of burning HTTP timeouts on them.
+    if not tcp_port_open(host, port):
+        return {}
+    # Try the OpenAI /v1 prefix first; only fall back to the bare prefix when the
+    # /v1 probe answered quickly. A port that times out (engine busy) is not an
+    # OpenAI endpoint, so don't wait on a second timeout.
+    api_url = f'http://{host}:{int(port)}/v1'
+    entries, timed_out = _probe_models_fast(api_url)
+    if not entries and not timed_out:
+        entries, _ = _probe_models_fast(f'http://{host}:{int(port)}')
+        if entries:
+            api_url = f'http://{host}:{int(port)}'
+    if not entries:
+        return {}
+    router = router_unload_available(api_url)
+    loaded = _loaded_model_ids(entries, router=router)
+    if loaded:
+        return {
+            'api_url': api_base_url(api_url),
+            'model_id': loaded[0],
+            'unload_via_api': router,
+        }
+    # Router listening but idle — still useful metadata.
+    if router:
+        return {'api_url': api_base_url(api_url), 'model_id': '', 'unload_via_api': True}
     return {}
 
 
