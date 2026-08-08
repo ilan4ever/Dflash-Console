@@ -1,0 +1,174 @@
+/** DFlash Console — Playground "Speak" panel (Piper TTS). */
+(function () {
+  const { api } = window.ConsoleApi || {};
+
+  function $(id) {
+    return document.getElementById(id);
+  }
+
+  let voices = [];
+  let currentMode = 'chat';
+  let speaking = false;
+
+  function setStatus(text) {
+    const el = $('speakStatus');
+    if (el) el.textContent = text || '';
+  }
+
+  function setMode(mode) {
+    currentMode = mode === 'speak' ? 'speak' : 'chat';
+    document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
+      const active = btn.dataset.playgroundMode === currentMode;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    });
+    const chatBody = document.querySelector('.df-chat-body');
+    const composer = document.querySelector('.df-chat-composer');
+    const panel = $('speakPanel');
+    const welcome = $('chatWelcome');
+    const modeIsSpeak = currentMode === 'speak';
+    if (chatBody) chatBody.classList.toggle('hidden', modeIsSpeak);
+    if (composer) composer.classList.toggle('hidden', modeIsSpeak);
+    if (welcome) welcome.classList.toggle('hidden', modeIsSpeak);
+    if (panel) panel.classList.toggle('hidden', !modeIsSpeak);
+    if (modeIsSpeak) {
+      void refreshVoices();
+      const input = $('speakInput');
+      if (input && !input.value) input.focus();
+    }
+  }
+
+  async function refreshVoices() {
+    const pick = $('speakVoicePick');
+    if (!pick) return;
+    try {
+      const data = await api('/api/runtimes/piper/voices', { timeoutMs: 8000 });
+      voices = Array.isArray(data?.voices) ? data.voices : [];
+    } catch (_err) {
+      voices = [];
+    }
+    const previous = pick.value;
+    pick.innerHTML = '';
+    if (!voices.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No Piper voices found';
+      pick.appendChild(opt);
+    } else {
+      for (const voice of voices) {
+        const opt = document.createElement('option');
+        opt.value = voice.id || '';
+        opt.textContent = voice.label || voice.id || '';
+        pick.appendChild(opt);
+      }
+      if (previous && voices.some((v) => v.id === previous)) pick.value = previous;
+    }
+    if (currentMode === 'speak') {
+      setStatus(
+        voices.length
+          ? `${voices.length} Piper voice${voices.length === 1 ? '' : 's'} ready. Type text and press Speak.`
+          : 'No Piper voices installed. Add .onnx + .onnx.json voices under runtimes/piper/voices/.',
+      );
+    }
+  }
+
+  async function speak() {
+    const input = $('speakInput');
+    const text = String(input?.value || '').trim();
+    if (!text) {
+      setStatus('Type some text to speak first.');
+      input?.focus();
+      return;
+    }
+    const btn = $('speakBtn');
+    const voice = $('speakVoicePick')?.value || '';
+    const speed = Number($('speakSpeed')?.value || 1);
+    const audio = $('speakAudio');
+    const download = $('speakDownload');
+    if (speaking) return;
+    speaking = true;
+    if (btn) btn.disabled = true;
+    if (download) download.hidden = true;
+    setStatus('Synthesizing…');
+    try {
+      const response = await fetch('/api/runtimes/piper/v1/audio/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'tts-1',
+          input: text,
+          voice,
+          response_format: 'wav',
+          speed,
+        }),
+      });
+      if (!response.ok) {
+        let detail = `Synthesis failed (${response.status})`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch (_err) { /* keep status detail */ }
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      if (audio) {
+        audio.src = url;
+        audio.hidden = false;
+        audio.play().catch(() => {});
+      }
+      if (download) {
+        download.href = url;
+        download.download = `speech-${Date.now()}.wav`;
+        download.hidden = false;
+      }
+      const voiceLabel = voices.find((v) => v.id === voice)?.label || voice || 'default';
+      setStatus(`Voice ${voiceLabel || 'default'} · ${(blob.size / 1024).toFixed(0)} KB`);
+    } catch (error) {
+      setStatus(error.message || 'Synthesis failed.');
+    } finally {
+      speaking = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function bind() {
+    document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => setMode(btn.dataset.playgroundMode));
+    });
+    const speakBtn = $('speakBtn');
+    if (speakBtn) speakBtn.addEventListener('click', () => void speak());
+    const speed = $('speakSpeed');
+    if (speed) {
+      speed.addEventListener('input', () => {
+        const label = $('speakSpeedLabel');
+        if (label) label.textContent = `${Number(speed.value).toFixed(1)}×`;
+      });
+    }
+    const input = $('speakInput');
+    if (input) {
+      input.addEventListener('keydown', (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          event.preventDefault();
+          void speak();
+        }
+      });
+    }
+  }
+
+  function onViewEnter() {
+    if (currentMode === 'speak') void refreshVoices();
+  }
+
+  window.DFlashSpeakLive = {
+    onViewEnter,
+    setMode,
+    refreshVoices,
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bind);
+  } else {
+    bind();
+  }
+})();

@@ -130,6 +130,10 @@ try {
             <div class="df-chat-main">
               <header class="df-chat-head">
                 <div class="df-chat-toolbar">
+                  <div class="df-chat-mode" role="tablist" aria-label="Playground mode">
+                    <button type="button" class="lm-filter-chip active" data-playground-mode="chat" role="tab" aria-selected="true">Chat</button>
+                    <button type="button" class="lm-filter-chip" data-playground-mode="speak" role="tab" aria-selected="false">Speak</button>
+                  </div>
                   <div class="df-chat-load-row">
                     <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
                     <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by source" disabled>
@@ -169,6 +173,24 @@ try {
                 <button type="button" class="lm-btn primary df-chat-send" id="chatSendBtn" disabled aria-label="Send message">Send</button>
               </footer>
               <div class="df-chat-status" id="chatStatus" aria-live="polite"></div>
+              <section class="df-speak-panel hidden" id="speakPanel" aria-label="Text to speech">
+                <div class="df-speak-toolbar">
+                  <label class="df-chat-engine-label" for="speakVoicePick">Voice</label>
+                  <select class="lm-select" id="speakVoicePick" title="Piper voice">
+                    <option value="">Loading voices…</option>
+                  </select>
+                  <label class="df-chat-engine-label" for="speakSpeed">Speed</label>
+                  <input type="range" id="speakSpeed" min="0.5" max="2" step="0.1" value="1" title="Playback speed">
+                  <span class="df-speak-speed-label" id="speakSpeedLabel">1.0×</span>
+                  <button type="button" class="lm-btn primary" id="speakBtn">Speak</button>
+                </div>
+                <textarea id="speakInput" class="df-chat-input df-speak-input" rows="4" placeholder="Type text to speak with the Piper voice… (Ctrl+Enter to speak)"></textarea>
+                <div class="df-speak-output">
+                  <audio id="speakAudio" controls preload="auto" hidden></audio>
+                  <a id="speakDownload" class="lm-btn small" hidden download="speech.wav" href="#">Download WAV</a>
+                </div>
+                <div class="df-chat-status" id="speakStatus" aria-live="polite"></div>
+              </section>
             </div>
           </div>
         </div>
@@ -1170,6 +1192,7 @@ try {
   <script src="/static/js/desktop-shell.js"></script>
   <script src="/static/js/about-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
+  <script src="/static/js/speak-live.js"></script>
   <script src="/static/js/dflash-console-ui.js"></script>
   <script src="/static/js/select-theme.js"></script>
 </body>

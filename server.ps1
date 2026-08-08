@@ -52,24 +52,29 @@ function Stop-ListenersOnPort {
             $details = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop
             $commandLine = [string]$details.CommandLine
             $identity = "$name $commandLine"
-            # Managed-process tokens. Built-in llama/console tokens plus any
-            # registered runtime tokens (e.g. Piper) written by the Console to
-            # runtimes\process-tokens.json at boot.
-            $ManagedTokens = @('llama-server', 'start_llama_server.ps1', 'uvicorn\s+api\.app:app')
+            # Built-in managed-process regexes (raw patterns, Console-owned).
+            $ManagedPatterns = @(
+                '(?i)llama-server',
+                '(?i)start_llama_server\.ps1',
+                '(?i)uvicorn\s+api\.app:app'
+            )
+            # Registered runtime tokens (e.g. Piper) written by the Console to
+            # runtimes\process-tokens.json at boot. These are literal substrings,
+            # so escape them before matching.
             $TokensFile = Join-Path $Root 'runtimes\process-tokens.json'
             if (Test-Path $TokensFile) {
                 try {
                     $manifestTokens = @((Get-Content $TokensFile -Raw | ConvertFrom-Json).tokens)
                     foreach ($token in $manifestTokens) {
-                        $ManagedTokens += [string]$token
+                        $ManagedPatterns += "(?i)$([regex]::Escape([string]$token))"
                     }
                 } catch {
                     # manifest is optional; keep the built-in token set
                 }
             }
             $managed = $false
-            foreach ($token in $ManagedTokens) {
-                if ($identity -match "(?i)$([regex]::Escape([string]$token))") {
+            foreach ($pattern in $ManagedPatterns) {
+                if ($identity -match $pattern) {
                     $managed = $true
                     break
                 }

@@ -29,6 +29,7 @@ from core.runtimes.base import (
     RuntimeAdapter,
 )
 from core.runtimes.noop import NoopRuntimeAdapter
+from core.runtimes.piper import PiperRuntimeAdapter
 from core.runtimes.registry import (
     get_runtime_adapter,
     list_runtime_adapters,
@@ -41,6 +42,9 @@ from core.runtimes.registry import (
 # The no-op adapter is always available so the UI can list installed adapters
 # before any real inference runtime ships.
 register_runtime_adapter(NoopRuntimeAdapter())
+# Piper TTS adapter (CLI). Registered always; reports installed=false when the
+# bundle is not present under runtimes/piper/.
+register_runtime_adapter(PiperRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -58,6 +62,7 @@ __all__ = [
     'RUNTIME_STT',
     'RuntimeAdapter',
     'NoopRuntimeAdapter',
+    'PiperRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',
     'register_runtime_adapter',

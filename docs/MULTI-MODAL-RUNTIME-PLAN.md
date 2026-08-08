@@ -278,9 +278,21 @@ Without this, stop-others, restart adoption, and shutdown cleanup **silently lea
 
 **Outcome:** Piper voices downloadable and speakable; validates adapter + proxy + identity + ports with CPU-only risk.
 
-- [ ] Install Piper under `DFLASH_CONSOLE_ROOT/runtimes/piper/` (native binary / small bundle)
-- [ ] `PiperAdapter` with `execution_mode: "cli"` (default) or `"server"` if HTTP mode chosen
-- [ ] Register process identity tokens; kill/adopt/cleanup works
+> **Phase 1 status (2026-08-08):** core TTS path shipped and verified.
+> `core/runtimes/piper.py` wraps the native Piper bundle under
+> `runtimes/piper/` (CLI mode, path-specific process token, manifest,
+> per-runtime log capture to `logs/runtimes/piper.log`). Console proxy
+> `POST /api/runtimes/piper/v1/audio/speech` (OpenAI shape) + `GET .../voices`,
+> `.../logs`, `.../load|unload`. Playground gains a Chat/Speak mode switcher
+> with a voice picker, speed slider, audio playback and WAV download. Default
+> `runtimes[]` entry `tts-main` added to config; port 0 allowed for CLI
+> runtimes. Verified: proxy 200 + WAV, no orphan Console piper processes,
+> foreign piper (OneVoice) NOT treated as managed. Remaining: catalog voice
+> download (paired `.onnx` + `.onnx.json` / `kind: repo`) and mp3 conversion.
+
+- [x] Install Piper under `DFLASH_CONSOLE_ROOT/runtimes/piper/` (native binary / small bundle)
+- [x] `PiperAdapter` with `execution_mode: "cli"` (default) or `"server"` if HTTP mode chosen
+- [x] Register process identity tokens; kill/adopt/cleanup works
 - [ ] Catalog: `kind: "repo"` or paired-file download for voice + json
 - [ ] Console proxy: `POST .../v1/audio/speech`
 - [ ] Playground: **Speak** panel — text in, WAV out

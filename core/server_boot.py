@@ -133,10 +133,8 @@ def managed_process_identity(pid: int) -> bool:
         details = json.loads(result.stdout)
         command = str(details.get('CommandLine') or '').lower()
         name = str(details.get('Name') or '').lower()
-        return any(
-            token in name or token in command
-            for token in runtime_process_identity_tokens()
-        )
+        tokens = tuple(str(token).lower() for token in runtime_process_identity_tokens())
+        return any(token in name or token in command for token in tokens)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return False
 
