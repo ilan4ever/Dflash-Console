@@ -53,7 +53,7 @@ class ModelStackTests(unittest.TestCase):
             with patch('core.model_stack.get_dflash_root', return_value=root):
                 with patch('core.model_stack._lmstudio_models_dir', return_value=root / 'lmstudio'):
                     picked = _find_gemma12_target(cfg=cfg)
-            self.assertEqual(picked, standard_file)
+            self.assertEqual(picked.resolve(), standard_file.resolve())
 
 
 if __name__ == '__main__':
