@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -869,6 +869,36 @@ def runtime_audio_speech(runtime_id: str, body: AudioSpeechRequest) -> Response:
             'X-DFlash-Voice': str(result.get('voice') or ''),
         },
     )
+
+
+@app.post('/api/runtimes/{runtime_id}/v1/audio/transcriptions')
+async def runtime_audio_transcriptions(
+    runtime_id: str,
+    file: UploadFile = File(...),
+    model: str = Form(default='whisper-1'),
+    language: str = Form(default=''),
+    response_format: str = Form(default='json'),
+) -> Any:
+    """Console-proxied OpenAI audio/transcriptions route (whisper-server)."""
+    adapter = _require_runtime_adapter(runtime_id)
+    transcribe = getattr(adapter, 'transcribe', None)
+    if not callable(transcribe):
+        raise HTTPException(status_code=400, detail='adapter does not support transcription')
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(status_code=400, detail='empty audio file')
+    result = transcribe(
+        audio,
+        filename=file.filename or 'audio.wav',
+        language=language,
+        response_format=response_format,
+    )
+    if not result.get('success'):
+        raise HTTPException(status_code=500, detail=result.get('error') or 'transcription failed')
+    text = str(result.get('text') or '')
+    if response_format == 'text':
+        return Response(content=text, media_type='text/plain')
+    return {'success': True, 'text': text}
 
 
 @app.get('/api/runtimes/{runtime_id}/logs')

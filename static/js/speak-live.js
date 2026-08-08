@@ -9,14 +9,20 @@
   let voices = [];
   let currentMode = 'chat';
   let speaking = false;
+  let transcribing = false;
 
   function setStatus(text) {
     const el = $('speakStatus');
     if (el) el.textContent = text || '';
   }
 
+  function setTranscribeStatus(text) {
+    const el = $('transcribeStatus');
+    if (el) el.textContent = text || '';
+  }
+
   function setMode(mode) {
-    currentMode = mode === 'speak' ? 'speak' : 'chat';
+    currentMode = ['speak', 'transcribe'].includes(mode) ? mode : 'chat';
     document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
       const active = btn.dataset.playgroundMode === currentMode;
       btn.classList.toggle('active', active);
@@ -24,17 +30,22 @@
     });
     const chatBody = document.querySelector('.df-chat-body');
     const composer = document.querySelector('.df-chat-composer');
-    const panel = $('speakPanel');
     const welcome = $('chatWelcome');
-    const modeIsSpeak = currentMode === 'speak';
-    if (chatBody) chatBody.classList.toggle('hidden', modeIsSpeak);
-    if (composer) composer.classList.toggle('hidden', modeIsSpeak);
-    if (welcome) welcome.classList.toggle('hidden', modeIsSpeak);
-    if (panel) panel.classList.toggle('hidden', !modeIsSpeak);
-    if (modeIsSpeak) {
+    const speakPanel = $('speakPanel');
+    const transcribePanel = $('transcribePanel');
+    const modeIsChat = currentMode === 'chat';
+    if (chatBody) chatBody.classList.toggle('hidden', !modeIsChat);
+    if (composer) composer.classList.toggle('hidden', !modeIsChat);
+    if (welcome) welcome.classList.toggle('hidden', !modeIsChat);
+    if (speakPanel) speakPanel.classList.toggle('hidden', currentMode !== 'speak');
+    if (transcribePanel) transcribePanel.classList.toggle('hidden', currentMode !== 'transcribe');
+    if (currentMode === 'speak') {
       void refreshVoices();
       const input = $('speakInput');
       if (input && !input.value) input.focus();
+    }
+    if (currentMode === 'transcribe') {
+      setTranscribeStatus('Pick an audio file and press Transcribe.');
     }
   }
 
@@ -132,12 +143,61 @@
     }
   }
 
+  async function transcribe() {
+    const fileInput = $('transcribeFilePick');
+    const file = fileInput?.files?.[0];
+    if (!file) {
+      setTranscribeStatus('Choose an audio file first.');
+      return;
+    }
+    const btn = $('transcribeBtn');
+    if (transcribing) return;
+    transcribing = true;
+    if (btn) btn.disabled = true;
+    setTranscribeStatus('Transcribing…');
+    const result = $('transcribeResult');
+    if (result) result.value = '';
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('model', 'whisper-1');
+      const language = String($('transcribeLanguage')?.value || '').trim();
+      if (language) form.append('language', language);
+      form.append('response_format', 'json');
+      const response = await fetch('/api/runtimes/stt/v1/audio/transcriptions', {
+        method: 'POST',
+        body: form,
+      });
+      if (!response.ok) {
+        let detail = `Transcription failed (${response.status})`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch (_err) { /* keep status detail */ }
+        throw new Error(detail);
+      }
+      const data = await response.json();
+      const text = String(data?.text || '');
+      if (result) result.value = text;
+      setTranscribeStatus(text
+        ? `Transcribed ${file.name} (${(file.size / 1024).toFixed(0)} KB).`
+        : 'No speech detected in the audio.');
+    } catch (error) {
+      setTranscribeStatus(error.message || 'Transcription failed.');
+    } finally {
+      transcribing = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function bind() {
     document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
       btn.addEventListener('click', () => setMode(btn.dataset.playgroundMode));
     });
     const speakBtn = $('speakBtn');
     if (speakBtn) speakBtn.addEventListener('click', () => void speak());
+    const transcribeBtn = $('transcribeBtn');
+    if (transcribeBtn) transcribeBtn.addEventListener('click', () => void transcribe());
     const speed = $('speakSpeed');
     if (speed) {
       speed.addEventListener('input', () => {
