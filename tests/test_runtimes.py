@@ -65,3 +65,24 @@ def test_process_identity_tokens_dedupe_case_insensitively():
     lower = [t.lower() for t in tokens]
     assert lower.count('llama-server') == 1
     assert lower.count('fake-engine') == 1
+
+
+def test_write_bundle_manifests_writes_adapter_manifests(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import core.runtimes.registry as registry
+
+    class ManifAdapter(NoopRuntimeAdapter):
+        runtime_id = 'manifest-test'
+
+        def write_manifest(self):
+            target = tmp_path / 'runtimes' / self.runtime_id / 'manifest.json'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{"runtime_id": "manifest-test"}', encoding='utf-8')
+            return target
+
+    adapter = ManifAdapter()
+    register_runtime_adapter(adapter)
+    registry.write_bundle_manifests()
+    manifest = tmp_path / 'runtimes' / 'manifest-test' / 'manifest.json'
+    assert manifest.is_file()

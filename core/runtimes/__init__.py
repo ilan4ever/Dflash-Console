@@ -36,6 +36,7 @@ from core.runtimes.registry import (
     register_runtime_adapter,
     runtime_ids,
     runtime_process_identity_tokens,
+    write_bundle_manifests,
     write_process_tokens_manifest,
 )
 from core.runtimes.stt import SttRuntimeAdapter
@@ -73,5 +74,6 @@ __all__ = [
     'register_runtime_adapter',
     'runtime_ids',
     'runtime_process_identity_tokens',
+    'write_bundle_manifests',
     'write_process_tokens_manifest',
 ]

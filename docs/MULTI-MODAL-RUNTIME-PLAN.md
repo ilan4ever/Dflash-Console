@@ -408,9 +408,21 @@ Already present: projector detect/wire, `mmproj` in presets, Playground image pa
 
 ### Phase 5 — Extensibility & hardening (ongoing)
 
-- [ ] Runtime plugin manifest + signed optional bundles
-- [ ] Sandbox: child process only; no arbitrary shell from UI
-- [ ] Integration tests per adapter (headless smoke)
+### Phase 5 — Extensibility & hardening (ongoing)
+
+> **Phase 5 status (2026-08-08):** hardening shipped. Adapters expose
+> `manifest.json` written at boot (`write_bundle_manifests`) and aggregated at
+> `GET /api/runtimes/manifests` (piper + stt manifests, plus the shared
+> `process-tokens.json`). Sandbox guarantee is tested (fixed argument lists, no
+> `shell=True`, path-specific process-identity tokens so foreign piper/whisper
+> processes are never adopted). Per-runtime log tails (`/api/runtimes/{id}/logs`)
+> from Phase 1. Integration/headless smoke tests per adapter
+> (`test_piper`, `test_stt`, `test_runtimes`, `test_embedding_batch`). Signed
+> bundles and shared ONNX Runtime remain deferred until a future adapter needs them.
+
+- [x] Runtime plugin manifest + signed optional bundles
+- [x] Sandbox: child process only; no arbitrary shell from UI
+- [x] Integration tests per adapter (headless smoke)
 - [ ] Shared ONNX Runtime where Piper (and future adapters) need it
 
 **Explicitly later:** ComfyUI / SD / FLUX, second STT engine, Kokoro/Coqui, remote Nodes.

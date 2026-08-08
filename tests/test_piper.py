@@ -88,3 +88,35 @@ def test_synthesize_reports_error_when_not_installed(monkeypatch, tmp_path: Path
     result = adapter.synthesize('hello', voice='x')
     assert result['success'] is False
     assert 'not installed' in result['error']
+
+
+def test_synthesize_spawns_argument_list_without_shell(monkeypatch, tmp_path: Path):
+    """Sandbox guarantee: Piper is spawned with a fixed argument list, never a shell string."""
+    monkeypatch.setattr(piper_mod, 'PIPER_EXE', tmp_path / 'piper.exe')
+    (tmp_path / 'piper.exe').write_bytes(b'x')
+    voices = tmp_path / 'voices'
+    voices.mkdir(parents=True)
+    (voices / 'en_US-test-medium.onnx').write_bytes(b'onnx')
+    (voices / 'en_US-test-medium.onnx.json').write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(piper_mod, 'PIPER_VOICES', voices)
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured['cmd'] = cmd
+        captured['shell'] = kwargs.get('shell')
+
+        class _Proc:
+            returncode = 0
+            stdout = b'RIFF....'
+            stderr = b''
+
+        return _Proc()
+
+    monkeypatch.setattr('core.runtimes.piper.subprocess.run', fake_run)
+    adapter = piper_mod.PiperRuntimeAdapter()
+    result = adapter.synthesize('hello')
+    assert result['success'] is True
+    assert isinstance(captured['cmd'], list)
+    assert captured['shell'] is not True
+    assert str(captured['cmd'][0]).endswith('piper.exe')
