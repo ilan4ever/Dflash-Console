@@ -24,7 +24,7 @@ developer checkout to a trusted production deployment.
 ## 3. Dependencies
 
 - [ ] `requirements.lock` is the single source of truth (pinned, SHA-verified)
-- [ ] `python-multipart==0.0.20` pinned (STT multipart proxy)
+- [ ] `python-multipart==0.0.31` pinned (STT multipart proxy)
 - [ ] No `pip install` from the UI; verified native bundles only
 
 ## 4. Security posture
