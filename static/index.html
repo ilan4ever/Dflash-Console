@@ -194,6 +194,13 @@ try {
               </section>
               <section class="df-speak-panel hidden" id="transcribePanel" aria-label="Speech to text">
                 <div class="df-speak-toolbar">
+                  <label class="df-chat-engine-label" for="sttModelPick">STT model</label>
+                  <select class="lm-select" id="sttModelPick" title="Whisper model to load">
+                    <option value="">Loading models…</option>
+                  </select>
+                  <button type="button" class="lm-btn primary" id="sttLoadBtn">Load</button>
+                </div>
+                <div class="df-speak-toolbar">
                   <label class="df-chat-engine-label" for="transcribeFilePick">Audio file</label>
                   <input type="file" id="transcribeFilePick" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm">
                   <label class="df-chat-engine-label" for="transcribeLanguage">Language</label>

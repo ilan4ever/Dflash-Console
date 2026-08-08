@@ -7,9 +7,11 @@
   }
 
   let voices = [];
+  let sttModels = [];
   let currentMode = 'chat';
   let speaking = false;
   let transcribing = false;
+  let sttLoading = false;
 
   function setStatus(text) {
     const el = $('speakStatus');
@@ -45,7 +47,70 @@
       if (input && !input.value) input.focus();
     }
     if (currentMode === 'transcribe') {
-      setTranscribeStatus('Pick an audio file and press Transcribe.');
+      void refreshSttModels();
+      setTranscribeStatus('Pick a Whisper model and Load, then choose an audio file and Transcribe.');
+    }
+  }
+
+  async function refreshSttModels() {
+    const pick = $('sttModelPick');
+    if (!pick) return;
+    if (!sttModels.length) {
+      try {
+        // Full catalog (not quick) so scanned Whisper GGUF files are included.
+        const data = await api('/api/models', { timeoutMs: 20000 });
+        sttModels = (Array.isArray(data?.models) ? data.models : []).filter((m) => {
+          const name = String(m.filename || m.label || m.path || '').toLowerCase();
+          return String(m.modality || '') === 'speech-to-text' || /whisper|faster-whisper/.test(name);
+        });
+      } catch (_err) {
+        sttModels = [];
+      }
+    }
+    const previous = pick.value;
+    pick.innerHTML = '';
+    if (!sttModels.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No Whisper models found';
+      pick.appendChild(opt);
+    } else {
+      for (const model of sttModels) {
+        const opt = document.createElement('option');
+        opt.value = model.path || '';
+        opt.textContent = model.filename || model.label || model.path || '';
+        pick.appendChild(opt);
+      }
+      if (previous && sttModels.some((m) => (m.path || '') === previous)) pick.value = previous;
+    }
+  }
+
+  async function loadStt() {
+    const pick = $('sttModelPick');
+    const path = pick?.value || '';
+    if (!path) {
+      setTranscribeStatus('Pick a Whisper model to load first.');
+      return;
+    }
+    const btn = $('sttLoadBtn');
+    if (sttLoading) return;
+    sttLoading = true;
+    if (btn) btn.disabled = true;
+    setTranscribeStatus('Loading Whisper model… (large models take a few seconds)');
+    try {
+      const data = await api('/api/runtimes/stt/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+        timeoutMs: 90000,
+      });
+      if (!data?.success) throw new Error(data?.error || 'load failed');
+      setTranscribeStatus(`Whisper model loaded on port ${data.port || '—'}. Choose audio and Transcribe.`);
+    } catch (error) {
+      setTranscribeStatus(error.message || 'Failed to load the STT model.');
+    } finally {
+      sttLoading = false;
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -198,6 +263,8 @@
     if (speakBtn) speakBtn.addEventListener('click', () => void speak());
     const transcribeBtn = $('transcribeBtn');
     if (transcribeBtn) transcribeBtn.addEventListener('click', () => void transcribe());
+    const sttLoadBtn = $('sttLoadBtn');
+    if (sttLoadBtn) sttLoadBtn.addEventListener('click', () => void loadStt());
     const speed = $('speakSpeed');
     if (speed) {
       speed.addEventListener('input', () => {

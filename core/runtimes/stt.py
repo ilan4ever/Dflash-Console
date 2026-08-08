@@ -166,11 +166,12 @@ class SttRuntimeAdapter:
         cmd = [
             str(STT_EXE),
             '-m', str(model_path),
-            '-p', str(port),
+            '--port', str(port),
             '--host', host,
-            '--openai',  # expose OpenAI-compatible /v1/audio/transcriptions
+            '-nt',  # no timestamps
         ]
         popen_kwargs: dict[str, Any] = {
+            'cwd': str(STT_BUNDLE),
             'stdout': subprocess.PIPE,
             'stderr': subprocess.STDOUT,
         }
@@ -230,13 +231,14 @@ class SttRuntimeAdapter:
         if not audio:
             return {'success': False, 'error': 'audio data is required'}
 
-        url = f'http://{_HOST}:{port}/v1/audio/transcriptions'
-        fields: list[tuple[str, str]] = [('model', 'whisper-1')]
+        # whisper.cpp server exposes the native /inference endpoint (OpenAI-style
+        # multipart). The Console proxy translates OpenAI /v1/audio/transcriptions
+        # onto this route and back to the OpenAI {text} shape.
+        url = f'http://{_HOST}:{port}/inference'
+        fields: list[tuple[str, str]] = []
         if language:
             fields.append(('language', language))
-        if response_format and response_format in ('json', 'text'):
-            fields.append(('response_format', response_format))
-        boundary = f'----DFlashSTT{os.getpid()}'
+        boundary = f'----DFlashSTT{os.getpid()}{int(time.time() * 1000)}'
         body = _build_multipart(fields, boundary, filename=filename or 'audio.wav', audio=audio)
         headers = {'Content-Type': f'multipart/form-data; boundary={boundary}'}
         request = urllib.request.Request(url, data=body, headers=headers, method='POST')
