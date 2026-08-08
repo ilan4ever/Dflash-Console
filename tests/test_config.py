@@ -112,6 +112,50 @@ class ConfigTests(unittest.TestCase):
                 ],
             })
 
+    def test_config_patch_round_trips_runtimes_field(self):
+        # Regression: ConfigPatch must carry the runtimes list through
+        # model_dump, otherwise PUT /api/config silently drops runtime edits.
+        from api.app import ConfigPatch
+
+        patch = ConfigPatch(runtimes=[
+            {'id': 'tts-main', 'runtime_id': 'piper', 'device_policy': 'cpu'},
+            {'id': 'stt-main', 'runtime_id': 'stt', 'device_policy': 'gpu'},
+        ])
+        dumped = patch.model_dump(exclude_none=True)
+        self.assertIn('runtimes', dumped)
+        self.assertEqual(len(dumped['runtimes']), 2)
+        self.assertEqual(dumped['runtimes'][1]['device_policy'], 'gpu')
+
+    def test_config_patch_persists_runtimes_through_put_config(self):
+        # End-to-end: put_config must write the patched runtimes to disk.
+        from api.app import ConfigPatch, put_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            original = cfg.CONFIG_PATH
+            cfg.CONFIG_PATH = path
+            cfg.save_config({
+                'ui_port': 8900,
+                'servers': [],
+                'runtimes': [
+                    {'id': 'tts-main', 'runtime_id': 'piper', 'port': 0, 'device_policy': 'cpu'},
+                    {'id': 'stt-main', 'runtime_id': 'stt', 'port': 8910, 'device_policy': 'gpu'},
+                ],
+            })
+            try:
+                body = ConfigPatch(runtimes=[
+                    {'id': 'tts-main', 'runtime_id': 'piper', 'port': 0, 'device_policy': 'cpu'},
+                    {'id': 'stt-main', 'runtime_id': 'stt', 'port': 8910, 'device_policy': 'cpu'},
+                ])
+                result = put_config(body)
+                self.assertTrue(result['success'])
+                reloaded = cfg.load_config()
+                runtimes = cfg.list_runtimes(reloaded)
+                self.assertEqual(len(runtimes), 2)
+                self.assertEqual(runtimes[1]['device_policy'], 'cpu')
+            finally:
+                cfg.CONFIG_PATH = original
+
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.
         with self.assertRaisesRegex(ValueError, 'already used by one'):
