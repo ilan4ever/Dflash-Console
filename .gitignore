@@ -35,6 +35,10 @@ logs/
 *.pfx
 !electron/resources/update-manifest-public.pem
 
+# Runtime bundles (installed outside the installer)
+runtimes/*
+!runtimes/.gitkeep
+
 # Node / Electron
 node_modules/
 dist-electron/

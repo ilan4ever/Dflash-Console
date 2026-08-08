@@ -243,7 +243,19 @@ Without this, stop-others, restart adoption, and shutdown cleanup **silently lea
 
 **Outcome:** Shared types, UI hooks, port registry, managed-process hooks, contention UX — **no new inference yet**.
 
-- [ ] Adapter registry skeleton under `core/runtimes/` + no-op adapter test
+> **Phase 0 status (2026-08-08):** backend + UI foundation implemented.
+> `core/runtimes/` ships the adapter `Protocol`, registry, no-op adapter + test,
+> contention scaffold, and shared process-identity tokens with the
+> `runtimes/process-tokens.json` manifest read by `server.ps1`. Config gains
+> optional `runtimes[]` (non-llama only) + dual-read `GET /api/runtimes`; port
+> registry covers ui/servers/runtimes with `reserved_ports`/`suggest_runtime_port`.
+> Catalog/scan payloads carry `modality`, `runtime_id`, `kind`, flags, sizes;
+> path validation generalized via `validate_model_path`. UI: Models modality
+> badges + filters, catalog runnable/download-only badges, inspector
+> device-rule + modality copy. Remaining: stop-others modal wiring and
+> non-GGUF VRAM estimates.
+
+- [x] Adapter registry skeleton under `core/runtimes/` + no-op adapter test
 - [ ] `modality`, `runtime_id`, `kind`, `size_bytes`, `estimated_vram_mb`, `runtime_min_version` on catalog / scan payloads
 - [ ] Split `loadable` → `catalog_visible`, `downloadable`, `runnable`
 - [ ] Engines UI: modality badges (LLM / STT / TTS / Embed)

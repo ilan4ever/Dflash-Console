@@ -16,9 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.config import get_dflash_root, get_server, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
+from core.config import get_dflash_root, get_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_model_libraries, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
-from core.model_paths import allowed_model_roots, disk_scan_roots
+from core.model_paths import allowed_model_roots, disk_scan_roots, validate_model_path
 from core.gpu_devices import get_gpu_devices_payload
 from core.local_models import invalidate_model_catalog_cache, list_local_models, warm_model_catalog
 from core.runtime import get_status_payload, stop_server, tcp_port_open, unload_model
@@ -39,11 +39,23 @@ _SYSTEM_STATS_CACHE_TTL = 2.0
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    _write_runtime_process_manifest()
     _start_background_tasks()
     try:
         yield
     finally:
         _release_gpu_on_shutdown()
+
+
+def _write_runtime_process_manifest() -> None:
+    """Write the process-identity token manifest read by server.ps1."""
+    try:
+        from core.runtimes import write_process_tokens_manifest
+
+        write_process_tokens_manifest()
+    except Exception:
+        # The manifest is an optimisation for cleanup; never block boot on it.
+        pass
 
 
 app = FastAPI(title='DFlash Console', version=APP_VERSION, lifespan=app_lifespan)
@@ -704,6 +716,74 @@ async def servers_status(
         return await asyncio.to_thread(_build_payload)
 
 
+@app.get('/api/runtimes')
+def runtimes_status() -> dict[str, Any]:
+    """Dual-read unified runtime list.
+
+    ``servers[]`` entries are synthesised with ``runtime_id: llama-server``;
+    non-llama adapters live in ``runtimes[]``. Read-only — this endpoint never
+    rewrites the Engines/stack APIs and never migrates servers[] onto runtimes[].
+    """
+    from core.runtimes import (
+        get_runtime_adapter,
+        list_runtime_adapters,
+        runtime_process_identity_tokens,
+    )
+
+    cfg = load_config()
+    merged: list[dict[str, Any]] = []
+    for server in list_servers(cfg):
+        merged.append({
+            'id': str(server.get('id') or ''),
+            'kind': 'server',
+            'runtime_id': 'llama-server',
+            'label': str(server.get('label') or server.get('id') or ''),
+            'port': int(server.get('port') or 0),
+            'host': str(server.get('host') or '127.0.0.1'),
+            'api_url': str(server.get('api_url') or ''),
+            'device_policy': str(server.get('gpu_device') or 'auto'),
+            'enabled': server.get('enabled', True) is not False,
+            'adapter_installed': get_runtime_adapter('llama-server') is not None,
+        })
+    for runtime in list_runtimes(cfg):
+        runtime_id = str(runtime.get('runtime_id') or '')
+        merged.append({
+            'id': str(runtime.get('id') or ''),
+            'kind': 'runtime',
+            'runtime_id': runtime_id,
+            'label': str(runtime.get('label') or runtime.get('id') or ''),
+            'port': int(runtime.get('port') or 0),
+            'host': str(runtime.get('host') or '127.0.0.1'),
+            'api_url': str(runtime.get('api_url') or ''),
+            'device_policy': str(runtime.get('device_policy') or 'auto'),
+            'vram_budget_mb': runtime.get('vram_budget_mb'),
+            'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
+            'enabled': runtime.get('enabled', True) is not False,
+            'adapter_installed': get_runtime_adapter(runtime_id) is not None,
+        })
+    adapters = [{
+        'runtime_id': adapter.runtime_id,
+        'modalities': list(adapter.modalities),
+        'execution_mode': adapter.execution_mode,
+        'process_identity_tokens': list(adapter.process_identity_tokens),
+        'openai_routes': list(adapter.openai_routes()),
+    } for adapter in list_runtime_adapters()]
+    return {
+        'success': True,
+        'runtimes': merged,
+        'adapters': adapters,
+        'process_identity_tokens': list(runtime_process_identity_tokens()),
+    }
+
+
+@app.get('/api/gpu/contention')
+def gpu_contention() -> dict[str, Any]:
+    """Phase 0 scaffold: which Console runtimes / external apps hold GPU memory."""
+    from core.runtimes.contention import gpu_contention_report
+
+    return gpu_contention_report(cfg=load_config())
+
+
 @app.get('/api/servers/{server_id}/status')
 async def server_status(server_id: str) -> dict[str, Any]:
     import asyncio
@@ -1299,13 +1379,19 @@ def _validate_gguf_under_allowed_roots(
     *,
     roots: list[Path] | None = None,
 ) -> Path:
-    target = Path(path_text).expanduser().resolve()
-    if target.suffix.lower() != '.gguf' or not target.is_file():
-        raise HTTPException(status_code=400, detail='not a GGUF file')
     allowed = roots if roots is not None else _allowed_model_roots(cfg)
-    if not allowed or not any(target.is_relative_to(root) for root in allowed):
-        raise HTTPException(status_code=403, detail='path not under allowed model directories')
-    return target
+    try:
+        return validate_model_path(
+            path_text,
+            cfg=cfg,
+            allowed_extensions=('.gguf',),
+            allowed_dirs=allowed,
+            require_file=True,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 403 if 'under allowed' in message else 400
+        raise HTTPException(status_code=status, detail=message) from exc
 
 
 @app.get('/api/stacks/capable-targets')

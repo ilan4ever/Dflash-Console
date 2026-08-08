@@ -128,10 +128,53 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if not is_loopback_url(api_url):
             raise ValueError(f'servers[{index}].api_url must be loopback-only')
 
+    runtimes = cfg.get('runtimes')
+    if runtimes is None:
+        runtimes = []
+    elif not isinstance(runtimes, list):
+        raise ValueError('runtimes must be a list')
+    runtime_ids: set[str] = set()
+    for index, row in enumerate(runtimes):
+        if not isinstance(row, dict):
+            raise ValueError(f'runtimes[{index}] must be an object')
+        runtime_id = str(row.get('id') or '').strip()
+        if not runtime_id:
+            raise ValueError(f'runtimes[{index}].id is required')
+        if runtime_id in runtime_ids:
+            raise ValueError(f'duplicate runtime id: {runtime_id}')
+        runtime_ids.add(runtime_id)
+        engine = str(row.get('runtime_id') or '').strip()
+        if not engine:
+            raise ValueError(f'runtimes[{index}].runtime_id is required')
+        if engine == 'llama-server':
+            # llama-server belongs in servers[]; runtimes[] is non-llama only.
+            raise ValueError(f'runtimes[{index}].runtime_id must not be llama-server')
+        try:
+            port = int(row.get('port') or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f'runtimes[{index}].port must be an integer') from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f'runtimes[{index}].port must be between 1 and 65535')
+        if port in seen_ports:
+            raise ValueError(f'port {port} is already used by {seen_ports[port]}')
+        seen_ports[port] = f'runtime:{runtime_id}'
+        if not is_loopback_host(row.get('host')):
+            raise ValueError(f'runtimes[{index}].host must be loopback-only')
+        api_url = row.get('api_url') or f"http://{row.get('host') or '127.0.0.1'}:{port}"
+        if not is_loopback_url(api_url):
+            raise ValueError(f'runtimes[{index}].api_url must be loopback-only')
+
     return cfg
 
 
-DEFAULT_ENGINE_PORTS = (8090, 8091, 8092, 8093, 8094, 8095, 8096, 8097)
+DEFAULT_ENGINE_PORTS = (
+    8090, 8091, 8092, 8093, 8094, 8095, 8096, 8097,
+    8098, 8099, 8100, 8101, 8102, 8103, 8104, 8105,
+)
+
+# Non-llama runtime ports (Piper, STT, ...). Kept in a distinct band so the UI
+# can tell llama engines from other runtimes at a glance.
+DEFAULT_RUNTIME_PORTS = (8910, 8911, 8912, 8913, 8914, 8915, 8916, 8917)
 
 
 def normalize_load_settings(raw: Any) -> dict[str, Any]:
@@ -294,14 +337,42 @@ def load_config() -> dict[str, Any]:
     return validate_config(data)
 
 
+def reserved_ports(cfg: dict[str, Any] | None = None) -> dict[int, str]:
+    """Map of every reserved port (ui + servers + runtimes) to its owner label."""
+    config = cfg or load_config()
+    ports: dict[int, str] = {int(config.get('ui_port') or 8900): 'ui_port'}
+    for row in config.get('servers') or []:
+        if not isinstance(row, dict):
+            continue
+        port = int(row.get('port') or 0)
+        if port:
+            ports[port] = f"server:{str(row.get('id') or '')}"
+    for row in config.get('runtimes') or []:
+        if not isinstance(row, dict):
+            continue
+        port = int(row.get('port') or 0)
+        if port:
+            ports[port] = f"runtime:{str(row.get('id') or '')}"
+    return ports
+
+
 def suggest_server_port(*, cfg: dict[str, Any] | None = None) -> int:
     config = cfg or load_config()
-    used = {int(config.get('ui_port') or 8900)}
-    used.update(int(row.get('port') or 0) for row in list_servers(config) if row.get('port'))
+    used = set(reserved_ports(config))
     for port in DEFAULT_ENGINE_PORTS:
         if port not in used:
             return port
     return max(used) + 1 if used else 8090
+
+
+def suggest_runtime_port(*, cfg: dict[str, Any] | None = None) -> int:
+    """Suggest a free port for a non-llama runtime (prefers the 8910+ band)."""
+    config = cfg or load_config()
+    used = set(reserved_ports(config))
+    for port in DEFAULT_RUNTIME_PORTS:
+        if port not in used:
+            return port
+    return max(used) + 1 if used else 8910
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -472,6 +543,40 @@ def list_servers(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         normalized = normalize_server(entry)
+        if normalized['id']:
+            result.append(normalized)
+    return result
+
+
+def normalize_runtime(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one non-llama runtime entry from ``runtimes[]``."""
+    port = int(entry.get('port') or 0)
+    host = str(entry.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+    api_url = str(entry.get('api_url') or f'http://{host}:{port}').strip().rstrip('/')
+    device_policy = str(entry.get('device_policy') or 'auto').strip().lower()
+    if device_policy not in ('auto', 'gpu', 'cpu'):
+        device_policy = 'auto'
+    return {
+        'id': str(entry.get('id') or '').strip(),
+        'runtime_id': str(entry.get('runtime_id') or '').strip(),
+        'label': str(entry.get('label') or entry.get('id') or 'Runtime').strip(),
+        'port': port,
+        'host': host,
+        'api_url': api_url,
+        'device_policy': device_policy,
+        'vram_budget_mb': max(0, int(entry.get('vram_budget_mb') or 0)),
+        'allow_cpu_fallback': entry.get('allow_cpu_fallback') is not False,
+        'enabled': entry.get('enabled', True) is not False,
+    }
+
+
+def list_runtimes(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    data = cfg or load_config()
+    result: list[dict[str, Any]] = []
+    for entry in data.get('runtimes') or []:
+        if not isinstance(entry, dict):
+            continue
+        normalized = normalize_runtime(entry)
         if normalized['id']:
             result.append(normalized)
     return result

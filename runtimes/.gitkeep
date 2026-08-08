@@ -1,0 +1,3 @@
+# Runtime engine bundles live here (e.g. `runtimes/piper/`, `runtimes/stt/`),
+# outside the Electron installer. The Console writes `process-tokens.json` here
+# at boot so server.ps1 can recognise managed child processes.

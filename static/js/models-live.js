@@ -107,6 +107,24 @@
     return tags.join('');
   }
 
+  const MODALITY_BADGES = {
+    llm: ['LLM', 'blue'],
+    embedding: ['Embed', 'purple'],
+    'speech-to-text': ['STT', 'green'],
+    'text-to-speech': ['TTS', 'green'],
+    vision: ['Vision', 'purple'],
+    ocr: ['OCR', 'yellow'],
+    translation: ['Translate', 'blue'],
+  };
+
+  function modalityBadge(model) {
+    const modality = String(model?.modality || '').trim().toLowerCase();
+    const entry = MODALITY_BADGES[modality];
+    return entry
+      ? `<span class="lm-tag ${entry[1]}" title="Modality: ${escapeHtml(modality)}">${entry[0]}</span>`
+      : '';
+  }
+
   function normalizeModelPath(path) {
     return String(path || '').replace(/\\/g, '/').trim().toLowerCase();
   }
@@ -222,6 +240,7 @@
   }
 
   function capTags(model) {
+    const modality = modalityBadge(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const compatibility = isDflashConvertible(model) ? dflashCompatibilityBadge() : '';
     const accelerator = isDflashAccelerator(model) ? acceleratorBadge() : '';
@@ -234,9 +253,9 @@
       port: model.port,
     });
     if (isDflashStack(model)) {
-      return status + compatibility + accelerator + hfAccelerator + split + caps + dup + weak;
+      return modality + status + compatibility + accelerator + hfAccelerator + split + caps + dup + weak;
     }
-    return status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
+    return modality + status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
   }
 
   function stackActionButton(model) {
@@ -676,6 +695,8 @@
   let lastRenderSignature = '';
 
   function modelType(model) {
+    const modality = String(model?.modality || '').trim().toLowerCase();
+    if (MODALITY_BADGES[modality]) return modality;
     const caps = Array.isArray(model?.capabilities) ? model.capabilities : [];
     const haystack = [
       model?.label,

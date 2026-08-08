@@ -71,6 +71,75 @@ class ConfigTests(unittest.TestCase):
                 Path(r'C:\override-root').resolve(),
             )
 
+    def test_runtimes_validate_and_list(self):
+        payload = {
+            'ui_port': 8900,
+            'servers': [],
+            'runtimes': [
+                {'id': 'piper-main', 'runtime_id': 'piper', 'port': 8910, 'device_policy': 'cpu'},
+                {'id': 'stt-main', 'runtime_id': 'stt', 'port': 8911, 'host': '127.0.0.1'},
+            ],
+        }
+        validated = cfg.validate_config(payload)
+        runtimes = cfg.list_runtimes(validated)
+        self.assertEqual(len(runtimes), 2)
+        self.assertEqual(runtimes[0]['runtime_id'], 'piper')
+        self.assertEqual(runtimes[0]['device_policy'], 'cpu')
+        self.assertEqual(runtimes[1]['api_url'], 'http://127.0.0.1:8911')
+
+    def test_runtimes_rejects_llama_server_and_non_loopback(self):
+        with self.assertRaisesRegex(ValueError, 'must not be llama-server'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [],
+                'runtimes': [{'id': 'bad', 'runtime_id': 'llama-server', 'port': 8910}],
+            })
+        with self.assertRaisesRegex(ValueError, 'loopback'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [],
+                'runtimes': [{'id': 'bad', 'runtime_id': 'piper', 'port': 8910, 'host': '0.0.0.0'}],
+            })
+
+    def test_runtimes_duplicate_ids_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'duplicate runtime id'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [],
+                'runtimes': [
+                    {'id': 'dup', 'runtime_id': 'piper', 'port': 8910},
+                    {'id': 'dup', 'runtime_id': 'stt', 'port': 8911},
+                ],
+            })
+
+    def test_shared_port_registry_rejects_cross_list_collisions(self):
+        # A runtime port colliding with a server port must be rejected.
+        with self.assertRaisesRegex(ValueError, 'already used by one'):
+            cfg.validate_config({
+                'ui_port': 8900,
+                'servers': [{'id': 'one', 'port': 8090, 'host': '127.0.0.1'}],
+                'runtimes': [{'id': 'rt', 'runtime_id': 'piper', 'port': 8090}],
+            })
+
+    def test_suggest_runtime_port_prefers_runtime_band_and_skips_reserved(self):
+        with patch.object(cfg, 'load_config', return_value={
+            'ui_port': 8900,
+            'servers': [{'id': 'one', 'port': 8090, 'host': '127.0.0.1'}],
+            'runtimes': [{'id': 'rt', 'runtime_id': 'piper', 'port': 8910}],
+        }):
+            self.assertEqual(cfg.suggest_runtime_port(), 8911)
+            self.assertEqual(cfg.suggest_server_port(), 8091)
+
+    def test_reserved_ports_covers_ui_servers_and_runtimes(self):
+        ports = cfg.reserved_ports({
+            'ui_port': 8900,
+            'servers': [{'id': 'one', 'port': 8090}],
+            'runtimes': [{'id': 'rt', 'runtime_id': 'piper', 'port': 8910}],
+        })
+        self.assertEqual(ports[8900], 'ui_port')
+        self.assertEqual(ports[8090], 'server:one')
+        self.assertEqual(ports[8910], 'runtime:rt')
+
 
 if __name__ == '__main__':
     unittest.main()
