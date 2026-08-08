@@ -148,11 +148,25 @@
   async function addAttachments(fileList) {
     const files = [...(fileList || [])];
     if (!files.length) return;
+    const engine = chatReadyEngine();
+    const canImages = imageInputSupported(engine);
+    const allowed = files.filter((file) => {
+      const isImage = /^image\//.test(file.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name || '');
+      if (isImage && !canImages) {
+        toast(`${file.name}: this model does not support image input`, false);
+        return false;
+      }
+      return true;
+    });
+    if (!allowed.length) {
+      updateComposerState();
+      return;
+    }
     const remaining = MAX_ATTACHMENTS - pendingAttachments.length;
-    if (files.length > remaining) {
+    if (allowed.length > remaining) {
       toast(`You can attach up to ${MAX_ATTACHMENTS} files`, false);
     }
-    for (const file of files.slice(0, Math.max(0, remaining))) {
+    for (const file of allowed.slice(0, Math.max(0, remaining))) {
       try {
         const attachment = await readAttachment(file);
         const nextSize = pendingAttachments.reduce((total, item) => (
@@ -826,7 +840,12 @@
     if (sendBtn) sendBtn.disabled = !ready || (!String(input?.value || '').trim() && !pendingAttachments.length);
     if (loadBtn) loadBtn.disabled = !canLoad;
     if (clearBtn) clearBtn.disabled = !session?.messages?.length;
-    if (attachBtn) attachBtn.disabled = sending || loadingCheckpoint;
+    if (attachBtn) {
+      attachBtn.disabled = sending || loadingCheckpoint;
+      attachBtn.title = imageInputSupported(chatReadyEngine())
+        ? 'Attach images or text files'
+        : 'Text files only — this model does not support image input';
+    }
     renderModelTag();
   }
 

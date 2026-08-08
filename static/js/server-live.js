@@ -2074,6 +2074,22 @@
       }
     }
 
+    const visionRow = document.getElementById('inspectorInfoVisionRow');
+    const visionEl = document.getElementById('inspectorInfoVision');
+    if (visionRow && visionEl) {
+      const caps = Array.isArray(model.capabilities) ? model.capabilities : [];
+      const mmproj = String(model.mmproj_path || '').trim();
+      const visionCapable = caps.includes('vision') || !!mmproj;
+      visionRow.classList.toggle('hidden', false);
+      if (visionCapable) {
+        visionEl.textContent = mmproj ? 'Yes — mmproj wired' : 'Yes (projector required)';
+        visionEl.title = mmproj ? mmproj : 'Vision-capable; add a mmproj projector to enable images.';
+      } else {
+        visionEl.textContent = 'No';
+        visionEl.title = 'Model is not vision-capable; image attachments will be hidden in the Playground.';
+      }
+    }
+
     const embedRow = document.getElementById('inspectorInfoEmbeddingRow');
     const embedEl = document.getElementById('inspectorInfoEmbedding');
     const embed = model.embedding_settings || {};
