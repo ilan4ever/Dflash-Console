@@ -371,10 +371,19 @@ Compare:
 
 Already present: projector detect/wire, `mmproj` in presets, Playground image parts.
 
-- [ ] Harden sibling detection + catalog `vision` / `tools` tags
-- [ ] Inspector clarity for mmproj / capability before Load
-- [ ] Speculative-stack + mmproj: document or support deliberately
-- [ ] Image attach only when `capabilities` includes vision
+> **Phase 3 status (2026-08-08):** polish landed. Inspector adds a **Vision** row
+> (mmproj path / capability badge before Load). Playground image attach is now
+> gated on the selected model's vision capability (text files still allowed),
+> with a clear tooltip. Catalog `vision`/`tools` tags + mmproj sibling detection
+> were already solid from Phase 0. **Stack + mmproj policy:** mmproj is wired via
+> `write_server_preset` → preset `mmproj` key (resolved from `target_path`
+> siblings), so DFlash stacks carry the projector like single models — no
+> special-casing needed; documented here deliberately.
+
+- [x] Harden sibling detection + catalog `vision` / `tools` tags
+- [x] Inspector clarity for mmproj / capability before Load
+- [x] Speculative-stack + mmproj: document or support deliberately
+- [x] Image attach only when `capabilities` includes vision
 
 ---
 
