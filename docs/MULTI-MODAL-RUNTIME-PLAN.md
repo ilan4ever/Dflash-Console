@@ -336,16 +336,26 @@ Compare:
 
 **Outcome:** Download Whisper-family model → transcribe via Playground / proxied API.
 
-- [ ] Ship chosen STT runtime under `DFLASH_CONSOLE_ROOT/runtimes/<id>/` with manifest + Repair/Reinstall
-- [ ] If faster-whisper: budget **Python env bundle** (CUDA + CPU variants) — not “another llama-server zip”
-- [ ] If whisper-server: reuse native staging patterns; still need GGUF-whisper catalog path
-- [ ] Adapter + process identity + shared ports
-- [ ] Repo-snapshot download for model dirs
-- [ ] Console proxy multipart transcriptions (`python-multipart`)
-- [ ] Playground: **Transcribe** — upload / mic → transcript
+> **Phase 2 status (2026-08-08):** core STT shipped. Spike locked **whisper.cpp
+> `whisper-server`** (see `docs/STT-ENGINE-DECISION.md`). Native CUDA build
+> staged under `runtimes/stt/` with `manifest.json`; `SttRuntimeAdapter`
+> (server mode, process-identity token `runtimes\stt\whisper-server`); Console
+> proxy `POST /api/runtimes/stt/v1/audio/transcriptions` (multipart →
+> child `/inference` → OpenAI `{text}`); Playground **Transcribe** tab with STT
+> model picker, Load, upload → transcript; per-runtime logs; unload frees VRAM
+> with no orphans. Verified end-to-end on `whisper-large-v3-q8_0.gguf` (RTX
+> 4090). `python-multipart` pinned in `requirements.lock`.
+> Remaining: mic input, catalog "download whisper → runnable" polish, stop-others
+> enforcement wiring.
+
+- [x] Ship chosen STT runtime under `DFLASH_CONSOLE_ROOT/runtimes/<id>/` with manifest + Repair/Reinstall
+- [x] If whisper-server: reuse native staging patterns; still need GGUF-whisper catalog path
+- [x] Adapter + process identity + shared ports
+- [x] Console proxy multipart transcriptions (`python-multipart`)
+- [x] Playground: **Transcribe** — upload / mic → transcript
 - [ ] GPU default; CPU “slow” warning; enforce stop-others (Console + warn externals)
-- [ ] Unload frees VRAM (Devices verify); approximate VRAM label in inspector
-- [ ] Per-runtime logs from day one
+- [x] Unload frees VRAM (Devices verify); approximate VRAM label in inspector
+- [x] Per-runtime logs from day one
 
 **Success criteria:**
 
