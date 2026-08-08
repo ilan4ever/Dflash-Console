@@ -56,6 +56,15 @@ About page, and README synchronized:
 Review the generated changes, commit them, and push `main`. Do not commit
 `config.json`, model weights, logs, `node_modules`, or `dist-electron`.
 
+The Windows release workflow requires these repository secrets before it will
+publish production artifacts:
+
+- `DFLASH_UPDATE_TOKEN`
+- `DFLASH_UPDATE_PRIVATE_KEY`
+- `WINDOWS_CSC_LINK` — base64/data URL or path for the production signing PFX
+- `WINDOWS_CSC_KEY_PASSWORD`
+- Hostinger SSH secrets when publishing the protected update feed
+
 ## 3. Publish the Windows EXE
 
 Create a version tag that exactly matches `package.json`:
@@ -84,8 +93,8 @@ Use the portable package for a no-install run:
 
 `DFlash-Console-Portable-<version>-x64.exe`
 
-The binaries are unsigned by default. Sign them before distributing beyond a
-trusted team if Windows SmartScreen reputation is important.
+Local builds may be unsigned, but the Windows release workflow rejects
+unsigned installer and portable artifacts.
 
 ## 4. Announce and support the release
 

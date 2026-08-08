@@ -55,6 +55,14 @@ jobs:
         shell: pwsh
         run: python scripts/release-preflight.py
 
+      - name: Stage Electron runtime
+        shell: pwsh
+        run: |
+          npm run predist
+          if (-not (Test-Path 'electron/runtime-staging/requirements.lock')) {
+            throw 'Electron runtime staging is missing requirements.lock.'
+          }
+
       - name: Prepare signed DFlash update configuration
         shell: pwsh
         env:
@@ -71,8 +79,36 @@ jobs:
           $endpoint | Set-Content electron/resources/update-endpoint.json -Encoding UTF8
           $env:DFLASH_UPDATE_PRIVATE_KEY | Set-Content "$env:RUNNER_TEMP\dflash-update-private.pem" -Encoding UTF8
 
+      - name: Verify Windows code-signing configuration
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CSC_LINK -or -not $env:WINDOWS_CSC_KEY_PASSWORD) {
+            throw "WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD repository secrets are required for production releases."
+          }
+
       - name: Build NSIS installer and portable package
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win --publish never
+
+      - name: Verify release signatures
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $artifacts = @(
+            "dist-electron/DFlash-Console-Setup-$version-x64.exe",
+            "dist-electron/DFlash-Console-Portable-$version-x64.exe"
+          )
+          foreach ($artifact in $artifacts) {
+            $signature = Get-AuthenticodeSignature $artifact
+            if ($signature.Status -ne 'Valid') {
+              throw "Release artifact is not validly signed: $artifact ($($signature.Status))"
+            }
+          }
 
       - name: Sign DFlash update manifest
         shell: pwsh
