@@ -156,6 +156,151 @@ class ConfigTests(unittest.TestCase):
             finally:
                 cfg.CONFIG_PATH = original
 
+    def test_normalize_runtime_keeps_default_voice_and_model(self):
+        entry = cfg.normalize_runtime({
+            'id': 'tts-main',
+            'runtime_id': 'piper',
+            'port': 0,
+            'device_policy': 'cpu',
+            'default_voice': 'en_US-lessac-medium',
+            'default_model': r'C:\models\whisper\model_q4_k.gguf',
+        })
+        self.assertEqual(entry['default_voice'], 'en_US-lessac-medium')
+        self.assertEqual(entry['default_model'], r'C:\models\whisper\model_q4_k.gguf')
+        blank = cfg.normalize_runtime({'id': 'rt', 'runtime_id': 'piper', 'port': 0})
+        self.assertEqual(blank['default_voice'], '')
+        self.assertEqual(blank['default_model'], '')
+
+    def test_config_patch_round_trips_new_toggles(self):
+        # The loading-behavior toggles must survive model_dump too, otherwise
+        # PUT /api/config would silently drop them (same pydantic pitfall).
+        from api.app import ConfigPatch
+
+        patch = ConfigPatch(runtime_stop_others_on_load=True, cpu_slow_warn=False)
+        dumped = patch.model_dump(exclude_none=True)
+        self.assertIs(dumped['runtime_stop_others_on_load'], True)
+        self.assertIs(dumped['cpu_slow_warn'], False)
+
+    def test_put_config_persists_runtime_defaults_and_toggles(self):
+        from api.app import ConfigPatch, put_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            original = cfg.CONFIG_PATH
+            cfg.CONFIG_PATH = path
+            cfg.save_config({
+                'ui_port': 8900,
+                'servers': [],
+                'runtimes': [
+                    {'id': 'tts-main', 'runtime_id': 'piper', 'port': 0, 'device_policy': 'cpu'},
+                    {'id': 'stt-main', 'runtime_id': 'stt', 'port': 0, 'device_policy': 'gpu'},
+                ],
+            })
+            try:
+                body = ConfigPatch(
+                    runtimes=[
+                        {
+                            'id': 'tts-main', 'runtime_id': 'piper', 'port': 0,
+                            'device_policy': 'cpu', 'default_voice': 'en_US-lessac-medium',
+                            'allow_cpu_fallback': True, 'vram_budget_mb': 0,
+                        },
+                        {
+                            'id': 'stt-main', 'runtime_id': 'stt', 'port': 0,
+                            'device_policy': 'gpu', 'default_model': r'C:\models\w\m.gguf',
+                            'allow_cpu_fallback': True, 'vram_budget_mb': 0,
+                        },
+                    ],
+                    runtime_stop_others_on_load=True,
+                    cpu_slow_warn=False,
+                )
+                result = put_config(body)
+                self.assertTrue(result['success'])
+                reloaded = cfg.load_config()
+                self.assertIs(reloaded['runtime_stop_others_on_load'], True)
+                self.assertIs(reloaded['cpu_slow_warn'], False)
+                runtimes = {r['id']: r for r in cfg.list_runtimes(reloaded)}
+                self.assertEqual(runtimes['tts-main']['default_voice'], 'en_US-lessac-medium')
+                self.assertEqual(runtimes['stt-main']['default_model'], r'C:\models\w\m.gguf')
+            finally:
+                cfg.CONFIG_PATH = original
+
+    def test_auto_stop_other_servers_gated_by_toggle(self):
+        from api.app import _auto_stop_other_servers
+
+        cfg_payload = {
+            'ui_port': 8900,
+            'servers': [{'id': 'a', 'port': 8090, 'host': '127.0.0.1'}],
+        }
+        with patch('core.runtimes.contention.gpu_contention_report',
+                   return_value={'recommendation': 'stop-others'}):
+            with patch('api.app.server_unload') as unload:
+                stopped = _auto_stop_other_servers(
+                    {**cfg_payload, 'runtime_stop_others_on_load': False}, 'a',
+                )
+        self.assertEqual(stopped, [])
+        unload.assert_not_called()
+
+    def test_auto_stop_other_servers_skips_target_and_embedding(self):
+        from api.app import _auto_stop_other_servers
+
+        cfg_payload = {
+            'ui_port': 8900,
+            'servers': [
+                {'id': 'a', 'port': 8090, 'host': '127.0.0.1'},
+                {'id': 'b', 'port': 8091, 'host': '127.0.0.1', 'engine_mode': 'embedding'},
+                {'id': 'c', 'port': 8092, 'host': '127.0.0.1'},
+            ],
+            'runtime_stop_others_on_load': True,
+        }
+        report = {
+            'recommendation': 'stop-others',
+            'console_runtimes': [
+                {'id': 'a', 'running': True},   # target -> skipped
+                {'id': 'b', 'running': True},   # embedding -> skipped
+                {'id': 'c', 'running': True},   # unload
+                {'id': 'z', 'running': False},  # not running -> skipped
+            ],
+        }
+        with patch('core.runtimes.contention.gpu_contention_report', return_value=report):
+            with patch('api.app.server_unload', return_value={'success': True}) as unload:
+                stopped = _auto_stop_other_servers(cfg_payload, 'a')
+        self.assertEqual(stopped, ['c'])
+        unload.assert_called_once_with('c')
+
+    def test_auto_stop_other_servers_noop_without_stop_others(self):
+        from api.app import _auto_stop_other_servers
+
+        cfg_payload = {
+            'ui_port': 8900,
+            'servers': [{'id': 'a', 'port': 8090, 'host': '127.0.0.1'}],
+            'runtime_stop_others_on_load': True,
+        }
+        with patch('core.runtimes.contention.gpu_contention_report',
+                   return_value={'recommendation': 'none'}):
+            with patch('api.app.server_unload') as unload:
+                stopped = _auto_stop_other_servers(cfg_payload, 'a')
+        self.assertEqual(stopped, [])
+        unload.assert_not_called()
+
+    def test_load_plan_route_registered_to_server_load_plan(self):
+        # Regression: _auto_stop_other_servers was once inserted between the
+        # @app.get('/api/servers/{server_id}/load-plan') decorator and
+        # server_load_plan, hijacking the route and breaking the load preview.
+        from api.app import app
+
+        found = False
+        for route in app.routes:
+            if getattr(route, 'path', None) == '/api/servers/{server_id}/load-plan':
+                endpoint = getattr(route, 'endpoint', None)
+                self.assertEqual(
+                    getattr(endpoint, '__name__', ''),
+                    'server_load_plan',
+                    'load-plan route must be owned by server_load_plan, not a helper',
+                )
+                found = True
+                break
+        self.assertTrue(found, 'load-plan route not registered')
+
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.
         with self.assertRaisesRegex(ValueError, 'already used by one'):

@@ -566,6 +566,8 @@ def normalize_runtime(entry: dict[str, Any]) -> dict[str, Any]:
         'host': host,
         'api_url': api_url,
         'device_policy': device_policy,
+        'default_voice': str(entry.get('default_voice') or '').strip(),
+        'default_model': str(entry.get('default_model') or '').strip(),
         'vram_budget_mb': max(0, int(entry.get('vram_budget_mb') or 0)),
         'allow_cpu_fallback': entry.get('allow_cpu_fallback') is not False,
         'enabled': entry.get('enabled', True) is not False,

@@ -15,6 +15,12 @@
   let sttLoading = false;
   let embedding = false;
   let lastEmbedResult = null;
+  let micRecording = false;
+  let micStream = null;
+  let micContext = null;
+  let micProcessor = null;
+  let micChunks = [];
+  let runtimePrefs = null;
 
   function setStatus(text) {
     const el = $('speakStatus');
@@ -24,6 +30,28 @@
   function setTranscribeStatus(text) {
     const el = $('transcribeStatus');
     if (el) el.textContent = text || '';
+  }
+
+  function setMicStatus(text) {
+    const el = $('micRecordStatus');
+    if (el) el.textContent = text || '';
+  }
+
+  async function loadRuntimePrefs() {
+    if (runtimePrefs) return runtimePrefs;
+    const result = { tts: null, stt: null, cpu_slow_warn: true };
+    try {
+      const [rt, cfg] = await Promise.all([
+        api('/api/runtimes', { timeoutMs: 8000 }),
+        api('/api/config', { timeoutMs: 8000 }),
+      ]);
+      const runtimes = (Array.isArray(rt?.runtimes) ? rt.runtimes : []).filter((r) => r.kind === 'runtime');
+      result.tts = runtimes.find((r) => r.runtime_id === 'piper') || null;
+      result.stt = runtimes.find((r) => r.runtime_id === 'stt') || null;
+      result.cpu_slow_warn = (cfg?.config || {}).cpu_slow_warn !== false;
+    } catch (_err) { /* keep defaults */ }
+    runtimePrefs = result;
+    return result;
   }
 
   function setMode(mode) {
@@ -198,8 +226,15 @@
         opt.textContent = model.filename || model.label || model.path || '';
         pick.appendChild(opt);
       }
-      if (previous && sttModels.some((m) => (m.path || '') === previous)) pick.value = previous;
+      const prefs = await loadRuntimePrefs();
+      const target = previous || prefs.stt?.default_model || '';
+      if (target && sttModels.some((m) => (m.path || '') === target)) pick.value = target;
     }
+    const prefs = await loadRuntimePrefs();
+    const cpuWarn = prefs.cpu_slow_warn && prefs.stt?.device_policy === 'cpu';
+    setTranscribeStatus(
+      `Pick a Whisper model and Load, then choose an audio file or record from mic, and Transcribe.${cpuWarn ? ' ⚠ Whisper is set to CPU — may be slow.' : ''}`,
+    );
   }
 
   async function loadStt() {
@@ -254,12 +289,16 @@
         opt.textContent = voice.label || voice.id || '';
         pick.appendChild(opt);
       }
-      if (previous && voices.some((v) => v.id === previous)) pick.value = previous;
+      const prefs = await loadRuntimePrefs();
+      const target = previous || prefs.tts?.default_voice || '';
+      if (target && voices.some((v) => v.id === target)) pick.value = target;
     }
     if (currentMode === 'speak') {
+      const prefs = await loadRuntimePrefs();
+      const cpuWarn = prefs.cpu_slow_warn && prefs.tts?.device_policy === 'cpu';
       setStatus(
         voices.length
-          ? `${voices.length} Piper voice${voices.length === 1 ? '' : 's'} ready. Type text and press Speak.`
+          ? `${voices.length} Piper voice${voices.length === 1 ? '' : 's'} ready. Type text and press Speak.${cpuWarn ? ' ⚠ Piper is set to CPU — may be slow.' : ''}`
           : 'No Piper voices installed. Add .onnx + .onnx.json voices under runtimes/piper/voices/.',
       );
     }
@@ -372,6 +411,135 @@
     }
   }
 
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeString = (offset, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate
+    view.setUint16(32, 2, true); // block align
+    view.setUint16(34, 16, true); // bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  async function startMic() {
+    if (micRecording) return;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      setMicStatus('Mic unavailable — ' + (err?.message || err?.name || 'denied'));
+      return;
+    }
+    micStream = stream;
+    micChunks = [];
+    micContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = micContext.createMediaStreamSource(micStream);
+    micProcessor = micContext.createScriptProcessor(4096, 1, 1);
+    micProcessor.onaudioprocess = (event) => {
+      micChunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+    };
+    source.connect(micProcessor);
+    micProcessor.connect(micContext.destination);
+    micRecording = true;
+    const btn = $('micRecordBtn');
+    if (btn) {
+      btn.textContent = 'Stop & transcribe';
+      btn.classList.add('primary');
+    }
+    setMicStatus('Recording…');
+    setTranscribeStatus('Recording from mic — press “Stop & transcribe” when done.');
+  }
+
+  function stopMic() {
+    if (!micRecording) return;
+    const sampleRate = micContext ? micContext.sampleRate : 16000;
+    micRecording = false;
+    try { micProcessor?.disconnect(); } catch (_err) { /* noop */ }
+    try { micContext?.close(); } catch (_err) { /* noop */ }
+    try { micStream?.getTracks().forEach((t) => t.stop()); } catch (_err) { /* noop */ }
+    micStream = null;
+    micProcessor = null;
+    micContext = null;
+    const btn = $('micRecordBtn');
+    if (btn) {
+      btn.textContent = 'Record from mic';
+      btn.classList.remove('primary');
+    }
+    setMicStatus('');
+    void transcribeMic(sampleRate);
+  }
+
+  async function transcribeMic(sampleRate) {
+    if (!micChunks.length) {
+      setTranscribeStatus('No audio captured from the mic.');
+      return;
+    }
+    let total = 0;
+    for (const chunk of micChunks) total += chunk.length;
+    const samples = new Float32Array(total);
+    let offset = 0;
+    for (const chunk of micChunks) {
+      samples.set(chunk, offset);
+      offset += chunk.length;
+    }
+    micChunks = [];
+    const blob = encodeWav(samples, sampleRate || 16000);
+    if (transcribing) return;
+    transcribing = true;
+    const btn = $('transcribeBtn');
+    if (btn) btn.disabled = true;
+    setTranscribeStatus(`Transcribing ${(blob.size / 1024).toFixed(0)} KB mic recording…`);
+    const result = $('transcribeResult');
+    if (result) result.value = '';
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'mic.wav');
+      form.append('model', 'whisper-1');
+      const language = String($('transcribeLanguage')?.value || '').trim();
+      if (language) form.append('language', language);
+      form.append('response_format', 'json');
+      const response = await fetch('/api/runtimes/stt/v1/audio/transcriptions', {
+        method: 'POST',
+        body: form,
+      });
+      if (!response.ok) {
+        let detail = `Transcription failed (${response.status})`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch (_err) { /* keep status detail */ }
+        throw new Error(detail);
+      }
+      const data = await response.json();
+      const text = String(data?.text || '');
+      if (result) result.value = text;
+      setTranscribeStatus(text ? 'Mic transcription complete.' : 'No speech detected in the mic audio.');
+    } catch (error) {
+      setTranscribeStatus(error.message || 'Transcription failed.');
+    } finally {
+      transcribing = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function bind() {
     document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
       btn.addEventListener('click', () => setMode(btn.dataset.playgroundMode));
@@ -380,6 +548,13 @@
     if (speakBtn) speakBtn.addEventListener('click', () => void speak());
     const transcribeBtn = $('transcribeBtn');
     if (transcribeBtn) transcribeBtn.addEventListener('click', () => void transcribe());
+    const micBtn = $('micRecordBtn');
+    if (micBtn) {
+      micBtn.addEventListener('click', () => {
+        if (micRecording) stopMic();
+        else void startMic();
+      });
+    }
     const sttLoadBtn = $('sttLoadBtn');
     if (sttLoadBtn) sttLoadBtn.addEventListener('click', () => void loadStt());
     const embedBtn = $('embedBtn');
