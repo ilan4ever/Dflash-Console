@@ -72,7 +72,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "DFlash Console",
       "uninstallDisplayName": "DFlash Console",
-      "runAfterFinish": false,
+      "runAfterFinish": true,
       "include": "installer/dark-installer.nsh",
       "artifactName": "DFlash-Console-Setup-${version}-${arch}.${ext}"
     },

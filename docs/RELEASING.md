@@ -80,12 +80,12 @@ The **Windows release** workflow then:
 1. Checks out the tag.
 2. Installs the locked Electron dependencies.
 3. Runs release preflight.
-4. Builds the NSIS installer and portable EXE.
-5. Generates `SHA256SUMS.txt`.
-6. Creates a GitHub Release and uploads the installer, portable EXE,
-   blockmap, update metadata, and checksums.
+4. Builds the branded dark setup EXE and portable EXE.
+5. Generates update metadata and `SHA256SUMS.txt` for those artifacts.
+6. Creates a GitHub Release and uploads the branded installer, portable EXE,
+   update metadata, and checksums.
 
-Use the NSIS installer for normal installation:
+Use the branded setup installer for normal installation:
 
 `DFlash-Console-Setup-<version>-x64.exe`
 
