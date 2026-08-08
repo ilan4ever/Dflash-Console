@@ -24,7 +24,10 @@
 - **Downloading** — active Hugging Face transfers.
 - **Loaded** — models currently loaded on an engine.
 - Model type filters include LLM/chat, DFlash, OCR, translation,
-  speech-to-text, text-to-speech, embeddings, vision, and other.
+  speech-to-text, text-to-speech, embeddings, vision, and other. Filters wire to
+  the catalog's backend `modality` field (not filename heuristics).
+- Each row shows a **modality badge** (LLM, Embed, STT, TTS, Vision, OCR,
+  Translate).
 - **HF accelerators available** — local target models with a compatible DFlash
   or DSpark accelerator currently listed in the Hugging Face catalog.
 

@@ -1,6 +1,6 @@
 # DFlash Console
 
-**Local control panel for DFlash speculative-decoding stacks** — manage llama-server engines, model libraries, Hugging Face downloads, and GPU settings from a single web UI.
+**Local control panel for DFlash speculative-decoding stacks and a unified local model runtime** — manage llama-server engines, Piper TTS, Whisper STT, embeddings, model libraries, Hugging Face downloads, and GPU settings from a single web UI.
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
@@ -15,6 +15,7 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 | Area | Highlights |
 |------|------------|
 | **Engines** | Start/stop llama-server routers, load & eject models in parallel, live boot progress, token stats on cards, developer logs with clear button |
+| **Runtimes** | Unified multi-modal layer: Piper TTS, whisper.cpp STT, embeddings — Console-proxied OpenAI routes, adapter registry, shared ports, process identity |
 | **Models** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
 | **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
@@ -26,7 +27,104 @@ Router mode uses `--models-preset` with load/unload over HTTP so engines stay li
 
 ---
 
-## Recent improvements (v0.2.9)
+## Multi-modal runtime
+
+DFlash Console is now a **unified local model runtime**, not just a GGUF control
+panel. A small **adapter registry** (`core/runtimes/`) lets the Console discover,
+load, monitor, and proxy OpenAI-shaped APIs for many model families, while
+`llama-server` / DFlash stacks stay the first-class GGUF path.
+
+| Modality | Runtime | Engine | Mode |
+|----------|---------|--------|------|
+| LLM chat / instruct | `llama-server` | GGUF (existing) | server |
+| Embeddings | `llama-server` embedding profile | GGUF (existing) | server |
+| Text-to-speech | **Piper** | ONNX voices (`runtimes/piper/`) | CLI |
+| Speech-to-text | **whisper.cpp `whisper-server`** | GGUF-whisper (`runtimes/stt/`) | server |
+| Vision / OCR | `llama-server` + mmproj | GGUF + projector (existing) | server |
+
+### Runtime bundles (thin installer / fat data root)
+
+Engines and voices live **outside** the Electron installer under the Console
+data root:
+
+```
+runtimes/
+├── piper/                 # piper.exe + espeak-ng-data + voices/*.onnx(+json)
+│   └── manifest.json
+├── stt/                   # whisper-server.exe + ggml-cuda.dll + ...
+│   └── manifest.json
+└── process-tokens.json    # shared managed-process identity (read by server.ps1)
+```
+
+Each adapter writes a `manifest.json` at boot, exposed read-only at
+`GET /api/runtimes/manifests`. There is **no `pip install` from the UI** — only
+verified native bundles.
+
+### Playground modes
+
+The Playground has four modes:
+
+| Mode | What it does |
+|------|--------------|
+| **Chat** | Existing chat completions against llama-server / DFlash |
+| **Speak** | Text → Piper WAV (voice picker, speed, download) |
+| **Transcribe** | Pick a Whisper model → upload audio → transcript |
+| **Embed** | One item per line → vectors; **Export .jsonl** |
+
+### Console-proxied OpenAI routes
+
+Children stay on internal loopback ports; clients only talk to the Console:
+
+| Route | Upstream |
+|-------|----------|
+| `/api/servers/{id}/v1/chat/completions` | llama-server (existing) |
+| `/api/runtimes/piper/v1/audio/speech` | Piper (CLI) |
+| `/api/runtimes/stt/v1/audio/transcriptions` | whisper-server (multipart → `/inference`) |
+| `/api/servers/{id}/v1/embeddings` | llama-server embedding profile |
+| `/api/servers/{id}/embed/batch` | batch embed + `.jsonl` export |
+
+### Process identity & cleanup
+
+Every adapter contributes **path-specific** process-identity tokens
+(`runtimes\piper\piper.exe`, `runtimes\stt\whisper-server`) to a shared
+registry. `managed_process_identity()`, `server.ps1` stop/shutdown cleanup, and
+restart adoption recognise Console-managed children **without** ever adopting
+foreign processes (e.g. another app's bundled Piper). Stop/unload kills children
+and frees VRAM with no orphans.
+
+### Config
+
+Non-llama runtimes are configured in `config.json` under `runtimes[]`; the
+`servers[]` list stays exclusively for llama-server / DFlash / GGUF:
+
+```json
+"runtimes": [
+  { "id": "tts-main", "runtime_id": "piper", "port": 0, "device_policy": "cpu" },
+  { "id": "stt-main", "runtime_id": "stt",  "port": 8910, "device_policy": "gpu" }
+]
+```
+
+`GET /api/runtimes` merges `servers[]` (synthesised `runtime_id: llama-server`)
+with `runtimes[]`. Ports are unique across ui/servers/runtimes (shared
+registry); CLI runtimes use `port: 0`.
+
+---
+
+## Recent improvements
+
+### v0.3.0-dev — multi-modal runtime
+
+| Feature | Description |
+|---------|-------------|
+| **Piper TTS** | Native bundle, Playground **Speak**, `POST .../v1/audio/speech`, per-runtime logs |
+| **Whisper STT** | whisper.cpp `whisper-server` bundle, Playground **Transcribe**, proxied multipart transcriptions |
+| **Embeddings** | Proxied `/v1/embeddings`, batch embed + `.jsonl` export, Playground **Embed** |
+| **Runtime registry** | Adapter protocol/registry, `runtimes[]` config, shared port registry, `GET /api/runtimes` |
+| **Process identity** | Path-specific tokens; `server.ps1` + supervisor clean up only Console-owned children |
+| **Vision polish** | Inspector vision row; image attach gated on model capability |
+| **Hardening** | Bundle manifests (`/api/runtimes/manifests`), sandbox/no-shell, per-adapter smoke tests |
+
+### v0.2.9
 
 | Feature | Description |
 |---------|-------------|
@@ -148,8 +246,9 @@ See **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)** for a full walkthrough, or op
 2. Pick a model from the dropdown and click **Load**, or load from the **Models** tab.
 3. Watch boot progress and live stats on the card; click the card for runtime settings in the side panel.
 4. Point your app at the engine OpenAI URL shown on the card, or use the console proxy at `/api/servers/{id}/v1/chat/completions`.
-5. Use **Settings → Locations** to back up or restore `config.json` and launch presets.
-6. Open **About** for the current release, developer attribution, license, and public project links.
+5. Use the **Playground** mode switcher (**Chat · Speak · Transcribe · Embed**) for TTS, STT, and embedding workflows.
+6. Use **Settings → Locations** to back up or restore `config.json` and launch presets.
+7. Open **About** for the current release, developer attribution, license, and public project links.
 
 ---
 
@@ -177,7 +276,8 @@ commercially deploying model files.
 | `models_root` / `./models` | Developer model library inside the Console app folder |
 | `DFLASH_ROOT_OVERRIDE` | Optional explicit override for the configured DFlash root |
 | `config.json` → `dflash_root` | Path to DFlash repo with llama-server binaries and launch scripts |
-| `config.json` → `servers[]` | Engine profiles: port, GPU layers, context, idle unload |
+| `config.json` → `servers[]` | llama-server / DFlash engine profiles: port, GPU layers, context, idle unload |
+| `config.json` → `runtimes[]` | Non-llama runtimes (Piper, STT): `runtime_id`, port, `device_policy` |
 | `config.json` → `model_libraries[]` | Folders scanned for local models and HF download targets |
 
 Default UI port is **8900**. Engine ports (e.g. 8090, 8092) are configured per server block.
@@ -204,6 +304,8 @@ in `config.json` or committed files.
 Dflash-Console/
 ├── api/app.py              # FastAPI routes
 ├── core/                   # Config, runtime, model discovery, HF, GPU, inference stats
+│   └── runtimes/           # Adapter registry + protocol (piper, stt, noop, contention)
+├── runtimes/               # Installed engine bundles (piper/, stt/) + manifests (gitignored)
 ├── static/                 # UI (HTML, CSS, JS)
 ├── electron/               # Desktop shell (Electron)
 ├── scripts/                # Server start / restart / Electron helpers
@@ -233,6 +335,12 @@ Dflash-Console/
 | `POST` | `/api/servers/{id}/load` | Load model (optional runtime JSON body) |
 | `POST` | `/api/servers/{id}/unload` | Eject model (router stays up) |
 | `POST` | `/api/servers/{id}/v1/chat/completions` | Proxy chat; updates live token stats |
+| `POST` | `/api/servers/{id}/v1/embeddings` | Text → vectors (embedding profile, OpenAI shape) |
+| `POST` | `/api/servers/{id}/embed/batch` | Batch embed text items; optional `.jsonl` export |
+| `GET` | `/api/runtimes` | Unified runtime list (`servers[]` + `runtimes[]` + adapters) |
+| `GET` | `/api/runtimes/manifests` | Installed runtime plugin manifests + process tokens |
+| `POST` | `/api/runtimes/piper/v1/audio/speech` | Text → speech (Piper, OpenAI shape) |
+| `POST` | `/api/runtimes/stt/v1/audio/transcriptions` | Audio → text (whisper.cpp, OpenAI shape) |
 | `GET` | `/api/models` | Local catalog from enabled libraries |
 | `GET` | `/api/docs/catalog` | In-app documentation JSON |
 | `GET` | `/api/model-libraries/scan` | PC scan for model folders |

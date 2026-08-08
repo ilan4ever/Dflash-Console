@@ -167,7 +167,44 @@ The status feed on the right reports recent actions (loads, errors, exports).
 
 ---
 
-## 7. Calling your engines
+## 7. Playground modes (Chat · Speak · Transcribe · Embed)
+
+The **Playground** has a mode switcher in the header with four modes.
+
+### Speak (Piper TTS)
+
+1. Switch to **Speak**.
+2. Pick a **voice** (auto-listed from `runtimes/piper/voices/`).
+3. Adjust **speed** if you like.
+4. Type text and press **Speak** — a WAV plays inline and a **Download WAV** link appears.
+
+No Piper voices? Add `.onnx` + `.onnx.json` voice files under
+`runtimes/piper/voices/`.
+
+### Transcribe (Whisper STT)
+
+1. Switch to **Transcribe**.
+2. Pick a **Whisper model** (auto-listed from your libraries) and click **Load**.
+   The first load spins up whisper-server on an internal loopback port (a large
+   model like `whisper-large-v3` takes a few seconds).
+3. Choose an **audio file** (WAV/MP3/…).
+4. Optionally set a **language** (leave blank for auto).
+5. Press **Transcribe** — the transcript appears in the result box.
+
+### Embed
+
+1. Switch to **Embed**.
+2. Pick an **embedding server** (e.g. Nomic).
+3. Enter **one item per line**.
+4. Press **Embed** — you get the vector count and dimensions.
+5. Press **Export .jsonl** to download `{"text", "embedding"}` rows.
+
+The underlying Console-proxied routes are OpenAI-shaped, so they also work from
+`curl` and API clients (see the README API table).
+
+---
+
+## 8. Calling your engines
 
 Each loaded card displays an **OpenAI-compatible URL**, for example:
 
@@ -185,7 +222,7 @@ Use the same JSON body as the OpenAI Chat Completions API. Response `usage` and 
 
 ---
 
-## 8. Documentation tab
+## 9. Documentation tab
 
 Open **Documentation** in the sidebar for:
 
@@ -202,7 +239,7 @@ for interactive testing.
 
 ---
 
-## 9. About page
+## 10. About page
 
 Open **About** in either the browser or Electron app for:
 
@@ -221,7 +258,7 @@ configuration or contact external services.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Problem | What to try |
 |---------|-------------|
@@ -233,7 +270,7 @@ configuration or contact external services.
 
 ---
 
-## 11. Tips
+## 12. Tips
 
 - Keep **config.json** and presets backed up via **Settings → Locations**.
 - Load heavy models one at a time if VRAM is tight, even though parallel load is supported.

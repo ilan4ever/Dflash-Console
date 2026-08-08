@@ -11,7 +11,7 @@ same `static/` application, so the views and documentation are shared.
 
 | View | Implementation | Notes |
 |------|----------------|-------|
-| Playground | `static/index.html` + `static/js/chat-live.js` | Local chat and model selection |
+| Playground | `static/index.html` + `static/js/chat-live.js` + `static/js/speak-live.js` | Chat · Speak · Transcribe · Embed (mode switcher) |
 | Engines | `static/index.html` + `static/js/server-live.js` | Router lifecycle, loading, stats, and logs |
 | Models | [models-view.md](./models-view.md) | Local library, DFlash stacks, filters, and loading |
 | Nodes | [devices-view.md](./devices-view.md) | Planned remote-node surface; disabled in this build |
@@ -49,3 +49,14 @@ same `static/` application, so the views and documentation are shared.
 - Static UI changes are picked up by the development reload watcher.
 - The Electron shell points at the selected external Console data root and does
   not bundle model files or the backend.
+
+## Runtimes
+
+- Adapters live in `core/runtimes/` (base protocol, registry, `piper`, `stt`,
+  `contention`, `noop`).
+- Engine/voice bundles live in `runtimes/<id>/` outside the installer;
+  manifests are aggregated at `GET /api/runtimes/manifests`.
+- Process identity is shared via `runtimes/process-tokens.json` so `server.ps1`
+  and the Python supervisor recognise the same Console-owned children.
+- Playground modes are backed by the Console proxies: `/v1/audio/speech`,
+  `/v1/audio/transcriptions`, `/v1/embeddings`, and `/embed/batch`.

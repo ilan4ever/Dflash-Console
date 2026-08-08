@@ -20,6 +20,10 @@ responses are shown as an empty state rather than fabricated staff picks.
 - Stats: downloads, stars, last updated
 - Tags: PARAMS, ARCH, DOMAIN, FORMAT
 - Capabilities: Vision, Tool Use, Reasoning
+- **Runnable vs download-only** badges: a model whose modality is runnable by an
+  installed Console runtime shows a green **runnable** badge; downloadable
+  non-llama models (e.g. TTS/STT) show a yellow **download-only** badge until
+  their runtime is installed
 - Download card: filename, size, and selected library
 - **Download [size]** starts a managed transfer
 - README section rendered with sanitized markdown
