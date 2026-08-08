@@ -34,6 +34,9 @@ logs/
 *.p12
 *.pfx
 !electron/resources/update-manifest-public.pem
+# Generated at build time from the DFLASH_UPDATE_TOKEN secret (CI) or the local
+# .env.admin — holds the update-feed token, so it must never be committed.
+electron/resources/update-endpoint.json
 
 # Runtime bundles (installed outside the installer)
 runtimes/*
