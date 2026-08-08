@@ -18,11 +18,43 @@ if (!function_exists('dflash_console_update_token')) {
     }
 }
 
+if (!function_exists('dflash_console_update_tokens')) {
+    function dflash_console_update_tokens(): array {
+        $tokens = [];
+        foreach ([
+            dflash_console_update_root() . '/.token',
+            dflash_console_update_root() . '/.token-legacy',
+        ] as $path) {
+            if (!is_readable($path)) {
+                continue;
+            }
+            $contents = file_get_contents($path);
+            if (!is_string($contents)) {
+                continue;
+            }
+            foreach (preg_split('/\R+/', $contents) ?: [] as $token) {
+                $token = trim((string) $token);
+                if ($token !== '') {
+                    $tokens[] = $token;
+                }
+            }
+        }
+        return array_values(array_unique($tokens));
+    }
+}
+
 if (!function_exists('dflash_console_update_authorized')) {
     function dflash_console_update_authorized(): bool {
         $provided = isset($_GET['token']) ? (string) wp_unslash($_GET['token']) : '';
-        $expected = dflash_console_update_token();
-        return $provided !== '' && $expected !== '' && hash_equals($expected, $provided);
+        if ($provided === '') {
+            return false;
+        }
+        foreach (dflash_console_update_tokens() as $expected) {
+            if (hash_equals($expected, $provided)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
