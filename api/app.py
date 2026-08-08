@@ -282,6 +282,12 @@ class RuntimeLoadRequest(BaseModel):
     path: str = Field(default='', max_length=1024)
 
 
+class EmbedBatchRequest(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    model: str = Field(default='', max_length=120)
+    export_jsonl: bool = Field(default=False)
+
+
 def _persist_server_merge(cfg: dict[str, Any], server_id: str, patch: dict[str, Any]) -> dict[str, Any]:
     servers = cfg.get('servers') or []
     for idx, entry in enumerate(servers):
@@ -1291,6 +1297,144 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         mark_inference_end(server_id)
+
+
+def _ensure_server_ready_for_embed(server_id: str, server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """JIT-load an embedding engine (no chat-ready gate)."""
+    import time
+
+    from core.runtime import build_server_status
+
+    def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            live_status = build_server_status(server, cfg=cfg)
+            if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
+                return live_status
+            if live_status.get('status') in {'booting', 'running'}:
+                time.sleep(2.0)
+                continue
+            return live_status
+        live_status = build_server_status(server, cfg=cfg)
+        if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
+            return live_status
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'error': 'model_not_loaded',
+                'message': 'Embedding engine load did not complete — retry shortly.',
+                'status': live_status.get('status'),
+                'loaded_models': live_status.get('loaded_models') or [],
+            },
+        )
+
+    live = build_server_status(server, cfg=cfg)
+    if live.get('status') == 'loaded' and live.get('loaded_models'):
+        return live
+    if live.get('status') == 'booting':
+        return _wait_until_loaded()
+    result = load_server_checkpoint(server, cfg=cfg)
+    if not result.get('success'):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'error': 'model_load_failed',
+                'message': str(result.get('error') or 'embedding engine load failed'),
+                'status': live.get('status'),
+                'model_id': live.get('model_id'),
+            },
+        )
+    return _wait_until_loaded()
+
+
+@app.post('/api/servers/{server_id}/v1/embeddings')
+async def server_embeddings_proxy(server_id: str, request: Request):
+    """Console-proxied OpenAI embeddings route (embedding llama-server profile)."""
+    import asyncio
+    import json
+    import urllib.error
+    import urllib.request
+
+    from core.runtime import api_base_url
+
+    cfg = load_config()
+    server = _require_server(cfg, server_id)
+    _ensure_server_ready_for_embed(server_id, server, cfg)
+
+    api_url = str(server.get('api_url') or '')
+    base = api_base_url(api_url)
+    if not base:
+        raise HTTPException(status_code=400, detail='engine api_url not configured')
+    raw = await request.body()
+    try:
+        body = json.loads(raw.decode('utf-8', errors='replace') or '{}')
+    except (ValueError, AttributeError):
+        body = {}
+    input_value = body.get('input')
+    if isinstance(input_value, str):
+        texts = [input_value]
+    elif isinstance(input_value, list):
+        texts = [str(t) for t in input_value]
+    else:
+        raise HTTPException(status_code=400, detail='input must be a string or list of strings')
+
+    from core.embedding_server import embed_batch
+
+    def _run():
+        items = [{'text': t} for t in texts]
+        return embed_batch(server, items=items, model_id=str(body.get('model') or ''), cfg=cfg)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not result.get('success'):
+        raise HTTPException(status_code=502, detail=result.get('error') or 'embedding failed')
+
+    rows = result.get('rows') or []
+    data = [
+        {'object': 'embedding', 'index': row.get('index'), 'embedding': row.get('embedding')}
+        for row in rows
+    ]
+    return {
+        'object': 'list',
+        'data': data,
+        'model': str(result.get('model') or server.get('model_id') or ''),
+        'usage': result.get('usage') or {},
+    }
+
+
+@app.post('/api/servers/{server_id}/embed/batch')
+async def server_embed_batch(server_id: str, body: EmbedBatchRequest) -> dict[str, Any]:
+    """Embed a list of text items and optionally export rows as .jsonl."""
+    import asyncio
+
+    from core.embedding_server import embed_batch, embed_rows_to_jsonl
+
+    cfg = load_config()
+    server = _require_server(cfg, server_id)
+    _ensure_server_ready_for_embed(server_id, server, cfg)
+
+    def _run():
+        return embed_batch(server, items=body.items, model_id=body.model, cfg=cfg)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not result.get('success'):
+        raise HTTPException(status_code=502, detail=result.get('error') or 'embedding failed')
+
+    payload: dict[str, Any] = {
+        'success': True,
+        'rows': result.get('rows') or [],
+        'model': result.get('model') or '',
+        'usage': result.get('usage') or {},
+        'count': len(result.get('rows') or []),
+    }
+    if body.export_jsonl:
+        payload['jsonl'] = embed_rows_to_jsonl(result.get('rows') or [])
+    return payload
 
 
 @app.post('/api/servers/{server_id}/start')

@@ -130,6 +130,93 @@ def embedding_metadata(model_path: Path) -> dict[str, Any]:
     }
 
 
+def embed_batch(
+    server: dict[str, Any],
+    *,
+    items: list[dict[str, Any]],
+    model_id: str = '',
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Embed a list of ``{'text': ...}`` items through the server's /v1/embeddings.
+
+    llama-server accepts a list of strings in a single call; rows are mapped
+    back to the input items by ``index`` so the caller can correlate vectors to
+    source text (and write .jsonl exports).
+    """
+    entry = normalize_server(server)
+    api_url = str(entry.get('api_url') or '').strip().rstrip('/')
+    if not api_url:
+        return {'success': False, 'error': 'embedding server has no api_url'}
+    texts: list[str] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get('text') or '').strip()
+        if text:
+            texts.append(text)
+    if not texts:
+        return {'success': False, 'error': 'no text items to embed'}
+
+    payload: dict[str, Any] = {'input': texts}
+    mid = str(model_id or entry.get('model_id') or '').strip()
+    if mid:
+        payload['model'] = mid
+    body = json.dumps(payload).encode('utf-8')
+    request = urllib.request.Request(
+        f'{api_url}/embeddings',
+        data=body,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180.0) as resp:
+            data = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    except urllib.error.HTTPError as exc:
+        return {'success': False, 'error': f'embedding server returned HTTP {exc.code}'}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {'success': False, 'error': f'embedding request failed: {exc}'}
+
+    rows_raw = data.get('data') if isinstance(data, dict) else None
+    by_index: dict[int, Any] = {}
+    if isinstance(rows_raw, list):
+        for row in rows_raw:
+            if not isinstance(row, dict):
+                continue
+            idx = row.get('index')
+            if isinstance(idx, int) or (isinstance(idx, str) and idx.isdigit()):
+                by_index[int(idx)] = row.get('embedding')
+    fallback_index = 0
+    result: list[dict[str, Any]] = []
+    for text in texts:
+        vector = by_index.get(fallback_index)
+        if vector is None and isinstance(rows_raw, list) and len(rows_raw) == len(texts):
+            vector = rows_raw[fallback_index].get('embedding') if isinstance(rows_raw[fallback_index], dict) else None
+        result.append({
+            'index': fallback_index,
+            'text': text,
+            'embedding': vector,
+            'dimensions': len(vector) if isinstance(vector, list) else 0,
+        })
+        fallback_index += 1
+
+    return {
+        'success': True,
+        'rows': result,
+        'model': str(data.get('model') or '') if isinstance(data, dict) else '',
+        'usage': data.get('usage') if isinstance(data, dict) else {},
+    }
+
+
+def embed_rows_to_jsonl(rows: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for row in rows or []:
+        lines.append(json.dumps({
+            'text': str(row.get('text') or ''),
+            'embedding': row.get('embedding'),
+        }, ensure_ascii=False))
+    return '\n'.join(lines) + '\n'
+
+
 def _launch_signature(entry: dict[str, Any], launch: dict[str, Any]) -> dict[str, Any]:
     load = normalize_load_settings(entry.get('load_settings'))
     return {
