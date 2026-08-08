@@ -48,13 +48,14 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 def _write_runtime_process_manifest() -> None:
-    """Write the process-identity token manifest read by server.ps1."""
+    """Write process-identity + per-runtime bundle manifests at boot."""
     try:
-        from core.runtimes import write_process_tokens_manifest
+        from core.runtimes import write_bundle_manifests, write_process_tokens_manifest
 
         write_process_tokens_manifest()
+        write_bundle_manifests()
     except Exception:
-        # The manifest is an optimisation for cleanup; never block boot on it.
+        # Manifests are an optimisation for cleanup/diagnostics; never block boot.
         pass
 
 
@@ -813,6 +814,40 @@ def _require_runtime_adapter(runtime_id: str):
     if adapter is None:
         raise HTTPException(status_code=404, detail=f'runtime adapter not found: {runtime_id}')
     return adapter
+
+
+@app.get('/api/runtimes/manifests')
+def runtime_manifests() -> dict[str, Any]:
+    """Aggregate installed runtime plugin manifests + the process-token manifest.
+
+    Registered before the ``/api/runtimes/{runtime_id}`` route so the literal
+    path ``manifests`` is not captured by the runtime_id path parameter.
+    """
+    import json as _json
+
+    from core.runtimes import list_runtime_adapters
+
+    manifests: list[dict[str, Any]] = []
+    bundle_root = ROOT / 'runtimes'
+    for adapter in list_runtime_adapters():
+        runtime_id = str(adapter.runtime_id or '')
+        manifest_path = bundle_root / runtime_id / 'manifest.json'
+        if manifest_path.is_file():
+            try:
+                manifests.append({
+                    'runtime_id': runtime_id,
+                    'manifest': _json.loads(manifest_path.read_text(encoding='utf-8')),
+                })
+            except (OSError, ValueError):
+                pass
+    tokens: dict[str, Any] = {}
+    tokens_path = bundle_root / 'process-tokens.json'
+    if tokens_path.is_file():
+        try:
+            tokens = _json.loads(tokens_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            tokens = {}
+    return {'success': True, 'manifests': manifests, 'process_tokens': tokens}
 
 
 @app.get('/api/runtimes/{runtime_id}')

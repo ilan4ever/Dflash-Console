@@ -39,6 +39,23 @@ def test_start_and_load_report_not_installed(monkeypatch, tmp_path: Path):
     assert loaded['success'] is False
 
 
+def test_write_manifest_records_runtime(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(stt_mod, 'STT_MANIFEST', tmp_path / 'manifest.json')
+    adapter = stt_mod.SttRuntimeAdapter()
+    manifest = adapter.write_manifest()
+    assert manifest.is_file()
+    payload = json.loads(manifest.read_text(encoding='utf-8'))
+    assert payload['runtime_id'] == RUNTIME_STT
+    assert payload['execution_mode'] == EXECUTION_MODE_SERVER
+
+
+def test_process_identity_token_is_path_specific_not_bare_name():
+    # Sandbox guarantee: the token must not match a foreign whisper process by
+    # bare name; it must be a path-segment of our own binary only.
+    assert 'runtimes\\stt\\whisper-server' in stt_mod.STT_PROCESS_TOKEN
+    assert stt_mod.STT_PROCESS_TOKEN.startswith('runtimes')
+
+
 def test_transcribe_reports_not_running(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(stt_mod, 'STT_EXE', tmp_path / 'missing-whisper-server.exe')
     adapter = stt_mod.SttRuntimeAdapter()

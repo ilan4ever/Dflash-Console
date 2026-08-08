@@ -92,3 +92,20 @@ def write_process_tokens_manifest(root: Path | None = None) -> Path:
     except OSError:
         return target
     return target
+
+
+def write_bundle_manifests() -> None:
+    """Write a manifest for every registered adapter that provides one.
+
+    Called at Console boot so ``GET /api/runtimes/manifests`` returns the
+    installed runtime plugin manifests immediately (not only after first use).
+    """
+    with _REGISTRY_LOCK:
+        adapters = list(_ADAPTERS.values())
+    for adapter in adapters:
+        writer = getattr(adapter, 'write_manifest', None)
+        if callable(writer):
+            try:
+                writer()
+            except Exception:
+                pass
