@@ -43,6 +43,9 @@ node --check electron/main.js
 npm audit --audit-level=high
 ```
 
+Run the full production checklist (runtime bundles, dependencies, security,
+packaging, docs) — see **[PRODUCTION.md](./PRODUCTION.md)**.
+
 Update the version with the helper. It keeps the package, lockfile, backend,
 About page, and README synchronized:
 
