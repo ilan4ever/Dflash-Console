@@ -51,6 +51,30 @@
   let externalInitialFetchDone = false;
   let externalMissingPolls = 0;
   let externalPollCounter = 0;
+  // Console OpenAI gateway — one stable OpenAI-compatible base URL shown on the
+  // toolbar API badge / copy button instead of the raw per-engine port.
+  let gatewayUrl = '';
+  let gatewayUrlFetch = null;
+
+  async function loadGatewayUrl({ rerender = false } = {}) {
+    if (gatewayUrlFetch) return gatewayUrlFetch;
+    gatewayUrlFetch = (async () => {
+      try {
+        const data = await api('/api/config', { timeoutMs: 8000 });
+        const cfg = data?.config || {};
+        gatewayUrl = `http://127.0.0.1:${Number(cfg.gateway_port) || 8001}/v1`;
+      } catch (_err) {
+        gatewayUrl = '';
+      } finally {
+        gatewayUrlFetch = null;
+      }
+      if (rerender) {
+        const urlEl = document.getElementById('serverReachableUrl');
+        if (urlEl) urlEl.textContent = gatewayUrl || '—';
+      }
+    })();
+    return gatewayUrlFetch;
+  }
 
   const MODEL_GROUPS = window.DFlashModelGroups?.GROUPS || [
     { id: 'dflash', label: 'DFlash' },
@@ -788,7 +812,7 @@
     cardContextTarget = { server, row };
     const ready = row.card_state === 'ready';
     const loading = row.card_state === 'loading';
-    const url = server.reachable_url || '';
+    const url = gatewayUrl || server.reachable_url || '';
     const path = row.path || '';
     const isEmbedding = server.engine_mode === 'embedding'
       || server.model_kind === 'embedding'
@@ -829,7 +853,7 @@
       return;
     }
     if (cmd === 'copy-url') {
-      const url = server.reachable_url;
+      const url = gatewayUrl || server.reachable_url;
       if (!url) return;
       await navigator.clipboard.writeText(url);
       toast('API URL copied');
@@ -1161,7 +1185,8 @@
       return lines.filter(Boolean).join('\n');
     }
     lines.push(`Engine: ${server.label || server.id}`);
-    if (server.reachable_url) lines.push(`API: ${server.reachable_url}`);
+    const apiShown = gatewayUrl || server.reachable_url;
+    if (apiShown) lines.push(`API: ${apiShown}`);
     const details = Array.isArray(row.stack_details) ? row.stack_details : [];
     for (const part of details) {
       const size = part.size_gb != null ? ` · ${part.size_gb} GB` : '';
@@ -1859,7 +1884,10 @@
       statusText.className = anyActive ? 'lm-status-running' : 'lm-status-stopped';
     }
     if (toggle) setRunningToggle(running && getServerAction(server.id) !== 'stopping');
-    if (urlEl) urlEl.textContent = server.reachable_url || '—';
+    if (urlEl) {
+      urlEl.textContent = gatewayUrl || server.reachable_url || '—';
+      if (!gatewayUrl) void loadGatewayUrl({ rerender: true });
+    }
     const picked = selectedCatalogModel();
     renderLoadPlanNotice(picked);
     syncEngineCardsSectionLabel();
@@ -2799,6 +2827,7 @@
   document.addEventListener('DOMContentLoaded', () => {
     bind();
     updateEnginePageNotice();
+    void loadGatewayUrl();
     void initEngineFilters()
       .then(() => refresh())
       .then(startPolling)

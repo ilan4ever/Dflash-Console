@@ -99,11 +99,20 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if not 1 <= ui_port <= 65535:
         raise ValueError('ui_port must be between 1 and 65535')
 
+    try:
+        gateway_port = int(cfg.get('gateway_port') or DEFAULT_GATEWAY_PORT)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('gateway_port must be an integer') from exc
+    if not 1 <= gateway_port <= 65535:
+        raise ValueError('gateway_port must be between 1 and 65535')
+
     servers = cfg.get('servers') or []
     if not isinstance(servers, list):
         raise ValueError('servers must be a list')
     seen_ids: set[str] = set()
-    seen_ports: dict[int, str] = {ui_port: 'ui_port'}
+    seen_ports: dict[int, str] = {ui_port: 'ui_port', gateway_port: 'gateway_port'}
+    if gateway_port == ui_port:
+        raise ValueError('gateway_port must differ from ui_port')
     for index, row in enumerate(servers):
         if not isinstance(row, dict):
             raise ValueError(f'servers[{index}] must be an object')
@@ -176,6 +185,12 @@ DEFAULT_ENGINE_PORTS = (
 # Non-llama runtime ports (Piper, STT, ...). Kept in a distinct band so the UI
 # can tell llama engines from other runtimes at a glance.
 DEFAULT_RUNTIME_PORTS = (8910, 8911, 8912, 8913, 8914, 8915, 8916, 8917)
+
+# Console OpenAI gateway port — a single friendly OpenAI-compatible endpoint
+# that proxies to the active/default engine (LM Studio uses 1234; the Console
+# uses 8001 to avoid colliding with llama.cpp/OpenWebUI on 8080, vLLM on 8000,
+# Ollama on 11434, GPT4All on 4891, KoboldCpp on 5001, Jan on 1337, adb on 5555).
+DEFAULT_GATEWAY_PORT = 8001
 
 
 def normalize_load_settings(raw: Any) -> dict[str, Any]:
@@ -325,7 +340,7 @@ def get_dflash_root(cfg: dict[str, Any] | None = None) -> Path:
 
 def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.is_file():
-        return {'ui_port': 8900, 'dflash_root': str(ROOT), 'servers': []}
+        return {'ui_port': 8900, 'gateway_port': DEFAULT_GATEWAY_PORT, 'dflash_root': str(ROOT), 'servers': []}
     with CONFIG_PATH.open(encoding='utf-8') as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
@@ -333,6 +348,11 @@ def load_config() -> dict[str, Any]:
     servers = data.get('servers')
     if not isinstance(servers, list):
         data['servers'] = []
+    try:
+        data['gateway_port'] = int(data.get('gateway_port') or DEFAULT_GATEWAY_PORT)
+    except (TypeError, ValueError):
+        data['gateway_port'] = DEFAULT_GATEWAY_PORT
+    data['gateway_server_id'] = str(data.get('gateway_server_id') or '').strip()
     data['hardware_settings'] = normalize_hardware_settings(data.get('hardware_settings'))
     if 'ui_layout' in data:
         data['ui_layout'] = normalize_ui_layout(data.get('ui_layout'))
@@ -340,9 +360,12 @@ def load_config() -> dict[str, Any]:
 
 
 def reserved_ports(cfg: dict[str, Any] | None = None) -> dict[int, str]:
-    """Map of every reserved port (ui + servers + runtimes) to its owner label."""
+    """Map of every reserved port (ui + gateway + servers + runtimes) to its owner label."""
     config = cfg or load_config()
-    ports: dict[int, str] = {int(config.get('ui_port') or 8900): 'ui_port'}
+    ports: dict[int, str] = {
+        int(config.get('ui_port') or 8900): 'ui_port',
+        int(config.get('gateway_port') or DEFAULT_GATEWAY_PORT): 'gateway_port',
+    }
     for row in config.get('servers') or []:
         if not isinstance(row, dict):
             continue

@@ -812,6 +812,24 @@ try {
               </section>
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
+                  <strong>Console OpenAI gateway</strong>
+                  <p class="lm-setting-desc">One friendly OpenAI-compatible URL for any client (chat, embeddings, audio)</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Gateway port</strong><p class="lm-setting-desc">Single port like LM Studio's 1234 (default 8001). Restart the app after changing.</p></div>
+                  <input type="number" class="lm-num" id="settingsGatewayPort" min="1" max="65535" value="8001">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Default chat engine</strong><p class="lm-setting-desc">Engine that <code>/v1/chat/completions</code> routes to</p></div>
+                  <select class="lm-select" id="settingsGatewayServer"></select>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>OpenAI base URL</strong></div>
+                  <code class="lm-settings-path" id="settingsGatewayUrl">—</code>
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
                   <strong>Runtime</strong>
                   <p class="lm-setting-desc">Default limits when this engine loads a model.</p>
                 </div>

@@ -206,13 +206,18 @@ The underlying Console-proxied routes are OpenAI-shaped, so they also work from
 
 ## 8. Calling your engines
 
-Each loaded card displays an **OpenAI-compatible URL**, for example:
+Every engine card exposes the **Console OpenAI gateway** — one stable
+OpenAI-compatible endpoint for your local models:
 
 ```
-http://127.0.0.1:8090/v1/chat/completions
+http://127.0.0.1:8001/v1
 ```
 
-You can also route requests through the console proxy (updates live stats automatically):
+This is the **API** value shown on the Engines toolbar next to the copy button
+(the port is `config.json → gateway_port`, default 8001). Send **any model
+name** — the gateway resolves it to the configured chat engine and rewrites
+the request for you. For one specific engine, route through the console proxy
+instead (updates live stats automatically):
 
 ```
 POST http://127.0.0.1:8900/api/servers/{server_id}/v1/chat/completions
@@ -293,6 +298,50 @@ POST /api/runtimes/stt/unload    # free GPU memory
 GET  /api/runtimes               # list runtimes + adapters + process tokens
 GET  /api/gpu/contention         # who holds VRAM right now
 ```
+
+### Console OpenAI gateway (port 8001)
+
+The console also runs a **friendly OpenAI-compatible gateway** so any app that
+speaks the OpenAI API can talk to your local models with one stable base URL:
+
+```
+base_url = http://127.0.0.1:8001/v1
+api_key  = anything (ignored by the local gateway)
+```
+
+Model names are **tolerant**: send the engine id (`gemma-12b-ar`), the real
+checkpoint id, or any alias (even `gpt-4o`) — the gateway resolves it to the
+configured chat engine and rewrites the request for you. Chat auto-loads the
+model on first use (JIT) and streams with SSE when `"stream": true`.
+
+```bash
+# list engines as models
+curl http://127.0.0.1:8001/v1/models
+
+# chat (any model name works; streams if you add "stream": true)
+curl -X POST http://127.0.0.1:8001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# embeddings
+curl -X POST http://127.0.0.1:8001/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": ["one", "two"], "model": "nomic-embed"}'
+
+# TTS (Piper) and STT (Whisper) are also exposed
+curl -X POST http://127.0.0.1:8001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input": "Hello", "voice": "en_US-lessac-medium"}' -o speech.wav
+curl -X POST http://127.0.0.1:8001/v1/audio/transcriptions -F "file=@meeting.wav"
+
+# gateway status
+curl http://127.0.0.1:8001/health
+curl http://127.0.0.1:8900/api/gateway
+```
+
+Configure the port and default chat engine in **Settings → Engine profiles →
+Console OpenAI gateway** (`gateway_port`, `gateway_server_id`). Changing the
+port takes effect after the console restarts.
 
 The full reference is in **Documentation → Multi-modal runtimes**, or browse
 the interactive Swagger UI at `http://127.0.0.1:8900/docs`.
