@@ -17,10 +17,11 @@
   let listRefreshIndicator = null;
   const CATALOG_REFRESH_MS = 10 * 60 * 1000;
 
+  const DEFAULT_CATEGORY = 'all-gguf';
   const CATEGORY_LABELS = {
     dflash: 'DFlash / speculative',
     'text-generation': 'Text generation',
-    'all-gguf': 'All GGUF',
+    'all-gguf': 'All models',
     'text-to-speech': 'Text-to-speech',
     'automatic-speech-recognition': 'Speech-to-text',
     'image-to-text': 'OCR / image-to-text',
@@ -178,14 +179,16 @@
     let text = preprocessReadme(stripDuplicateTitle(stripFrontmatter(raw || ''), modelId));
     if (!text.trim()) return '<p class="lm-readme-empty">README not available.</p>';
 
-    const htmlTags = (text.match(/<\s*[a-z][^>]*>/gi) || []).length;
+    // Always parse as Markdown (GFM). HF READMEs mix HTML + Markdown; skipping
+    // marked when HTML tags are present left raw ## / tables / pipes on screen.
     let html = '';
-    if (htmlTags >= 2) {
-      html = sanitizeReadmeHtml(text);
-    } else if (window.marked?.parse) {
+    if (window.marked?.parse) {
       html = sanitizeReadmeHtml(window.marked.parse(text, { gfm: true, breaks: false }));
     } else {
-      html = renderMarkdownFallback(text);
+      const looksLikeMarkdown = /(^|\n)\s{0,3}#{1,6}\s|(^|\n)\|.+\||```|\[[^\]]+\]\([^)]+\)/.test(text);
+      html = looksLikeMarkdown
+        ? sanitizeReadmeHtml(renderMarkdownFallback(text))
+        : sanitizeReadmeHtml(text);
     }
     const wrap = document.createElement('div');
     wrap.className = 'lm-readme-rendered lm-readme-md';
@@ -194,8 +197,51 @@
     return wrap.outerHTML;
   }
 
+  function renderDescriptionHtml(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return escapeHtml('No description on Hugging Face.');
+    if (/<\s*[a-z]/i.test(raw)) return sanitizeReadmeHtml(raw);
+    return escapeHtml(raw);
+  }
+
+  function formatCatalogFileSize(file) {
+    if (!file) return '';
+    const bytes = Number(file.size_bytes);
+    if (Number.isFinite(bytes) && bytes > 0) {
+      return window.DFlashDownloadQueue?.formatBytes?.(bytes) || `${file.size_gb} GB`;
+    }
+    if (file.size_gb != null && file.size_gb !== '') return `${file.size_gb} GB`;
+    return '';
+  }
+
+  function selectedCatalogFile(files) {
+    const list = Array.isArray(files) ? files : [];
+    const filename = getSelectedFilename();
+    if (!filename) return list[0] || null;
+    return list.find((file) => file.filename === filename) || list[0] || null;
+  }
+
+  function updateSelectedFileSize(files) {
+    const el = document.getElementById('hfSelectedFileSize');
+    if (!el) return;
+    const size = formatCatalogFileSize(selectedCatalogFile(files));
+    el.textContent = size || '';
+    el.classList.toggle('hidden', !size);
+    el.title = size ? `File size on disk: ${size}` : '';
+  }
+
   function currentCategory() {
-    return document.getElementById('hfSearchCategory')?.value || 'dflash';
+    return document.getElementById('hfSearchCategory')?.value || DEFAULT_CATEGORY;
+  }
+
+  function applyCatalogDefaults() {
+    const returnBar = document.getElementById('stackWizardCatalogReturn');
+    if (returnBar && !returnBar.classList.contains('hidden')) return;
+    const category = document.getElementById('hfSearchCategory');
+    if (category) {
+      category.value = DEFAULT_CATEGORY;
+      window.DFlashSelectTheme?.syncSelect?.(category);
+    }
   }
 
   function currentCreator() {
@@ -504,7 +550,7 @@
     if (catalogPrimed) return;
     try {
       if (!modelLibraries.length) await loadLibraries();
-      const category = 'dflash';
+      const category = DEFAULT_CATEGORY;
       const sort = 'downloads';
       const query = '';
       const key = searchCacheKey(query, sort, category);
@@ -804,8 +850,12 @@
     const files = Array.isArray(model.download_files) ? model.download_files
       : (Array.isArray(model.gguf_files) ? model.gguf_files : []);
     const fileOptions = files.map((file, idx) =>
-      `<option value="${escapeHtml(file.filename)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(file.label)}${file.size_gb != null ? ` · ${file.size_gb} GB` : ''}</option>`,
+      `<option value="${escapeHtml(file.filename)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(file.label)}</option>`,
     ).join('');
+    const initialSize = formatCatalogFileSize(files[0]);
+    const fileSizeEl = files.length
+      ? `<span class="df-catalog-file-size${initialSize ? '' : ' hidden'}" id="hfSelectedFileSize" title="${initialSize ? `File size on disk: ${escapeHtml(initialSize)}` : ''}">${escapeHtml(initialSize)}</span>`
+      : '';
     const filePick = files.length > 1
       ? `<div class="df-catalog-file-row">
           <label class="df-catalog-field-label" for="hfFilePick">Quantization</label>
@@ -849,9 +899,10 @@
                 · Updated ${escapeHtml(model.updated_ago || '—')}${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
               </p>
               <p class="lm-search-repo-id">${escapeHtml(model.id)}</p>
-              <p class="lm-search-description">${escapeHtml(summaryText)}</p>
+              <p class="lm-search-description">${renderDescriptionHtml(summaryText)}</p>
               <div class="df-catalog-quant-download-row">
                 ${filePick}
+                ${fileSizeEl}
                 <div class="df-catalog-quant-download-actions">
                   ${downloadBtn}
                   <span class="df-catalog-download-progress-pct hidden" id="hfDownloadProgressPct">0%</span>
@@ -900,6 +951,7 @@
       });
     });
     document.getElementById('hfFilePick')?.addEventListener('change', () => {
+      updateSelectedFileSize(files);
       void refreshInstallUI(model);
     });
     document.getElementById('hfDownloadBtn')?.addEventListener('click', async (event) => {
@@ -916,6 +968,7 @@
       const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
       void startDownload(model.id, filename, libraryId, model);
     });
+    updateSelectedFileSize(files);
     void refreshInstallUI(model);
   }
 
@@ -1139,6 +1192,7 @@
 
   async function onViewEnter() {
     await loadLibraries();
+    applyCatalogDefaults();
     const input = searchInput();
     input?.focus();
 

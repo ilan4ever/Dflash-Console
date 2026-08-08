@@ -14,6 +14,7 @@ from core.runtime import api_base_url
 
 _LAST_COMPLETION: dict[str, dict[str, Any]] = {}
 _LAST_COMPLETION_SLOTS: dict[str, dict[int, dict[str, Any]]] = {}
+_RECENT_COMPLETIONS: dict[str, list[dict[str, Any]]] = {}
 # Reference-counted so parallel map→merge chat proxies stay "generating"
 # until the last in-flight request ends (avoids status thrashing mid-batch).
 _ACTIVE_INFERENCE: dict[str, dict[str, Any]] = {}
@@ -143,6 +144,19 @@ def _completion_entry(
     }
 
 
+def _remember_completion(server_id: str, entry: dict[str, Any]) -> None:
+    sid = str(server_id or '')
+    if not sid or not isinstance(entry, dict):
+        return
+    history = _RECENT_COMPLETIONS.setdefault(sid, [])
+    history.insert(0, dict(entry))
+    del history[3:]
+
+
+def _recent_completions(server_id: str) -> list[dict[str, Any]]:
+    return [dict(row) for row in (_RECENT_COMPLETIONS.get(str(server_id or '')) or [])]
+
+
 def get_cached_inference_stats(server_id: str) -> dict[str, Any]:
     cached = _STATS_CACHE.get(str(server_id or ''))
     if not isinstance(cached, dict):
@@ -242,6 +256,7 @@ def note_completion_stats(
             entry['tokens_per_second'] = round(1000.0 / float(tpt_ms), 1)
     sid = str(server_id)
     _LAST_COMPLETION[sid] = entry
+    _remember_completion(sid, entry)
     slot_id = _match_completion_slot(
         sid,
         api_url=api_url,
@@ -277,6 +292,7 @@ def note_completion_from_live(
         )
         last_by_slot[int(slot_id)] = entry
         _LAST_COMPLETION[sid] = entry
+        _remember_completion(sid, entry)
         _mark_slot_wave_completion(sid, int(slot_id))
         return
     last = _LAST_COMPLETION.get(sid) or {}
@@ -287,6 +303,7 @@ def note_completion_from_live(
         prompt_tokens=prompt_tokens,
         tokens_per_second=tokens_per_second,
     )
+    _remember_completion(sid, _LAST_COMPLETION[sid])
     if slot_id is None:
         _mark_slot_wave_completion(sid, 0)
 
@@ -508,6 +525,7 @@ def _process_slot(server_id: str, slot: dict[str, Any]) -> dict[str, Any]:
             )
         last_by_slot[slot_id] = entry
         _LAST_COMPLETION[sid] = entry
+        _remember_completion(sid, entry)
         _mark_slot_wave_completion(sid, slot_id)
     slot_epoch = (_SLOT_WAVE_EPOCH.get(sid) or {}).get(slot_id)
     if slot_epoch == _current_wave_epoch(sid):
@@ -571,6 +589,7 @@ def fetch_inference_stats(
         for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'updated_at'):
             if last.get(key) is not None:
                 stats[key] = last[key]
+        stats['recent_completions'] = _recent_completions(sid)
         if proxy_active:
             stats['generating'] = True
             started = _proxy_inference_started_at(sid)
@@ -660,6 +679,7 @@ def fetch_inference_stats(
             stats[key] = last[key]
     if stats.get('tokens_per_second') is not None:
         stats['tokens_per_second'] = round(float(stats['tokens_per_second']), 1)
+    stats['recent_completions'] = _recent_completions(sid)
 
     if sid:
         cached = dict(stats)

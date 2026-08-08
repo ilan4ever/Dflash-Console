@@ -310,14 +310,25 @@ def find_repo_local_installs(repo_id: str, *, cfg: dict[str, Any] | None = None)
     if not matches:
         tokens = [
             token for token in re.split(r'[^a-z0-9]+', repo_name.lower())
-            if len(token) >= 3 and token not in {'gguf', 'llama', 'cpp', 'model'}
+            if len(token) >= 3 and token not in {'gguf', 'llama', 'cpp', 'model', 'dflash', 'dspark'}
         ]
         for row in list_local_models(cfg=config).get('models') or []:
             path_text = str(row.get('path') or '').strip()
             path = Path(path_text)
+            if not path.is_file():
+                continue
             normalized = path.as_posix().lower().replace('_', '-')
-            if path.is_file() and sum(token in normalized for token in tokens) >= min(3, len(tokens)):
-                matches.append(_row_from_path(path, match_type='model_name', labels=labels, row=row))
+            if author_l not in normalized and f'/{author_l}/' not in normalized:
+                continue
+            if repo_slug not in normalized and repo_slug_flat not in normalized.replace('-', ''):
+                continue
+            if tokens and sum(token in normalized for token in tokens) < min(2, len(tokens)):
+                continue
+            key = str(path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(_row_from_path(path, match_type='model_name', labels=labels, row=row))
 
     return matches
 

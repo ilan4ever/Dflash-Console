@@ -254,8 +254,11 @@ def normalize_ui_layout(raw: Any) -> dict[str, Any]:
         if tab in valid_inspector_tabs:
             result['inspector_tab'] = tab
     valid_settings_panels = {
-        'ws-checkpoints', 'ws-locations', 'hw-system', 'hw-gpus', 'hw-strategy',
-        'hw-live', 'gw-network', 'gw-behavior', 'gw-preset', 'int-mcp',
+        'app-settings',
+        'ws-checkpoints', 'ws-locations',
+        'hw-system', 'hw-gpus', 'hw-strategy', 'hw-live',
+        'gw-engines', 'gw-network', 'gw-behavior', 'gw-preset',
+        'int-mcp',
     }
     if 'settings_panel' in raw:
         panel = str(raw.get('settings_panel') or '').strip()

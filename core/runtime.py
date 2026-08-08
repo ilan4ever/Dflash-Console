@@ -26,7 +26,13 @@ _ROUTER_UNLOAD_CACHE: dict[str, tuple[bool, float]] = {}
 _ROUTER_UNLOAD_CACHE_TTL = 300.0
 
 from core.gpu_devices import format_gpu_assignment, query_gpu_devices, resolve_role_gpu_launch_params
-from core.load_progress import is_active_boot, parse_load_progress, read_log_tail
+from core.load_progress import (
+    is_active_boot,
+    is_active_model_load,
+    model_load_failure_message,
+    parse_load_progress,
+    read_log_tail,
+)
 from core.model_presets import gpu_layers_max_for
 from core.model_stack import resolve_model_stack
 from core.server_boot import (
@@ -898,15 +904,18 @@ def build_server_status(
     from core.load_progress import boot_failure_message
 
     boot_error = boot_failure_message(log_lines)
+    load_error = None if boot_error else model_load_failure_message(log_lines)
+    status_error = boot_error or load_error
     active_boot = is_active_boot(log_lines)
-    load_progress = parse_load_progress(log_lines) if active_boot else None
+    active_model_load = is_active_model_load(log_lines)
+    load_progress = parse_load_progress(log_lines) if (active_boot or active_model_load) and not load_error else None
     alias_ready = bool(loaded_models)
-    booting = running and not alias_ready and not boot_error and (
-        bool(loading_models) or (active_boot and not router_ready)
+    booting = running and not alias_ready and not status_error and (
+        bool(loading_models) or active_model_load or (active_boot and not router_ready)
     )
     started = get_started_launch(port)
     status = 'stopped'
-    if boot_error:
+    if status_error:
         status = 'error'
     elif running and loaded_models:
         status = 'loaded'
@@ -1029,7 +1038,8 @@ def build_server_status(
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
         'inference_stats': inference_stats,
-        'boot_error': boot_error,
+        'boot_error': status_error,
+        'load_error': load_error,
     }
     if server_id:
         _SERVER_STATUS_CACHE[server_id] = dict(result)

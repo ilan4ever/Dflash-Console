@@ -178,7 +178,15 @@
   }
 
   function isModelReadyToLoad(model) {
-    return !!(model?.loadable && !isDflashAccelerator(model) && !isStackLoadedOnGpu(model) && !isStackBooting(model));
+    return !!(
+      model?.loadable
+      && !modelFileMissing(model)
+      && !isDflashAccelerator(model)
+      && model.stack_status !== 'unregistered'
+      && !Number(model?.split_count || 0)
+      && !isStackLoadedOnGpu(model)
+      && !isStackBooting(model)
+    );
   }
 
   function isStackReadyToLoad(model) {
@@ -222,7 +230,7 @@
     const dup = duplicateTag(model);
     const weak = weakMatchTag(model);
     const caps = capabilityTags(model.capabilities, {
-      loadable: model.loadable && !isDflashAccelerator(model),
+      loadable: model.loadable && !isDflashAccelerator(model) && !modelFileMissing(model) && model.stack_status !== 'unregistered',
       port: model.port,
     });
     if (isDflashStack(model)) {
@@ -241,7 +249,10 @@
     if (isDflashAccelerator(model)) {
       return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
     }
-    if (model.loadable) {
+    if (modelFileMissing(model)) {
+      return '<span class="lm-tag yellow" title="File not found on disk — refresh the catalog or check model folders">missing file</span>';
+    }
+    if (model.loadable && model.stack_status !== 'unregistered') {
       return '<button class="lm-btn ghost tiny" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
     }
     if (model.stack_status === 'disabled' && model.server_id) {
@@ -573,7 +584,12 @@
   }
 
   function installedBadge(model) {
-    return model?.path ? '<span class="lm-badge installed">Installed</span>' : '';
+    if (!model?.path || model?.path_missing) return '';
+    return '<span class="lm-badge installed">Installed</span>';
+  }
+
+  function modelFileMissing(model) {
+    return !!(model?.path_missing || (model?.path && !model.path));
   }
 
   function installedDflashLogo(model) {
@@ -1191,7 +1207,10 @@
     }
     if (path) path.textContent = meta.models_dir || '—';
     if (hint) {
-      hint.textContent = typeFilter === 'downloading'
+      const cacheNote = meta.cached
+        ? (meta.stale ? 'Showing the last saved list while the library refreshes in the background. ' : 'Showing the saved list while checking for library changes. ')
+        : '';
+      hint.textContent = cacheNote + (typeFilter === 'downloading'
         ? 'Active Hugging Face downloads from Model catalog appear here with live progress.'
         : typeFilter === 'loaded'
           ? 'Only models currently on the GPU (matched by engine profile or file path). Use Unload to free VRAM.'
@@ -1199,7 +1218,7 @@
           ? 'DFlash/DSpark draft files only (name contains DFlash or DSpark) — small checkpoints paired with a full target for speculative decoding. Full target GGUFs belong under All models.'
           : typeFilter === 'dflash'
             ? 'DFlash stacks with target + accelerator pairing. Green = ready. Gold label = speculative stack.'
-            : 'All discovered GGUF files from Console libraries and common model folders on this PC.';
+            : 'All discovered GGUF files from Console libraries and common model folders on this PC.');
     }
   }
 
@@ -1288,6 +1307,14 @@
   async function loadModel(model) {
     if (isDflashAccelerator(model)) {
       toast('Choose the full target model; accelerators are stack-only.', false);
+      return;
+    }
+    if (modelFileMissing(model)) {
+      toast('Model file not found on disk. Refresh the catalog or check Settings → model folders.', false);
+      return;
+    }
+    if (model.stack_status === 'unregistered') {
+      toast('Set up a DFlash stack first, or use Load LLM from the row menu.', false);
       return;
     }
     if (!window.DFlashServerLive?.loadModelOnServer) {

@@ -17,14 +17,18 @@ function Rotate-LogFile {
     )
     if (-not (Test-Path $Path)) { return }
     if ((Get-Item $Path).Length -lt $MaxBytes) { return }
-    for ($index = $Backups - 1; $index -ge 1; $index--) {
-        $source = "$Path.$index"
-        $destination = "$Path.$($index + 1)"
-        if (Test-Path $source) {
-            Move-Item -Force $source $destination
+    try {
+        for ($index = $Backups - 1; $index -ge 1; $index--) {
+            $source = "$Path.$index"
+            $destination = "$Path.$($index + 1)"
+            if (Test-Path $source) {
+                Move-Item -Force $source $destination -ErrorAction Stop
+            }
         }
+        Move-Item -Force $Path "$Path.1" -ErrorAction Stop
+    } catch {
+        # Another process may hold the log open (Electron shell / watcher). Skip rotate.
     }
-    Move-Item -Force $Path "$Path.1"
 }
 
 function Write-StartupLine {

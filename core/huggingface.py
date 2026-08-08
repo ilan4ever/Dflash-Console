@@ -21,7 +21,7 @@ HF_BASE = 'https://huggingface.co'
 
 HF_CATEGORIES: dict[str, dict[str, Any]] = {
     'dflash': {
-        'label': 'DFlash / speculative',
+        'label': 'DFlash Accelerator',
         'search': 'dflash gguf',
         'filter': 'gguf',
         'gguf_only': True,
@@ -165,20 +165,175 @@ def _model_files(siblings: list[Any] | None, *, gguf_only: bool = True) -> list[
         if not any(lower.endswith(ext) for ext in allowed):
             continue
         size = entry.get('size')
+        if not isinstance(size, int) or size <= 0:
+            lfs = entry.get('lfs')
+            if isinstance(lfs, dict) and isinstance(lfs.get('size'), int):
+                size = lfs['size']
         size_gb = round(int(size) / (1024 ** 3), 2) if isinstance(size, int) and size > 0 else None
         files.append({
             'filename': name,
-            'size_bytes': size,
+            'size_bytes': size if isinstance(size, int) and size > 0 else None,
             'size_gb': size_gb,
             'label': name.split('/')[-1],
             'format': Path(name).suffix.lower().lstrip('.') or 'file',
         })
-    files.sort(key=lambda row: (0 if str(row.get('format')) == 'gguf' else 1, row.get('size_bytes') or 0))
+    files.sort(key=_catalog_file_sort_key)
     return files
 
 
 def _gguf_files(siblings: list[Any] | None) -> list[dict[str, Any]]:
     return _model_files(siblings, gguf_only=True)
+
+
+def _fetch_repo_tree(repo: str) -> list[dict[str, Any]]:
+    """Return HF tree entries (with sizes). Falls back to empty list on error."""
+    encoded = urllib.parse.quote(repo, safe='/')
+    url = f'{HF_API}/models/{encoded}/tree/main?recursive=1'
+    try:
+        payload = _request_json(url, timeout=30)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _siblings_with_sizes(siblings: list[Any] | None, tree: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Merge model siblings with tree sizes when the Hub omits size on siblings."""
+    size_by_name: dict[str, int] = {}
+    for row in tree or []:
+        path = str(row.get('path') or '').strip()
+        if not path:
+            continue
+        size = row.get('size')
+        if not isinstance(size, int) or size <= 0:
+            lfs = row.get('lfs')
+            if isinstance(lfs, dict) and isinstance(lfs.get('size'), int):
+                size = lfs['size']
+        if isinstance(size, int) and size > 0:
+            size_by_name[path] = size
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in siblings or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get('rfilename') or entry.get('path') or '').strip()
+        if not name:
+            continue
+        row = dict(entry)
+        row['rfilename'] = name
+        if name in size_by_name and not (isinstance(row.get('size'), int) and row['size'] > 0):
+            row['size'] = size_by_name[name]
+        merged.append(row)
+        seen.add(name)
+    for path, size in size_by_name.items():
+        if path in seen:
+            continue
+        merged.append({'rfilename': path, 'path': path, 'size': size})
+    return merged
+
+
+def _quant_rank(filename: str) -> int:
+    """Lower rank = better default download. Prefer Q4_K_M, then nearby Q4/Q5 quants."""
+    lower = str(filename or '').lower()
+    if 'imatrix' in lower or lower.endswith('.part'):
+        return 10_000
+    ranked: list[tuple[str, int]] = [
+        ('q4_k_m', 0),
+        ('q4_k_s', 1),
+        ('q4_0', 2),
+        ('q5_k_m', 3),
+        ('q5_k_s', 4),
+        ('q3_k_m', 5),
+        ('q3_k_s', 6),
+        ('q4_k_l', 7),
+        ('q5_0', 8),
+        ('q6_k', 9),
+        ('q8_0', 10),
+        ('q2_k', 20),
+        ('q2_k_s', 21),
+        ('iq4_nl', 40),
+        ('iq4_xs', 41),
+        ('iq3_xxs', 50),
+        ('iq3_s', 51),
+        ('iq2_xxs', 60),
+        ('iq2_xs', 61),
+        ('iq2_s', 62),
+        ('iq1_s', 70),
+        ('q8_0', 80),
+        ('f16', 900),
+        ('bf16', 901),
+        ('f32', 902),
+    ]
+    best = 500
+    for token, rank in ranked:
+        if token in lower:
+            best = min(best, rank)
+    return best
+
+
+def _catalog_file_sort_key(row: dict[str, Any]) -> tuple[int, int, int, int]:
+    filename = str(row.get('filename') or '')
+    return (
+        0 if str(row.get('format')) == 'gguf' else 1,
+        1 if 'imatrix' in filename.lower() else 0,
+        _quant_rank(filename),
+        int(row.get('size_bytes') or 0),
+    )
+
+
+def _preferred_gguf_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not files:
+        return None
+    return min(files, key=_catalog_file_sort_key)
+
+
+def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
+    preferred = _preferred_gguf_file(_gguf_files(siblings))
+    if not preferred:
+        return None, '—'
+    size_gb = preferred.get('size_gb')
+    if not isinstance(size_gb, (int, float)):
+        return None, '—'
+    return float(size_gb), f'{float(size_gb):g} GB'
+
+
+_ACCELERATOR_MAX_SIZE_GB = 8.0
+
+
+def _is_accelerator_only_repo(
+    siblings: list[Any] | None,
+    *,
+    repo_id: str = '',
+    size_gb: float | None = None,
+) -> bool:
+    """True when the repo ships DFlash draft weights only, not a full target model."""
+    largest_gb, _ = _largest_gguf_size(siblings)
+    effective_gb = largest_gb
+    if size_gb is not None:
+        effective_gb = max(float(size_gb), float(largest_gb or 0))
+    if effective_gb is not None and effective_gb > _ACCELERATOR_MAX_SIZE_GB:
+        return False
+
+    files = _gguf_files(siblings)
+    if files:
+        names = [str(row.get('filename') or '').lower() for row in files]
+        if names and all('dflash' in name or 'dspark' in name for name in names):
+            return True
+        return False
+    repo_lower = str(repo_id or '').lower()
+    if 'dflash' not in repo_lower and 'dspark' not in repo_lower:
+        return False
+    if re.search(r'-dflash(?:[-_.]|/|$)|dflash-gguf', repo_lower):
+        param = re.search(r'\b(\d+(?:\.\d+)?)\s*b\b', repo_lower)
+        if param and float(param.group(1)) >= 30 and effective_gb is None:
+            return False
+        return True
+    param = re.search(r'\b(\d+(?:\.\d+)?)\s*b\b', repo_lower)
+    if param and size_gb is not None and float(size_gb) < 6 and float(param.group(1)) >= 7:
+        return True
+    return False
 
 
 def _largest_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
@@ -440,8 +595,9 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     tags = [str(t) for t in (raw.get('tags') or []) if t]
     siblings = raw.get('siblings')
     downloadable = _model_files(siblings, gguf_only=False)
-    last_modified = str(raw.get('lastModified') or '')
-    size_gb, size_label = _largest_gguf_size(siblings)
+    last_modified = str(raw.get('lastModified') or raw.get('createdAt') or '')
+    size_gb, size_label = _preferred_gguf_size(siblings)
+    accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
     updated_days = _days_since(last_modified)
     repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
     lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
@@ -460,6 +616,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'updated_days': updated_days,
         'size_gb': size_gb,
         'size_label': size_label,
+        'accelerator_only': accelerator_only,
         'tags': tags,
         'pipeline_tag': str(raw.get('pipeline_tag') or ''),
         'description': description,
@@ -468,6 +625,52 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'has_gguf': any(name.endswith('.gguf') for name in tags) or bool(_gguf_files(siblings)),
         'has_files': bool(downloadable),
     }
+
+
+def _summaries_from_models(
+    raw_models: list[dict[str, Any]],
+    *,
+    enrich_sizes: bool = False,
+) -> list[dict[str, Any]]:
+    """Build summaries and fill missing GGUF sizes from the Hub tree."""
+    raw_items = [item for item in raw_models if isinstance(item, dict)]
+    rows = [_summary_from_model(item) for item in raw_items]
+    if not enrich_sizes or not rows:
+        return rows
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    raw_by_index = dict(enumerate(raw_items))
+    futures = {}
+    with ThreadPoolExecutor(max_workers=min(12, len(rows))) as pool:
+        for index, row in enumerate(rows):
+            repo_id = str(row.get('id') or '')
+            marker_text = ' '.join([
+                repo_id,
+                ' '.join(str(tag) for tag in row.get('tags') or []),
+            ]).lower()
+            if not repo_id or not re.search(r'dflash|dspark', marker_text):
+                continue
+            raw = raw_by_index.get(index)
+            if not raw or any(
+                item.get('size_gb') is not None
+                for item in _gguf_files(raw.get('siblings'))
+            ):
+                continue
+            futures[pool.submit(_fetch_repo_tree, repo_id)] = (index, raw)
+
+        for future in as_completed(futures):
+            index, raw = futures[future]
+            try:
+                tree = future.result()
+            except Exception:
+                continue
+            if not tree:
+                continue
+            enriched = dict(raw)
+            enriched['siblings'] = _siblings_with_sizes(raw.get('siblings'), tree)
+            rows[index] = _summary_from_model(enriched)
+    return rows
 
 
 def search_models(
@@ -482,10 +685,13 @@ def search_models(
     cat_key = str(category or 'dflash').strip().lower()
     cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
     use_gguf_only = cat.get('gguf_only', True) if gguf_only is None else gguf_only
+    response_limit = max(1, min(int(limit), 50))
+    hf_limit = 50 if cat_key == 'dflash' and not needle else response_limit
     params: dict[str, str | int] = {
-        'limit': max(1, min(int(limit), 50)),
+        'limit': hf_limit,
         'sort': sort if sort in ('downloads', 'likes', 'lastModified', 'createdAt') else 'downloads',
         'direction': '-1',
+        'full': 'true',
     }
     if needle:
         if use_gguf_only and 'gguf' not in needle.lower():
@@ -508,7 +714,10 @@ def search_models(
         return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
-    models = [_summary_from_model(item) for item in payload if isinstance(item, dict)]
+    models = _summaries_from_models(
+        payload,
+        enrich_sizes=cat_key == 'dflash',
+    )
     if use_gguf_only:
         models = [
             row for row in models
@@ -523,6 +732,7 @@ def search_models(
             'limit': params['limit'],
             'sort': params['sort'],
             'direction': '-1',
+            'full': 'true',
             'search': needle,
         }
         if use_gguf_only:
@@ -532,7 +742,10 @@ def search_models(
         try:
             fallback_payload = _request_json(f'{HF_API}/models?{urllib.parse.urlencode(fallback_params)}')
             if isinstance(fallback_payload, list):
-                models = [_summary_from_model(item) for item in fallback_payload if isinstance(item, dict)]
+                models = _summaries_from_models(
+                    fallback_payload,
+                    enrich_sizes=cat_key == 'dflash',
+                )
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             pass
     models.sort(
@@ -559,6 +772,9 @@ def search_models(
             tags=tags,
             cfg=config,
         )
+    if cat_key == 'dflash':
+        models = [row for row in models if row.get('accelerator_only')]
+    models = models[:response_limit]
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
@@ -591,10 +807,17 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
 
     card = raw.get('cardData') if isinstance(raw.get('cardData'), dict) else {}
     tags = [str(t) for t in (raw.get('tags') or []) if t]
-    gguf_files = _gguf_files(raw.get('siblings'))
-    downloadable_files = _model_files(raw.get('siblings'), gguf_only=use_gguf_only)
+    tree = _fetch_repo_tree(repo)
+    siblings = _siblings_with_sizes(raw.get('siblings'), tree)
+    gguf_files = _gguf_files(siblings)
+    downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)
     files = gguf_files if use_gguf_only else downloadable_files
+    preferred = _preferred_gguf_file(files)
     summary = _summary_from_model(raw)
+    # Prefer the recommended quant size for the detail summary when siblings omit them.
+    if preferred and isinstance(preferred.get('size_gb'), (int, float)):
+        summary['size_gb'] = float(preferred['size_gb'])
+        summary['size_label'] = f"{float(preferred['size_gb']):g} GB"
     description = _truncate_text(_card_description(card) or summary.get('description') or '')
     title = str(summary.get('title') or summary.get('label') or repo).strip()
     if readme:
@@ -619,6 +842,12 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
             'tags': tags,
             'gguf_files': gguf_files,
             'download_files': files,
+            'default_download': preferred.get('filename') if preferred else '',
+            'accelerator_only': _is_accelerator_only_repo(
+                siblings,
+                repo_id=repo,
+                size_gb=float(preferred['size_gb']) if preferred and isinstance(preferred.get('size_gb'), (int, float)) else summary.get('size_gb'),
+            ),
             'local_installs': local_installs,
             'local_ready': bool(repo_installs),
             'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),

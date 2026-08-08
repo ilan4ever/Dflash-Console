@@ -55,8 +55,56 @@ jobs:
         shell: pwsh
         run: python scripts/release-preflight.py
 
+      - name: Prepare signed DFlash update configuration
+        shell: pwsh
+        env:
+          DFLASH_UPDATE_TOKEN: ${{ secrets.DFLASH_UPDATE_TOKEN }}
+          DFLASH_UPDATE_PRIVATE_KEY: ${{ secrets.DFLASH_UPDATE_PRIVATE_KEY }}
+        run: |
+          if (-not $env:DFLASH_UPDATE_TOKEN -or -not $env:DFLASH_UPDATE_PRIVATE_KEY) {
+            throw "DFLASH_UPDATE_TOKEN and DFLASH_UPDATE_PRIVATE_KEY repository secrets are required."
+          }
+          $endpoint = @{
+            manifestUrl = "https://onevoiceai.in/internal-app/dflash-console/latest.json"
+            token = $env:DFLASH_UPDATE_TOKEN
+          } | ConvertTo-Json
+          $endpoint | Set-Content electron/resources/update-endpoint.json -Encoding UTF8
+          $env:DFLASH_UPDATE_PRIVATE_KEY | Set-Content "$env:RUNNER_TEMP\dflash-update-private.pem" -Encoding UTF8
+
       - name: Build NSIS installer and portable package
         run: npx electron-builder --win --publish never
+
+      - name: Sign DFlash update manifest
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          node tools/sign-update-manifest.js `
+            --installer "dist-electron/DFlash-Console-Setup-$version-x64.exe" `
+            --output "dist-electron/latest.json" `
+            --version $version `
+            --key "$env:RUNNER_TEMP\dflash-update-private.pem" `
+            --download-url "https://onevoiceai.in/internal-app/dflash-console/download"
+          $manifest = Get-Content "dist-electron/latest.json" -Raw | ConvertFrom-Json
+          if ($manifest.appId -ne "com.dflash.console") { throw "Unexpected DFlash manifest appId." }
+
+      - name: Publish signed DFlash update feed
+        if: ${{ secrets.HOSTINGER_SSH_HOST != '' }}
+        shell: pwsh
+        env:
+          HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          HOSTINGER_SSH_USERNAME: ${{ secrets.HOSTINGER_SSH_USERNAME }}
+          HOSTINGER_SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+          HOSTINGER_SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          DFLASH_UPDATE_TOKEN: ${{ secrets.DFLASH_UPDATE_TOKEN }}
+        run: |
+          $key = "$env:RUNNER_TEMP\hostinger-dflash.key"
+          $env:HOSTINGER_SSH_PRIVATE_KEY | Set-Content $key -Encoding ascii
+          $env:HOSTINGER_SSH_PRIVATE_KEY_PATH = $key
+          $version = node -p "require('./package.json').version"
+          .\scripts\publish-dflash-update.ps1 `
+            -Installer "dist-electron/DFlash-Console-Setup-$version-x64.exe" `
+            -Manifest "dist-electron/latest.json" `
+            -Token $env:DFLASH_UPDATE_TOKEN
 
       - name: Generate SHA-256 checksums
         shell: pwsh

@@ -13,6 +13,7 @@ from core.model_presets import infer_profile_from_path, model_id_from_path
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+|F16|BF16|IQ\d_[A-Z0-9]+', re.I)
 _DFLASH_RE = re.compile(r'dflash|dspark', re.I)
+_SHARD_RE = re.compile(r'[-_]\d{5}-of-\d{5}', re.I)
 _TOKEN_RE = re.compile(r'[a-z0-9]+')
 _MIN_CAPABLE_SCORE = 2.0
 
@@ -115,13 +116,30 @@ def infer_dflash_profile(target_path: str | Path, draft_path: str | Path | None 
 
 def build_hf_search_query(target_path: str | Path) -> str:
     stem = Path(target_path).stem
+    stem = _SHARD_RE.sub('', stem)
     stem = _QUANT_RE.sub('', stem).strip(' .-_')
+    stem = re.sub(r'\bud\b', ' ', stem, flags=re.I)
     stem = re.sub(r'\s+', ' ', stem.replace('_', ' ').replace('-', ' ')).strip()
     if not stem:
         return 'dflash gguf'
     if 'dflash' not in stem.lower():
         return f'{stem} DFlash gguf'
     return f'{stem} gguf'
+
+
+def _hf_accelerator_matches_target(target_path: str | Path, row: dict[str, Any]) -> bool:
+    target_name = Path(target_path).name
+    candidate_name = str(row.get('title') or row.get('id') or '')
+    target_tokens = _identity_tokens(target_name)
+    candidate_tokens = _identity_tokens(candidate_name)
+    if not target_tokens or not candidate_tokens:
+        return False
+    overlap = target_tokens & candidate_tokens
+    if not overlap:
+        return False
+    target_param = _param_token(target_name)
+    candidate_param = _param_token(candidate_name)
+    return not (target_param and candidate_param and target_param != candidate_param)
 
 
 def suggest_stack_label(target_path: str | Path) -> str:
@@ -366,8 +384,10 @@ def match_stack_for_target(target_path: str | Path, *, cfg: dict[str, Any] | Non
     try:
         from core.huggingface import search_models
 
-        search = search_models(q=hf_query, limit=8, category='dflash')
+        search = search_models(query=hf_query, limit=8, category='dflash')
         for row in search.get('models') or []:
+            if not _hf_accelerator_matches_target(target, row):
+                continue
             hf_suggestions.append({
                 'id': row.get('id'),
                 'title': row.get('title') or row.get('id'),

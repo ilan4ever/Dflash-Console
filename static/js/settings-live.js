@@ -9,9 +9,24 @@
   let saveTimer = null;
   let pollTimer = null;
   let filling = false;
-  const DEFAULT_PANEL = 'ws-checkpoints';
+  const DEFAULT_PANEL = 'app-settings';
+  const PANEL_ALIASES = {
+    'gw-network': 'gw-engines',
+    'gw-behavior': 'gw-engines',
+    'gw-preset': 'gw-engines',
+    'ws-checkpoints': 'ws-checkpoints',
+  };
   const HW_PANELS = new Set(['hw-system', 'hw-gpus', 'hw-strategy', 'hw-live']);
-  const GW_PANELS = new Set(['gw-network', 'gw-behavior', 'gw-preset']);
+  const GW_PANELS = new Set(['gw-engines']);
+  const HARDWARE_PANELS = new Set(['ws-checkpoints', 'ws-locations', ...HW_PANELS]);
+  const HARDWARE_TIMEOUT_MS = 30000;
+  let hardwareLoadInFlight = null;
+  let hardwareLoadError = null;
+
+  function normalizePanelId(id) {
+    const panelId = String(id || '').trim() || DEFAULT_PANEL;
+    return PANEL_ALIASES[panelId] || panelId;
+  }
 
   const STRATEGY_HINTS = {
     single_largest: 'Use one GPU — the fastest/largest card (RTX 4090). No layer-split.',
@@ -33,7 +48,7 @@
   }
 
   function showPanel(id, { persist = true } = {}) {
-    const panelId = id || DEFAULT_PANEL;
+    const panelId = normalizePanelId(id || DEFAULT_PANEL);
     document.querySelectorAll('.lm-settings-nav-item[data-settings-panel]').forEach((item) => {
       item.classList.toggle('active', item.dataset.settingsPanel === panelId);
     });
@@ -47,6 +62,15 @@
     if (HW_PANELS.has(panelId)) renderHardwareForPanel(panelId);
     if (GW_PANELS.has(panelId)) renderGatewayPanel();
     if (panelId === 'int-mcp') void renderMcpPanel();
+    if (panelId === 'app-settings') void window.DFlashAppSettingsLive?.render?.();
+    if (HARDWARE_PANELS.has(panelId)) {
+      if (hardwareData) {
+        if (panelId === 'ws-checkpoints' || panelId === 'ws-locations') renderWorkspacePaths();
+      } else {
+        showLoadingForPanel(panelId);
+        void ensureSettingsData();
+      }
+    }
   }
 
   function openSettings(panelId = DEFAULT_PANEL) {
@@ -59,7 +83,9 @@
     if (HW_PANELS.has(panel)) renderHardwareForPanel(panel);
     if (GW_PANELS.has(panel)) renderGatewayPanel();
     if (panel === 'int-mcp') void renderMcpPanel();
-    void fetchHardware().then(startPolling).catch(() => {});
+    if (panel === 'app-settings') void window.DFlashAppSettingsLive?.render?.();
+    if (HARDWARE_PANELS.has(panel) && !hardwareData) showLoadingForPanel(panel);
+    void ensureSettingsData().finally(() => startPolling());
   }
 
   function onViewLeave() {
@@ -76,6 +102,65 @@
     const enabled = hardwareDraft?.enabled_gpu_indices;
     if (!Array.isArray(enabled) || !enabled.length) return true;
     return enabled.includes(Number(index));
+  }
+
+  function showLoadingForPanel(panelId) {
+    if (panelId === 'hw-system') {
+      const el = document.getElementById('settingsHwSummary');
+      if (el && !hardwareData) {
+        el.innerHTML = '<p class="lm-setting-desc">Loading system info…</p>';
+      }
+    }
+    if (panelId === 'hw-live') {
+      const el = document.getElementById('settingsHwMonitor');
+      if (el && !hardwareData) el.innerHTML = '<p class="lm-setting-desc">Loading live stats…</p>';
+    }
+    if (panelId === 'ws-checkpoints') {
+      const list = document.getElementById('settingsModelLibraries');
+      const downloadPick = document.getElementById('settingsDownloadLibrary');
+      if (list && !hardwareData && !librariesDraft?.length) {
+        list.innerHTML = '<p class="lm-setting-desc">Loading library folders…</p>';
+      }
+      if (downloadPick && !hardwareData) {
+        window.ConsoleApi?.setSelectLoading?.(downloadPick, true, 'Loading…');
+      }
+    }
+    if (panelId === 'hw-gpus') {
+      const detect = document.getElementById('settingsGpuDetectLine');
+      if (detect && !hardwareData) detect.textContent = 'Detecting GPUs…';
+    }
+  }
+
+  function showHardwareLoadError(message) {
+    hardwareLoadError = message || 'Could not load hardware info';
+    const panel = activePanelId();
+    if (panel === 'hw-system') {
+      const el = document.getElementById('settingsHwSummary');
+      if (el) {
+        el.innerHTML = `<p class="lm-setting-desc lm-settings-load-err">${escapeHtml(hardwareLoadError)}</p>`;
+      }
+    }
+    if (panel === 'ws-checkpoints') {
+      const list = document.getElementById('settingsModelLibraries');
+      if (list && !librariesDraft?.length) {
+        list.innerHTML = `<p class="lm-setting-desc lm-settings-load-err">${escapeHtml(hardwareLoadError)}</p>`;
+      }
+    }
+  }
+
+  async function ensureSettingsData({ force = false } = {}) {
+    if (hardwareData && !force) return hardwareData;
+    if (hardwareLoadInFlight) return hardwareLoadInFlight;
+    hardwareLoadError = null;
+    hardwareLoadInFlight = fetchHardware({ retries: force ? 1 : 3 })
+      .catch((err) => {
+        showHardwareLoadError(err?.message || 'Could not load settings data');
+        throw err;
+      })
+      .finally(() => {
+        hardwareLoadInFlight = null;
+      });
+    return hardwareLoadInFlight;
   }
 
   function renderWorkspacePaths() {
@@ -414,7 +499,13 @@
 
   function renderHardwareSummary() {
     const el = document.getElementById('settingsHwSummary');
-    if (!el || !hardwareData) return;
+    if (!el) return;
+    if (!hardwareData) {
+      el.innerHTML = hardwareLoadError
+        ? `<p class="lm-setting-desc lm-settings-load-err">${escapeHtml(hardwareLoadError)}</p>`
+        : '<p class="lm-setting-desc">Loading system info…</p>';
+      return;
+    }
     const cpu = hardwareData.cpu || {};
     const ram = hardwareData.ram || {};
     const features = (cpu.features || []).map((f) => `<span class="lm-tag">${escapeHtml(f)}</span>`).join('');
@@ -621,35 +712,48 @@
       <div>Port · ${escapeHtml(server.port)} · Context · ${escapeHtml(server.context_size)}</div>`;
   }
 
-  async function fetchHardware({ silent = false } = {}) {
-    const stats = await api('/api/system-stats').catch(() => ({}));
-    const data = await api('/api/hardware');
-    hardwareData = {
-      ...data,
-      cpu_percent: stats.cpu_percent,
-      ram: {
-        ...(data.ram || {}),
-        used_gb: stats.ram_used_gb ?? data.ram?.used_gb,
-        total_gb: stats.ram_total_gb ?? data.ram?.total_gb,
-        percent: stats.ram_percent ?? data.ram?.percent,
-      },
-      gpus: (data.gpus || []).map((gpu) => {
-        const live = (stats.gpus || []).find((g) => Number(g.index) === Number(gpu.index)) || {};
-        return { ...gpu, ...live, index: gpu.index };
-      }),
-    };
-    if (!hardwareDraft) {
-      hardwareDraft = { ...(data.hardware_settings || {}) };
-      delete hardwareDraft.guardrails;
-      delete hardwareDraft.guardrails_max_model_gb;
+  async function fetchHardware({ silent = false, retries = 1 } = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      try {
+        const [stats, data] = await Promise.all([
+          api('/api/system-stats', { timeoutMs: 15000 }).catch(() => ({})),
+          api('/api/hardware', { timeoutMs: HARDWARE_TIMEOUT_MS }),
+        ]);
+        hardwareLoadError = null;
+        hardwareData = {
+          ...data,
+          cpu_percent: stats.cpu_percent,
+          ram: {
+            ...(data.ram || {}),
+            used_gb: stats.ram_used_gb ?? data.ram?.used_gb,
+            total_gb: stats.ram_total_gb ?? data.ram?.total_gb,
+            percent: stats.ram_percent ?? data.ram?.percent,
+          },
+          gpus: (data.gpus || []).map((gpu) => {
+            const live = (stats.gpus || []).find((g) => Number(g.index) === Number(gpu.index)) || {};
+            return { ...gpu, ...live, index: gpu.index };
+          }),
+        };
+        if (!hardwareDraft) {
+          hardwareDraft = { ...(data.hardware_settings || {}) };
+          delete hardwareDraft.guardrails;
+          delete hardwareDraft.guardrails_max_model_gb;
+        }
+        librariesDraft = [...(data.model_libraries || hardwareData?.model_libraries || [])];
+        renderWorkspacePaths();
+        const panel = activePanelId();
+        if (HW_PANELS.has(panel)) renderHardwareForPanel(panel);
+        if (GW_PANELS.has(panel)) renderGatewayPanel();
+        return data;
+      } catch (err) {
+        lastError = err;
+        if (attempt < retries - 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 800 * (attempt + 1)));
+        }
+      }
     }
-    librariesDraft = [...(data.model_libraries || hardwareData?.model_libraries || [])];
-    renderWorkspacePaths();
-    const panel = activePanelId();
-    if (HW_PANELS.has(panel)) renderHardwareForPanel(panel);
-    if (GW_PANELS.has(panel)) renderGatewayPanel();
-    if (!silent) return data;
-    return data;
+    throw lastError || new Error('Could not load hardware info');
   }
 
   async function persistHardware() {
@@ -702,7 +806,7 @@
     if (pollTimer) return;
     pollTimer = window.setInterval(() => {
       if (document.body.dataset.activeView !== 'settings') return;
-      void fetchHardware({ silent: true }).then(() => {
+      void fetchHardware({ retries: 1 }).then(() => {
         const panel = activePanelId();
         if (panel === 'hw-system') renderHardwareSummary();
         if (panel === 'hw-live') renderMonitor();
@@ -765,7 +869,10 @@
     });
   }
 
-  document.addEventListener('DOMContentLoaded', bind);
+  document.addEventListener('DOMContentLoaded', () => {
+    bind();
+    void ensureSettingsData().catch(() => {});
+  });
 
   window.DFlashSettingsLive = {
     showPanel,
