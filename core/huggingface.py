@@ -587,6 +587,52 @@ def _enrich_models_from_readme(models: list[dict[str, Any]]) -> list[dict[str, A
     return [row if row is not None else models[idx] for idx, row in enumerate(enriched)]
 
 
+def _hf_modality_fields(
+    *,
+    pipeline_tag: str,
+    has_gguf: bool,
+    tags: list[str],
+    label: str,
+    downloadable: bool,
+) -> dict[str, Any]:
+    """Phase 0: derive modality/runtime/kind metadata for a catalog row."""
+    tag = str(pipeline_tag or '').lower()
+    hay = ' '.join([str(label or ''), ' '.join(str(t) for t in tags or [])]).lower()
+    if tag == 'automatic-speech-recognition' or 'whisper' in hay or 'faster-whisper' in hay:
+        modality, runtime_id, kind = 'speech-to-text', 'stt', 'repo'
+    elif tag == 'text-to-speech' or 'piper' in hay or 'tts' in hay or 'kokoro' in hay:
+        modality, runtime_id, kind = 'text-to-speech', 'piper', 'repo'
+    elif tag == 'feature-extraction':
+        modality = 'embedding'
+        runtime_id = 'llama-server' if has_gguf else ''
+        kind = 'file' if has_gguf else 'repo'
+    elif tag in ('image-to-text', 'image-text-to-text') or 'vision' in hay or 'mmproj' in hay:
+        modality = 'vision'
+        runtime_id = 'llama-server' if has_gguf else ''
+        kind = 'file' if has_gguf else 'repo'
+    elif has_gguf:
+        modality, runtime_id, kind = 'llm', 'llama-server', 'file'
+    else:
+        modality, runtime_id, kind = 'llm', '', 'repo'
+    task = {
+        'speech-to-text': 'transcribe',
+        'text-to-speech': 'speech',
+        'embedding': 'embed',
+        'vision': 'vision',
+        'llm': 'chat',
+    }.get(modality, 'chat')
+    return {
+        'modality': modality,
+        'runtime_id': runtime_id,
+        'kind': kind,
+        'catalog_visible': True,
+        'downloadable': bool(downloadable) or has_gguf,
+        'runnable': runtime_id == 'llama-server',
+        'family': '',
+        'task': task,
+    }
+
+
 def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     repo_id = str(raw.get('id') or raw.get('modelId') or '')
     author = str(raw.get('author') or (repo_id.split('/')[0] if '/' in repo_id else ''))
@@ -601,6 +647,14 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     updated_days = _days_since(last_modified)
     repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
     lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
+    has_gguf = any(name.endswith('.gguf') for name in tags) or bool(_gguf_files(siblings))
+    modality_fields = _hf_modality_fields(
+        pipeline_tag=str(raw.get('pipeline_tag') or ''),
+        has_gguf=has_gguf,
+        tags=tags,
+        label=repo_label,
+        downloadable=bool(downloadable),
+    )
     return {
         'id': repo_id,
         'author': author,
@@ -622,8 +676,10 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'description': description,
         'gguf_count': len(_gguf_files(siblings)),
         'file_count': len(downloadable),
-        'has_gguf': any(name.endswith('.gguf') for name in tags) or bool(_gguf_files(siblings)),
+        'has_gguf': has_gguf,
         'has_files': bool(downloadable),
+        'size_bytes': int(size_gb * (1024 ** 3)) if isinstance(size_gb, (int, float)) and size_gb > 0 else None,
+        **modality_fields,
     }
 
 

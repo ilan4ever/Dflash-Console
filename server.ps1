@@ -51,10 +51,29 @@ function Stop-ListenersOnPort {
             $name = $proc.ProcessName
             $details = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop
             $commandLine = [string]$details.CommandLine
-            $managed = (
-                $commandLine -match '(?i)llama-server|start_llama_server\.ps1' -or
-                $commandLine -match '(?i)uvicorn\s+api\.app:app'
-            )
+            $identity = "$name $commandLine"
+            # Managed-process tokens. Built-in llama/console tokens plus any
+            # registered runtime tokens (e.g. Piper) written by the Console to
+            # runtimes\process-tokens.json at boot.
+            $ManagedTokens = @('llama-server', 'start_llama_server.ps1', 'uvicorn\s+api\.app:app')
+            $TokensFile = Join-Path $Root 'runtimes\process-tokens.json'
+            if (Test-Path $TokensFile) {
+                try {
+                    $manifestTokens = @((Get-Content $TokensFile -Raw | ConvertFrom-Json).tokens)
+                    foreach ($token in $manifestTokens) {
+                        $ManagedTokens += [string]$token
+                    }
+                } catch {
+                    # manifest is optional; keep the built-in token set
+                }
+            }
+            $managed = $false
+            foreach ($token in $ManagedTokens) {
+                if ($identity -match "(?i)$([regex]::Escape([string]$token))") {
+                    $managed = $true
+                    break
+                }
+            }
             if (-not $managed) {
                 $freed += "skipped $name ($procId)"
                 continue

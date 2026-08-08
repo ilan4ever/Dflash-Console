@@ -2052,6 +2052,28 @@
     document.getElementById('inspectorInfoPath').textContent = model.path || model.id || '—';
     document.getElementById('inspectorInfoProfile').textContent = model.profile || (model.external ? 'External' : '—');
 
+    const modalityEl = document.getElementById('inspectorInfoModality');
+    if (modalityEl) {
+      const MODALITY_LABEL = {
+        'llm': 'LLM', 'embedding': 'Embedding', 'speech-to-text': 'Speech-to-text',
+        'text-to-speech': 'Text-to-speech', 'vision': 'Vision', 'ocr': 'OCR',
+      };
+      const modality = String(model.modality || model.model_kind || '').toLowerCase();
+      modalityEl.textContent = MODALITY_LABEL[modality] || (model.external ? 'External' : 'LLM');
+    }
+
+    const deviceRuleEl = document.getElementById('inspectorInfoDeviceRule');
+    if (deviceRuleEl) {
+      const runtimeId = String(model.runtime_id || '');
+      if (runtimeId && runtimeId !== 'llama-server') {
+        deviceRuleEl.textContent = `Per-runtime (${runtimeId})`;
+        deviceRuleEl.title = 'Non-llama runtime: device comes from its per-runtime device_policy.';
+      } else {
+        deviceRuleEl.textContent = 'Global (hardware settings)';
+        deviceRuleEl.title = 'llama-server stack: device comes from global hardware_settings.gpu_strategy.';
+      }
+    }
+
     const embedRow = document.getElementById('inspectorInfoEmbeddingRow');
     const embedEl = document.getElementById('inspectorInfoEmbedding');
     const embed = model.embedding_settings || {};
