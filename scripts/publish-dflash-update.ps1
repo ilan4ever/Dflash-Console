@@ -19,6 +19,15 @@ function Read-EnvValue([string]$Name) {
     return (($line -split "=", 2)[1]).Trim().Trim("'").Trim('"')
 }
 
+# The feed token can come from -Token, the DFLASH_UPDATE_TOKEN environment
+# variable, or DFLASH_UPDATE_TOKEN in .env.admin (kept out of git).
+if (-not $Token) {
+    $Token = Read-EnvValue "DFLASH_UPDATE_TOKEN"
+}
+if (-not $Token) {
+    Write-Warning "No update-feed token provided (-Token / DFLASH_UPDATE_TOKEN). The feed will be published without token protection."
+}
+
 $sshHost = Read-EnvValue "HOSTINGER_SSH_HOST"
 $sshUser = Read-EnvValue "HOSTINGER_SSH_USERNAME"
 $sshPort = Read-EnvValue "HOSTINGER_SSH_PORT"
