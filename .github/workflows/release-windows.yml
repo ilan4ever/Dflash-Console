@@ -89,6 +89,18 @@ jobs:
             throw "WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD repository secrets are required for production releases."
           }
 
+      - name: Verify update-feed publishing configuration
+        shell: pwsh
+        env:
+          HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          HOSTINGER_SSH_USERNAME: ${{ secrets.HOSTINGER_SSH_USERNAME }}
+          HOSTINGER_SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+          HOSTINGER_SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+        run: |
+          if (-not $env:HOSTINGER_SSH_HOST -or -not $env:HOSTINGER_SSH_USERNAME -or -not $env:HOSTINGER_SSH_PORT -or -not $env:HOSTINGER_SSH_PRIVATE_KEY) {
+            throw "Hostinger SSH repository secrets are required to publish the automatic-update feed."
+          }
+
       - name: Build NSIS installer and portable package
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
@@ -124,7 +136,6 @@ jobs:
           if ($manifest.appId -ne "com.dflash.console") { throw "Unexpected DFlash manifest appId." }
 
       - name: Publish signed DFlash update feed
-        if: ${{ secrets.HOSTINGER_SSH_HOST != '' }}
         shell: pwsh
         env:
           HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
