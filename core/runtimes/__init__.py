@@ -38,6 +38,7 @@ from core.runtimes.registry import (
     runtime_process_identity_tokens,
     write_process_tokens_manifest,
 )
+from core.runtimes.stt import SttRuntimeAdapter
 
 # The no-op adapter is always available so the UI can list installed adapters
 # before any real inference runtime ships.
@@ -45,6 +46,9 @@ register_runtime_adapter(NoopRuntimeAdapter())
 # Piper TTS adapter (CLI). Registered always; reports installed=false when the
 # bundle is not present under runtimes/piper/.
 register_runtime_adapter(PiperRuntimeAdapter())
+# whisper.cpp whisper-server STT adapter (server mode). Registered always;
+# reports installed=false until runtimes/stt/whisper-server.exe exists.
+register_runtime_adapter(SttRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -63,6 +67,7 @@ __all__ = [
     'RuntimeAdapter',
     'NoopRuntimeAdapter',
     'PiperRuntimeAdapter',
+    'SttRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',
     'register_runtime_adapter',

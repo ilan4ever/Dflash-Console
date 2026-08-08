@@ -133,6 +133,7 @@ try {
                   <div class="df-chat-mode" role="tablist" aria-label="Playground mode">
                     <button type="button" class="lm-filter-chip active" data-playground-mode="chat" role="tab" aria-selected="true">Chat</button>
                     <button type="button" class="lm-filter-chip" data-playground-mode="speak" role="tab" aria-selected="false">Speak</button>
+                    <button type="button" class="lm-filter-chip" data-playground-mode="transcribe" role="tab" aria-selected="false">Transcribe</button>
                   </div>
                   <div class="df-chat-load-row">
                     <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
@@ -190,6 +191,17 @@ try {
                   <a id="speakDownload" class="lm-btn small" hidden download="speech.wav" href="#">Download WAV</a>
                 </div>
                 <div class="df-chat-status" id="speakStatus" aria-live="polite"></div>
+              </section>
+              <section class="df-speak-panel hidden" id="transcribePanel" aria-label="Speech to text">
+                <div class="df-speak-toolbar">
+                  <label class="df-chat-engine-label" for="transcribeFilePick">Audio file</label>
+                  <input type="file" id="transcribeFilePick" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm">
+                  <label class="df-chat-engine-label" for="transcribeLanguage">Language</label>
+                  <input type="text" id="transcribeLanguage" class="lm-input" placeholder="auto" size="12" title="Optional ISO language code, e.g. en">
+                  <button type="button" class="lm-btn primary" id="transcribeBtn">Transcribe</button>
+                </div>
+                <textarea id="transcribeResult" class="df-chat-input df-speak-input" rows="6" readonly placeholder="Transcript will appear here…"></textarea>
+                <div class="df-chat-status" id="transcribeStatus" aria-live="polite"></div>
               </section>
             </div>
           </div>

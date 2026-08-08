@@ -559,7 +559,12 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
     else:
         modality = 'llm'
     row.setdefault('modality', modality)
-    row.setdefault('runtime_id', 'llama-server')
+    runtime_id = 'llama-server'
+    if modality == 'text-to-speech':
+        runtime_id = 'piper'
+    elif modality == 'speech-to-text':
+        runtime_id = 'stt'
+    row.setdefault('runtime_id', runtime_id)
     row.setdefault('kind', 'file')
     row.setdefault('catalog_visible', True)
     row.setdefault('downloadable', True)
