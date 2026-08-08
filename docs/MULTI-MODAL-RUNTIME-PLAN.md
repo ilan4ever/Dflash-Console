@@ -311,6 +311,13 @@ Without this, stop-others, restart adoption, and shutdown cleanup **silently lea
 
 **Outcome:** Written decision record before packaging the hard path.
 
+> **Phase 1.5 status (2026-08-08):** decision recorded in
+> `docs/STT-ENGINE-DECISION.md` → **locked whisper.cpp `whisper-server`** for
+> Phase 2. It drops into the existing native-runtime machinery (packaging,
+> process identity, ports, GGUF catalog) built in Phase 0–1; faster-whisper
+> remains a documented fallback if multilingual/translate becomes the primary
+> workload. No STT shipped.
+
 Compare:
 
 | | **whisper.cpp `whisper-server`** | **faster-whisper** |
@@ -321,7 +328,7 @@ Compare:
 | Model source | GGUF-whisper | HF safetensors repos (matches catalog) |
 | Quality / translate | Good | Often stronger multilingual / translate |
 
-**Exit:** Lock one engine in §11; do **not** ship both in v1.
+**Exit:** Lock one engine in §11; do **not** ship both in v1. → **Locked: whisper.cpp** (`docs/STT-ENGINE-DECISION.md`).
 
 ---
 
