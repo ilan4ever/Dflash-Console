@@ -212,6 +212,7 @@ class ConfigPatch(BaseModel):
     ui_port: int | None = None
     dflash_root: str | None = None
     servers: list[dict[str, Any]] | None = None
+    runtimes: list[dict[str, Any]] | None = None
     hardware_settings: dict[str, Any] | None = None
     model_libraries: list[dict[str, Any]] | None = None
     ui_layout: dict[str, Any] | None = None
