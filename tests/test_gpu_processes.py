@@ -211,6 +211,116 @@ def test_unload_external_requires_current_approved_gpu_process(monkeypatch):
     assert result['method'] == 'kill'
 
 
+def test_unload_external_uses_lmstudio_native_api(monkeypatch):
+    responses = {
+        '/api/v1/models': {
+            'models': [{
+                'key': 'gemma-4-12b-it-qat',
+                'loaded_instances': [{'id': 'gemma-4-12b-it-qat'}],
+            }],
+        },
+        '/api/v1/models/unload': {'instance_id': 'gemma-4-12b-it-qat'},
+    }
+    requests = []
+
+    class FakeResp:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def read(self):
+            import json as json_mod
+            return json_mod.dumps(self.payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, **_kwargs):
+        requests.append(request)
+        path = request.full_url.split('http://127.0.0.1:1234', 1)[-1]
+        return FakeResp(responses[path])
+
+    monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
+    monkeypatch.setattr(gpu_processes.urllib.request, 'urlopen', fake_urlopen)
+
+    result = gpu_processes.unload_external_gpu_process(
+        22556,
+        api_url='http://127.0.0.1:1234/v1',
+        model_id='gemma-4-12b-it-qat',
+    )
+
+    assert result['success'] is True
+    assert result['method'] == 'lmstudio-api'
+    assert len(requests) == 2
+    assert requests[1].data == b'{"instance_id": "gemma-4-12b-it-qat"}'
+
+
+def test_unload_external_uses_main_lmstudio_api_for_worker_card(monkeypatch):
+    calls = []
+
+    def fake_native(*, api_url, model_id):
+        calls.append((api_url, model_id))
+        if ':1234/' in api_url:
+            return {'success': True, 'unloaded': True, 'model': 'gemma-4-12b-it-qat'}
+        return {'success': False, 'http_status': 401}
+
+    monkeypatch.setattr(gpu_processes, '_unload_lmstudio_model', fake_native)
+    monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
+
+    result = gpu_processes.unload_external_gpu_process(
+        14252,
+        api_url='http://127.0.0.1:38380/v1',
+        model_id=r'C:\models\gemma-4-12b-it-qat-q4_0.gguf',
+    )
+
+    assert result['success'] is True
+    assert result['method'] == 'lmstudio-api'
+    assert calls == [
+        ('http://127.0.0.1:38380/v1', r'C:\models\gemma-4-12b-it-qat-q4_0.gguf'),
+        ('http://127.0.0.1:1234/v1', r'C:\models\gemma-4-12b-it-qat-q4_0.gguf'),
+    ]
+
+
+def test_unload_external_kills_worker_after_api_key_failure(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        'query_compute_apps',
+        lambda: [{
+            'pid': 1234,
+            'process_name': 'llama-server.exe',
+            'command_line': r'C:\lmstudio\llama-server.exe -m C:\models\gemma.gguf',
+            'model_name': 'gemma.gguf',
+            'model_path': r'C:\models\gemma.gguf',
+        }],
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_unload_lmstudio_model',
+        lambda **_kwargs: {'success': False, 'http_status': 401},
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        'unload_model',
+        lambda **_kwargs: {'success': False, 'http_status': 401, 'error': 'Invalid API Key'},
+    )
+    monkeypatch.setattr(
+        gpu_processes.subprocess,
+        'run',
+        lambda *args, **kwargs: type('Result', (), {'returncode': 0, 'stdout': '', 'stderr': ''})(),
+    )
+
+    result = gpu_processes.unload_external_gpu_process(
+        1234,
+        api_url='http://127.0.0.1:38380/v1',
+        model_id=r'C:\models\gemma.gguf',
+    )
+
+    assert result['success'] is True
+    assert result['method'] == 'kill'
+
+
 def test_unload_external_rejects_unknown_pid(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
 

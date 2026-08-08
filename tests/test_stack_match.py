@@ -13,6 +13,7 @@ from core.stack_match import (
     infer_dflash_profile,
     is_accelerator_path,
     list_capable_targets,
+    match_stack_for_target,
     is_target_candidate,
     is_viable_stack_pair,
     preflight_stack_target,
@@ -39,6 +40,48 @@ class StackMatchTests(unittest.TestCase):
     def test_hf_query(self):
         query = build_hf_search_query('Qwen3.6-9B-Instruct-Q4_K_M.gguf')
         self.assertIn('DFlash', query)
+
+    def test_hf_query_removes_shard_and_quant_noise(self):
+        query = build_hf_search_query(
+            'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf',
+        )
+        self.assertEqual(query, 'Laguna S 2.1 DFlash gguf')
+
+    def test_hf_suggestions_only_include_selected_target_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf'
+            target.write_bytes(b'x')
+            search_rows = {
+                'success': True,
+                'models': [
+                    {
+                        'id': 'wimmmm/poolside-Laguna-S-2.1-DFlash-GGUF',
+                        'title': 'poolside-Laguna-S-2.1-DFlash-GGUF',
+                        'author': 'wimmmm',
+                        'size_gb': 0.61,
+                        'size_label': '0.61 GB',
+                        'accelerator_only': True,
+                    },
+                    {
+                        'id': 'Alittlehammmer/Qwen3.6-27B-DFlash-GGUF-llama.cpp',
+                        'title': 'Qwen3.6-27B-DFlash-GGUF-llama.cpp',
+                        'author': 'Alittlehammmer',
+                        'size_gb': 0.96,
+                        'size_label': '0.96 GB',
+                        'accelerator_only': True,
+                    },
+                ],
+            }
+            with patch('core.stack_match.find_local_accelerators', return_value=[]), patch(
+                'core.huggingface.search_models',
+                return_value=search_rows,
+            ):
+                result = match_stack_for_target(target, cfg={'servers': []})
+
+        self.assertEqual(
+            [row['id'] for row in result['hf_suggestions']],
+            ['wimmmm/poolside-Laguna-S-2.1-DFlash-GGUF'],
+        )
 
     def test_custom_stack_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:

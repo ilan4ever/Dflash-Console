@@ -3,6 +3,27 @@ window.ConsoleApi = (function () {
   const inflightGets = new Map();
   const DEFAULT_GET_TIMEOUT_MS = 8000;
 
+  function formatApiError(detail) {
+    if (detail == null) return 'Request failed';
+    if (typeof detail === 'string') {
+      const trimmed = detail.trim();
+      if (!trimmed) return 'Request failed';
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed?.error?.message) return String(parsed.error.message);
+      } catch (_) {
+        /* not JSON */
+      }
+      return trimmed;
+    }
+    if (typeof detail === 'object' && detail.error?.message) return String(detail.error.message);
+    try {
+      return JSON.stringify(detail);
+    } catch (_) {
+      return String(detail);
+    }
+  }
+
   async function api(path, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
     const dedupeKey = method === 'GET' ? path : '';
@@ -35,7 +56,7 @@ window.ConsoleApi = (function () {
         }
         if (!resp.ok) {
           const detail = data?.detail || data?.error || `HTTP ${resp.status}`;
-          throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+          throw new Error(formatApiError(detail));
         }
         return data;
       } catch (err) {

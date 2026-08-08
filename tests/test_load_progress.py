@@ -1,4 +1,11 @@
-from core.load_progress import boot_failure_message, is_active_boot, parse_load_progress, stop_log_line
+from core.load_progress import (
+    boot_failure_message,
+    is_active_boot,
+    is_active_model_load,
+    model_load_failure_message,
+    parse_load_progress,
+    stop_log_line,
+)
 
 
 def test_active_boot_requires_stop_after_boot():
@@ -42,6 +49,43 @@ def test_boot_failed_marker():
     ]
     assert boot_failure_message(lines) == 'timed out waiting for port 8092'
     assert is_active_boot(lines) is False
+
+
+def test_on_demand_router_load_progress_survives_idle_marker():
+    lines = [
+        '=== boot 2026-01-01 12:00:00 profile=x router=1 ===',
+        '=== router idle ready 2026-01-01 12:00:01 ===',
+        'load: spawning server instance with name=model',
+        'load_model: loading model model',
+        'cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.5}}',
+    ]
+    assert is_active_model_load(lines) is True
+    assert parse_load_progress(lines) == 25.0
+
+    lines.append(
+        'cmd_child_to_router:state:{"state":"ready","payload":{"id":"model"}}',
+    )
+    assert is_active_model_load(lines) is False
+    assert parse_load_progress(lines) is None
+
+
+def test_model_load_failure_reports_cuda_oom():
+    lines = [
+        '=== boot 2026-01-01 12:00:00 profile=x router=1 ===',
+        'load: spawning server instance with name=large-model',
+        'load_model: loading model large-model',
+        'common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort',
+        'ggml_backend_cuda_buffer_type_alloc_buffer: allocating 69415.95 MiB on device 0: cudaMalloc failed: out of memory',
+        'llama_model_load: error loading model: unable to allocate CUDA0 buffer',
+        'llama-server: exiting due to model loading error',
+    ]
+
+    message = model_load_failure_message(lines)
+
+    assert message is not None
+    assert 'not enough GPU memory' in message
+    assert '67.8 GiB' in message
+    assert 'GPU 0' in message
 
 
 def test_stop_log_line_format():

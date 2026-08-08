@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.0.49</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.9</span>
           </div>
         </div>
       </div>
@@ -179,7 +179,7 @@ try {
             <div class="lm-server-bar">
               <div class="lm-server-bar-top">
                 <div class="lm-server-engine-meta">
-                  <button class="lm-icon-btn small lm-engine-settings-btn" type="button" data-action="open-settings-panel" data-settings-panel="gw-network" title="Engine settings" aria-label="Engine settings">
+                  <button class="lm-icon-btn small lm-engine-settings-btn" type="button" data-action="open-settings-panel" data-settings-panel="gw-engines" title="Engine settings" aria-label="Engine settings">
                     <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                       <path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7m7.43-2.53c.04-.32.07-.64.07-.97 0-.33-.03-.66-.07-1l2.11-1.63a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.1 7.1 0 0 0-1.73-1l-.38-2.65A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.49.42l-.38 2.65c-.62.24-1.21.56-1.73 1l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64L3.57 11c-.04.34-.07.67-.07 1 0 .33.03.65.07.97l-2.11 1.63a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.52.43 1.11.76 1.73 1l.38 2.65A.5.5 0 0 0 10 22h4a.5.5 0 0 0 .49-.42l.38-2.65c.62-.24 1.21-.56 1.73-1l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64z"/>
                     </svg>
@@ -203,6 +203,7 @@ try {
                     </select>
                     <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
                   </div>
+                  <div id="serverLoadMemoryNotice" class="lm-engine-load-notice hidden" role="status" aria-live="polite"></div>
                 </div>
                 <div class="lm-server-api">
                   <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
@@ -311,7 +312,15 @@ try {
                   <th class="lm-col-action" data-col-id="action" data-col-min="56"></th>
                 </tr>
               </thead>
-              <tbody id="modelsTableBody"></tbody>
+              <tbody id="modelsTableBody">
+                <tr class="lm-models-loading-row">
+                  <td colspan="7">
+                    <span class="lm-models-loading-spinner" aria-hidden="true"></span>
+                    <span>Loading your model library…</span>
+                    <small>Scanning configured folders. Your models will appear here shortly.</small>
+                  </td>
+                </tr>
+              </tbody>
             </table>
           </div>
           <footer class="lm-models-footer">
@@ -370,7 +379,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.0.49</strong>
+                <strong id="dfAboutVersion">v0.2.9</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -456,9 +465,9 @@ try {
                 <div class="df-catalog-toolbar-group">
                   <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
                   <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
-                    <option value="dflash" selected>DFlash / speculative</option>
+                    <option value="all-gguf" selected>All models</option>
+                    <option value="dflash">DFlash Accelerator</option>
                     <option value="text-generation">Text generation (GGUF)</option>
-                    <option value="all-gguf">All GGUF</option>
                     <option value="text-to-speech">Text-to-speech</option>
                     <option value="automatic-speech-recognition">Speech-to-text</option>
                     <option value="image-to-text">OCR / image-to-text</option>
@@ -471,6 +480,7 @@ try {
                     <option value="downloads">Most downloads</option>
                     <option value="lastModified">Recently updated</option>
                     <option value="likes">Most liked</option>
+                    <option value="accelerators">Accelerators only</option>
                     <option value="installed">Installed only</option>
                   </select>
                 </div>
@@ -502,22 +512,106 @@ try {
           <div class="df-settings-shell">
             <div class="lm-settings-layout">
           <nav class="lm-settings-nav" id="settingsNav">
-            <button type="button" class="lm-settings-nav-item active" data-settings-panel="ws-checkpoints">Model storage</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-locations">Locations</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-system">System summary</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-gpus">GPU devices</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-strategy">Multi-GPU rules</button>
+            <div class="lm-settings-nav-section">General</div>
+            <button type="button" class="lm-settings-nav-item active" data-settings-panel="app-settings">Desktop app</button>
+
+            <div class="lm-settings-nav-section">Files &amp; libraries</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-checkpoints">Model libraries</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-locations">Paths &amp; backup</button>
+
+            <div class="lm-settings-nav-section">Hardware</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-system">System</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-gpus">GPUs</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-strategy">Multi-GPU</button>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="hw-live">Live monitor</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-network">Network &amp; API</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-behavior">Runtime limits</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-preset">Launch preset</button>
-            <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">MCP &amp; clients</button>
+
+            <div class="lm-settings-nav-section">Engines</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-engines">Engine profiles</button>
+
+            <div class="lm-settings-nav-section">Integrations</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">API clients</button>
           </nav>
 
           <div class="lm-settings-content">
-            <div class="lm-settings-panel active" data-settings-panel="ws-checkpoints">
-              <div class="lm-settings-header"><h2>Model storage</h2></div>
-              <p class="lm-setting-desc">Choose where downloads land and which folders appear in the model library. DFlash models is the default; add optional libraries such as speech, OCR, or third-party apps.</p>
+            <div class="lm-settings-panel active" data-settings-panel="app-settings">
+              <div class="lm-settings-header"><h2>Desktop app</h2></div>
+              <p class="lm-setting-desc">Tray, startup, and other preferences for the Windows installer. The browser UI ignores these options.</p>
+              <div class="lm-settings-note hidden" id="appSettingsBrowserNotice">
+                Install the DFlash Console desktop app to control startup, tray, and shell preferences here.
+              </div>
+              <div id="appSettingsForm">
+                <section class="lm-settings-section">
+                  <div class="lm-settings-section-head">
+                    <strong>Window &amp; tray</strong>
+                    <p class="lm-setting-desc">What happens when you close the window or restart your PC.</p>
+                  </div>
+                  <div class="lm-setting-row">
+                    <div><strong>Minimize to system tray</strong><p class="lm-setting-desc">Closing the window hides it in the tray instead of quitting.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsMinimizeTray" checked><span class="lm-toggle-track"></span></label>
+                  </div>
+                  <div class="lm-setting-row">
+                    <div><strong>Start minimized to tray</strong><p class="lm-setting-desc">Launch in the background; open the window from the tray icon.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsStartMinimized"><span class="lm-toggle-track"></span></label>
+                  </div>
+                  <div class="lm-setting-row">
+                    <div><strong>Show splash on startup</strong><p class="lm-setting-desc">Brief loading window while the local engine starts.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsShowSplash" checked><span class="lm-toggle-track"></span></label>
+                  </div>
+                  <div class="lm-setting-row">
+                    <div><strong>Start with Windows</strong><p class="lm-setting-desc">Open DFlash Console when you sign in.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsStartWithWindows"><span class="lm-toggle-track"></span></label>
+                  </div>
+                  <div class="lm-setting-row">
+                    <div><strong>Check for updates automatically</strong><p class="lm-setting-desc">Allow DFlash Console to check periodically. You can always check manually below.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsAllowAutomaticUpdates" checked><span class="lm-toggle-track"></span></label>
+                  </div>
+                </section>
+                <section class="lm-settings-section">
+                  <div class="lm-settings-section-head">
+                    <strong>About this install</strong>
+                    <p class="lm-setting-desc">Version and folders used by the desktop shell.</p>
+                  </div>
+                  <div class="lm-setting-row lm-setting-row-path">
+                    <div><strong>App version</strong></div>
+                    <code class="lm-settings-path lm-settings-path-inline" id="appSettingsVersion">—</code>
+                  </div>
+                  <div class="lm-setting-row lm-setting-row-path">
+                    <div><strong>Console data folder</strong><p class="lm-setting-desc">Backend, models, and config (server.ps1, api, static).</p></div>
+                    <code class="lm-settings-path" id="appSettingsDataRoot">—</code>
+                  </div>
+                  <div class="lm-setting-row lm-setting-row-path">
+                    <div><strong>Shell preferences</strong><p class="lm-setting-desc">Tray and startup settings for this install.</p></div>
+                    <code class="lm-settings-path" id="appSettingsUserData">—</code>
+                  </div>
+                  <div class="lm-settings-inline-actions">
+                    <button class="lm-btn ghost small" type="button" id="appSettingsChooseDataRoot">Change data folder</button>
+                    <button class="lm-btn ghost small" type="button" id="appSettingsOpenUserData">Open shell folder</button>
+                  </div>
+                </section>
+              <section class="lm-settings-section" id="appUpdateSection">
+                <div class="lm-settings-section-head">
+                  <strong>Automatic updates</strong>
+                  <p class="lm-setting-desc">Check the DFlash Console website for signed Windows updates. Downloads are verified before installation.</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong id="appUpdateStatus">Not checked</strong><p class="lm-setting-desc" id="appUpdateDetail">Updates are available only in the desktop app.</p></div>
+                  <div class="lm-settings-update-progress">
+                    <progress id="appUpdateProgressBar" max="100" value="0"></progress>
+                    <span id="appUpdateProgress"></span>
+                  </div>
+                </div>
+                <div class="lm-settings-inline-actions">
+                  <button class="lm-btn ghost small" type="button" id="appUpdateCheckBtn">Check for updates</button>
+                  <button class="lm-btn ghost small hidden" type="button" id="appUpdateDownloadBtn">Download update</button>
+                  <button class="lm-btn primary small hidden" type="button" id="appUpdateInstallBtn">Install update</button>
+                </div>
+              </section>
+              </div>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="ws-checkpoints">
+              <div class="lm-settings-header"><h2>Model libraries</h2></div>
+              <p class="lm-setting-desc">Choose where Hugging Face downloads land and which folders the Models tab scans on this PC.</p>
               <section class="lm-settings-section">
                 <div class="lm-setting-row">
                   <div><strong>Default download folder</strong><p class="lm-setting-desc">New Hugging Face downloads save here</p></div>
@@ -538,8 +632,8 @@ try {
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="ws-locations">
-              <div class="lm-settings-header"><h2>Locations</h2></div>
-              <p class="lm-setting-desc">Paths used by DFlash Console on this machine.</p>
+              <div class="lm-settings-header"><h2>Paths &amp; backup</h2></div>
+              <p class="lm-setting-desc">Read-only folders used by DFlash Console. Export or import config and launch presets when moving to a new machine.</p>
               <section class="lm-settings-section">
                 <div class="lm-setting-row lm-setting-row-path">
                   <div><strong>Config file</strong><p class="lm-setting-desc">Engine profiles, libraries, and preferences</p></div>
@@ -584,7 +678,7 @@ try {
 
             <div class="lm-settings-panel" data-settings-panel="hw-system">
               <div class="lm-settings-header">
-                <h2>System summary</h2>
+                <h2>System</h2>
                 <div class="lm-settings-header-actions">
                   <button class="lm-btn ghost small" type="button" id="settingsHardwareCopy">Copy info</button>
                   </div>
@@ -593,13 +687,13 @@ try {
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="hw-gpus">
-              <div class="lm-settings-header"><h2>GPU devices</h2></div>
+              <div class="lm-settings-header"><h2>GPUs</h2></div>
               <p class="lm-setting-desc" id="settingsGpuDetectLine">Detecting GPUs…</p>
               <div id="settingsGpuList" class="lm-hw-gpu-list"></div>
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="hw-strategy">
-              <div class="lm-settings-header"><h2>Multi-GPU rules</h2></div>
+              <div class="lm-settings-header"><h2>Multi-GPU</h2></div>
               <section class="lm-settings-section">
                 <div class="lm-setting-row">
                   <div><strong>Multi-GPU mode</strong><p class="lm-setting-desc" id="settingsGpuStrategyHint">How weights spread when an engine uses automatic GPU selection.</p></div>
@@ -614,7 +708,7 @@ try {
                   <label class="lm-toggle small"><input type="checkbox" id="settingsLimitDedicatedVram" checked><span class="lm-toggle-track"></span></label>
                 </div>
                 <div class="lm-setting-row">
-                  <div><strong>KV cache on GPU</strong><p class="lm-setting-desc">Keep attention cache on GPU when possible. <span class="lm-dev-badge subtle">Launch flag pending</span></p></div>
+                  <div><strong>KV cache on GPU</strong><p class="lm-setting-desc">Turn off to keep the active KV cache in system RAM. Disk is used only for saved prompt/slot cache, not live inference.</p></div>
                   <label class="lm-toggle small"><input type="checkbox" id="settingsOffloadKvGpu" checked><span class="lm-toggle-track"></span></label>
                 </div>
               </section>
@@ -626,16 +720,23 @@ try {
               <div class="lm-hw-monitor" id="settingsHwMonitor"></div>
             </div>
 
-            <div class="lm-settings-panel" data-settings-panel="gw-network">
-              <div class="lm-settings-header"><h2>Network &amp; API</h2></div>
+            <div class="lm-settings-panel" data-settings-panel="gw-engines">
+              <div class="lm-settings-header"><h2>Engine profiles</h2></div>
+              <p class="lm-setting-desc">Network, runtime, and launch defaults for each engine in <code>config.json</code>. Pick a profile first — changes apply to that engine only.</p>
               <section class="lm-settings-section">
                 <div class="lm-setting-row">
-                  <div><strong>Engine profile</strong><p class="lm-setting-desc">Choose which configured engine you edit below</p></div>
+                  <div><strong>Engine profile</strong><p class="lm-setting-desc">Which configured engine you are editing</p></div>
                   <select class="lm-select full" id="serverSettingsPick"></select>
                 </div>
                 <div id="settingsGatewaySummary" class="lm-gateway-summary"></div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Network &amp; API</strong>
+                  <p class="lm-setting-desc">OpenAI-compatible endpoint for this profile.</p>
+                </div>
                 <div class="lm-setting-row">
-                  <div><strong>Listen port</strong><p class="lm-setting-desc">OpenAI-compatible API port for this profile</p></div>
+                  <div><strong>Listen port</strong><p class="lm-setting-desc">API port for this engine</p></div>
                   <input type="number" class="lm-num" id="serverSettingsPort" value="8090">
                 </div>
                 <div class="lm-setting-row">
@@ -649,31 +750,23 @@ try {
               </section>
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
-                  <strong>Console API reference</strong>
-                  <p class="lm-setting-desc">Manage engines, load models with JSON runtime settings, and proxy chat completions.</p>
+                  <strong>Runtime</strong>
+                  <p class="lm-setting-desc">Default limits when this engine loads a model.</p>
                 </div>
-                <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
-                <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
-              </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="gw-behavior">
-              <div class="lm-settings-header"><h2>Runtime limits</h2></div>
-              <section class="lm-settings-section">
                 <div class="lm-setting-row">
-                  <div><strong>Default context</strong><p class="lm-setting-desc">Starting context window when this engine loads a model</p></div>
+                  <div><strong>Default context</strong><p class="lm-setting-desc">Starting context window on load</p></div>
                   <input type="number" class="lm-num" id="serverSettingsContext" value="65536">
                 </div>
                 <div class="lm-setting-row">
-                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model is unloaded · 0 = never</p></div>
+                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model unloads · 0 = never</p></div>
                   <input type="number" class="lm-num" id="serverSettingsIdle" value="60">
                 </div>
               </section>
-            </div>
-
-            <div class="lm-settings-panel" data-settings-panel="gw-preset">
-              <div class="lm-settings-header"><h2>Launch preset</h2></div>
               <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Launch</strong>
+                  <p class="lm-setting-desc">DFlash preset and GPU override for this profile.</p>
+                </div>
                 <div class="lm-setting-row">
                   <div><strong>DFlash preset</strong><p class="lm-setting-desc">Target/draft pairing and speculative decoding mode</p></div>
                   <select class="lm-select" id="serverSettingsProfile">
@@ -687,20 +780,28 @@ try {
                   </select>
                 </div>
                 <div class="lm-setting-row">
-                  <div><strong>GPU device</strong><p class="lm-setting-desc">Override automatic GPU selection for this profile</p></div>
+                  <div><strong>GPU device</strong><p class="lm-setting-desc">Override automatic GPU selection</p></div>
                   <select class="lm-select" id="serverSettingsGpu"></select>
                 </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Console API reference</strong>
+                  <p class="lm-setting-desc">Manage engines, load models, and proxy chat completions.</p>
+                </div>
+                <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
+                <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
               </section>
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="int-mcp">
               <div class="lm-settings-header">
-                <h2>MCP &amp; clients</h2>
+                <h2>API clients</h2>
                 <div class="lm-settings-header-actions">
                   <button class="lm-btn ghost small" type="button" id="settingsMcpCopy">Copy mcp.json</button>
                   </div>
               </div>
-              <p class="lm-setting-desc">Model Context Protocol lets desktop AI clients attach tools and data sources. DFlash Console does not host an MCP server yet — use the OpenAI-compatible engine URLs below, or copy the starter file for external clients.</p>
+              <p class="lm-setting-desc">Connect Cursor, Claude Desktop, and other tools to your local engines. MCP hosting is not active yet — use the OpenAI-compatible URLs below.</p>
               <section class="lm-settings-section">
                 <div class="lm-setting-row">
                   <div><strong>MCP host status</strong><p class="lm-setting-desc">In-console MCP discovery and registration</p></div>
@@ -737,7 +838,8 @@ try {
         </div>
         <h2 id="inspectorHeadTitle" class="lm-inspector-model-title">Select a model</h2>
         <div id="inspectorReloadNotice" class="lm-inspector-reload-notice hidden" role="status">
-          Reload this model to apply runtime changes. Settings stay saved in config until the next load.
+          <span>Reload this model to apply runtime changes. Settings stay saved in config until the next load.</span>
+          <button class="lm-btn ghost small" type="button" id="inspectorReloadBtn">Reload model</button>
         </div>
         <div class="lm-inspector-scroll">
           <div class="lm-inspector-panel" data-inspector-panel="info">
@@ -911,6 +1013,43 @@ try {
     </div>
   </div>
 
+  <!-- First-run setup wizard -->
+  <div class="lm-modal lm-setup-wizard" id="setupWizardModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-setup-dialog">
+        <div class="lm-scan-header">
+          <div>
+            <h2 id="setupWizardTitle">Welcome to DFlash Console</h2>
+            <p class="lm-setting-desc" id="setupWizardSubtitle">We will scan this PC for model folders, then you confirm where to look for GGUF, LM Studio, Whisper, OCR, and other installs.</p>
+          </div>
+        </div>
+        <div class="lm-setup-step active" data-setup-step="welcome">
+          <p class="lm-setting-desc">Your Console data lives in your user folder. Models stay where they are — DFlash links to existing folders instead of moving files.</p>
+          <p class="lm-setting-desc">Folders with models already installed (for example LM Studio or DFlash checkpoints) are pre-selected when we find them.</p>
+          <button class="lm-btn df-btn-accent" type="button" id="setupWizardStart">Scan this PC</button>
+        </div>
+        <div class="lm-setup-step" data-setup-step="scan">
+          <div class="lm-setup-scanning">
+            <div class="lm-setup-spinner" aria-hidden="true"></div>
+            <p class="lm-setting-desc">Scanning installed models…</p>
+          </div>
+        </div>
+        <div class="lm-setup-step" data-setup-step="review">
+          <div class="lm-setup-toolbar">
+            <label class="lm-scan-select-all"><input type="checkbox" id="setupWizardSelectAll"> Select all</label>
+            <button class="lm-btn ghost small" type="button" id="setupWizardRescan">Scan again</button>
+          </div>
+          <div class="lm-setup-results" id="setupWizardResults"></div>
+          <div class="lm-setup-footer">
+            <span class="lm-setting-desc" id="setupWizardMeta">—</span>
+            <span class="lm-setting-desc" id="setupWizardSummary">—</span>
+            <button class="lm-btn df-btn-accent" type="button" id="setupWizardFinish" disabled>Confirm locations</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Library scan modal -->
   <div class="lm-modal" id="libraryScanModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -1002,8 +1141,8 @@ try {
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
   <script src="/static/js/ui-layout-prefs.js"></script>
   <script src="/static/js/status-feed.js"></script>
@@ -1015,6 +1154,8 @@ try {
   <script src="/static/js/model-search-live.js"></script>
   <script src="/static/js/sysbar-live.js"></script>
   <script src="/static/js/settings-live.js"></script>
+  <script src="/static/js/setup-wizard-live.js"></script>
+  <script src="/static/js/app-settings-live.js"></script>
   <script src="/static/js/runtime-steppers.js"></script>
   <script src="/static/js/runtime-recommendations.js"></script>
   <script src="/static/js/log-format.js"></script>
@@ -1024,6 +1165,7 @@ try {
   <script src="/static/js/models-live.js"></script>
   <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
+  <script src="/static/js/desktop-shell.js"></script>
   <script src="/static/js/about-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
   <script src="/static/js/dflash-console-ui.js"></script>

@@ -151,11 +151,11 @@
       });
       parts.push('</div>');
     } else {
-      parts.push('<p class="lm-setting-desc">No matching DFlash accelerator found locally. Search Hugging Face below, download one, then use <strong>Back to Create DFlash stack</strong> at the top.</p>');
+      parts.push('<p class="lm-setting-desc">No matching DFlash accelerator is installed for this target. Only accelerators matching this target are shown below.</p>');
     }
 
     if (hf.length) {
-      parts.push('<div class="df-stack-section-label">Suggested on Hugging Face</div>');
+      parts.push('<div class="df-stack-section-label">Matching accelerator on Hugging Face</div>');
       parts.push('<div class="df-stack-pick-list df-stack-pick-list-hf">');
       hf.forEach((row) => {
         parts.push(`
@@ -169,7 +169,7 @@
 
     parts.push(`
       <div class="df-stack-hf-actions">
-        <button class="lm-btn ghost small" type="button" id="stackWizardSearchHf">Search Hugging Face for more accelerators</button>
+        <button class="lm-btn ghost small" type="button" id="stackWizardSearchHf">Search Hugging Face for matching accelerators</button>
       </div>`);
 
     return parts.join('');
@@ -303,7 +303,9 @@
     window.DFlashShell?.setView?.('catalog');
     const input = document.getElementById('hfSearchInput');
     const category = document.getElementById('hfSearchCategory');
+    const sort = document.getElementById('hfSearchSort');
     if (category) category.value = 'dflash';
+    if (sort) sort.value = 'accelerators';
     if (input) input.value = q;
     void window.DFlashModelSearchLive?.runSearch?.();
   }

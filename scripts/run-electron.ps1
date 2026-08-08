@@ -37,11 +37,7 @@ if (-not (Test-Path (Join-Path $Root 'node_modules\electron'))) {
 }
 
 if ($Build) {
-    if ($DirOnly) {
-        & npm run dist:dir
-    } else {
-        & npm run dist
-    }
+    & (Join-Path $PSScriptRoot 'build-fast-installer.ps1')
     exit $LASTEXITCODE
 }
 
