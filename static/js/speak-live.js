@@ -8,10 +8,13 @@
 
   let voices = [];
   let sttModels = [];
+  let embedServers = [];
   let currentMode = 'chat';
   let speaking = false;
   let transcribing = false;
   let sttLoading = false;
+  let embedding = false;
+  let lastEmbedResult = null;
 
   function setStatus(text) {
     const el = $('speakStatus');
@@ -24,7 +27,7 @@
   }
 
   function setMode(mode) {
-    currentMode = ['speak', 'transcribe'].includes(mode) ? mode : 'chat';
+    currentMode = ['speak', 'transcribe', 'embed'].includes(mode) ? mode : 'chat';
     document.querySelectorAll('[data-playground-mode]').forEach((btn) => {
       const active = btn.dataset.playgroundMode === currentMode;
       btn.classList.toggle('active', active);
@@ -35,12 +38,14 @@
     const welcome = $('chatWelcome');
     const speakPanel = $('speakPanel');
     const transcribePanel = $('transcribePanel');
+    const embedPanel = $('embedPanel');
     const modeIsChat = currentMode === 'chat';
     if (chatBody) chatBody.classList.toggle('hidden', !modeIsChat);
     if (composer) composer.classList.toggle('hidden', !modeIsChat);
     if (welcome) welcome.classList.toggle('hidden', !modeIsChat);
     if (speakPanel) speakPanel.classList.toggle('hidden', currentMode !== 'speak');
     if (transcribePanel) transcribePanel.classList.toggle('hidden', currentMode !== 'transcribe');
+    if (embedPanel) embedPanel.classList.toggle('hidden', currentMode !== 'embed');
     if (currentMode === 'speak') {
       void refreshVoices();
       const input = $('speakInput');
@@ -49,6 +54,118 @@
     if (currentMode === 'transcribe') {
       void refreshSttModels();
       setTranscribeStatus('Pick a Whisper model and Load, then choose an audio file and Transcribe.');
+    }
+    if (currentMode === 'embed') {
+      void refreshEmbedServers();
+      setEmbedStatus('Pick an embedding server, enter one item per line, and press Embed.');
+    }
+  }
+
+  function setEmbedStatus(text) {
+    const el = $('embedStatus');
+    if (el) el.textContent = text || '';
+  }
+
+  async function refreshEmbedServers() {
+    const pick = $('embedServerPick');
+    if (!pick) return;
+    if (!embedServers.length) {
+      try {
+        // /api/servers/profiles always returns normalized all_servers (the
+        // status payload may be served from a cache that omits all_servers).
+        const data = await api('/api/servers/profiles', { timeoutMs: 10000 });
+        const all = Array.isArray(data?.all_servers) ? data.all_servers : [];
+        embedServers = all.filter((s) => String(s.engine_mode || '') === 'embedding' || String(s.model_kind || '') === 'embedding');
+      } catch (_err) {
+        embedServers = [];
+      }
+    }
+    const previous = pick.value;
+    pick.innerHTML = '';
+    if (!embedServers.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No embedding server found';
+      pick.appendChild(opt);
+    } else {
+      for (const server of embedServers) {
+        const opt = document.createElement('option');
+        opt.value = server.id || '';
+        opt.textContent = server.label || server.id || '';
+        pick.appendChild(opt);
+      }
+      if (previous && embedServers.some((s) => (s.id || '') === previous)) pick.value = previous;
+    }
+  }
+
+  async function embed() {
+    const input = $('embedInput');
+    const serverId = $('embedServerPick')?.value || '';
+    const items = String(input?.value || '').split(/\n+/).map((t) => t.trim()).filter(Boolean);
+    if (!serverId) {
+      setEmbedStatus('Pick an embedding server first.');
+      return;
+    }
+    if (!items.length) {
+      setEmbedStatus('Enter at least one item to embed.');
+      return;
+    }
+    const btn = $('embedBtn');
+    if (embedding) return;
+    embedding = true;
+    if (btn) btn.disabled = true;
+    setEmbedStatus(`Embedding ${items.length} item${items.length === 1 ? '' : 's'}…`);
+    try {
+      const data = await api(`/api/servers/${encodeURIComponent(serverId)}/embed/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: items.map((text) => ({ text })) }),
+        timeoutMs: 120000,
+      });
+      if (!data?.success) throw new Error(data?.error || 'embedding failed');
+      lastEmbedResult = data;
+      const dims = data.rows?.[0]?.dimensions || 0;
+      const exportBtn = $('embedExportBtn');
+      if (exportBtn) exportBtn.hidden = false;
+      setEmbedStatus(`${data.count || 0} vectors${dims ? ` · ${dims} dims` : ''}. Ready to export.`);
+    } catch (error) {
+      setEmbedStatus(error.message || 'Embedding failed.');
+    } finally {
+      embedding = false;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function embedExport() {
+    const serverId = $('embedServerPick')?.value || '';
+    const input = $('embedInput');
+    const items = String(input?.value || '').split(/\n+/).map((t) => t.trim()).filter(Boolean);
+    if (!serverId || !items.length) return;
+    const exportBtn = $('embedExportBtn');
+    if (exportBtn) exportBtn.disabled = true;
+    setEmbedStatus('Exporting .jsonl…');
+    try {
+      const data = await api(`/api/servers/${encodeURIComponent(serverId)}/embed/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: items.map((text) => ({ text })), export_jsonl: true }),
+        timeoutMs: 120000,
+      });
+      if (!data?.jsonl) throw new Error('no jsonl in response');
+      const blob = new Blob([data.jsonl], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `embeddings-${Date.now()}.jsonl`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setEmbedStatus(`Exported ${items.length} vectors to .jsonl.`);
+    } catch (error) {
+      setEmbedStatus(error.message || 'Export failed.');
+    } finally {
+      if (exportBtn) exportBtn.disabled = false;
     }
   }
 
@@ -265,6 +382,10 @@
     if (transcribeBtn) transcribeBtn.addEventListener('click', () => void transcribe());
     const sttLoadBtn = $('sttLoadBtn');
     if (sttLoadBtn) sttLoadBtn.addEventListener('click', () => void loadStt());
+    const embedBtn = $('embedBtn');
+    if (embedBtn) embedBtn.addEventListener('click', () => void embed());
+    const embedExportBtn = $('embedExportBtn');
+    if (embedExportBtn) embedExportBtn.addEventListener('click', () => void embedExport());
     const speed = $('speakSpeed');
     if (speed) {
       speed.addEventListener('input', () => {

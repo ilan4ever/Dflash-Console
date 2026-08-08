@@ -134,6 +134,7 @@ try {
                     <button type="button" class="lm-filter-chip active" data-playground-mode="chat" role="tab" aria-selected="true">Chat</button>
                     <button type="button" class="lm-filter-chip" data-playground-mode="speak" role="tab" aria-selected="false">Speak</button>
                     <button type="button" class="lm-filter-chip" data-playground-mode="transcribe" role="tab" aria-selected="false">Transcribe</button>
+                    <button type="button" class="lm-filter-chip" data-playground-mode="embed" role="tab" aria-selected="false">Embed</button>
                   </div>
                   <div class="df-chat-load-row">
                     <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
@@ -209,6 +210,17 @@ try {
                 </div>
                 <textarea id="transcribeResult" class="df-chat-input df-speak-input" rows="6" readonly placeholder="Transcript will appear here…"></textarea>
                 <div class="df-chat-status" id="transcribeStatus" aria-live="polite"></div>
+              <section class="df-speak-panel hidden" id="embedPanel" aria-label="Embeddings">
+                <div class="df-speak-toolbar">
+                  <label class="df-chat-engine-label" for="embedServerPick">Server</label>
+                  <select class="lm-select" id="embedServerPick" title="Embedding server">
+                    <option value="">Loading…</option>
+                  </select>
+                  <button type="button" class="lm-btn primary" id="embedBtn">Embed</button>
+                  <button type="button" class="lm-btn" id="embedExportBtn" hidden>Export .jsonl</button>
+                </div>
+                <textarea id="embedInput" class="df-chat-input df-speak-input" rows="6" placeholder="One item per line — each line becomes one embedding. Paste a paragraph per line, or a list of documents."></textarea>
+                <div class="df-chat-status" id="embedStatus" aria-live="polite"></div>
               </section>
             </div>
           </div>

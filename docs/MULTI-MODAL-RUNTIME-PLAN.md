@@ -391,8 +391,17 @@ Already present: projector detect/wire, `mmproj` in presets, Playground image pa
 
 **Outcome:** First-class embedding UX on existing embedding llama-server profiles.
 
-- [ ] Dedicated embedding cards (not mixed with chat in UI)
-- [ ] Batch embed folder of text files → export `.jsonl`
+> **Phase 4 status (2026-08-08):** shipped. Embedding servers are already
+> distinct in the UI via the `embedding` modality badge/cards (Phase 0). Added a
+> Console-proxied OpenAI `POST /api/servers/{id}/v1/embeddings`, a
+> `POST /api/servers/{id}/embed/batch` endpoint (text items → vectors, optional
+> `.jsonl` export), an embed-agnostic JIT-load helper (works even when
+> `engine_on` is false), and a Playground **Embed** tab (server picker, one item
+> per line, vectors + dims, **Export .jsonl**). Verified on `nomic-embed` (768
+> dims). Chroma-lite store remains a nice-to-have (deferred).
+
+- [x] Dedicated embedding cards (not mixed with chat in UI)
+- [x] Batch embed folder of text files → export `.jsonl`
 - [ ] Optional Chroma-lite store (nice-to-have)
 
 ---
