@@ -153,11 +153,12 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
             port = int(row.get('port') or 0)
         except (TypeError, ValueError) as exc:
             raise ValueError(f'runtimes[{index}].port must be an integer') from exc
-        if not 1 <= port <= 65535:
-            raise ValueError(f'runtimes[{index}].port must be between 1 and 65535')
-        if port in seen_ports:
-            raise ValueError(f'port {port} is already used by {seen_ports[port]}')
-        seen_ports[port] = f'runtime:{runtime_id}'
+        if not 0 <= port <= 65535:
+            raise ValueError(f'runtimes[{index}].port must be between 0 and 65535')
+        if port:
+            if port in seen_ports:
+                raise ValueError(f'port {port} is already used by {seen_ports[port]}')
+            seen_ports[port] = f'runtime:{runtime_id}'
         if not is_loopback_host(row.get('host')):
             raise ValueError(f'runtimes[{index}].host must be loopback-only')
         api_url = row.get('api_url') or f"http://{row.get('host') or '127.0.0.1'}:{port}"

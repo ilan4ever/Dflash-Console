@@ -66,7 +66,10 @@
     if (tab === 'server') void window.DFlashServerLive?.refresh?.(true);
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
-    if (tab === 'chat') void window.DFlashChatLive?.onViewEnter?.();
+    if (tab === 'chat') {
+      void window.DFlashChatLive?.onViewEnter?.();
+      void window.DFlashSpeakLive?.onViewEnter?.();
+    }
     if (tab === 'about') window.DFlashAboutLive?.syncVersion?.();
   }
 

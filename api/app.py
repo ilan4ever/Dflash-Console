@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -266,6 +266,20 @@ class ServerCreateRequest(BaseModel):
     model_id: str | None = Field(default=None, max_length=120)
     id: str | None = Field(default=None, max_length=80)
     context_size: int | None = Field(default=None, ge=2048, le=262144)
+
+
+class AudioSpeechRequest(BaseModel):
+    """OpenAI-shaped POST /v1/audio/speech body (Piper TTS)."""
+    model: str = Field(default='tts-1', max_length=120)
+    input: str = Field(..., min_length=1)
+    voice: str = Field(default='', max_length=120)
+    response_format: str = Field(default='wav', pattern='^(wav|mp3)$')
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+
+
+class RuntimeLoadRequest(BaseModel):
+    voice: str = Field(default='', max_length=120)
+    path: str = Field(default='', max_length=1024)
 
 
 def _persist_server_merge(cfg: dict[str, Any], server_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -743,7 +757,9 @@ def runtimes_status() -> dict[str, Any]:
             'api_url': str(server.get('api_url') or ''),
             'device_policy': str(server.get('gpu_device') or 'auto'),
             'enabled': server.get('enabled', True) is not False,
-            'adapter_installed': get_runtime_adapter('llama-server') is not None,
+            # llama-server is a built-in adapter (not in the registry), so it is
+            # always "installed".
+            'adapter_installed': True,
         })
     for runtime in list_runtimes(cfg):
         runtime_id = str(runtime.get('runtime_id') or '')
@@ -782,6 +798,94 @@ def gpu_contention() -> dict[str, Any]:
     from core.runtimes.contention import gpu_contention_report
 
     return gpu_contention_report(cfg=load_config())
+
+
+def _require_runtime_adapter(runtime_id: str):
+    from core.runtimes import get_runtime_adapter
+
+    adapter = get_runtime_adapter(str(runtime_id or ''))
+    if adapter is None:
+        raise HTTPException(status_code=404, detail=f'runtime adapter not found: {runtime_id}')
+    return adapter
+
+
+@app.get('/api/runtimes/{runtime_id}')
+def runtime_status(runtime_id: str) -> dict[str, Any]:
+    adapter = _require_runtime_adapter(runtime_id)
+    health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
+    return {'success': True, 'runtime_id': runtime_id, **health}
+
+
+@app.get('/api/runtimes/{runtime_id}/voices')
+def runtime_voices(runtime_id: str) -> dict[str, Any]:
+    adapter = _require_runtime_adapter(runtime_id)
+    list_fn = getattr(adapter, 'list_voices', None)
+    voices = list_fn() if callable(list_fn) else []
+    return {'success': True, 'runtime_id': runtime_id, 'voices': voices}
+
+
+@app.post('/api/runtimes/{runtime_id}/load')
+def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
+    adapter = _require_runtime_adapter(runtime_id)
+    load_fn = getattr(adapter, 'load', None)
+    if not callable(load_fn):
+        raise HTTPException(status_code=400, detail='adapter does not support load')
+    result = load_fn({'id': body.voice, 'path': body.path})
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
+    return {'success': True, 'runtime_id': runtime_id, **result}
+
+
+@app.post('/api/runtimes/{runtime_id}/unload')
+def runtime_unload(runtime_id: str) -> dict[str, Any]:
+    adapter = _require_runtime_adapter(runtime_id)
+    unload_fn = getattr(adapter, 'unload', None)
+    if not callable(unload_fn):
+        raise HTTPException(status_code=400, detail='adapter does not support unload')
+    return {'success': True, 'runtime_id': runtime_id, **unload_fn()}
+
+
+@app.post('/api/runtimes/{runtime_id}/v1/audio/speech')
+def runtime_audio_speech(runtime_id: str, body: AudioSpeechRequest) -> Response:
+    """Console-proxied OpenAI audio/speech route backed by Piper (CLI)."""
+    adapter = _require_runtime_adapter(runtime_id)
+    synthesize = getattr(adapter, 'synthesize', None)
+    if not callable(synthesize):
+        raise HTTPException(status_code=400, detail='adapter does not support speech synthesis')
+    text = str(body.input or '').strip()
+    if not text:
+        raise HTTPException(status_code=400, detail='input text is required')
+    result = synthesize(text, voice=body.voice, speed=body.speed)
+    if not result.get('success'):
+        raise HTTPException(status_code=500, detail=result.get('error') or 'synthesis failed')
+    audio = result.get('audio') or b''
+    media_type = str(result.get('media_type') or 'audio/wav')
+    return Response(
+        content=audio,
+        media_type=media_type,
+        headers={
+            'Content-Disposition': 'inline; filename="speech.wav"',
+            'X-DFlash-Runtime': runtime_id,
+            'X-DFlash-Voice': str(result.get('voice') or ''),
+        },
+    )
+
+
+@app.get('/api/runtimes/{runtime_id}/logs')
+def runtime_logs(
+    runtime_id: str,
+    lines: int = Query(default=120, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Tail the per-runtime log file (logs/runtimes/<runtime_id>.log)."""
+    log_path = ROOT / 'logs' / 'runtimes' / f'{str(runtime_id).strip()}.log'
+    rows: list[str] = []
+    if log_path.is_file():
+        try:
+            content = log_path.read_text(encoding='utf-8', errors='replace').splitlines()
+            rows = content[-int(lines):]
+        except OSError:
+            rows = []
+    return {'success': True, 'runtime_id': runtime_id, 'lines': rows, 'log_file': str(log_path)}
 
 
 @app.get('/api/servers/{server_id}/status')
