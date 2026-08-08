@@ -84,7 +84,10 @@
   function settingsPanelFromRoute(segment) {
     if (!segment) return null;
     const panel = String(segment).trim();
-    return document.querySelector(`.lm-settings-nav-item[data-settings-panel="${panel}"]`) ? panel : null;
+    const resolved = panel === 'gw-network' || panel === 'gw-behavior' || panel === 'gw-preset'
+      ? 'gw-engines'
+      : panel;
+    return document.querySelector(`.lm-settings-nav-item[data-settings-panel="${resolved}"]`) ? resolved : null;
   }
 
   function parseHashRoute() {
@@ -132,7 +135,7 @@
     if (tab === 'settings') {
       const panel = settingsPanel
         || layoutPrefs()?.getString?.('settings_panel')
-        || 'ws-checkpoints';
+        || 'app-settings';
       window.DFlashSettingsLive?.showPanel?.(panel, { persist: false });
     }
     if (persist) layoutPrefs()?.setString?.('active_view', tab);

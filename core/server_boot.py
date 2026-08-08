@@ -10,7 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.config import get_dflash_root, is_embedding_server, normalize_load_settings, normalize_server
+from core.config import (
+    get_dflash_root,
+    is_embedding_server,
+    normalize_hardware_settings,
+    normalize_load_settings,
+    normalize_server,
+)
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.log_utils import rotate_log
 from core.model_presets import infer_profile_from_path, model_id_from_path, preset_path_for, write_server_preset
@@ -174,7 +180,7 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
 
         signature = embedding_launch_signature(entry, launch)
     else:
-        signature = _launch_signature(entry, launch)
+        signature = _launch_signature(entry, launch, cfg=cfg)
     _started_launch[port] = dict(signature)
     note_boot_cycle_end(port)
     return {'success': True, 'adopted': True, 'port': port}
@@ -246,10 +252,16 @@ def listener_pid(host: str, port: int) -> int | None:
     return None
 
 
-def _launch_signature(server: dict[str, Any], launch: dict[str, Any]) -> dict[str, Any]:
+def _launch_signature(
+    server: dict[str, Any],
+    launch: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     idle_minutes = int(server.get('idle_unload_minutes') or 0)
     idle_seconds = 0 if idle_minutes <= 0 else idle_minutes * 60
     load = normalize_load_settings(server.get('load_settings'))
+    hardware = normalize_hardware_settings((cfg or {}).get('hardware_settings'))
     return {
         'context': int(server.get('context_size') or 8192),
         'main_gpu': int(launch.get('main_gpu') or 0),
@@ -263,6 +275,7 @@ def _launch_signature(server: dict[str, Any], launch: dict[str, Any]) -> dict[st
         'physical_batch_size': int(load.get('physical_batch_size') or 512),
         'flash_attention': bool(load.get('flash_attention', True)),
         'parallel_slots': int(load.get('parallel_slots') or 4),
+        'offload_kv_cache_to_gpu': hardware.get('offload_kv_cache_to_gpu') is not False,
         'model_id': str(server.get('model_id') or ''),
         'router_mode': True,
     }
@@ -343,6 +356,8 @@ def _spawn_router(
         str(signature['physical_batch_size']),
         '-FlashAttention',
         'on' if signature['flash_attention'] else 'off',
+        '-KvOffload',
+        'on' if signature.get('offload_kv_cache_to_gpu', True) else 'off',
         '-Parallel',
         str(signature.get('parallel_slots') or 4),
     ]
@@ -444,7 +459,7 @@ def _start_router_listener_locked(
         hardware=(cfg or {}).get('hardware_settings'),
         context_size=entry.get('context_size'),
     )
-    signature = _launch_signature(entry, launch)
+    signature = _launch_signature(entry, launch, cfg=cfg)
 
     try:
         if skip_preset_write:
@@ -674,7 +689,7 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         hardware=(cfg or {}).get('hardware_settings'),
         context_size=entry.get('context_size'),
     )
-    signature = _launch_signature(entry, launch)
+    signature = _launch_signature(entry, launch, cfg=cfg)
     port_open = _tcp_port_open(host, port)
     if port_open:
         pid = listener_pid(host, port)

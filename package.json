@@ -1,7 +1,7 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.0.49",
+  "version": "0.2.9",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "ILAN AVIV",
@@ -13,8 +13,11 @@
   "scripts": {
     "electron": "electron .",
     "electron:dev": "electron .",
+    "predist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-electron-runtime.ps1",
+    "predist:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-electron-runtime.ps1",
     "dist": "electron-builder --win",
-    "dist:dir": "electron-builder --win --dir"
+    "dist:dir": "electron-builder --win --dir",
+    "release:sign": "node tools/sign-update-manifest.js"
   },
   "build": {
     "appId": "com.dflash.console",
@@ -30,12 +33,16 @@
     ],
     "extraResources": [
       {
-        "from": "scripts/start-console-server.ps1",
-        "to": "scripts/start-console-server.ps1"
+        "from": "electron/runtime-staging",
+        "to": "console-runtime"
       },
       {
         "from": "server.ps1",
         "to": "server.ps1"
+      },
+      {
+        "from": "electron/update-helper.ps1",
+        "to": "update-helper.ps1"
       }
     ],
     "win": {
@@ -53,7 +60,8 @@
           ]
         }
       ],
-      "icon": "assets/dflash_console_logo_only_clear.png"
+      "icon": "assets/dflash_console_logo_only_clear.png",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
@@ -64,7 +72,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "DFlash Console",
       "uninstallDisplayName": "DFlash Console",
-      "runAfterFinish": true,
+      "runAfterFinish": false,
+      "include": "installer/dark-installer.nsh",
       "artifactName": "DFlash-Console-Setup-${version}-${arch}.${ext}"
     },
     "portable": {

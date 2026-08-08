@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from core.config import get_dflash_root, normalize_load_settings, SPECULATIVE_PROFILES
+from core.config import (
+    get_dflash_root,
+    normalize_hardware_settings,
+    normalize_load_settings,
+    SPECULATIVE_PROFILES,
+)
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.model_stack import resolve_model_stack
 
@@ -63,8 +68,10 @@ def write_server_preset(
         server.get('gpu_device'),
         model_id=preset_model_id,
         hardware=(cfg or {}).get('hardware_settings'),
+        context_size=server.get('context_size'),
     )
     cache_k, cache_v = PROFILE_CACHE_TYPES.get(preset_profile, ('q4_0', 'q4_0'))
+    hardware = normalize_hardware_settings((cfg or {}).get('hardware_settings'))
 
     target_path_resolved = str(target_path or server.get('target_path') or '').strip()
     draft_path_resolved = str(server.get('draft_path') or '').strip()
@@ -106,6 +113,7 @@ def write_server_preset(
         'mlock = true',
         f"main-gpu = {int(launch.get('main_gpu') or 0)}",
         f"split-mode = {launch.get('split_mode') or 'none'}",
+        f"kv-offload = {'true' if hardware.get('offload_kv_cache_to_gpu') is not False else 'false'}",
         f"cache-type-k = {cache_k}",
         f"cache-type-v = {cache_v}",
         f"np = {int(load.get('parallel_slots') or 4)}",

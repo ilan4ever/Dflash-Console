@@ -8,9 +8,11 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from core.gpu_devices import format_gpu_display_name
 from core.runtime import (
@@ -714,37 +716,59 @@ def _is_lmstudio_chromium_helper(command_line: str) -> bool:
 
 
 def _probe_lmstudio_loaded_models(host: str = '127.0.0.1', port: int = 1234) -> list[dict[str, Any]]:
-    url = f'http://{host}:{int(port)}/api/v0/models'
-    try:
-        with urllib.request.urlopen(url, timeout=2.5) as resp:
-            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
-    except Exception:
-        return []
-    if not isinstance(payload, dict):
-        return []
-
     loaded: list[dict[str, Any]] = []
-    for entry in payload.get('data') or []:
-        if not isinstance(entry, dict):
+    base = f'http://{host}:{int(port)}'
+
+    # LM Studio's current API exposes the authoritative loaded instances here.
+    # The older v0 endpoint reports the same information as a model state.
+    for endpoint in ('/api/v1/models', '/api/v0/models'):
+        try:
+            with urllib.request.urlopen(f'{base}{endpoint}', timeout=2.5) as resp:
+                payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+        except Exception:
             continue
-        state = str(entry.get('state') or '').lower()
-        if state not in {'loaded', 'loading', 'running'}:
+        if not isinstance(payload, dict):
             continue
-        model_id = str(entry.get('id') or '').strip()
-        if not model_id:
-            continue
-        title = model_id
-        quant = str(entry.get('quantization') or '').strip()
-        if quant:
-            title = f'{model_id} · {quant}'
-        loaded.append({
-            'model_id': model_id,
-            'title': title,
-            'quantization': quant,
-            'state': state,
-            'api_url': f'http://{host}:{int(port)}/v1',
-            'listen_port': int(port),
-        })
+
+        entries = payload.get('models') if endpoint.endswith('/v1/models') else payload.get('data')
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            instances = entry.get('loaded_instances')
+            state = str(entry.get('state') or '').lower()
+            if endpoint.endswith('/v1/models'):
+                if not isinstance(instances, list) or not instances:
+                    continue
+                instance = instances[0] if isinstance(instances[0], dict) else {}
+                model_id = str(instance.get('id') or entry.get('key') or '').strip()
+                state = str(instance.get('state') or 'loaded').lower()
+            else:
+                if state not in {'loaded', 'loading', 'running'}:
+                    continue
+                model_id = str(entry.get('id') or '').strip()
+            if not model_id:
+                continue
+            title = str(entry.get('display_name') or entry.get('id') or entry.get('key') or model_id)
+            quant_data = entry.get('quantization')
+            quant = (
+                str(quant_data.get('name') or '').strip()
+                if isinstance(quant_data, dict)
+                else str(entry.get('quantization') or '').strip()
+            )
+            if quant:
+                title = f'{title} · {quant}'
+            loaded.append({
+                'model_id': model_id,
+                'title': title,
+                'quantization': quant,
+                'state': state,
+                'size_gb': round(float(entry.get('size_bytes') or 0) / (1024 ** 3), 2)
+                if entry.get('size_bytes') else None,
+                'api_url': f'{base}/v1',
+                'listen_port': int(port),
+            })
+        if loaded:
+            break
     return loaded
 
 
@@ -1190,6 +1214,21 @@ def unload_external_gpu_process(
     target_pid = int(pid)
     if target_pid <= 0:
         return {'success': False, 'error': 'invalid pid'}
+    api = str(api_url or '').strip()
+    model = str(model_id or '').strip()
+    if api and model:
+        native_urls = [api]
+        parsed_api = urlparse(api)
+        if (
+            parsed_api.hostname in {'127.0.0.1', 'localhost', '::1'}
+            and parsed_api.port != 1234
+        ):
+            native_urls.append(f'{parsed_api.scheme}://{parsed_api.hostname}:1234/v1')
+        for native_url in native_urls:
+            native = _unload_lmstudio_model(api_url=native_url, model_id=model)
+            if native.get('success'):
+                return {**native, 'pid': target_pid, 'method': 'lmstudio-api'}
+
     matching = next(
         (
             row for row in query_compute_apps()
@@ -1206,13 +1245,13 @@ def unload_external_gpu_process(
     if _APP_SERVER_CMD.search(identity) or not (_ML_PROCESS.search(identity) or _ML_CMD.search(identity)):
         return {'success': False, 'error': 'process is not an approved model process', 'pid': target_pid}
 
-    api = str(api_url or '').strip()
-    model = str(model_id or '').strip()
     if api and model:
         result = unload_model(api_url=api, model_id=model)
         if result.get('success'):
             return {**result, 'pid': target_pid, 'method': 'api'}
-        if int(result.get('http_status') or 0) not in (404, 405):
+        # Some LM Studio worker endpoints reject the legacy unload route with
+        # 401/403. The worker PID is still safe to terminate below.
+        if int(result.get('http_status') or 0) not in (401, 403, 404, 405):
             return result
 
     try:
@@ -1234,3 +1273,93 @@ def unload_external_gpu_process(
         return {'success': False, 'error': str(exc), 'pid': target_pid}
 
     return {'success': True, 'pid': target_pid, 'method': 'kill', 'message': 'Process terminated'}
+
+
+def _unload_lmstudio_model(*, api_url: str, model_id: str) -> dict[str, Any]:
+    """Use LM Studio's native API when the card represents its main server."""
+    parsed = urlparse(str(api_url or '').strip())
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return {'success': False, 'error': 'invalid API URL'}
+
+    base = f'{parsed.scheme}://{parsed.netloc}/api/v1'
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+    token = (
+        os.environ.get('LM_API_TOKEN')
+        or os.environ.get('LM_STUDIO_API_TOKEN')
+        or os.environ.get('LM_STUDIO_API_KEY')
+    )
+    if token:
+        headers['Authorization'] = f'Bearer {token.strip()}'
+
+    try:
+        list_request = urllib.request.Request(
+            f'{base}/models',
+            method='GET',
+            headers=headers,
+        )
+        with urllib.request.urlopen(list_request, timeout=3) as response:
+            payload = json.loads(response.read().decode('utf-8', errors='replace') or '{}')
+    except urllib.error.HTTPError as exc:
+        return {'success': False, 'error': str(exc), 'http_status': exc.code}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError) as exc:
+        return {'success': False, 'error': str(exc)}
+
+    requested = str(model_id or '').strip()
+    instance_id = ''
+    for entry in (payload.get('models') if isinstance(payload, dict) else []):
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get('key') or '').strip()
+        requested_path = requested.replace('\\', '/').rsplit('/', 1)[-1].rsplit('.', 1)[0].lower()
+        key_name = key.rsplit('/', 1)[-1].lower()
+        for instance in entry.get('loaded_instances') or []:
+            if not isinstance(instance, dict):
+                continue
+            candidate = str(instance.get('id') or '').strip()
+            path_matches_key = bool(
+                requested_path
+                and key_name
+                and (
+                    requested_path == key_name
+                    or requested_path.startswith(f'{key_name}-')
+                    or key_name.startswith(f'{requested_path}-')
+                )
+            )
+            if candidate and (requested in {candidate, key} or path_matches_key):
+                instance_id = candidate
+                break
+        if instance_id:
+            break
+    if not instance_id:
+        return {
+            'success': False,
+            'error': 'LM Studio model instance is not loaded',
+            'http_status': 404,
+        }
+
+    body = json.dumps({'instance_id': instance_id}).encode('utf-8')
+    unload_request = urllib.request.Request(
+        f'{base}/models/unload',
+        data=body,
+        method='POST',
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(unload_request, timeout=15) as response:
+            response_body = response.read().decode('utf-8', errors='replace')
+            result = json.loads(response_body or '{}') if response_body else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        return {'success': False, 'error': detail or str(exc), 'http_status': exc.code}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError) as exc:
+        return {'success': False, 'error': str(exc)}
+
+    return {
+        'success': True,
+        'unloaded': True,
+        'model': instance_id,
+        'response': result,
+    }

@@ -40,6 +40,8 @@ param(
     [int]$PhysicalBatch = 512,
     [ValidateSet("on", "off")]
     [string]$FlashAttention = "on",
+    [ValidateSet("on", "off")]
+    [string]$KvOffload = "on",
     [string]$ModelsPreset = "",
     [int]$Parallel = 0,
     [switch]$RouterMode
@@ -110,6 +112,11 @@ if ($RouterMode) {
         "--no-models-autoload",
         "--jinja"
     )
+    if ($KvOffload -eq "off") {
+        $routerArgs += "--no-kv-offload"
+    } else {
+        $routerArgs += "--kv-offload"
+    }
     if ($IdleUnloadSeconds -gt 0) {
         $routerArgs += @("--sleep-idle-seconds", "$IdleUnloadSeconds")
     }
@@ -167,6 +174,12 @@ $argsList = @(
     "--jinja",
     "--mlock"
 )
+
+if ($KvOffload -eq "off") {
+    $argsList += "--no-kv-offload"
+} else {
+    $argsList += "--kv-offload"
+}
 
 if ($SplitMode -ne "none" -and -not [string]::IsNullOrWhiteSpace($TensorSplit)) {
     $argsList += @("--tensor-split", $TensorSplit)

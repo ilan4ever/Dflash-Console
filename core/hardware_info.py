@@ -7,7 +7,6 @@ from typing import Any
 
 from core.config import CONFIG_PATH, get_dflash_root, load_config, normalize_hardware_settings
 from core.gpu_devices import query_gpu_devices
-from core.local_models import list_local_models
 from core.system_stats import get_cpu_info_payload, get_system_stats_payload
 
 
@@ -33,8 +32,8 @@ def get_hardware_payload(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
 
     from core.model_paths import get_download_library, get_model_libraries, storage_presets
 
-    models_meta = list_local_models(cfg=config)
     libraries = get_model_libraries(config)
+    download_library = get_download_library(config)
     from core.model_discovery import summarize_library_path
     enriched_libraries = []
     for row in libraries:
@@ -57,7 +56,7 @@ def get_hardware_payload(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
         'vram_total_gb': total_vram,
         'gpus': merged_gpus,
         'gpu_count': len(merged_gpus),
-        'models_dir': models_meta.get('models_dir'),
+        'models_dir': download_library.get('path'),
         'model_libraries': enriched_libraries,
         'download_library_id': get_download_library(config).get('id'),
         'storage_presets': storage_presets(),

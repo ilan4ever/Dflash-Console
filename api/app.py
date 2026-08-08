@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 import uuid
@@ -131,6 +132,16 @@ def _start_background_tasks() -> None:
             logger.exception('model catalog warm failed: %s', exc)
 
     threading.Thread(target=warm_catalog, daemon=True, name='model-catalog-warm').start()
+
+    def warm_hf_catalog() -> None:
+        try:
+            from core.hf_catalog_cache import warm_hf_catalog_cache
+
+            warm_hf_catalog_cache()
+        except Exception as exc:
+            logger.exception('hf catalog warm failed: %s', exc)
+
+    threading.Thread(target=warm_hf_catalog, daemon=True, name='hf-catalog-warm').start()
 
 
 def _release_gpu_on_shutdown() -> None:
@@ -279,13 +290,24 @@ def _save_config_checked(cfg: dict[str, Any]) -> None:
 
 @app.get('/api/health')
 async def health() -> dict[str, Any]:
+    from core.setup import is_setup_complete
+
+    cfg = load_config()
+    console_root = str((ROOT).resolve())
+    try:
+        configured_root = str(Path(str(cfg.get('dflash_root') or console_root)).resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        configured_root = console_root
     return {
         'success': True,
         'app': 'DFlash Console',
         'version': APP_VERSION,
+        'console_root': configured_root,
+        'shell_version': os.environ.get('DFLASH_CONSOLE_SHELL_VERSION', ''),
         'boot_id': _BOOT_ID,
         'boot_at': _BOOT_AT,
         'ui_version': _ui_version(),
+        'setup_complete': is_setup_complete(cfg),
     }
 
 
@@ -490,17 +512,26 @@ def hf_search(
     q: str = Query('', max_length=200),
     limit: int = Query(25, ge=1, le=50),
     sort: str = Query('downloads'),
-    category: str = Query('dflash'),
+    category: str = Query('all-gguf'),
+    refresh: bool = Query(False),
 ) -> dict[str, Any]:
+    from core.hf_catalog_cache import search_with_cache
     from core.huggingface import search_models
 
-    return search_models(q, limit=limit, sort=sort, category=category)
+    return search_with_cache(
+        query=q,
+        sort=sort,
+        category=category,
+        limit=limit,
+        force_refresh=refresh,
+        fetcher=lambda: search_models(q, limit=limit, sort=sort, category=category),
+    )
 
 
 @app.get('/api/hf/models/{repo_id:path}')
 def hf_model_detail(
     repo_id: str,
-    category: str = Query('dflash'),
+    category: str = Query('all-gguf'),
 ) -> dict[str, Any]:
     from core.huggingface import get_model_detail
 
@@ -842,6 +873,28 @@ def _ensure_server_ready_for_chat(server_id: str, server: dict[str, Any], cfg: d
     note_engine_loaded(server_id, loaded_by=client_label)
     _invalidate_status_cache()
     return _wait_until_loaded()
+
+
+@app.get('/api/servers/{server_id}/load-plan')
+def server_load_plan(
+    server_id: str,
+    model_path: str = Query(default=''),
+    model_id: str = Query(default=''),
+) -> dict[str, Any]:
+    from core.memory_guardrails import assess_load
+
+    cfg = load_config()
+    server = _require_server(cfg, server_id)
+    candidate = dict(server)
+    if model_path.strip():
+        candidate['adhoc_model_path'] = model_path.strip()
+    if model_id.strip():
+        candidate['model_id'] = model_id.strip()
+    return {
+        'success': True,
+        'server_id': server_id,
+        **assess_load(candidate, cfg=cfg),
+    }
 
 
 @app.post('/api/servers/{server_id}/load')

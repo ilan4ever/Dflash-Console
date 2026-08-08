@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from core.config import list_servers, load_config, normalize_server
+from core.config import ROOT, list_servers, load_config, normalize_server
 from core.model_paths import (
     allowed_model_roots,
     disk_scan_roots,
@@ -27,6 +28,10 @@ _CATALOG_CACHE_PLAIN: dict[str, Any] | None = None
 _CATALOG_CACHE_PLAIN_AT: float = 0.0
 _CATALOG_CACHE_PLAIN_KEY = ''
 _CATALOG_TTL_SECONDS = 120.0
+_PERSISTED_CACHE_TTL_SECONDS = 24 * 60 * 60
+_PERSISTED_CACHE_PATH = ROOT / 'logs' / 'local-model-catalog-cache.json'
+_CATALOG_REFRESH_LOCK = threading.Lock()
+_CATALOG_REFRESHING = False
 
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
@@ -38,6 +43,76 @@ def _catalog_cache_key(config: dict[str, Any]) -> str:
         return json.dumps(config, sort_keys=True, default=str, separators=(',', ':'))
     except (TypeError, ValueError):
         return repr(config)
+
+
+def _read_persisted_catalog(cache_key: str, *, include_dflash_stacks: bool) -> dict[str, Any] | None:
+    if not _PERSISTED_CACHE_PATH.is_file():
+        return None
+    try:
+        payload = json.loads(_PERSISTED_CACHE_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get('version') != 1:
+        return None
+    if payload.get('cache_key') != cache_key:
+        return None
+    if bool(payload.get('include_dflash_stacks', True)) != include_dflash_stacks:
+        return None
+    saved_at = float(payload.get('saved_at') or 0.0)
+    if not saved_at or time.time() - saved_at > _PERSISTED_CACHE_TTL_SECONDS:
+        return None
+    catalog = payload.get('payload')
+    if not isinstance(catalog, dict) or not isinstance(catalog.get('models'), list):
+        return None
+    result = dict(catalog)
+    result['cached'] = True
+    result['stale'] = time.time() - saved_at >= _CATALOG_TTL_SECONDS
+    result['cache_age_seconds'] = round(max(0.0, time.time() - saved_at), 1)
+    return result
+
+
+def _write_persisted_catalog(payload: dict[str, Any], *, cache_key: str, include_dflash_stacks: bool) -> None:
+    try:
+        _PERSISTED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _PERSISTED_CACHE_PATH.with_suffix('.tmp')
+        temporary.write_text(
+            json.dumps({
+                'version': 1,
+                'saved_at': time.time(),
+                'cache_key': cache_key,
+                'include_dflash_stacks': include_dflash_stacks,
+                'payload': payload,
+            }, ensure_ascii=False),
+            encoding='utf-8',
+        )
+        temporary.replace(_PERSISTED_CACHE_PATH)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _schedule_catalog_refresh(config: dict[str, Any], *, include_dflash_stacks: bool) -> None:
+    global _CATALOG_REFRESHING
+    with _CATALOG_REFRESH_LOCK:
+        if _CATALOG_REFRESHING:
+            return
+        _CATALOG_REFRESHING = True
+
+    def refresh() -> None:
+        global _CATALOG_REFRESHING
+        try:
+            list_local_models(
+                cfg=config,
+                scan_disk=True,
+                force_refresh=True,
+                include_dflash_stacks=include_dflash_stacks,
+            )
+        except Exception:
+            pass
+        finally:
+            with _CATALOG_REFRESH_LOCK:
+                _CATALOG_REFRESHING = False
+
+    threading.Thread(target=refresh, daemon=True, name='model-catalog-refresh').start()
 
 
 def _guess_arch(name: str) -> str:
@@ -292,7 +367,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
         'label': label,
         'profile': '',
         'port': 0,
-        'loadable': path.is_file(),
+        'loadable': False,
         'path': str(path),
         'filename': path.name,
         'arch': target.get('arch') or _guess_arch(path.name),
@@ -430,6 +505,27 @@ def _mark_duplicate_files(models: list[dict[str, Any]]) -> None:
             row['duplicate_identical'] = False
 
 
+def _annotate_path_status(row: dict[str, Any]) -> None:
+    path_text = str(row.get('path') or '').strip()
+    if not path_text:
+        row['path_missing'] = True
+        row['loadable'] = False
+        return
+    path = Path(path_text)
+    missing = not path.is_file()
+    row['path_missing'] = missing
+    if missing:
+        row['loadable'] = False
+    draft_path = str(row.get('draft_path') or '').strip()
+    if draft_path:
+        draft_missing = not Path(draft_path).is_file()
+        row['draft_path_missing'] = draft_missing
+        if draft_missing and row.get('dflash_stack'):
+            row['loadable'] = False
+    if int(row.get('split_count') or 0) > 1:
+        row['loadable'] = False
+
+
 def _mark_stack_path_access(models: list[dict[str, Any]], config: dict[str, Any]) -> None:
     roots: list[Path] = []
     for root in allowed_model_roots(config):
@@ -482,6 +578,8 @@ def _build_models_payload(
     models = _collapse_split_shards(models)
     models = _collapse_identical_files(models)
     _mark_duplicate_files(models)
+    for row in models:
+        _annotate_path_status(row)
     _mark_stack_path_access(models, config)
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
@@ -552,6 +650,25 @@ def list_local_models(
     ):
         return _CATALOG_CACHE_PLAIN
 
+    if not force_refresh:
+        persisted = _read_persisted_catalog(
+            cache_key,
+            include_dflash_stacks=include_dflash_stacks,
+        )
+        if persisted is not None:
+            if include_dflash_stacks:
+                _CATALOG_CACHE = persisted
+                _CATALOG_CACHE_AT = now
+                _CATALOG_CACHE_KEY = cache_key
+            else:
+                _CATALOG_CACHE_PLAIN = persisted
+                _CATALOG_CACHE_PLAIN_AT = now
+                _CATALOG_CACHE_PLAIN_KEY = cache_key
+            # The first request after process startup gets the previous scan
+            # immediately; the disk scan happens off the request thread.
+            _schedule_catalog_refresh(config, include_dflash_stacks=include_dflash_stacks)
+            return persisted
+
     scanned: list[dict[str, Any]] = []
     for root, source in disk_scan_roots(config):
         scanned.extend(_scan_gguf(root, source=source))
@@ -589,6 +706,7 @@ def list_local_models(
         _CATALOG_CACHE_PLAIN = payload
         _CATALOG_CACHE_PLAIN_AT = now
         _CATALOG_CACHE_PLAIN_KEY = cache_key
+        _write_persisted_catalog(payload, cache_key=cache_key, include_dflash_stacks=False)
         return payload
 
     stack_rows = _dflash_stack_supplement(config, catalog, cfg=config)
@@ -603,4 +721,5 @@ def list_local_models(
     _CATALOG_CACHE = payload
     _CATALOG_CACHE_AT = now
     _CATALOG_CACHE_KEY = cache_key
+    _write_persisted_catalog(payload, cache_key=cache_key, include_dflash_stacks=True)
     return payload

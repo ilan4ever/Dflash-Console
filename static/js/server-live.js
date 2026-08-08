@@ -39,6 +39,9 @@
   let suppressRunningToggle = false;
   let selectedLoadedKey = localStorage.getItem('dflashConsole.selectedLoadedKey') || '';
   let selectedModelKey = '';
+  let currentLoadPlan = null;
+  let currentLoadPlanKey = '';
+  let loadPlanRequestKey = '';
   const ENGINE_MODEL_PLACEHOLDER = 'Model to load';
   let statusFetchPending = false;
   let initialStatusSettled = false;
@@ -48,7 +51,6 @@
   let externalInitialFetchDone = false;
   let externalMissingPolls = 0;
   let externalPollCounter = 0;
-  const pageLoadAt = Date.now();
 
   const MODEL_GROUPS = window.DFlashModelGroups?.GROUPS || [
     { id: 'dflash', label: 'DFlash' },
@@ -273,7 +275,10 @@
   function serverIsLive(server) {
     if (!server) return false;
     const action = getServerAction(server.id);
-    if (action === 'stopping' || action === 'ejecting') return false;
+    if (action === 'stopping') return false;
+    if (action === 'ejecting') {
+      return server.running || server.status === 'booting' || server.status === 'loaded';
+    }
     if (action === 'starting') return true;
     // The live status payload is authoritative while a router is starting or
     // already listening. Do not let a stale persisted engine_on flag make the
@@ -347,8 +352,6 @@
     const bootingCount = bootingServerCount();
     const startingCount = [...serverActions.values()].filter((value) => value === 'starting').length;
     const loadingCount = pendingLoads.size;
-    const restoreWindow = (Date.now() - pageLoadAt) < 120000;
-    const activeConfig = server ? allServers.find((s) => s.id === server.id) : null;
 
     let title = '';
     let detail = '';
@@ -365,20 +368,8 @@
         : 'Finishing the GPU scan so loaded models can appear in this section.';
       mode = 'loading';
     } else if (action === 'starting' || startingCount > 0) {
-      const label = server?.label || server?.id || 'engine';
-      title = startingCount > 1 ? `Starting ${startingCount} engines…` : `Starting ${label}…`;
+      title = startingCount > 1 ? `Starting ${startingCount} engines…` : 'Starting engine…';
       detail = 'The llama-server process is launching. Cards and chat stay disabled until the listener is up.';
-      mode = 'starting';
-    } else if (
-      restoreWindow
-      && server
-      && activeConfig?.engine_on
-      && !server.running
-      && server.status !== 'loaded'
-      && server.status !== 'booting'
-    ) {
-      title = `Starting ${server.label || server.id}…`;
-      detail = 'Console is bringing this saved engine online after startup. This usually takes 30–60 seconds.';
       mode = 'starting';
     }
 
@@ -532,6 +523,8 @@
     inspectorDirty = false;
     if (inspectorLoadedOnGpu) inspectorPendingReload = true;
     updateInspectorReloadNotice();
+    const selected = selectedCatalogModel();
+    if (selected) void refreshLoadPlan(selected);
     window.DFlashStatusFeed?.note('Runtime settings saved', 'Reload the model to apply changes');
   }
 
@@ -553,8 +546,14 @@
 
   function updateInspectorReloadNotice() {
     const el = document.getElementById('inspectorReloadNotice');
+    const button = document.getElementById('inspectorReloadBtn');
     if (!el) return;
     el.classList.toggle('hidden', !(inspectorLoadedOnGpu && inspectorPendingReload));
+    if (button) {
+      button.disabled = !inspectorLoadedOnGpu
+        || !inspectorPendingReload
+        || isServerBusy(inspectorBound?.serverId);
+    }
   }
 
   function syncInspectorRuntimeAvailability(model) {
@@ -566,6 +565,33 @@
   function clearInspectorPendingReload() {
     inspectorPendingReload = false;
     updateInspectorReloadNotice();
+  }
+
+  async function reloadInspectorModel() {
+    const serverId = inspectorBound?.serverId || '';
+    if (!serverId || !inspectorLoadedOnGpu || !inspectorPendingReload) return;
+    const server = servers.find((item) => item.id === serverId)
+      || allServers.find((item) => item.id === serverId);
+    if (!server || isServerBusy(serverId)) return;
+    const selected = selectedCatalogModel();
+    const row = loadedRowsForServer(server)[0] || {};
+    const model = selected?.server_id === serverId
+      ? selected
+      : modelFromLoadedEntry(server, row);
+    if (!model) {
+      toast('The loaded model could not be identified', false);
+      return;
+    }
+    const button = document.getElementById('inspectorReloadBtn');
+    if (button) button.disabled = true;
+    try {
+      await flushInspectorSave();
+      const unloaded = await ejectServer(serverId);
+      if (!unloaded) return;
+      await loadModelOnServer(serverId, { ...model, server_id: serverId });
+    } finally {
+      updateInspectorReloadNotice();
+    }
   }
 
   async function flushInspectorSave() {
@@ -1091,6 +1117,16 @@
       const base = String(path).split(/[/\\]/).pop();
       return genericName(base) ? '' : base;
     };
+    if (row?.external) {
+      const externalName = row.model_name
+        || row.title
+        || row.display_name
+        || row.display_name_full
+        || basename(row.model_path)
+        || row.app_label
+        || 'External model';
+      return basename(externalName) || String(externalName);
+    }
     if (row?.is_adhoc || row?.plain_llm) {
       if (row?.title && !genericName(row.title)) return row.title;
       const fromPath = basename(row?.path);
@@ -1101,9 +1137,6 @@
     if (server?.display_name_full && !genericName(server.display_name_full)) return server.display_name_full;
     if (row?.display_name && !genericName(row.display_name)) return row.display_name;
     if (server?.display_name && !genericName(server.display_name)) return server.display_name;
-    if (row?.external) {
-      return row.model_name || basename(row?.model_path) || row.title || row.app_label || 'External model';
-    }
     const fromPath = basename(row?.path);
     if (fromPath) return fromPath;
     if (row?.title && !genericName(row.title)) return row.title;
@@ -1206,7 +1239,7 @@
       return `<span class="lm-tag orange lm-tag-external-app" title="Loaded outside DFlash Console">External · ${label}</span>`;
     }
     const loadedBy = row?.loaded_by || row?.app_label || '';
-    const appBadge = loadedBy
+    const appBadge = loadedBy && !/^dflash\s+console$/i.test(String(loadedBy).trim())
       ? `<span class="lm-tag orange" title="Requested by ${escapeHtml(loadedBy)}">${escapeHtml(loadedBy)}</span>`
       : '';
     if (row.role === 'draft-dflash') {
@@ -1233,6 +1266,25 @@
   }
 
   function inferCardDetail(row) {
+    if (row?.external) {
+      const name = cardDisplayName(row);
+      const normalizedName = String(name || '').trim().toLowerCase();
+      const raw = String(row.card_detail || row.subtitle || '').trim();
+      const normalizedRaw = raw.toLowerCase();
+      if (raw && normalizedRaw !== normalizedName && !normalizedRaw.includes(normalizedName)) {
+        return raw;
+      }
+      const kind = inferModelKind(row);
+      const parts = [];
+      if (kind?.label) parts.push(kind.label);
+      if (kind?.kind === 'llm') {
+        parts.push('GGUF');
+        const quant = (name.match(/Q\d[_A-Z0-9]*/i) || [])[0];
+        if (quant) parts.push(quant.toUpperCase());
+      }
+      if (row.listen_port && kind?.kind === 'llm') parts.push(`port ${row.listen_port}`);
+      return parts.join(' · ');
+    }
     if (row?.card_detail) return row.card_detail;
     if (row?.subtitle && row.subtitle !== 'Loading…' && !/^API:/i.test(String(row.subtitle))) {
       return row.subtitle;
@@ -1278,7 +1330,8 @@
   function cardTagMetricsHtml(row) {
     const disk = formatCardGb(cardSizeGb(row));
     if (!disk) return '';
-    return `<span class="lm-model-card-metric lm-model-card-tag-metric"><span class="lbl">Disk</span>${escapeHtml(disk)}</span>`;
+    const label = row.external ? 'Model' : 'Disk';
+    return `<span class="lm-model-card-metric lm-model-card-tag-metric"><span class="lbl">${label}</span>${escapeHtml(disk)}</span>`;
   }
 
   function slotInferenceStats(stats) {
@@ -1295,26 +1348,44 @@
     return [];
   }
 
-  function formatTokenMetricParts({ prompt_tokens: prompt, generation_tokens: out, tokens_per_second: tps }) {
+  function tokenSummary(entry) {
+    if (!entry) return '';
     const parts = [];
-    if (prompt != null) parts.push(`${prompt} in`);
-    if (out != null) parts.push(`${out} out`);
-    if (tps != null) parts.push(`${tps} t/s`);
+    if (entry.prompt_tokens != null) parts.push(`IN ${entry.prompt_tokens}`);
+    if (entry.generation_tokens != null) parts.push(`OUT ${entry.generation_tokens}`);
+    if (entry.tokens_per_second != null) parts.push(`SPEED ${entry.tokens_per_second} t/s`);
     return parts.join(' · ');
   }
 
-  function cardTokenMetricGroup(slot, { live = false } = {}) {
+  function recentCompletionsTitle(history) {
+    const rows = Array.isArray(history) ? history.slice(0, 3) : [];
+    if (!rows.length) return 'Last completion';
+    return `Recent completions\n${rows.map((entry, index) => `${index + 1}. ${tokenSummary(entry)}`).join('\n')}`;
+  }
+
+  function cardTokenMetricGroup(slot, { live = false, recent = [] } = {}) {
     if (live) {
-      const parts = [];
-      const outTok = slot.generating_tokens != null ? slot.generating_tokens : 0;
-      parts.push(`${outTok} tok`);
-      if (slot.generating_tokens_per_second != null) parts.push(`${slot.generating_tokens_per_second} t/s`);
-      else if (slot.prefill_tokens != null && outTok <= 0) parts.push(`${slot.prefill_tokens} prefill`);
-      return `<span class="lm-model-card-token-metric is-live lm-model-card-token-generating" title="Live generation">${escapeHtml(parts.join(' · '))}</span>`;
+      const inputTok = slot.generating
+        ? (slot.prefill_tokens ?? slot.prompt_tokens ?? 0)
+        : 0;
+      const outTok = slot.generating ? (slot.generating_tokens ?? 0) : 0;
+      const speed = slot.generating ? (slot.generating_tokens_per_second ?? 0) : 0;
+      return `
+        <span class="lm-model-card-token-metric is-live lm-model-card-token-generating" title="Live generation">
+          <span class="lbl">IN</span>${escapeHtml(String(inputTok))}
+          <span class="lm-model-card-token-separator">·</span>
+          <span class="lbl">OUT</span>${escapeHtml(String(outTok))}
+          <span class="lm-model-card-token-separator">·</span>
+          <span class="lbl">SPEED</span>${escapeHtml(String(speed))} t/s
+        </span>`;
     }
-    const text = formatTokenMetricParts(slot);
+    const parts = [];
+    if (slot.prompt_tokens != null) parts.push(`IN ${slot.prompt_tokens}`);
+    if (slot.generation_tokens != null) parts.push(`OUT ${slot.generation_tokens}`);
+    if (slot.tokens_per_second != null) parts.push(`SPEED ${slot.tokens_per_second} t/s`);
+    const text = parts.join(' · ');
     if (!text) return '';
-    return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="Last completion">${escapeHtml(text)}</span>`;
+    return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="${escapeHtml(recentCompletionsTitle(recent))}"><span class="lbl">LAST</span>${escapeHtml(text)}</span>`;
   }
 
   function inferenceIsGenerating(stats) {
@@ -1327,17 +1398,20 @@
     const stats = row?.inference_stats || server?.inference_stats || {};
     if (!isExternal && server?.status !== 'loaded' && !inferenceIsGenerating(stats)) return '';
     const slots = slotInferenceStats(stats);
+    if (!slots.length) slots.push({ slot_id: 0, generating: false });
+    const primarySlot = slots.find((slot) => slot?.generating) || slots[0];
 
     const groups = [];
-    for (const slot of slots) {
-      const metrics = [];
-      const hasLast = !slot.generating && (slot.prompt_tokens != null || slot.generation_tokens != null);
-      const hasLive = !!slot.generating;
-      if (hasLast) metrics.push(cardTokenMetricGroup(slot, { live: false }));
-      if (hasLive) metrics.push(cardTokenMetricGroup(slot, { live: true }));
-      if (!metrics.length) continue;
-      groups.push(`<span class="lm-model-card-slot-metric-group">${metrics.join('')}</span>`);
+    const metrics = [cardTokenMetricGroup(primarySlot, { live: true })];
+    const hasLast = !primarySlot.generating
+      && (primarySlot.prompt_tokens != null || primarySlot.generation_tokens != null);
+    if (hasLast) {
+      metrics.push(cardTokenMetricGroup(primarySlot, {
+        live: false,
+        recent: stats.recent_completions,
+      }));
     }
+    groups.push(`<span class="lm-model-card-slot-metric-group">${metrics.join('')}</span>`);
 
     if (!groups.length && stats.tokens_loaded != null) {
       groups.push(
@@ -1449,7 +1523,7 @@
       const isSelected = actionKey === selectedLoadedKey;
       const inferenceStats = row?.inference_stats || server?.inference_stats || {};
       const isGenerating = inferenceIsGenerating(inferenceStats);
-      const cardClass = `lm-model-card lm-model-card-compact ${ejecting ? 'ejecting' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external ? ' external-gpu' : ''}`;
+      const cardClass = `lm-model-card lm-model-card-compact ${ejecting ? 'ejecting' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external ? ' external-gpu' : ' dflash-model'}`;
       const cardStyle = loading ? ` style="--card-progress:${progressPct}%"` : '';
       const installedBadge = row.external ? '' : '<span class="lm-badge installed">Installed</span>';
       const loadChrome = loading && !isGenerating
@@ -1486,8 +1560,9 @@
           ${ejectChrome}
           <div class="lm-model-card-top">
             ${centerBlock}
-            <span class="lm-model-card-tags">${cardTagMetricsHtml(row)} ${missing}</span>
+            <span class="lm-model-card-tags">${missing}</span>
             <div class="lm-model-stats">
+              ${cardTagMetricsHtml(row)}
               ${action}
             </div>
           </div>
@@ -1565,6 +1640,82 @@
     return parts.join(' · ');
   }
 
+  function loadPlanKeyFor(model) {
+    if (!model) return '';
+    const serverId = model.server_id || activeServer()?.id || '';
+    if (!serverId) return '';
+    return [
+      serverId,
+      model.path || model.model_path || model.id || '',
+      model.context_size || activeServer()?.context_size || '',
+    ].join('|');
+  }
+
+  function renderLoadPlanNotice(model) {
+    const notice = document.getElementById('serverLoadMemoryNotice');
+    const loadBtn = document.getElementById('serverModelLoadBtn');
+    if (!notice) return;
+    const key = loadPlanKeyFor(model);
+    const checking = !!key && loadPlanRequestKey === key;
+    const plan = key && currentLoadPlanKey === key ? currentLoadPlan : null;
+    notice.classList.add('hidden');
+    notice.classList.remove('is-block', 'is-checking');
+    if (loadBtn && model) {
+      loadBtn.disabled = !canLoadModel(model) || checking || plan?.level === 'block';
+    }
+    if (!model || !key) return;
+    if (checking || !plan) {
+      notice.textContent = 'Checking whether this model fits the selected GPU…';
+      notice.classList.remove('hidden');
+      notice.classList.add('is-checking');
+      return;
+    }
+    if (plan.level === 'ok') return;
+    notice.textContent = plan.message || 'GPU memory may be insufficient for this model.';
+    notice.classList.remove('hidden');
+    if (plan.level === 'block') notice.classList.add('is-block');
+  }
+
+  async function refreshLoadPlan(model) {
+    const key = loadPlanKeyFor(model);
+    if (!key) {
+      currentLoadPlan = null;
+      currentLoadPlanKey = '';
+      loadPlanRequestKey = '';
+      renderLoadPlanNotice(null);
+      return;
+    }
+    if (currentLoadPlanKey === key && (currentLoadPlan || loadPlanRequestKey === key)) {
+      renderLoadPlanNotice(model);
+      return;
+    }
+    currentLoadPlan = null;
+    currentLoadPlanKey = key;
+    loadPlanRequestKey = key;
+    renderLoadPlanNotice(model);
+    const serverId = model.server_id || activeServer()?.id || '';
+    const params = new URLSearchParams();
+    if (model.path || model.model_path) params.set('model_path', model.path || model.model_path);
+    if (model.id) params.set('model_id', model.id);
+    try {
+      const result = await api(
+        `/api/servers/${encodeURIComponent(serverId)}/load-plan?${params.toString()}`,
+        { timeoutMs: 30000 },
+      );
+      if (currentLoadPlanKey !== key) return;
+      currentLoadPlan = result;
+    } catch {
+      if (currentLoadPlanKey !== key) return;
+      currentLoadPlan = {
+        level: 'warn',
+        message: 'GPU fit could not be checked. Loading may fail if the model exceeds available VRAM.',
+      };
+    } finally {
+      if (loadPlanRequestKey === key) loadPlanRequestKey = '';
+      if (currentLoadPlanKey === key) renderLoadPlanNotice(model);
+    }
+  }
+
   function renderEngineModelPicker() {
     const pick = document.getElementById('serverModelPick');
     const sourcePick = document.getElementById('serverSourcePick');
@@ -1614,6 +1765,8 @@
 
     const selected = catalogModels.find((m) => modelCatalogKey(m) === pick.value);
     if (loadBtn) loadBtn.disabled = !canLoadModel(selected);
+    renderLoadPlanNotice(selected);
+    if (selected) void refreshLoadPlan(selected);
   }
 
   function resetEngineModelPicker() {
@@ -1646,6 +1799,9 @@
     if (model) {
       await applyModelSelection(model);
       await window.DFlashModelsLive?.selectModel?.(selectedModelKey, { applyInspector: false });
+      await refreshLoadPlan(model);
+    } else {
+      await refreshLoadPlan(null);
     }
   }
 
@@ -1662,6 +1818,10 @@
     if (!canLoadModel(model)) {
       if (model?.path) toast('Pick an engine profile first (use the toolbar toggle), then Load.', false);
       else toast('This model is browse-only — wire it to an engine profile in Settings.', false);
+      return;
+    }
+    if (currentLoadPlanKey === loadPlanKeyFor(model) && currentLoadPlan?.level === 'block') {
+      toast(currentLoadPlan.message || 'This model does not fit the current GPU memory.', false);
       return;
     }
     if (window.DFlashModelsLive?.loadModel) {
@@ -1700,10 +1860,8 @@
     }
     if (toggle) setRunningToggle(running && getServerAction(server.id) !== 'stopping');
     if (urlEl) urlEl.textContent = server.reachable_url || '—';
-    if (loadBtn) {
-      const picked = selectedCatalogModel();
-      loadBtn.disabled = !canLoadModel(picked);
-    }
+    const picked = selectedCatalogModel();
+    renderLoadPlanNotice(picked);
     syncEngineCardsSectionLabel();
   }
 
@@ -2042,7 +2200,7 @@
     }
 
     if (inspectorBound?.serverId === server.id) {
-      if (!inspectorDirty && !inspectorFilling) {
+      if (!inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
         fillInspectorLoadSettings(server);
       }
       const row = loadedRowsForServer(server)[0] || {};
@@ -2056,7 +2214,7 @@
 
     const model = modelFromLoadedEntry(server, loadedRowsForServer(server)[0] || {});
     fillInspectorInfo(model);
-    if (!inspectorDirty && !inspectorFilling) {
+    if (!inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
       fillInspectorLoadSettings(getMergedLoadSettings(model));
     }
     inspectorBound = {
@@ -2237,7 +2395,7 @@
     } finally {
       pollInFlight = false;
     }
-    if (view === 'server' && (externalPollCounter === 1 || externalPollCounter % 12 === 0)) {
+    if (view === 'server' && (externalPollCounter === 1 || externalPollCounter % 3 === 0)) {
       void refreshExternalGpuLoads(true);
     }
     if (view === 'models' && window.DFlashModelsLive) {
@@ -2255,7 +2413,15 @@
       const server = servers.find((s) => s.id === serverId);
       if (server?.status === 'loaded') return server;
       if (server?.status === 'error') return server;
-      if (server && !server.booting && server.status !== 'booting' && attempt > 2) {
+      if (server?.load_error || server?.boot_error) return server;
+      if (
+        server
+        && !server.loaded_models?.length
+        && !server.booting
+        && server.status !== 'booting'
+        && server.status !== 'running'
+        && attempt > 2
+      ) {
         return server;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
@@ -2346,6 +2512,15 @@
         toast('Model loaded');
         window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
         clearInspectorPendingReload();
+      } else if (loaded?.status === 'error') {
+        const message = loaded.boot_error || loaded.load_error || 'Model load failed. Check the engine log.';
+        toast(message, false);
+        window.DFlashStatusFeed?.note('Load failed', message);
+      } else if (loaded && !loaded.loaded_models?.length) {
+        const message = loaded.load_error
+          || 'Model load did not complete. Check the engine log and try again.';
+        toast(message, false);
+        window.DFlashStatusFeed?.note('Load did not complete', message);
       }
     } catch (err) {
       toast(err.message, false);
@@ -2399,6 +2574,8 @@
         body: Object.keys(body).length ? JSON.stringify(body) : undefined,
       });
       toast('External model unloaded');
+      setServerAction(key, null);
+      renderAll();
       await refreshAfterUnload();
     } catch (err) {
       toast(err.message, false);
@@ -2414,8 +2591,10 @@
     const label = allServers.find((s) => s.id === serverId)?.label || serverId;
     window.DFlashStatusFeed?.setTransient(`Unloading ${label}…`, { ttlMs: 30000 });
     renderAll();
+    let unloaded = false;
     try {
       await api(`/api/servers/${encodeURIComponent(serverId)}/unload`, { method: 'POST' });
+      unloaded = true;
       toast('Model unloaded');
       await waitUntilServerIdle(serverId);
       activeId = serverId;
@@ -2426,8 +2605,10 @@
     } finally {
       setServerAction(serverId, null);
       if (inspectorBound?.serverId === serverId) clearInspectorPendingReload();
+      renderAll();
       await refreshAfterUnload();
     }
+    return unloaded;
   }
 
   async function ejectActive() {
@@ -2513,6 +2694,7 @@
       else void stopActive();
     });
     document.getElementById('serverModelLoadBtn')?.addEventListener('click', () => void loadPickedModel());
+    document.getElementById('inspectorReloadBtn')?.addEventListener('click', () => void reloadInspectorModel());
     document.getElementById('serverModelPick')?.addEventListener('change', () => {
       void onEngineModelPickChange();
     });
