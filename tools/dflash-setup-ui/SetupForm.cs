@@ -53,6 +53,7 @@ namespace DFlashConsoleSetup
         private bool _perMachine;
         private bool _installStarted;
         private bool _ok;
+        private bool _appLaunchStarted;
         private bool _finishReady;
         private bool _marquee;
         private int _progressValue;
@@ -82,6 +83,7 @@ namespace DFlashConsoleSetup
             MaximizeBox = false;
             MinimizeBox = true;
             ControlBox = true;
+            AutoScaleMode = AutoScaleMode.Font;
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize = new Size(480, 286);
             TopMost = true;
@@ -213,6 +215,9 @@ namespace DFlashConsoleSetup
                 Location = new Point(28, top),
                 ForeColor = TextPrimary,
                 BackColor = Bg,
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
+                Padding = new Padding(2, 0, 0, 0),
                 Text = text,
                 Checked = selected
             };
@@ -581,12 +586,17 @@ namespace DFlashConsoleSetup
                 File.WriteAllText(_doneFlag, _version);
                 _ok = true;
                 SetProgress(100, false);
-                SetStatus("Installation complete.\nStarting DFlash Console…");
                 _finish.Text = "Finish";
                 ApplyFinishReadyStyle();
-                _finish.Focus();
+                if (!LaunchInstalledApp())
+                {
+                    SetStatus("Installation complete.\nDFlash Console is ready from the Start menu.");
+                    _finish.Focus();
+                    return;
+                }
+                SetStatus("Installation complete.\nStarting DFlash Console…");
                 await Task.Delay(_silent ? 200 : 600);
-                Finish_Click(_finish, EventArgs.Empty);
+                Close();
             }
             catch (Exception ex)
             {
@@ -773,6 +783,29 @@ namespace DFlashConsoleSetup
             }
         }
 
+        private bool LaunchInstalledApp()
+        {
+            if (_appLaunchStarted) return true;
+            string destExe = Path.Combine(_destRoot, "DFlash Console.exe");
+            if (!File.Exists(destExe)) return false;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = destExe,
+                    WorkingDirectory = _destRoot,
+                    Arguments = "--dflash-post-update",
+                    UseShellExecute = true
+                });
+                _appLaunchStarted = true;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static int RunRobocopy(string src, string dst)
         {
             ProcessStartInfo psi = new ProcessStartInfo
@@ -808,23 +841,9 @@ namespace DFlashConsoleSetup
 
             if (_ok)
             {
-                string destExe = Path.Combine(_destRoot, "DFlash Console.exe");
-                try
+                if (!LaunchInstalledApp())
                 {
-                    if (File.Exists(destExe))
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = destExe,
-                            WorkingDirectory = _destRoot,
-                            Arguments = "--dflash-post-update",
-                            UseShellExecute = true
-                        });
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(this, "Could not start DFlash Console:\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(this, "DFlash Console was installed, but could not be started.\nYou can launch it from the Start menu.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
             }
