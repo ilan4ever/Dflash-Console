@@ -367,6 +367,19 @@
     return /dflash|dspark/.test(name);
   }
 
+  // External GGUF files that are not already inside the Console's own library
+  // can be copied/moved into the Console folder so they register under DFlash
+  // Console and are managed by the app.
+  function canImportToConsole(model) {
+    if (!model?.path) return false;
+    if (model.source === 'dflash' || model.source === 'dflash-profile' || model.source === 'dflash-stack') {
+      return false;
+    }
+    if (isDflashAccelerator(model)) return false;
+    if (model.loadable && model.server_id) return false;
+    return String(model.path).toLowerCase().endsWith('.gguf');
+  }
+
   function draftHint(model) {
     if (!model.draft_filename && !model.draft_path) return '';
     const name = model.draft_filename || model.draft_path.split(/[/\\]/).pop();
@@ -1090,6 +1103,8 @@
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="Download vision projector from Hugging Face and wire it to this model">Add vision support…</button>
+      ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">Copy to DFlash Console</button>
+      <button type="button" data-cmd="move-to-console">Move to DFlash Console</button>` : ''}
       <hr>
       <div id="modelsStackAction">${stackMenuActionHtml(model)}</div>
       ${isDflashAccelerator(model)
@@ -1177,6 +1192,31 @@
         return;
       }
       if (model.loadable) await loadModel(model);
+      return;
+    }
+    if (cmd === 'copy-to-console' || cmd === 'move-to-console') {
+      const isMove = cmd === 'move-to-console';
+      const name = model.filename || model.label || 'this model';
+      if (isMove && !window.confirm(`Move ${name} into the DFlash Console library? The file will be removed from its current location.`)) {
+        return;
+      }
+      if (!canImportToConsole(model)) {
+        toast('This model cannot be imported into the Console library', false);
+        return;
+      }
+      try {
+        const data = await api('/api/models/import-into-console', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: model.path, mode: isMove ? 'move' : 'copy' }),
+        });
+        toast(`${isMove ? 'Moved' : 'Copied'} ${name} into DFlash Console library`);
+        await refresh({ rebindInspector: true });
+        if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh();
+        if (data?.library_path && selectedKey === key) selectedKey = '';
+      } catch (err) {
+        toast(err.message || 'Could not import model into Console library', false);
+      }
       return;
     }
     if (cmd === 'delete') {

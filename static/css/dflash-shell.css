@@ -5037,6 +5037,21 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   word-break: break-all;
 }
 
+.df-stack-copy-toggle {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.df-stack-copy-toggle input {
+  accent-color: var(--ok, #34d399);
+  width: 15px;
+  height: 15px;
+}
+
 /* Installed local models use a quiet shaded surface instead of a frame. */
 .df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load td {
   background: rgba(10, 45, 36, 0.72) !important;

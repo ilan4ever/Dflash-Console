@@ -185,6 +185,11 @@
         <div class="df-stack-review-row"><span>Engine profile</span><strong>${escapeHtml(profileLabel)}</strong></div>
         <div class="df-stack-review-row"><span>API port</span><strong>${escapeHtml(String(state.port || '—'))}</strong></div>
       </div>
+      <label class="df-stack-field-label df-stack-copy-toggle">
+        <input type="checkbox" id="stackWizardCopyConsole" ${state.copyToConsole ? 'checked' : ''}>
+        <span>Copy target + accelerator into the DFlash Console library</span>
+      </label>
+      <p class="lm-setting-desc">Copies both files into your Console models folder so this stack is registered under DFlash Console and the originals can be deleted from their current location.</p>
       <p class="lm-setting-desc">Creates a runnable DFlash stack in your model library. You can load it onto the GPU afterward.</p>`;
   }
 
@@ -279,6 +284,9 @@
         state.port = Number(event.target.value) || state.port;
         if (nextBtn) nextBtn.disabled = !canContinue();
       });
+      document.getElementById('stackWizardCopyConsole')?.addEventListener('change', (event) => {
+        state.copyToConsole = event.target.checked;
+      });
     }
 
     if (backBtn) backBtn.disabled = step === 1;
@@ -363,6 +371,7 @@
       port: state.port,
       model_id: state.modelId,
       id: state.serverId || undefined,
+      copy_to_console: !!state.copyToConsole,
     };
     const result = await api('/api/servers', {
       method: 'POST',
@@ -429,6 +438,7 @@
       modelId: '',
       profile: '',
       port: 0,
+      copyToConsole: true,
     };
 
     try {

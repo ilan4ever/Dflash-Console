@@ -341,6 +341,7 @@ class ServerCreateRequest(BaseModel):
     model_id: str | None = Field(default=None, max_length=120)
     id: str | None = Field(default=None, max_length=80)
     context_size: int | None = Field(default=None, ge=2048, le=262144)
+    copy_to_console: bool = False
 
 
 class AudioSpeechRequest(BaseModel):
@@ -2144,6 +2145,26 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
     model_id = str(body.model_id or model_id_from_path(target)).strip()
     if not model_id:
         raise HTTPException(status_code=400, detail='target model has no usable identifier')
+
+    # When the user converts an external model to a DFlash stack, copy both the
+    # target GGUF and its accelerator into the Console's own models folder so the
+    # pair registers under DFlash Console (and the originals can be deleted).
+    copied = None
+    if body.copy_to_console:
+        from core.library_import import import_stack_pair
+
+        try:
+            copied = import_stack_pair(
+                str(target),
+                str(draft),
+                label=body.label.strip() or server_id,
+                cfg=cfg,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        target = Path(str(copied['target_path'])).expanduser().resolve()
+        draft = Path(str(copied['draft_path'])).expanduser().resolve()
+
     entry = normalize_server({
         'id': server_id,
         'label': body.label.strip(),
@@ -2171,7 +2192,14 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _save_config_checked(cfg)
     invalidate_model_catalog_cache()
-    return {'success': True, 'server': entry}
+    result = {'success': True, 'server': entry}
+    if copied:
+        result['copied_to_console'] = {
+            'target_path': str(target),
+            'draft_path': str(draft),
+            'library_path': copied.get('library_path'),
+        }
+    return result
 
 
 @app.post('/api/fs/reveal')
@@ -2202,6 +2230,34 @@ def delete_model_file(path: str = Query(..., min_length=1)) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
     target.unlink()
     return {'success': True, 'path': str(target)}
+
+
+class ModelImportIntoConsoleRequest(BaseModel):
+    path: str = Field(..., min_length=1)
+    mode: str = Field(default='copy', pattern='^(copy|move)$')
+
+
+@app.post('/api/models/import-into-console')
+def model_import_into_console(body: ModelImportIntoConsoleRequest) -> dict[str, Any]:
+    """Copy or move a single external GGUF into the Console's own model library.
+
+    Lets users bring models they downloaded elsewhere (e.g. LM Studio or a raw
+    folder) into the DFlash Console folder so they are managed and registered as
+    Console models. ``mode`` is ``copy`` (default, keeps the original) or
+    ``move`` (removes the original from its current location).
+    """
+    from core.library_import import import_single_model_file
+
+    cfg = load_config()
+    source = Path(body.path).expanduser().resolve()
+    if source.suffix.lower() != '.gguf' or not source.is_file():
+        raise HTTPException(status_code=400, detail='not a GGUF file')
+    try:
+        result = import_single_model_file(str(source), mode=body.mode, cfg=cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    invalidate_model_catalog_cache()
+    return result
 
 
 if STATIC_DIR.is_dir():

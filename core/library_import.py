@@ -174,3 +174,105 @@ def import_library_folder(
             'sample_models': stats.get('sample_models'),
         },
     }
+
+
+def _console_import_root(preset: str = 'dflash', *, cfg: dict[str, Any] | None = None) -> Path:
+    """The Console's own model library folder (where DFlash models live)."""
+    config = cfg or load_config()
+    root = _preset_path(str(preset or 'dflash').strip().lower() or 'dflash', config)
+    return Path(root).expanduser().resolve()
+
+
+def is_under_console_models(path: str | Path, *, preset: str = 'dflash', cfg: dict[str, Any] | None = None) -> bool:
+    """True when a file/folder is already physically inside the Console library."""
+    try:
+        source = Path(str(path)).expanduser().resolve()
+    except OSError:
+        return False
+    root = _console_import_root(preset, cfg=cfg)
+    try:
+        source.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def import_single_model_file(
+    source_path: str,
+    *,
+    mode: str = 'copy',
+    preset: str = 'dflash',
+    folder_name: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy or move a single GGUF file into the Console's own model library.
+
+    Used to bring external models (e.g. from LM Studio or a raw download folder)
+    into the DFlash Console library so they are managed, registered and grouped
+    as Console models. ``mode`` is ``copy`` (default) or ``move``.
+    """
+    config = cfg or load_config()
+    mode_key = str(mode or 'copy').strip().lower()
+    if mode_key not in ('copy', 'move'):
+        mode_key = 'copy'
+    source = Path(os.path.expanduser(str(source_path or '').strip())).resolve()
+    if not source.is_file() or source.suffix.lower() != '.gguf':
+        raise ValueError('source is not a GGUF file')
+    root = _console_import_root(preset, cfg=config)
+    root.mkdir(parents=True, exist_ok=True)
+    dest_dir = _unique_dest(root, folder_name or source.stem)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / source.name
+    if mode_key == 'move':
+        _move_file(source, dest)
+    else:
+        _copy_file(source, dest)
+    return {
+        'success': True,
+        'mode': mode_key,
+        'source_path': str(source),
+        'library_path': str(dest),
+        'preset': preset,
+    }
+
+
+def import_stack_pair(
+    target_path: str,
+    draft_path: str,
+    *,
+    label: str | None = None,
+    preset: str = 'dflash',
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Copy a DFlash stack pair (target + accelerator) into the Console library.
+
+    When a user converts a regular model to a DFlash stack, both the full target
+    GGUF and its accelerator are copied into the Console's own models folder so
+    the pair is registered under DFlash Console and the originals can be deleted
+    elsewhere. Returns the new paths for registering the engine profile.
+    """
+    config = cfg or load_config()
+    target = Path(os.path.expanduser(str(target_path or '').strip())).resolve()
+    draft = Path(os.path.expanduser(str(draft_path or '').strip())).resolve()
+    if not target.is_file() or target.suffix.lower() != '.gguf':
+        raise ValueError('target is not a GGUF file')
+    if not draft.is_file() or draft.suffix.lower() != '.gguf':
+        raise ValueError('accelerator is not a GGUF file')
+    root = _console_import_root(preset, cfg=config)
+    root.mkdir(parents=True, exist_ok=True)
+    folder = _slug_folder(label or target.stem)
+    dest_dir = _unique_dest(root, folder)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target_dest = dest_dir / target.name
+    draft_dest = dest_dir / draft.name
+    _copy_file(target, target_dest)
+    _copy_file(draft, draft_dest)
+    return {
+        'success': True,
+        'target_path': str(target_dest),
+        'draft_path': str(draft_dest),
+        'library_path': str(dest_dir),
+        'target_filename': target.name,
+        'draft_filename': draft.name,
+    }
+
