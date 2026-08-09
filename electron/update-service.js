@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const {
-  DFLASH_NSIS_FILE,
+  DFLASH_SETUP_FILE,
   assertValidManifest,
   compareVersions,
   normalizeUpdateConfig,
@@ -23,7 +23,7 @@ const STATUS = Object.freeze({
 });
 
 function safeArtifactName(fileName) {
-  return DFLASH_NSIS_FILE.test(fileName) && path.basename(fileName) === fileName;
+  return DFLASH_SETUP_FILE.test(fileName) && path.basename(fileName) === fileName;
 }
 
 function quoteCmdArg(value) {

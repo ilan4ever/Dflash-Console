@@ -1,7 +1,7 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "ILAN AVIV",
@@ -15,7 +15,7 @@
     "electron:dev": "electron .",
     "predist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-electron-runtime.ps1",
     "predist:dir": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stage-electron-runtime.ps1",
-    "dist": "electron-builder --win",
+    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fast-installer.ps1",
     "dist:dir": "electron-builder --win --dir",
     "release:sign": "node tools/sign-update-manifest.js"
   },
@@ -48,12 +48,6 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
           "target": "portable",
           "arch": [
             "x64"
@@ -62,19 +56,6 @@
       ],
       "icon": "assets/dflash_console_logo_only_clear.png",
       "requestedExecutionLevel": "asInvoker"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "allowElevation": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "DFlash Console",
-      "uninstallDisplayName": "DFlash Console",
-      "runAfterFinish": true,
-      "include": "installer/dark-installer.nsh",
-      "artifactName": "DFlash-Console-Setup-${version}-${arch}.${ext}"
     },
     "portable": {
       "artifactName": "DFlash-Console-Portable-${version}-${arch}.${ext}"

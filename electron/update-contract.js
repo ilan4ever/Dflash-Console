@@ -5,7 +5,7 @@ const path = require('path');
 const DFLASH_APP_ID = 'com.dflash.console';
 const DFLASH_APP_NAME = 'DFlash Console';
 const DFLASH_PLATFORM = 'win32-x64';
-const DFLASH_NSIS_FILE = /^DFlash-Console-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$/i;
+const DFLASH_SETUP_FILE = /^DFlash-Console-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$/i;
 const REQUIRED_MANIFEST_FIELDS = [
   'app',
   'appId',
@@ -61,8 +61,8 @@ function validateManifest(manifest, options = {}) {
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(String(manifest.version || ''))) {
     errors.push('version must be semantic version text');
   }
-  if (!isNonEmptyString(manifest.fileName) || !DFLASH_NSIS_FILE.test(manifest.fileName)) {
-    errors.push('fileName must be a DFlash x64 NSIS artifact');
+  if (!isNonEmptyString(manifest.fileName) || !DFLASH_SETUP_FILE.test(manifest.fileName)) {
+    errors.push('fileName must be a DFlash x64 setup artifact');
   }
   if (!Number.isSafeInteger(manifest.sizeBytes) || manifest.sizeBytes <= 0) {
     errors.push('sizeBytes must be a positive integer');
@@ -119,7 +119,7 @@ module.exports = {
   DFLASH_APP_ID,
   DFLASH_APP_NAME,
   DFLASH_PLATFORM,
-  DFLASH_NSIS_FILE,
+  DFLASH_SETUP_FILE,
   REQUIRED_MANIFEST_FIELDS,
   compareVersions,
   validateManifest,

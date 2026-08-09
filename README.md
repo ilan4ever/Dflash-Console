@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.2.15
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.2.16
 
 ---
 
@@ -231,7 +231,7 @@ root still requires Python 3.10+ and PowerShell 7+.
 .\scripts\run-electron.ps1
 ```
 
-Build Windows packages (NSIS installer + portable exe):
+Build Windows packages (branded DFlash setup + portable exe):
 
 ```powershell
 .\scripts\run-electron.ps1 -Build

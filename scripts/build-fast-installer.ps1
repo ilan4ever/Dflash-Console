@@ -68,6 +68,7 @@ Write-Host '[4/4] Building SFX installer...' -ForegroundColor Yellow
 $SfxConfig = @"
 ;!@Install@!UTF-8!
 Title="DFlash Console $Version Setup"
+GUIMode="2"
 RunProgram="%%T\dflash-setup-ui.exe"
 ;!@InstallEnd@!
 "@
