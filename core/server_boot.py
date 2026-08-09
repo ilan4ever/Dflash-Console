@@ -125,6 +125,7 @@ def managed_process_identity(pid: int) -> bool:
             text=True,
             timeout=5,
             check=False,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         if result.returncode != 0 or not result.stdout.strip():
             return False

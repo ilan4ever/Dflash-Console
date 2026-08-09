@@ -6,6 +6,7 @@
   let saving = false;
   let current = null;
   let updateStatus = null;
+  let updatePromptVersion = '';
 
   function el(id) {
     return document.getElementById(id);
@@ -105,6 +106,31 @@
     if (check) check.disabled = state === 'checking' || state === 'downloading' || state === 'installing';
     download?.classList.toggle('hidden', !available || ready || state === 'downloading');
     install?.classList.toggle('hidden', !ready);
+    maybeShowUpdatePrompt(status);
+  }
+
+  function setUpdatePromptOpen(open) {
+    const modal = el('desktopUpdateModal');
+    if (!modal) return;
+    modal.classList.toggle('open', Boolean(open));
+    modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+    document.body.classList.toggle('modal-open', Boolean(open));
+  }
+
+  function maybeShowUpdatePrompt(status) {
+    if (!status?.ready) return;
+    const version = String(status.latestVersion || status.manifest?.version || '').trim();
+    const modal = el('desktopUpdateModal');
+    if (!version || !modal || updatePromptVersion === version) return;
+    updatePromptVersion = version;
+    const message = el('desktopUpdateMessage');
+    const notes = el('desktopUpdateNotes');
+    if (message) message.textContent = `DFlash Console ${version} has finished downloading and passed integrity checks.`;
+    if (notes) notes.textContent = status.releaseNotes
+      || 'DFlash Console will close briefly and reopen after installation.';
+    modal.classList.remove('is-busy');
+    setUpdatePromptOpen(true);
+    el('desktopUpdateInstall')?.focus();
   }
 
   async function checkForUpdate() {
@@ -184,6 +210,22 @@
         renderUpdateStatus({ ...(updateStatus || {}), state: 'error', error: err?.message || 'Update installation failed.' });
       }
     });
+    el('desktopUpdateLater')?.addEventListener('click', () => setUpdatePromptOpen(false));
+    el('desktopUpdateInstall')?.addEventListener('click', async () => {
+      const button = el('desktopUpdateInstall');
+      const notes = el('desktopUpdateNotes');
+      button?.setAttribute('disabled', 'disabled');
+      el('desktopUpdateModal')?.classList.add('is-busy');
+      if (notes) notes.textContent = 'Preparing the installer… DFlash Console will close and reopen shortly.';
+      try {
+        await desktop()?.installUpdate?.();
+        setUpdatePromptOpen(false);
+      } catch (err) {
+        el('desktopUpdateModal')?.classList.remove('is-busy');
+        button?.removeAttribute('disabled');
+        if (notes) notes.textContent = err?.message || 'The update could not be started. Try again from Settings → App.';
+      }
+    });
     desktop()?.onUpdateStatus?.(renderUpdateStatus);
   }
 
@@ -192,8 +234,8 @@
     if (document.body.dataset.activeView === 'settings'
       && document.querySelector('.lm-settings-panel.active')?.dataset.settingsPanel === 'app-settings') {
       void load();
-      void desktop()?.getUpdateStatus?.().then(renderUpdateStatus);
     }
+    void desktop()?.getUpdateStatus?.().then(renderUpdateStatus);
   });
 
   window.DFlashAppSettingsLive = {

@@ -247,7 +247,88 @@
   }
 
   function modelCatalogKey(model) {
-    return model?.server_id || model?.path || model?.id || '';
+    return model?.chat_model_key || model?.server_id || model?.path || model?.id || '';
+  }
+
+  function normalizeModelToken(value) {
+    return String(value || '').replace(/\\/g, '/').trim().toLowerCase();
+  }
+
+  function modelMatchesLoadedServer(model, server) {
+    if (!model || !server) return false;
+    const loadedTokens = [
+      ...(Array.isArray(server.loaded_models) ? server.loaded_models : []),
+      server.active_model_id,
+    ].map(normalizeModelToken).filter(Boolean);
+    const modelTokens = [model.id, model.model_id, model.filename, model.path]
+      .map(normalizeModelToken).filter(Boolean);
+    if (loadedTokens.some((token) => modelTokens.includes(token))) return true;
+
+    // Older llama-server builds do not expose loaded_models consistently, but
+    // the configured profile checkpoint is still unambiguous.
+    const configuredTokens = [
+      server.model_id,
+      server.model_catalog?.api_model_id,
+      server.model_catalog?.target_model_id,
+      server.model_catalog?.target_path,
+      server.target_path,
+    ].map(normalizeModelToken).filter(Boolean);
+    return server.status === 'loaded'
+      && configuredTokens.some((token) => modelTokens.includes(token));
+  }
+
+  function modelLoadState(model) {
+    const server = serverById.get(String(model?.server_id || ''));
+    if (!server) return 'idle';
+    if (server.status === 'booting' || server.booting || server.load_progress != null) return 'loading';
+    return modelMatchesLoadedServer(model, server) ? 'loaded' : 'idle';
+  }
+
+  function isChatModel(model) {
+    const modality = String(model?.modality || '').trim().toLowerCase();
+    const task = String(model?.task || '').trim().toLowerCase();
+    return !['embedding', 'stt', 'tts', 'audio'].includes(modality)
+      && !['embed', 'embedding', 'transcribe', 'speech', 'tts'].includes(task);
+  }
+
+  function appendLoadedChatModels(models) {
+    const result = models.filter((model) => (
+      !model.chat_model_key
+      || modelMatchesLoadedServer(model, serverById.get(String(model.server_id || '')))
+    ));
+    for (const server of allServers) {
+      if (server.engine_mode === 'embedding' || server.model_kind === 'embedding') continue;
+      const loadedIds = Array.isArray(server.loaded_models) ? server.loaded_models : [];
+      for (const loadedId of loadedIds) {
+        const token = normalizeModelToken(loadedId);
+        if (!token) continue;
+        if (result.some((model) => model.server_id === server.id && modelMatchesLoadedServer(model, server))) continue;
+        const rows = [
+          ...(Array.isArray(server.visible_cards) ? server.visible_cards : []),
+          ...(Array.isArray(server.model_stack) ? server.model_stack : []),
+        ];
+        const row = rows.find((entry) => [entry?.id, entry?.model_id, entry?.path, entry?.model_path]
+          .map(normalizeModelToken).includes(token));
+        const path = row?.path || row?.model_path || '';
+        const label = row?.title || row?.label || loadedId || server.label || server.id;
+        result.push({
+          id: loadedId,
+          model_id: loadedId,
+          chat_model_key: `${server.id}::${loadedId}`,
+          server_id: server.id,
+          label,
+          filename: path.split(/[\\/]/).pop() || loadedId,
+          path,
+          loadable: !!path,
+          source: 'loaded',
+          modality: 'llm',
+          task: 'chat',
+          capabilities: row?.capabilities || [],
+          size_gb: row?.size_gb,
+        });
+      }
+    }
+    return result;
   }
 
   function checkpointLabel(model) {
@@ -271,9 +352,14 @@
     const serverId = pick?.value || '';
     const server = serverById.get(serverId);
     if (!server || server.status !== 'loaded') return null;
+    const selected = selectedCatalogModel();
+    if (selected?.server_id === serverId && modelLoadState(selected) !== 'loaded') return null;
     const loadedModels = Array.isArray(server.loaded_models) ? server.loaded_models : [];
     const modelId = String(
-      server.active_model_id
+      (selected?.server_id === serverId && modelLoadState(selected) === 'loaded'
+        ? selected.id || selected.model_id || selected.filename
+        : '')
+      || server.active_model_id
       || loadedModels[0]
       || server.model_id
       || '',
@@ -363,6 +449,10 @@
     return models.map((m) => modelCatalogKey(m)).join('\n');
   }
 
+  function catalogStateSignature(models) {
+    return models.map((model) => `${modelCatalogKey(model)}:${modelLoadState(model)}`).join('\n');
+  }
+
   function sourceOptionsFor(models) {
     if (window.DFlashModelGroups?.sourceOptions) {
       return window.DFlashModelGroups.sourceOptions(models);
@@ -436,7 +526,9 @@
       ]);
       if (gen !== catalogRefreshGen) return;
       applyServersData(profilesData);
-      catalogModels = (quickModelsData.models || []).filter((m) => m.path || m.server_id || m.id);
+      catalogModels = (quickModelsData.models || [])
+        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m));
+      catalogModels = appendLoadedChatModels(catalogModels);
       catalogLoaded = true;
       noteCatalogResult();
       renderPickers();
@@ -465,13 +557,18 @@
       ]);
       if (gen !== catalogRefreshGen) return;
       applyServersData(serversData);
-      const nextModels = (modelsData.models || []).filter((m) => m.path || m.server_id || m.id);
-      const modelsChanged = catalogSignature(nextModels) !== catalogSignature(catalogModels);
-      catalogModels = nextModels;
+      const nextModels = (modelsData.models || [])
+        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m));
+      const mergedModels = appendLoadedChatModels(nextModels);
+      const modelsChanged = catalogSignature(mergedModels) !== catalogSignature(catalogModels);
+      catalogModels = mergedModels;
       catalogLoaded = true;
       noteCatalogResult();
       if (modelsChanged || showLoading) renderPickers();
-      else renderEnginePicker();
+      else {
+        renderEnginePicker();
+        renderCheckpointPicker();
+      }
       renderModelTag();
       updateComposerState();
       window.DFlashStatusFeed?.refresh?.();
@@ -491,7 +588,9 @@
         { timeoutMs: fresh ? 30000 : 15000 },
       );
       applyServersData(serversData);
+      catalogModels = appendLoadedChatModels(catalogModels);
       renderEnginePicker();
+      renderCheckpointPicker();
       renderModelTag();
       updateComposerState();
     } catch {
@@ -526,7 +625,7 @@
 
     const prev = pick.value || selectedCheckpointKey || '';
     const sourceKey = String(selectedSource || '').trim().toLowerCase();
-    const sig = `${catalogSignature(catalogModels)}:${sourceKey}`;
+    const sig = `${catalogSignature(catalogModels)}:${catalogStateSignature(catalogModels)}:${sourceKey}`;
     if (pick.dataset.catalogSig === sig && prev && catalogModels.some((m) => modelCatalogKey(m) === prev)) {
       return;
     }
@@ -538,7 +637,11 @@
     if (window.DFlashModelGroups?.renderGroupedSelectOptions) {
       pick.innerHTML = window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
         catalogKey: modelCatalogKey,
-        optionLabel: checkpointLabel,
+        optionLabel: (model) => {
+          const state = modelLoadState(model);
+          const suffix = state === 'loaded' ? ' · Loaded' : state === 'loading' ? ' · Loading…' : '';
+          return `${checkpointLabel(model)}${suffix}`;
+        },
         placeholder: 'Select model…',
         selectedKey: prev,
       });
@@ -548,8 +651,10 @@
       for (const model of sorted) {
         const key = modelCatalogKey(model);
         const selected = key === prev ? ' selected' : '';
+        const state = modelLoadState(model);
+        const suffix = state === 'loaded' ? ' · Loaded' : state === 'loading' ? ' · Loading…' : '';
         options.push(
-          `<option value="${escapeHtml(key)}"${selected}>${escapeHtml(checkpointLabel(model))}</option>`,
+          `<option value="${escapeHtml(key)}"${selected}>${escapeHtml(`${checkpointLabel(model)}${suffix}`)}</option>`,
         );
       }
       pick.innerHTML = options.join('');
@@ -824,9 +929,11 @@
     const attachBtn = document.getElementById('chatAttachBtn');
     const session = activeSession();
     const engine = chatReadyEngine();
+    const selectedModel = selectedCatalogModel();
+    const selectedState = modelLoadState(selectedModel);
     const ready = !!engine && !sending && !loadingCheckpoint;
     const canLoad = !!document.getElementById('chatEnginePick')?.value
-      && !!selectedCatalogModel()
+      && !!selectedModel
       && !sending
       && !loadingCheckpoint;
 
@@ -838,7 +945,14 @@
       else input.placeholder = 'Message the model… (Enter to send, Shift+Enter for newline)';
     }
     if (sendBtn) sendBtn.disabled = !ready || (!String(input?.value || '').trim() && !pendingAttachments.length);
-    if (loadBtn) loadBtn.disabled = !canLoad;
+    if (loadBtn) {
+      loadBtn.textContent = selectedState === 'loaded'
+        ? 'Use in chat'
+        : selectedState === 'loading' || loadingCheckpoint
+          ? 'Loading…'
+          : 'Load';
+      loadBtn.disabled = !canLoad || selectedState === 'loading';
+    }
     if (clearBtn) clearBtn.disabled = !session?.messages?.length;
     if (attachBtn) {
       attachBtn.disabled = sending || loadingCheckpoint;
@@ -959,11 +1073,20 @@
       return;
     }
 
+    if (modelLoadState(model) === 'loaded') {
+      syncSessionEngine();
+      setStatus('Model ready — you can chat now');
+      updateComposerState();
+      document.getElementById('chatInput')?.focus();
+      return;
+    }
+
     loadingCheckpoint = true;
     setStatus(`Loading ${model.label || model.id}…`);
     renderAll();
     try {
-      await window.DFlashServerLive.loadModelOnServer(serverId, model);
+      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model);
+      if (!loaded) throw new Error('Model load did not complete. Check the engine log and try again.');
       await refreshStatus({ fresh: true });
       syncSessionEngine();
       setStatus('Model loaded — you can chat now');
