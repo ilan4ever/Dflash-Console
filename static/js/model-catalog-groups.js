@@ -58,6 +58,17 @@
     return source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack';
   }
 
+  // External models are grouped per provider: known providers get their own
+  // group (e.g. LM Studio); loose/unrecognized files go under "Other models".
+  function externalGroupLabelFor(model) {
+    const source = String(model?.source || '').trim().toLowerCase();
+    if (source === 'lmstudio') return 'LM Studio';
+    if (!source || source === 'local' || source === 'other' || source === 'unknown') {
+      return 'Other models';
+    }
+    return sourceLabelFor(model);
+  }
+
   function sourceIdFor(model) {
     return String(model?.source || model?.provider || model?.library_label || model?.library || 'Local').trim() || 'Local';
   }
@@ -145,13 +156,17 @@
 
     if (consoleFirst) {
       // One category for every model registered inside the DFlash Console, then
-      // a separate category for all external models — each alphabetical, so the
-      // two are never visually mixed.
+      // external models grouped per provider (LM Studio, Other models, …).
       const consoleModels = [];
-      const externalModels = [];
+      const externalBuckets = new Map();
       for (const model of uniqueModels(models)) {
-        if (isConsoleRegisteredModel(model)) consoleModels.push(model);
-        else externalModels.push(model);
+        if (isConsoleRegisteredModel(model)) {
+          consoleModels.push(model);
+        } else {
+          const label = externalGroupLabelFor(model);
+          if (!externalBuckets.has(label)) externalBuckets.set(label, []);
+          externalBuckets.get(label).push(model);
+        }
       }
       const parts = [`<option value="">${escapeHtml(placeholder)}</option>`];
       if (consoleModels.length) {
@@ -159,9 +174,10 @@
         for (const model of sortModels(consoleModels)) parts.push(optionHtml(model));
         parts.push('</optgroup>');
       }
-      if (externalModels.length) {
-        parts.push('<optgroup label="External models">');
-        for (const model of sortModels(externalModels)) parts.push(optionHtml(model));
+      const externalLabels = [...externalBuckets.keys()].sort((a, b) => a.localeCompare(b));
+      for (const label of externalLabels) {
+        parts.push(`<optgroup label="${escapeHtml(label)}">`);
+        for (const model of sortModels(externalBuckets.get(label))) parts.push(optionHtml(model));
         parts.push('</optgroup>');
       }
       return parts.join('');
