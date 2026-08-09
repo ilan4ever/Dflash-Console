@@ -1290,6 +1290,28 @@ body.lm-resizing-table-col {
   gap: 4px;
 }
 
+/* Horizontal separator between the DFlash models and the external GPU group. */
+.df-shell .lm-model-card-group-sep {
+  height: 0;
+  margin: 8px 2px 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.35);
+  position: relative;
+}
+
+.df-shell .lm-model-card-group-sep::before {
+  content: 'External models';
+  position: absolute;
+  top: -7px;
+  left: 8px;
+  padding: 0 6px;
+  background: var(--bg-app, #0b0f14);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .df-shell .lm-model-card-compact {
   margin-bottom: 0;
   border-radius: var(--radius);

@@ -1549,7 +1549,26 @@
     }
     empty.classList.add('hidden');
 
-    wrap.innerHTML = entries.map(({ server, row }) => {
+    // DFlash models always first (loading ones at the very top), then external
+    // GPU models below, so Console models stay at the top of the list.
+    const orderedEntries = entries.slice().sort((a, b) => {
+      const aExt = isExternalEntry(a) ? 1 : 0;
+      const bExt = isExternalEntry(b) ? 1 : 0;
+      if (aExt !== bExt) return aExt - bExt;
+      const aLoad = a.row?.card_state === 'loading' ? 0 : 1;
+      const bLoad = b.row?.card_state === 'loading' ? 0 : 1;
+      if (aLoad !== bLoad) return aLoad - bLoad;
+      return 0;
+    });
+
+    wrap.innerHTML = orderedEntries.map(({ server, row }, index) => {
+      const isExternal = isExternalEntry({ server, row });
+      const prevEntry = orderedEntries[index - 1];
+      const prevIsExternal = prevEntry ? isExternalEntry(prevEntry) : null;
+      // Horizontal separator between the DFlash models and the external group.
+      const groupSep = prevIsExternal === false && isExternal
+        ? '<div class="lm-model-card-group-sep" aria-hidden="true"></div>'
+        : '';
       const ready = row.card_state === 'ready';
       const loading = row.card_state === 'loading';
       const actionKey = loadedCardKey(server, row);
@@ -1608,6 +1627,7 @@
       });
 
       return `
+        ${groupSep}
         <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role || 'external-gpu')}"${row.external ? ` data-external-pid="${row.pid}"` : ''} role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${isGenerating ? ' aria-label="Model generating"' : ''}${ejecting ? ' aria-busy="true"' : ''}${cardStyle}>
           ${loadChrome}
           ${ejectChrome}
