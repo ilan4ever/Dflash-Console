@@ -1565,6 +1565,29 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=400, detail='engine api_url not configured')
     raw = await request.body()
     content_type = request.headers.get('content-type') or 'application/json'
+
+    # llama-server validates the model name against its loaded checkpoint id.
+    # Clients may send the configured profile alias (e.g. gemma-4-12b-it-qat)
+    # while the engine loaded it under a sanitized filename
+    # (gemma-4-12b-it-q4-k-m), which yields "model '…' not found". Rewrite the
+    # body's model field to the engine's actual loaded id so any client works.
+    upstream_model_id = (
+        str(live.get('active_model_id') or '')
+        or (str((live.get('loaded_models') or [''])[0]) if live.get('loaded_models') else '')
+        or str(server.get('model_id') or '')
+    ).strip()
+    if upstream_model_id:
+        try:
+            body_json = json.loads(raw.decode('utf-8'))
+        except Exception:
+            body_json = None
+        if isinstance(body_json, dict) and 'model' in body_json:
+            try:
+                body_json['model'] = upstream_model_id
+                raw = json.dumps(body_json).encode('utf-8')
+            except Exception:
+                pass
+
     url = f'{base}/v1/chat/completions'
 
     if wants_stream(raw):
