@@ -361,6 +361,13 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
     label = suggest_stack_label(path) if path.is_file() else str(target.get('label') or path.name)
     caps = ['instruct', 'dflash']
     _append_vision_capability(caps, path)
+    # The source reflects where the target file physically lives. A capable
+    # target inside the Console's own models folder is a Console DFlash model
+    # (dflash-stack); files living under other libraries keep their provider
+    # source (e.g. lmstudio) so they are grouped as external models.
+    source = str(target.get('source') or '').strip().lower()
+    if source in ('dflash', 'dflash-profile', 'dflash-stack', ''):
+        source = 'dflash-stack'
     return {
         'id': f"stack-capable:{path.stem.replace('_', '-').lower()[:96]}",
         'server_id': '',
@@ -376,7 +383,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
         'quant': target.get('quant') or _guess_quant(path.name),
         'size_gb': target.get('size_gb'),
         'modified': target.get('modified') or (_modified_label(path) if path.is_file() else '—'),
-        'source': 'dflash-stack',
+        'source': source,
         'capabilities': caps,
         'context_max': 131072,
         'draft_label': target.get('draft_filename') or '',

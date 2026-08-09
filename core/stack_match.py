@@ -318,6 +318,7 @@ def list_capable_targets(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
             'path': str(path),
             'filename': path.name,
             'label': model.get('label') or path.name,
+            'source': str(model.get('source') or '').strip() or 'library',
             'size_gb': model.get('size_gb'),
             'publisher': model.get('publisher'),
             'arch': model.get('arch'),
