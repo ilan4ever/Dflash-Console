@@ -66,3 +66,18 @@ test('keeps file staging isolated from the final artifact until verified', async
   assert.match(temp, /dflash-update-test-/);
   await fs.promises.rm(temp, { recursive: true, force: true });
 });
+
+test('owns the ready prompt in the dark renderer instead of native Electron dialogs', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  const settings = fs.readFileSync(
+    path.join(__dirname, '..', 'static', 'js', 'app-settings-live.js'),
+    'utf8',
+  );
+  const index = fs.readFileSync(path.join(__dirname, '..', 'static', 'index.html'), 'utf8');
+
+  assert.doesNotMatch(main, /promptInstallUpdate|DFlash Console update ready/);
+  assert.match(settings, /desktopUpdateModal/);
+  assert.match(settings, /updatePromptVersion/);
+  assert.match(settings, /localStorage\.setItem\(UPDATE_PROMPT_VERSION_KEY, version\)/);
+  assert.match(index, /id="desktopUpdateModal"/);
+});
