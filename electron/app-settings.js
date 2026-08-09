@@ -44,12 +44,34 @@ function saveAppSettings(patch) {
   return { ...next };
 }
 
+function resolveStartupExe() {
+  // Never register a temporary/portable extraction path: the SFX update flow
+  // runs the app from %TEMP%\7z... and registering that path makes Windows
+  // launch a stale temp copy at every login (duplicate instances, repeated
+  // update prompts after install). Prefer the real installed executable.
+  const currentExe = app.getPath('exe') || '';
+  const tempDirs = [process.env.TEMP, process.env.TMP]
+    .map((dir) => String(dir || '').toLowerCase())
+    .filter(Boolean);
+  const isTempRun = tempDirs.some((dir) => currentExe.toLowerCase().startsWith(dir));
+  if (!isTempRun) return currentExe;
+  const installedCandidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'DFlash Console', 'DFlash Console.exe'),
+    path.join(process.env.ProgramFiles || '', 'DFlash Console', 'DFlash Console.exe'),
+  ];
+  for (const candidate of installedCandidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return '';
+}
+
 function applyWindowsStartup(enabled) {
   if (process.platform !== 'win32') return;
-  const exe = app.getPath('exe');
   const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
   try {
     if (enabled) {
+      const exe = resolveStartupExe();
+      if (!exe || !fs.existsSync(exe)) return; // nothing stable to register
       execFileSync(
         'reg',
         ['add', regKey, '/v', 'DFlash Console', '/t', 'REG_SZ', '/d', exe, '/f'],
