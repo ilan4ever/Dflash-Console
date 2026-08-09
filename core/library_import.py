@@ -242,16 +242,22 @@ def import_stack_pair(
     *,
     label: str | None = None,
     preset: str = 'dflash',
+    mode: str = 'copy',
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Copy a DFlash stack pair (target + accelerator) into the Console library.
+    """Copy or move a DFlash stack pair (target + accelerator) into the Console library.
 
     When a user converts a regular model to a DFlash stack, both the full target
-    GGUF and its accelerator are copied into the Console's own models folder so
+    GGUF and its accelerator are brought into the Console's own models folder so
     the pair is registered under DFlash Console and the originals can be deleted
-    elsewhere. Returns the new paths for registering the engine profile.
+    elsewhere. ``mode`` is ``copy`` (default, keeps the originals) or ``move``
+    (removes the originals after copying). Returns the new paths for registering
+    the engine profile.
     """
     config = cfg or load_config()
+    mode_key = str(mode or 'copy').strip().lower()
+    if mode_key not in ('copy', 'move'):
+        mode_key = 'copy'
     target = Path(os.path.expanduser(str(target_path or '').strip())).resolve()
     draft = Path(os.path.expanduser(str(draft_path or '').strip())).resolve()
     if not target.is_file() or target.suffix.lower() != '.gguf':
@@ -265,10 +271,15 @@ def import_stack_pair(
     dest_dir.mkdir(parents=True, exist_ok=True)
     target_dest = dest_dir / target.name
     draft_dest = dest_dir / draft.name
-    _copy_file(target, target_dest)
-    _copy_file(draft, draft_dest)
+    if mode_key == 'move':
+        _move_file(target, target_dest)
+        _move_file(draft, draft_dest)
+    else:
+        _copy_file(target, target_dest)
+        _copy_file(draft, draft_dest)
     return {
         'success': True,
+        'mode': mode_key,
         'target_path': str(target_dest),
         'draft_path': str(draft_dest),
         'library_path': str(dest_dir),

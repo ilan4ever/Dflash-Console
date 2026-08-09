@@ -177,6 +177,13 @@
 
   function reviewHtml() {
     const profileLabel = PROFILE_LABELS[state.profile] || state.profile || '—';
+    const mode = state.copyMode || 'copy';
+    const seg = (value, label, desc) => `
+      <label class="df-stack-copy-option${mode === value ? ' active' : ''}">
+        <input type="radio" name="stackWizardCopyMode" value="${value}" ${mode === value ? 'checked' : ''}>
+        <span class="df-stack-copy-option-title">${escapeHtml(label)}</span>
+        <span class="df-stack-copy-option-desc">${escapeHtml(desc)}</span>
+      </label>`;
     return `
       <div class="df-stack-review">
         <div class="df-stack-review-row"><span>Stack name</span><strong>${escapeHtml(state.label || '—')}</strong></div>
@@ -185,11 +192,12 @@
         <div class="df-stack-review-row"><span>Engine profile</span><strong>${escapeHtml(profileLabel)}</strong></div>
         <div class="df-stack-review-row"><span>API port</span><strong>${escapeHtml(String(state.port || '—'))}</strong></div>
       </div>
-      <label class="df-stack-field-label df-stack-copy-toggle">
-        <input type="checkbox" id="stackWizardCopyConsole" ${state.copyToConsole ? 'checked' : ''}>
-        <span>Copy target + accelerator into the DFlash Console library</span>
-      </label>
-      <p class="lm-setting-desc">Copies both files into your Console models folder so this stack is registered under DFlash Console and the originals can be deleted from their current location.</p>
+      <div class="df-stack-copy-mode" id="stackWizardCopyModeGroup">
+        <div class="df-stack-section-label">Bring into DFlash Console library?</div>
+        ${seg('copy', 'Copy into DFlash Console', 'Copies target + accelerator into your Console folder, keeps the originals.')}
+        ${seg('move', 'Move into DFlash Console', 'Moves target + accelerator into your Console folder and removes the originals for full control.')}
+        ${seg('none', 'Don’t copy — use as-is', 'Loads the files from their current location; nothing is copied or moved.')}
+      </div>
       <p class="lm-setting-desc">Creates a runnable DFlash stack in your model library. You can load it onto the GPU afterward.</p>`;
   }
 
@@ -284,8 +292,11 @@
         state.port = Number(event.target.value) || state.port;
         if (nextBtn) nextBtn.disabled = !canContinue();
       });
-      document.getElementById('stackWizardCopyConsole')?.addEventListener('change', (event) => {
-        state.copyToConsole = event.target.checked;
+      body.querySelectorAll('input[name="stackWizardCopyMode"]').forEach((radio) => {
+        radio.addEventListener('change', (event) => {
+          if (event.target.checked) state.copyMode = event.target.value;
+          render();
+        });
       });
     }
 
@@ -371,7 +382,8 @@
       port: state.port,
       model_id: state.modelId,
       id: state.serverId || undefined,
-      copy_to_console: !!state.copyToConsole,
+      copy_to_console: (state.copyMode || 'copy') !== 'none',
+      copy_mode: state.copyMode || 'copy',
     };
     const result = await api('/api/servers', {
       method: 'POST',
@@ -438,7 +450,7 @@
       modelId: '',
       profile: '',
       port: 0,
-      copyToConsole: true,
+      copyMode: 'copy',
     };
 
     try {

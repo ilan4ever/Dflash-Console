@@ -1629,12 +1629,22 @@
         installedBadge,
         statusBadge: badge,
       });
+      // External GPU models are loaded from outside the Console. Remind the user
+      // they can bring the file under Console control with one click (copy).
+      const externalPath = row?.model_path || row?.path || '';
+      const externalPrompt = row.external && externalPath
+        ? `<div class="lm-model-card-external-prompt">
+            <span>Loaded from outside DFlash Console</span>
+            <button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(externalPath)}" title="Copy this model file into the DFlash Console library for full control">Copy to Console</button>
+          </div>`
+        : '';
 
       return `
         ${groupSep}
         <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role || 'external-gpu')}"${row.external ? ` data-external-pid="${row.pid}"` : ''} role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${isGenerating ? ' aria-label="Model generating"' : ''}${ejecting ? ' aria-busy="true"' : ''}${cardStyle}>
           ${loadChrome}
           ${ejectChrome}
+          ${externalPrompt}
           <div class="lm-model-card-top">
             ${centerBlock}
             <span class="lm-model-card-tags">${missing}</span>
@@ -1645,6 +1655,35 @@
           </div>
         </article>`;
     }).join('');
+
+    wrap.querySelectorAll('[data-action="copy-to-console"]').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const path = btn.getAttribute('data-path');
+        if (!path) return;
+        btn.disabled = true;
+        btn.textContent = 'Copying…';
+        try {
+          const data = await api('/api/models/import-into-console', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path, mode: 'copy' }),
+          });
+          window.DFlashStatusFeed?.setTransient?.('Copied model into DFlash Console library', {
+            secondary: 'It now registers under DFlash Console.',
+            ttlMs: 4000,
+          });
+          await refresh(true, { fresh: true });
+        } catch (err) {
+          window.DFlashStatusFeed?.setTransient?.(err.message || 'Could not copy model into Console', {
+            secondary: 'Try again or use the Models page.',
+            ttlMs: 5000,
+          });
+          btn.disabled = false;
+          btn.textContent = 'Copy to Console';
+        }
+      });
+    });
 
     wrap.querySelectorAll('[data-action="eject"]').forEach((btn) => {
       btn.addEventListener('click', (e) => {

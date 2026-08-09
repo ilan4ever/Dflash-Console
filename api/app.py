@@ -342,6 +342,7 @@ class ServerCreateRequest(BaseModel):
     id: str | None = Field(default=None, max_length=80)
     context_size: int | None = Field(default=None, ge=2048, le=262144)
     copy_to_console: bool = False
+    copy_mode: str | None = Field(default=None, pattern='^(copy|move|none)$')
 
 
 class AudioSpeechRequest(BaseModel):
@@ -2146,11 +2147,13 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
     if not model_id:
         raise HTTPException(status_code=400, detail='target model has no usable identifier')
 
-    # When the user converts an external model to a DFlash stack, copy both the
+    # When the user converts an external model to a DFlash stack, bring both the
     # target GGUF and its accelerator into the Console's own models folder so the
-    # pair registers under DFlash Console (and the originals can be deleted).
+    # pair registers under DFlash Console. copy_mode controls whether the
+    # originals are kept (copy), removed (move), or left untouched (none).
     copied = None
-    if body.copy_to_console:
+    copy_mode = (body.copy_mode or ('copy' if body.copy_to_console else 'none')).strip().lower()
+    if copy_mode in ('copy', 'move'):
         from core.library_import import import_stack_pair
 
         try:
@@ -2158,6 +2161,7 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
                 str(target),
                 str(draft),
                 label=body.label.strip() or server_id,
+                mode=copy_mode,
                 cfg=cfg,
             )
         except ValueError as exc:
