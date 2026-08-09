@@ -258,9 +258,13 @@
   function isAcceleratorOnlyModel(model) {
     if (!model) return false;
     const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+    // A real DFlash stack (dflash_stack / draft_path / "dflash" capability) is a
+    // loadable Console model and must stay visible even when loadable=false
+    // (e.g. stack-capable variants). Only true accelerator draft files are hidden.
     const isDflashTarget = !!(
-      model.loadable
-      && (model.dflash_stack || model.draft_path || capabilities.includes('dflash'))
+      model.dflash_stack
+      || model.draft_path
+      || capabilities.includes('dflash')
     );
     if (isDflashTarget) return false;
     const name = `${model.filename || ''} ${model.label || ''}`.toLowerCase();
@@ -1709,7 +1713,7 @@
     const parts = [model.label || model.filename || model.id || 'Model'];
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
-    if (model.loadable && model.port) parts.push(`port :${model.port}`);
+    if (model.port) parts.push(`port :${model.port}`);
     return parts.join(' · ');
   }
 
