@@ -17,6 +17,7 @@ const {
   verifyManifestSignature,
 } = require('../electron/update-integrity');
 const { safeArtifactName } = require('../electron/update-service');
+const packageJson = require('../package.json');
 
 function manifest() {
   return {
@@ -34,13 +35,22 @@ function manifest() {
   };
 }
 
-test('validates the DFlash x64 NSIS manifest contract', () => {
+test('validates the DFlash x64 setup manifest contract', () => {
   const value = manifest();
   assert.equal(validateManifest(value).valid, false);
   value.signature = 'placeholder';
   assert.equal(validateManifest(value).valid, true);
   assert.equal(safeArtifactName(value.fileName), true);
   assert.equal(safeArtifactName('../' + value.fileName), false);
+});
+
+test('uses the branded setup UI instead of the Windows NSIS wizard', () => {
+  const targets = packageJson.build?.win?.target || [];
+  assert.equal(targets.some((target) => target.target === 'nsis'), false);
+  assert.equal(packageJson.scripts?.dist, 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fast-installer.ps1');
+  const builder = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-fast-installer.ps1'), 'utf8');
+  assert.match(builder, /dflash-setup-ui\.exe/);
+  assert.match(builder, /GUIMode="2"/);
 });
 
 test('requires authenticated HTTPS update configuration', () => {

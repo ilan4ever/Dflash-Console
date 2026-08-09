@@ -4,7 +4,7 @@ The Windows desktop shell checks the signed feed at:
 
 `https://onevoiceai.in/internal-app/dflash-console/latest.json`
 
-The feed and installer are protected by a token and stored outside the website's public directory. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest.
+The feed and installer are protected by a token and stored outside the website's public directory. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest. The setup artifact is a branded DFlash 7-Zip SFX wrapper that launches the native dark setup UI; it is not an NSIS or Windows wizard.
 
 ## Release prerequisites
 
@@ -25,4 +25,4 @@ node tools/sign-update-manifest.js `
   -Token "<the feed token>"
 ```
 
-GitHub releases use `DFLASH_UPDATE_TOKEN`, `DFLASH_UPDATE_PRIVATE_KEY`, and the Hostinger SSH secrets. The detached helper waits for the running app and its child processes to quit, then opens the verified assisted NSIS installer. The installer provides the per-user/per-machine choice, shows its normal progress pages, and uses the DFlash dark theme before relaunching the app.
+GitHub releases use `DFLASH_UPDATE_TOKEN`, `DFLASH_UPDATE_PRIVATE_KEY`, and the Hostinger SSH secrets. The detached helper waits for the running app and its child processes to quit, then opens the verified branded DFlash setup UI. The installer provides the per-user/per-machine choice, shows custom progress, and relaunches the app after installation.
