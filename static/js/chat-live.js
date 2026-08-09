@@ -291,6 +291,23 @@
       && !['embed', 'embedding', 'transcribe', 'speech', 'tts'].includes(task);
   }
 
+  // DFlash/DSpark accelerator (draft) checkpoints are small companion files, not
+  // standalone chat models — never expose them in the Playground pickers. A real
+  // DFlash stack (dflash_stack / draft_path / "dflash" capability) is a chat
+  // model and must stay visible.
+  function isAcceleratorOnlyModel(model) {
+    if (!model) return false;
+    const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+    const isDflashTarget = !!(
+      model.dflash_stack
+      || model.draft_path
+      || capabilities.includes('dflash')
+    );
+    if (isDflashTarget) return false;
+    const name = `${model.filename || ''} ${model.label || ''}`.toLowerCase();
+    return !!name && !name.startsWith('mmproj') && /dflash|dspark/.test(name);
+  }
+
   function appendLoadedChatModels(models) {
     const result = models.filter((model) => (
       !model.chat_model_key
@@ -527,7 +544,7 @@
       if (gen !== catalogRefreshGen) return;
       applyServersData(profilesData);
       catalogModels = (quickModelsData.models || [])
-        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m));
+        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m) && !isAcceleratorOnlyModel(m));
       catalogModels = appendLoadedChatModels(catalogModels);
       catalogLoaded = true;
       noteCatalogResult();
@@ -558,7 +575,7 @@
       if (gen !== catalogRefreshGen) return;
       applyServersData(serversData);
       const nextModels = (modelsData.models || [])
-        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m));
+        .filter((m) => (m.path || m.server_id || m.id) && isChatModel(m) && !isAcceleratorOnlyModel(m));
       const mergedModels = appendLoadedChatModels(nextModels);
       const modelsChanged = catalogSignature(mergedModels) !== catalogSignature(catalogModels);
       catalogModels = mergedModels;
