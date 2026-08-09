@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.14</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.15</span>
           </div>
         </div>
       </div>
@@ -438,7 +438,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.14</strong>
+                <strong id="dfAboutVersion">v0.2.15</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -959,13 +959,17 @@ try {
           <button class="lm-inspector-tab" data-inspector-tab="info">Details</button>
           <button class="lm-inspector-tab active" data-inspector-tab="load">Runtime</button>
         </div>
-        <h2 id="inspectorHeadTitle" class="lm-inspector-model-title">Select a model</h2>
+        <h2 id="inspectorHeadTitle" class="lm-inspector-model-title">No model selected</h2>
         <div id="inspectorReloadNotice" class="lm-inspector-reload-notice hidden" role="status">
           <span>Reload this model to apply runtime changes. Settings stay saved in config until the next load.</span>
           <button class="lm-btn ghost small" type="button" id="inspectorReloadBtn">Reload model</button>
         </div>
         <div class="lm-inspector-scroll">
-          <div class="lm-inspector-panel" data-inspector-panel="info">
+          <div id="inspectorEmptyState" class="lm-inspector-empty" role="status" aria-live="polite">
+            <strong>No model selected</strong>
+            <p>Select a model card to view its details and runtime settings.</p>
+          </div>
+          <div class="lm-inspector-panel hidden" data-inspector-panel="info">
             <section class="lm-field-group">
               <h3>Model</h3>
               <div class="lm-info-row"><span>Model family</span><strong id="inspectorInfoArch">—</strong></div>
@@ -988,7 +992,7 @@ try {
               <div class="lm-info-row"><span>Path</span><code class="lm-info-path" id="inspectorInfoPath">—</code></div>
             </section>
           </div>
-          <div class="lm-inspector-panel active" data-inspector-panel="load">
+          <div class="lm-inspector-panel active hidden" data-inspector-panel="load">
             <p id="inspectorExternalRuntimeNote" class="lm-inspector-external-note hidden">This model runs outside DFlash Console. Runtime settings here apply only when you load through this app.</p>
             <div class="lm-runtime-rec-bar">
               <p class="lm-rec-summary hidden" id="inspectorRecSummary"></p>
