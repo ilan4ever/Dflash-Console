@@ -145,7 +145,8 @@
 
     if (consoleFirst) {
       // One category for every model registered inside the DFlash Console, then
-      // all external models as a plain alphabetical list (no extra grouping).
+      // a separate category for all external models — each alphabetical, so the
+      // two are never visually mixed.
       const consoleModels = [];
       const externalModels = [];
       for (const model of uniqueModels(models)) {
@@ -158,7 +159,11 @@
         for (const model of sortModels(consoleModels)) parts.push(optionHtml(model));
         parts.push('</optgroup>');
       }
-      for (const model of sortModels(externalModels)) parts.push(optionHtml(model));
+      if (externalModels.length) {
+        parts.push('<optgroup label="External models">');
+        for (const model of sortModels(externalModels)) parts.push(optionHtml(model));
+        parts.push('</optgroup>');
+      }
       return parts.join('');
     }
 
