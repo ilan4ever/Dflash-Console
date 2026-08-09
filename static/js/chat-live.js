@@ -654,11 +654,13 @@
     if (window.DFlashModelGroups?.renderGroupedSelectOptions) {
       pick.innerHTML = window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
         catalogKey: modelCatalogKey,
+        groupBySource: true,
         optionLabel: (model) => {
           const state = modelLoadState(model);
           const suffix = state === 'loaded' ? ' · Loaded' : state === 'loading' ? ' · Loading…' : '';
           return `${checkpointLabel(model)}${suffix}`;
         },
+        optionClass: (model) => (modelLoadState(model) === 'loaded' ? 'is-loaded' : ''),
         placeholder: 'Select model…',
         selectedKey: prev,
       });
@@ -1321,7 +1323,14 @@
       }
       assistantMessage.pending = false;
       assistantMessage.content = choice || '(empty response)';
-      assistantMessage.stats = statsParts.join(' · ') || undefined;
+      // Signature: model name · tokens/speed · completion time.
+      const modelName = String(engine.modelId || '').trim();
+      const finishedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const sigParts = [];
+      if (modelName) sigParts.push(modelName);
+      if (statsParts.length) sigParts.push(statsParts.join(' · '));
+      if (finishedAt) sigParts.push(finishedAt);
+      assistantMessage.stats = sigParts.join(' · ') || undefined;
       setStatus(statsParts.length ? `Last reply · ${statsParts.join(' · ')}` : 'Reply complete');
       void refreshStatus();
       void window.DFlashServerLive?.refresh?.();

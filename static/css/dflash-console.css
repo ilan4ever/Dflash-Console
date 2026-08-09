@@ -1695,6 +1695,19 @@ body.lm-resizing-logs {
   color: #c8d8d2;
 }
 
+/* Models currently loaded on the GPU are usable in chat right away — mark
+   them with a deep green so they stand out in the picker. */
+.lm-select option.is-loaded {
+  background: #0b5d2f;
+  color: #eafff2;
+}
+
+.lm-select option.is-loaded:checked,
+.lm-select option.is-loaded:hover {
+  background: #0a7a3a;
+  color: #ffffff;
+}
+
 .lm-select optgroup {
   color: var(--text-muted);
   font-style: normal;

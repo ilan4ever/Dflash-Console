@@ -45,6 +45,12 @@
     return familyIdFor(model);
   }
 
+  function familyLabelFor(model) {
+    const id = familyIdFor(model);
+    const group = GROUPS.find((entry) => entry.id === id);
+    return group ? group.label : 'Other models';
+  }
+
   function sourceIdFor(model) {
     return String(model?.source || model?.provider || model?.library_label || model?.library || 'Local').trim() || 'Local';
   }
@@ -101,24 +107,67 @@
     optionLabel,
     placeholder = 'Select…',
     selectedKey = '',
+    groupBySource = false,
+    optionClass,
   } = {}) {
     const keyFn = typeof catalogKey === 'function'
       ? catalogKey
       : (model) => model?.server_id || model?.path || model?.id || '';
     const labelFn = typeof optionLabel === 'function' ? optionLabel : defaultOptionLabel;
+    const classFn = typeof optionClass === 'function' ? optionClass : () => '';
+
+    function optionHtml(model) {
+      const key = keyFn(model);
+      const selected = key === selectedKey ? ' selected' : '';
+      const cls = classFn(model);
+      const classAttr = cls ? ` class="${escapeHtml(cls)}"` : '';
+      return `<option value="${escapeHtml(key)}"${selected}${classAttr}>${escapeHtml(labelFn(model))}</option>`;
+    }
+
+    const seen = new Set();
+    function uniqueModels(list) {
+      const out = [];
+      for (const model of list || []) {
+        const key = keyFn(model);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(model);
+      }
+      return out;
+    }
+
+    if (groupBySource) {
+      // Group by provider/source first, keeping the model families under each:
+      // e.g. "Lmstudio · Qwen", "Dflash Stack · Gemma", one group below another.
+      const buckets = new Map();
+      for (const model of uniqueModels(models)) {
+        const source = sourceLabelFor(model);
+        const family = familyLabelFor(model);
+        const bucketKey = `${source}\u0000${family}`;
+        if (!buckets.has(bucketKey)) {
+          buckets.set(bucketKey, { source, family, models: [] });
+        }
+        buckets.get(bucketKey).models.push(model);
+      }
+      const entries = [...buckets.values()]
+        .sort((a, b) => a.source.localeCompare(b.source) || a.family.localeCompare(b.family));
+      const parts = [`<option value="">${escapeHtml(placeholder)}</option>`];
+      for (const entry of entries) {
+        entry.models = sortModels(entry.models);
+        parts.push(`<optgroup label="${escapeHtml(`${entry.source} · ${entry.family}`)}">`);
+        for (const model of entry.models) parts.push(optionHtml(model));
+        parts.push('</optgroup>');
+      }
+      return parts.join('');
+    }
+
     const { groups, buckets } = groupCatalogModels(models, { catalogKey: keyFn });
     const parts = [`<option value="">${escapeHtml(placeholder)}</option>`];
     for (const group of groups) {
       const rows = buckets[group.id] || [];
       if (!rows.length) continue;
       parts.push(`<optgroup label="${escapeHtml(group.label)}">`);
-      for (const model of rows) {
-        const key = keyFn(model);
-        const selected = key === selectedKey ? ' selected' : '';
-        parts.push(
-          `<option value="${escapeHtml(key)}"${selected}>${escapeHtml(labelFn(model))}</option>`,
-        );
-      }
+      for (const model of rows) parts.push(optionHtml(model));
       parts.push('</optgroup>');
     }
     return parts.join('');
@@ -129,6 +178,7 @@
     isDflashEntry,
     groupIdFor,
     familyIdFor,
+    familyLabelFor,
     sourceIdFor,
     sourceLabelFor,
     sourceOptions,

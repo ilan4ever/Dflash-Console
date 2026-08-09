@@ -70,7 +70,8 @@
         if (opt.disabled && !opt.value) return;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'df-select-option';
+        // Carry any option-level classes (e.g. is-loaded) into the themed item.
+        btn.className = 'df-select-option' + (opt.className ? ` ${opt.className}` : '');
         btn.setAttribute('role', 'option');
         btn.textContent = opt.textContent;
         btn.dataset.value = opt.value;
