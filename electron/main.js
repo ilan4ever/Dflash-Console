@@ -563,17 +563,36 @@ function startConsoleServer(port = DEFAULT_PORT) {
     throw new Error(`server.ps1 not found at ${serverScript}`);
   }
   const pwsh = findPwsh();
+  const logDir = path.join(root, 'logs');
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+  } catch (_err) {
+    // logs are best-effort
+  }
+  let outFd = null;
+  let errFd = null;
+  try {
+    outFd = fs.openSync(path.join(logDir, 'console-server.log'), 'a');
+    errFd = fs.openSync(path.join(logDir, 'console-server.err.log'), 'a');
+  } catch (_err) {
+    outFd = null;
+    errFd = null;
+  }
+  // Foreground mode: the spawned pwsh runs uvicorn directly, so Electron owns
+  // the live server process and can stop it (and its tree) when the app quits.
   const child = spawn(
     pwsh,
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript, '-Port', String(port)],
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript, '-Port', String(port), '-Foreground'],
     {
       cwd: root,
       windowsHide: true,
-      stdio: 'ignore',
+      stdio: ['ignore', outFd || 'ignore', errFd || 'ignore'],
       detached: false,
       env: {
         ...process.env,
         DFLASH_CONSOLE_SHELL_VERSION: app.getVersion(),
+        // App-owned servers release their managed engines on shutdown.
+        DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN: '1',
       },
     },
   );
@@ -581,8 +600,55 @@ function startConsoleServer(port = DEFAULT_PORT) {
   startedByApp = true;
   child.on('exit', () => {
     if (spawnedServer === child) spawnedServer = null;
+    try {
+      if (outFd) fs.closeSync(outFd);
+    } catch (_err) { /* ignore */ }
+    try {
+      if (errFd) fs.closeSync(errFd);
+    } catch (_err) { /* ignore */ }
   });
   return child;
+}
+
+/**
+ * Gracefully stop the server this app started (if any), waiting for it to
+ * exit and force-killing the process tree as a fallback. Safe to call on quit.
+ */
+async function stopOwnedServer() {
+  if (!startedByApp || !spawnedServer) return;
+  const child = spawnedServer;
+  const port = activePort;
+  // 1) Graceful: ask the Console API to shut down (releases engines + gateway).
+  try {
+    const req = http.request(
+      { host: UI_HOST, port, path: '/api/shutdown', method: 'POST', timeout: 3000 },
+      (res) => {
+        res.resume();
+      },
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {});
+    req.end();
+  } catch (_err) {
+    // ignore network/transport errors; fall through to the kill fallback
+  }
+  // 2) Wait for the spawned process tree to exit on its own.
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    if (spawnedServer !== child || child.exitCode !== null) return;
+    await sleep(200);
+  }
+  // 3) Fallback: force-kill the whole process tree.
+  try {
+    if (child.pid) {
+      spawn('taskkill.exe', ['/F', '/T', '/PID', String(child.pid)], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    }
+  } catch (_err) {
+    // ignore
+  }
 }
 
 async function ensureBackend() {
@@ -813,7 +879,21 @@ if (!gotLock) {
     }
   });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     isQuitting = true;
+    if (startedByApp && spawnedServer) {
+      // Own this server: wait for it to stop (graceful shutdown, then kill
+      // fallback) before Electron fully exits so closing the app really
+      // terminates the server it started.
+      event.preventDefault();
+      void (async () => {
+        try {
+          await stopOwnedServer();
+        } catch (_err) {
+          // ignore
+        }
+        setTimeout(() => app.exit(0), 100);
+      })();
+    }
   });
 }

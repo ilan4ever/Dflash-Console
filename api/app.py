@@ -418,6 +418,26 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.post('/api/shutdown')
+async def api_shutdown() -> dict[str, Any]:
+    """Gracefully stop the Console API (used by the Electron shell on quit).
+
+    Stops the OpenAI gateway, releases managed engines, then exits the process.
+    The response is returned first; shutdown runs a moment later in a thread so
+    the caller sees success before the port is released.
+    """
+    def _shutdown_worker() -> None:
+        try:
+            time.sleep(0.3)  # let the HTTP response flush first
+            _stop_gateway_server()
+            _release_gpu_on_shutdown()
+        finally:
+            os._exit(0)
+
+    threading.Thread(target=_shutdown_worker, name='console-shutdown', daemon=True).start()
+    return {'success': True, 'app': 'DFlash Console', 'message': 'shutting down'}
+
+
 @app.get('/api/gpu-devices')
 def gpu_devices() -> dict[str, Any]:
     return get_gpu_devices_payload()
