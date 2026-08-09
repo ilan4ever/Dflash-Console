@@ -611,10 +611,11 @@
       || allServers.find((item) => item.id === serverId);
     if (!server || isServerBusy(serverId)) return;
     const selected = selectedCatalogModel();
-    const row = loadedRowsForServer(server)[0] || {};
-    const model = selected?.server_id === serverId
-      ? selected
-      : modelFromLoadedEntry(server, row);
+    const selectedEntry = selectedLoadedEntry();
+    const selectedCardModel = selectedEntry?.server?.id === serverId
+      ? modelFromLoadedEntry(selectedEntry.server, selectedEntry.row)
+      : null;
+    const model = selectedCardModel || (selected?.server_id === serverId ? selected : null);
     if (!model) {
       toast('The loaded model could not be identified', false);
       return;
@@ -804,6 +805,7 @@
       resetEngineModelPicker();
     }
     await applyModelSelection(model);
+    renderInspectorSelectionState(true);
     ensureInspectorVisible();
     focusInspectorTab(tab ?? currentInspectorTab());
     renderCards();
@@ -1018,6 +1020,16 @@
       result.push({ server, row });
     }
     return result;
+  }
+
+  function selectedLoadedEntry(entries = collectLoadedEntries()) {
+    if (!selectedLoadedKey) return null;
+    return entries.find(({ server, row }) => loadedCardKey(server, row) === selectedLoadedKey) || null;
+  }
+
+  function clearLoadedCardSelection() {
+    selectedLoadedKey = '';
+    localStorage.removeItem('dflashConsole.selectedLoadedKey');
   }
 
   function isExternalEntry({ server, row }) {
@@ -1520,6 +1532,9 @@
     }
 
     const allEntries = collectLoadedEntries();
+    if (selectedLoadedKey && !selectedLoadedEntry(allEntries)) {
+      clearLoadedCardSelection();
+    }
     const entries = filterLoadedEntries(allEntries);
     if (!entries.length) {
       wrap.innerHTML = '';
@@ -1830,6 +1845,7 @@
     const pick = document.getElementById('serverModelPick');
     const loadBtn = document.getElementById('serverModelLoadBtn');
     const model = selectedCatalogModel();
+    clearLoadedCardSelection();
     selectedModelKey = pick?.value || '';
     if (loadBtn) loadBtn.disabled = !canLoadModel(model);
     if (model?.server_id) {
@@ -1838,9 +1854,11 @@
     }
     if (model) {
       await applyModelSelection(model);
+      renderInspectorEmptyState();
       await window.DFlashModelsLive?.selectModel?.(selectedModelKey, { applyInspector: false });
       await refreshLoadPlan(model);
     } else {
+      renderInspectorEmptyState();
       await refreshLoadPlan(null);
     }
   }
@@ -2204,6 +2222,26 @@
     document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode(inspectorModelTitle(model)));
   }
 
+  function renderInspectorSelectionState(hasSelection) {
+    const empty = document.getElementById('inspectorEmptyState');
+    if (empty) empty.classList.toggle('hidden', hasSelection);
+    document.querySelectorAll('.lm-inspector-panel').forEach((panel) => {
+      panel.classList.toggle('hidden', !hasSelection);
+    });
+    document.querySelectorAll('.lm-inspector-tab').forEach((tab) => {
+      tab.disabled = !hasSelection;
+    });
+    if (!hasSelection) {
+      document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode('No model selected'));
+      document.getElementById('inspectorReloadNotice')?.classList.add('hidden');
+      syncInspectorLoadedState(null);
+    }
+  }
+
+  function renderInspectorEmptyState() {
+    renderInspectorSelectionState(false);
+  }
+
   async function applyModelSelection(model) {
     if (!model) return;
     await flushInspectorSave();
@@ -2259,52 +2297,28 @@
     const server = activeServer();
     renderToolbar(server);
     renderCards();
-    if (!server) return;
-
-    if (inspectorBound?.external) {
-      const pid = Number(String(inspectorBound.modelKey || '').replace(/^external-/, ''));
-      const row = externalGpuLoads.find((entry) => Number(entry.pid) === pid);
-      if (row) {
-        const extServer = {
-          id: `external-${row.pid}`,
-          label: row.app_label || 'External app',
-          port: row.listen_port || '',
-          external: true,
-          status: 'loaded',
-          gpu_display: row.gpu_display || '',
-        };
-        const model = modelFromLoadedEntry(extServer, row);
-        fillInspectorInfo(model);
-        syncInspectorLoadedState(model);
-      }
+    const selectedEntry = selectedLoadedEntry();
+    if (!selectedEntry) {
+      renderInspectorEmptyState();
       return;
     }
 
-    if (inspectorBound?.serverId === server.id) {
-      if (!inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
-        fillInspectorLoadSettings(server);
-      }
-      const row = loadedRowsForServer(server)[0] || {};
-      const boundModel = modelFromLoadedEntry(server, row);
-      fillInspectorInfo({ ...boundModel, server_id: server.id, loaded_on_gpu: server.status === 'loaded' });
-      syncInspectorLoadedState({ ...boundModel, server_id: server.id, loaded_on_gpu: server.status === 'loaded' });
-      return;
-    }
-
-    if (document.body.dataset.activeView !== 'server') return;
-
-    const model = modelFromLoadedEntry(server, loadedRowsForServer(server)[0] || {});
+    const { server: selectedServer, row: selectedRow } = selectedEntry;
+    const model = modelFromLoadedEntry(selectedServer, selectedRow);
+    renderInspectorSelectionState(true);
     fillInspectorInfo(model);
-    if (!inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
-      fillInspectorLoadSettings(getMergedLoadSettings(model));
+    if (!model.external && !inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
+      fillInspectorLoadSettings(selectedServer);
     }
     inspectorBound = {
-      serverId: server.id,
+      serverId: model.server_id || selectedServer.id || '',
       modelKey: modelKeyFor(model),
       profile: model.profile,
       context_max: model.context_max,
       gpu_layers_max: model.gpu_layers_max,
+      external: !!model.external,
     };
+    syncInspectorLoadedState(model);
   }
 
   async function clearLogs() {
@@ -2630,6 +2644,7 @@
       return;
     }
     await applyModelSelection(model);
+    renderInspectorEmptyState();
     activeId = serverId;
     localStorage.setItem('dflashConsole.activeServerId', activeId);
     ensureInspectorVisible();
@@ -2783,6 +2798,8 @@
       void onEngineModelPickChange();
     });
     document.getElementById('serverSourcePick')?.addEventListener('change', () => {
+      clearLoadedCardSelection();
+      renderInspectorEmptyState();
       selectedModelKey = '';
       localStorage.removeItem('dflashConsole.selectedModelKey');
       renderEngineModelPicker();
@@ -2801,6 +2818,8 @@
     });
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', (e) => {
+      clearLoadedCardSelection();
+      renderInspectorEmptyState();
       activeId = e.target.value;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
       fillSettingsForm(allServers.find((s) => s.id === activeId) || activeServer());
