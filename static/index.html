@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.12</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.13</span>
           </div>
         </div>
       </div>
@@ -438,7 +438,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.12</strong>
+                <strong id="dfAboutVersion">v0.2.13</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1262,6 +1262,29 @@ try {
         </div>
         <div class="lm-modal-scroll">
           <pre class="lm-metadata-pre" id="modelMetadataBody"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dark in-app update prompt; keep update decisions inside the DFlash shell. -->
+  <div class="lm-modal df-update-modal" id="desktopUpdateModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-update-dialog" role="dialog" aria-modal="true" aria-labelledby="desktopUpdateTitle">
+        <div class="lm-modal-head df-update-head">
+          <div>
+            <div class="df-update-kicker">DFlash Console update</div>
+            <h2 id="desktopUpdateTitle">A new version is ready</h2>
+          </div>
+          <span class="df-update-badge" aria-hidden="true">↗</span>
+        </div>
+        <div class="df-update-body">
+          <p id="desktopUpdateMessage">The update has been downloaded and verified.</p>
+          <p class="lm-setting-desc" id="desktopUpdateNotes">DFlash Console will close briefly and reopen after installation.</p>
+        </div>
+        <div class="lm-modal-footer df-update-footer">
+          <button class="lm-btn ghost" type="button" id="desktopUpdateLater">Later</button>
+          <button class="lm-btn df-btn-accent" type="button" id="desktopUpdateInstall">Install update</button>
         </div>
       </div>
     </div>

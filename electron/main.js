@@ -27,10 +27,7 @@ let activePort = DEFAULT_PORT;
 let isQuitting = false;
 let booting = false;
 let updateService = null;
-let promptedUpdateVersion = '';
-let pendingUpdatePrompt = null;
 let lastAutomaticUpdateCheckAt = 0;
-const isPostUpdateLaunch = process.argv.some((arg) => String(arg).trim() === '--dflash-post-update');
 
 const {
   isConsoleRoot,
@@ -265,57 +262,13 @@ function createUpdateService() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update:status', status);
       }
-      if (status.state === 'ready') void promptInstallUpdate(status);
     },
   });
 }
 
 function flushPendingUpdatePrompt() {
-  const status = pendingUpdatePrompt || updateService?.getStatus();
-  if (status?.ready) {
-    void promptInstallUpdate(status);
-    return;
-  }
   if (updateService && loadAppSettings().allowAutomaticUpdates !== false) {
     void checkAndDownloadUpdate().catch(() => {});
-  }
-}
-
-async function promptInstallUpdate(status) {
-  if (isPostUpdateLaunch) return;
-  const version = String(status?.latestVersion || status?.manifest?.version || '').trim();
-  if (!version || promptedUpdateVersion === version) return;
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    pendingUpdatePrompt = { ...status };
-    return;
-  }
-  pendingUpdatePrompt = null;
-  const result = await dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'DFlash Console update ready',
-    message: `DFlash Console ${version} has finished downloading.`,
-    detail: status.releaseNotes
-      ? `${status.releaseNotes}\n\nInstall it now? The app will close briefly and reopen after installation.`
-      : 'Install it now? The app will close briefly and reopen after installation.',
-    buttons: ['Install now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  });
-  if (result.response !== 0 || !updateService?.getStatus().ready) return;
-  promptedUpdateVersion = version;
-  try {
-    await updateService.launchInstaller(updateService.getStatus().installerPath, {
-      processId: process.pid,
-      relaunchPath: process.execPath,
-      relaunchArguments: [],
-      onReady: async () => {
-        setTimeout(() => app.quit(), 100);
-      },
-    });
-  } catch (error) {
-    promptedUpdateVersion = '';
-    dialog.showErrorBox('DFlash Console update failed', error?.message || String(error));
   }
 }
 
@@ -323,7 +276,6 @@ async function checkAndDownloadUpdate() {
   if (!updateService || loadAppSettings().allowAutomaticUpdates === false) return;
   const status = updateService.getStatus();
   if (status.ready) {
-    void promptInstallUpdate(status);
     return;
   }
   if (status.state === 'downloading' || status.state === 'installing') return;
@@ -332,7 +284,6 @@ async function checkAndDownloadUpdate() {
   const manifest = await updateService.checkForUpdate();
   if (manifest && !updateService.getStatus().ready) {
     await updateService.stageUpdate(manifest);
-    void promptInstallUpdate(updateService.getStatus());
   }
 }
 
@@ -831,9 +782,6 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     updateService = createUpdateService();
-    if (isPostUpdateLaunch) {
-      promptedUpdateVersion = app.getVersion();
-    }
     registerAppSettingsIpc();
     syncStartupRegistration();
     if (updateService) {

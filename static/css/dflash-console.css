@@ -2283,6 +2283,82 @@ body.lm-resizing-logs {
   border-top: 1px solid var(--border-soft);
 }
 
+.df-update-modal {
+  z-index: 22000;
+}
+
+.df-update-modal .lm-modal-backdrop {
+  background: rgba(3, 5, 12, 0.82);
+  backdrop-filter: blur(5px);
+}
+
+.df-update-dialog {
+  max-width: min(520px, calc(100vw - 32px));
+  background:
+    linear-gradient(145deg, rgba(59, 130, 246, 0.1), transparent 42%),
+    var(--bg-elevated);
+  border-color: rgba(59, 130, 246, 0.42);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(59, 130, 246, 0.08);
+}
+
+.df-update-head {
+  align-items: center;
+  padding: 22px 24px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.df-update-head h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.df-update-kicker {
+  color: #7dd3fc;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.df-update-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 10px;
+  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.18);
+  font-size: 20px;
+}
+
+.df-update-body {
+  padding: 20px 24px 4px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.df-update-body p:first-child {
+  margin-top: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.df-update-body p:last-child {
+  margin-bottom: 0;
+}
+
+.df-update-footer {
+  padding-top: 18px;
+}
+
+.df-update-modal.is-busy .df-update-footer {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
 .lm-settings-dialog {
   max-width: min(920px, 100%);
 }

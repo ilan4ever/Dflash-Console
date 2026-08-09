@@ -255,8 +255,21 @@
     return !!getServerAction(serverId);
   }
 
+  function isAcceleratorOnlyModel(model) {
+    if (!model) return false;
+    const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+    const isDflashTarget = !!(
+      model.loadable
+      && (model.dflash_stack || model.draft_path || capabilities.includes('dflash'))
+    );
+    if (isDflashTarget) return false;
+    const name = `${model.filename || ''} ${model.label || ''}`.toLowerCase();
+    return !!name && !name.startsWith('mmproj') && /dflash|dspark/.test(name);
+  }
+
   function canLoadModel(model) {
     if (!model) return false;
+    if (isAcceleratorOnlyModel(model)) return false;
     const serverId = model.server_id || activeServer()?.id;
     if (!serverId) return false;
     if (isServerBusy(serverId)) return false;
@@ -1749,12 +1762,14 @@
 
     const source = sourcePick?.value || '';
     const sourceKey = String(source).trim().toLowerCase();
+    const loadableModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
     const visibleModels = source
-      ? catalogModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
-      : catalogModels;
+      ? loadableModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
+      : loadableModels;
     if (sourcePick && window.DFlashModelGroups?.sourceOptions) {
+      const loadableCatalogModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
       sourcePick.innerHTML = ['<option value="">All sources</option>',
-        ...window.DFlashModelGroups.sourceOptions(catalogModels).map(([id, label]) =>
+        ...window.DFlashModelGroups.sourceOptions(loadableCatalogModels).map(([id, label]) =>
           `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`)].join('');
       sourcePick.value = source;
       sourcePick.disabled = false;
@@ -2552,6 +2567,7 @@
       ttlMs: 120000,
     });
     renderAll();
+    let completed = false;
     try {
       await saveInspectorLoadSettings();
       const body = {};
@@ -2570,23 +2586,24 @@
       if (result?.already_loaded) {
         toast('Model already loaded');
         window.DFlashStatusFeed?.note(`${label} ready`, `Port :${result.port || '—'}`);
-        await refresh(true, { fresh: true });
-        return;
-      }
-      const loaded = await waitUntilModelLoaded(serverId);
-      if (loaded?.status === 'loaded') {
-        toast('Model loaded');
-        window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
-        clearInspectorPendingReload();
-      } else if (loaded?.status === 'error') {
-        const message = loaded.boot_error || loaded.load_error || 'Model load failed. Check the engine log.';
-        toast(message, false);
-        window.DFlashStatusFeed?.note('Load failed', message);
-      } else if (loaded && !loaded.loaded_models?.length) {
-        const message = loaded.load_error
-          || 'Model load did not complete. Check the engine log and try again.';
-        toast(message, false);
-        window.DFlashStatusFeed?.note('Load did not complete', message);
+        completed = true;
+      } else {
+        const loaded = await waitUntilModelLoaded(serverId);
+        if (loaded?.status === 'loaded') {
+          toast('Model loaded');
+          window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
+          clearInspectorPendingReload();
+          completed = true;
+        } else if (loaded?.status === 'error') {
+          const message = loaded.boot_error || loaded.load_error || 'Model load failed. Check the engine log.';
+          toast(message, false);
+          window.DFlashStatusFeed?.note('Load failed', message);
+        } else if (loaded && !loaded.loaded_models?.length) {
+          const message = loaded.load_error
+            || 'Model load did not complete. Check the engine log and try again.';
+          toast(message, false);
+          window.DFlashStatusFeed?.note('Load did not complete', message);
+        }
       }
     } catch (err) {
       toast(err.message, false);
@@ -2599,6 +2616,7 @@
       renderAll();
       await refresh(true, { fresh: true });
     }
+    return completed;
   }
 
   async function loadSelectedModel(model) {
@@ -2616,7 +2634,7 @@
     localStorage.setItem('dflashConsole.activeServerId', activeId);
     ensureInspectorVisible();
     focusInspectorTab('load');
-    void executeModelLoad({ ...model, server_id: model.server_id || '' });
+    return executeModelLoad({ ...model, server_id: model.server_id || '' });
   }
 
   async function ejectExternalLoad(pid) {
@@ -2820,8 +2838,7 @@
       toast('This model cannot be loaded', false);
       return false;
     }
-    await executeModelLoad(payload, serverId);
-    return true;
+    return executeModelLoad(payload, serverId);
   }
 
   document.addEventListener('DOMContentLoaded', () => {

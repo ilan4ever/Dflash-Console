@@ -1008,7 +1008,7 @@
       toast(`${model.label || model.server_id} unloaded`);
       await refresh({ rebindInspector: true });
       if (window.DFlashServerLive?.refresh) {
-        await window.DFlashServerLive.refresh(true);
+        await window.DFlashServerLive.refresh(true, { fresh: true });
       }
     } catch (err) {
       toast(err.message, false);
@@ -1362,7 +1362,7 @@
     await window.DFlashServerLive.loadModelOnServer(serverId, model);
     await refresh({ rebindInspector: true });
     if (window.DFlashServerLive?.refresh) {
-      await window.DFlashServerLive.refresh(true);
+      await window.DFlashServerLive.refresh(true, { fresh: true });
     }
   }
 

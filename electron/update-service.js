@@ -35,7 +35,7 @@ function quoteCmdArg(value) {
 async function launchDetachedUpdateHelper(helperPath, args, launcherPath) {
   const batPath = launcherPath.replace(/\.ps1$/i, '.cmd');
   const psTail = args.flatMap(([flag, value]) => [flag, value]).map(quoteCmdArg).join(' ');
-  const bat = `@echo off\r\nstart "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -File ${quoteCmdArg(helperPath)} ${psTail}\r\n`;
+  const bat = `@echo off\r\nstart "" /b powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ${quoteCmdArg(helperPath)} ${psTail}\r\n`;
   await fs.promises.writeFile(batPath, bat, 'utf8');
   await new Promise((resolve, reject) => {
     const child = spawn('cmd.exe', ['/d', '/c', batPath], { windowsHide: true, stdio: 'ignore' });
