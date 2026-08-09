@@ -2667,15 +2667,15 @@ body.lm-resizing-table-col {
 
 /* Models currently loaded on the GPU are usable in chat — deep green. */
 .df-shell .df-select-option.is-loaded {
-  background: #0b5d2f;
-  color: #eafff2;
+  background: #04301a;
+  color: #d9ffe9;
 }
 
 .df-shell .df-select-option.is-loaded:hover,
 .df-shell .df-select-option.is-loaded:focus,
 .df-shell .df-select-option.is-loaded.active,
 .df-shell .df-select-option.is-loaded.active:hover {
-  background: #0a7a3a;
+  background: #075225;
   color: #ffffff;
 }
 
