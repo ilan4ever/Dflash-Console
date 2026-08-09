@@ -654,7 +654,7 @@
     if (window.DFlashModelGroups?.renderGroupedSelectOptions) {
       pick.innerHTML = window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
         catalogKey: modelCatalogKey,
-        groupBySource: true,
+        consoleFirst: true,
         optionLabel: (model) => {
           const state = modelLoadState(model);
           const suffix = state === 'loaded' ? ' · Loaded' : state === 'loading' ? ' · Loading…' : '';

@@ -51,6 +51,13 @@
     return group ? group.label : 'Other models';
   }
 
+  // Models registered inside the DFlash Console itself (its own model
+  // libraries), as opposed to external models (e.g. LM Studio).
+  function isConsoleRegisteredModel(model) {
+    const source = String(model?.source || '').trim().toLowerCase();
+    return source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack';
+  }
+
   function sourceIdFor(model) {
     return String(model?.source || model?.provider || model?.library_label || model?.library || 'Local').trim() || 'Local';
   }
@@ -107,7 +114,7 @@
     optionLabel,
     placeholder = 'Select…',
     selectedKey = '',
-    groupBySource = false,
+    consoleFirst = false,
     optionClass,
   } = {}) {
     const keyFn = typeof catalogKey === 'function'
@@ -136,28 +143,22 @@
       return out;
     }
 
-    if (groupBySource) {
-      // Group by provider/source first, keeping the model families under each:
-      // e.g. "Lmstudio · Qwen", "Dflash Stack · Gemma", one group below another.
-      const buckets = new Map();
+    if (consoleFirst) {
+      // One category for every model registered inside the DFlash Console, then
+      // all external models as a plain alphabetical list (no extra grouping).
+      const consoleModels = [];
+      const externalModels = [];
       for (const model of uniqueModels(models)) {
-        const source = sourceLabelFor(model);
-        const family = familyLabelFor(model);
-        const bucketKey = `${source}\u0000${family}`;
-        if (!buckets.has(bucketKey)) {
-          buckets.set(bucketKey, { source, family, models: [] });
-        }
-        buckets.get(bucketKey).models.push(model);
+        if (isConsoleRegisteredModel(model)) consoleModels.push(model);
+        else externalModels.push(model);
       }
-      const entries = [...buckets.values()]
-        .sort((a, b) => a.source.localeCompare(b.source) || a.family.localeCompare(b.family));
       const parts = [`<option value="">${escapeHtml(placeholder)}</option>`];
-      for (const entry of entries) {
-        entry.models = sortModels(entry.models);
-        parts.push(`<optgroup label="${escapeHtml(`${entry.source} · ${entry.family}`)}">`);
-        for (const model of entry.models) parts.push(optionHtml(model));
+      if (consoleModels.length) {
+        parts.push('<optgroup label="DFlash Console">');
+        for (const model of sortModels(consoleModels)) parts.push(optionHtml(model));
         parts.push('</optgroup>');
       }
+      for (const model of sortModels(externalModels)) parts.push(optionHtml(model));
       return parts.join('');
     }
 
@@ -179,6 +180,7 @@
     groupIdFor,
     familyIdFor,
     familyLabelFor,
+    isConsoleRegisteredModel,
     sourceIdFor,
     sourceLabelFor,
     sourceOptions,
