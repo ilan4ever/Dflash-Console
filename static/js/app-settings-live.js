@@ -6,7 +6,14 @@
   let saving = false;
   let current = null;
   let updateStatus = null;
-  let updatePromptVersion = '';
+  const UPDATE_PROMPT_VERSION_KEY = 'dflashConsole.updatePromptVersion';
+  let updatePromptVersion = (() => {
+    try {
+      return localStorage.getItem(UPDATE_PROMPT_VERSION_KEY) || '';
+    } catch {
+      return '';
+    }
+  })();
 
   function el(id) {
     return document.getElementById(id);
@@ -123,6 +130,11 @@
     const modal = el('desktopUpdateModal');
     if (!version || !modal || updatePromptVersion === version) return;
     updatePromptVersion = version;
+    try {
+      localStorage.setItem(UPDATE_PROMPT_VERSION_KEY, version);
+    } catch {
+      /* The in-memory guard still prevents repeated prompts in this session. */
+    }
     const message = el('desktopUpdateMessage');
     const notes = el('desktopUpdateNotes');
     if (message) message.textContent = `DFlash Console ${version} has finished downloading and passed integrity checks.`;
