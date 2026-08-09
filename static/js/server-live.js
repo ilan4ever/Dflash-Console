@@ -1797,6 +1797,7 @@
         optionLabel: modelOptionLabel,
         placeholder,
         selectedKey: selectedModelKey,
+        consoleFirst: true,
       });
     } else {
       const buckets = groupedCatalogModels(visibleModels);
