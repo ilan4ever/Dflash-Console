@@ -347,3 +347,51 @@ def test_unload_external_rejects_unknown_pid(monkeypatch):
 
     assert result['success'] is False
     assert 'current GPU compute process' in result['error']
+
+
+def test_unload_external_uses_ollama_native_api(monkeypatch):
+    calls = []
+
+    def fake_ollama(*, api_url, model_id):
+        calls.append((api_url, model_id))
+        return {'success': True, 'unloaded': True, 'model': model_id}
+
+    monkeypatch.setattr(gpu_processes, '_unload_ollama_model', fake_ollama)
+    monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
+
+    result = gpu_processes.unload_external_gpu_process(
+        7336,
+        api_url='http://127.0.0.1:11434/v1',
+        model_id='qwen3.5:9b',
+    )
+
+    assert result['success'] is True
+    assert result['method'] == 'ollama-api'
+    assert calls == [('http://127.0.0.1:11434/v1', 'qwen3.5:9b')]
+
+
+def test_unload_external_uses_api_before_pid_lookup(monkeypatch):
+    # llama-server-style card: the stored PID is NOT a current GPU compute
+    # process, but the OpenAI-compatible API unload works. The generic API
+    # path must run before the PID lookup or this fails with "process is not a
+    # current GPU compute process".
+    monkeypatch.setattr(
+        gpu_processes,
+        '_unload_lmstudio_model',
+        lambda **_kwargs: {'success': False, 'http_status': 401},
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        'unload_model',
+        lambda **_kwargs: {'success': True, 'unloaded': True, 'model': 'gemma-4-12b-it-qat'},
+    )
+    monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
+
+    result = gpu_processes.unload_external_gpu_process(
+        9876,
+        api_url='http://127.0.0.1:38380/v1',
+        model_id='gemma-4-12b-it-qat',
+    )
+
+    assert result['success'] is True
+    assert result['method'] == 'api'

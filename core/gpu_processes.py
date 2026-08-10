@@ -1306,8 +1306,15 @@ def unload_external_gpu_process(
     api = str(api_url or '').strip()
     model = str(model_id or '').strip()
     if api and model:
-        native_urls = [api]
         parsed_api = urlparse(api)
+        # Ollama has its own unload route (/api/generate keep_alive=0); the
+        # generic llama-server path does not work for it.
+        if parsed_api.port == 11434:
+            native = _unload_ollama_model(api_url=api, model_id=model)
+            if native.get('success'):
+                return {**native, 'pid': target_pid, 'method': 'ollama-api'}
+
+        native_urls = [api]
         if (
             parsed_api.hostname in {'127.0.0.1', 'localhost', '::1'}
             and parsed_api.port != 1234
@@ -1317,6 +1324,18 @@ def unload_external_gpu_process(
             native = _unload_lmstudio_model(api_url=native_url, model_id=model)
             if native.get('success'):
                 return {**native, 'pid': target_pid, 'method': 'lmstudio-api'}
+
+        # Generic OpenAI-compatible unload (Ollama, llama-server, LM Studio
+        # workers). Try it BEFORE the PID lookup: the stored PID is often the
+        # service/app process (e.g. ollama.exe) rather than the current GPU
+        # compute worker, so it would not appear in nvidia-smi's compute apps.
+        result = unload_model(api_url=api, model_id=model)
+        if result.get('success'):
+            return {**result, 'pid': target_pid, 'method': 'api'}
+        # Some LM Studio worker endpoints reject the legacy unload route with
+        # 401/403. The worker PID is still safe to terminate below.
+        if int(result.get('http_status') or 0) not in (401, 403, 404, 405):
+            return result
 
     matching = next(
         (
@@ -1333,15 +1352,6 @@ def unload_external_gpu_process(
     )
     if _APP_SERVER_CMD.search(identity) or not (_ML_PROCESS.search(identity) or _ML_CMD.search(identity)):
         return {'success': False, 'error': 'process is not an approved model process', 'pid': target_pid}
-
-    if api and model:
-        result = unload_model(api_url=api, model_id=model)
-        if result.get('success'):
-            return {**result, 'pid': target_pid, 'method': 'api'}
-        # Some LM Studio worker endpoints reject the legacy unload route with
-        # 401/403. The worker PID is still safe to terminate below.
-        if int(result.get('http_status') or 0) not in (401, 403, 404, 405):
-            return result
 
     try:
         if sys.platform == 'win32':
@@ -1450,5 +1460,62 @@ def _unload_lmstudio_model(*, api_url: str, model_id: str) -> dict[str, Any]:
         'success': True,
         'unloaded': True,
         'model': instance_id,
+        'response': result,
+    }
+
+
+def _unload_ollama_model(*, api_url: str, model_id: str) -> dict[str, Any]:
+    """Use Ollama's native API to unload a model.
+
+    Ollama does not implement llama-server's ``/models/unload`` route, so the
+    generic OpenAI path 404s and falls back to PID termination (which fails
+    because the stored PID is the ollama.exe service, not a GPU compute
+    process). Sending ``keep_alive: 0`` in a generate request unloads the
+    model from VRAM immediately.
+    """
+    parsed = urlparse(str(api_url or '').strip())
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        return {'success': False, 'error': 'invalid API URL'}
+
+    model = str(model_id or '').strip()
+    if not model:
+        return {'success': False, 'error': 'model_id required'}
+
+    base = f'{parsed.scheme}://{parsed.netloc}'
+    body = json.dumps({
+        'model': model,
+        'keep_alive': 0,
+        'prompt': '',
+        'stream': False,
+    }).encode('utf-8')
+    request = urllib.request.Request(
+        f'{base}/api/generate',
+        data=body,
+        method='POST',
+        headers={'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response_body = response.read().decode('utf-8', errors='replace')
+            result = json.loads(response_body or '{}') if response_body else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        # The model may already be unloaded; treat that as success (idempotent).
+        if exc.code in (404, 405) or 'not found' in detail.lower() or 'is not running' in detail.lower():
+            return {
+                'success': True,
+                'unloaded': False,
+                'already_unloaded': True,
+                'model': model,
+                'response': detail,
+            }
+        return {'success': False, 'error': detail or str(exc), 'http_status': exc.code}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, ConnectionResetError, OSError) as exc:
+        return {'success': False, 'error': str(exc)}
+
+    return {
+        'success': True,
+        'unloaded': True,
+        'model': model,
         'response': result,
     }
