@@ -36,6 +36,8 @@ _CATALOG_REFRESHING = False
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
+_PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
+_GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)
 
 
 def _catalog_cache_key(config: dict[str, Any]) -> str:
@@ -125,6 +127,30 @@ def _guess_arch(name: str) -> str:
         return 'deepseekv2'
     if 'bonsai' in lower:
         return 'bonsai'
+    if 'ovis' in lower or 'maas' in lower:
+        return 'ovis'
+    if 'glm' in lower:
+        return 'glm'
+    if 'llama' in lower:
+        return 'llama'
+    if 'mistral' in lower:
+        return 'mistral'
+    if 'whisper' in lower:
+        return 'whisper'
+    if 'chandra' in lower:
+        return 'chandra'
+    if 'lighton' in lower:
+        return 'lighton'
+    if 'ornith' in lower:
+        return 'ornith'
+    if 'laguna' in lower:
+        return 'laguna'
+    if 'bls' in lower or 'mini-code' in lower:
+        return 'bls'
+    if _GPT_RE.search(lower):
+        return 'gpt'
+    if _PHI_RE.search(lower):
+        return 'phi'
     return 'unknown'
 
 

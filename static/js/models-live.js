@@ -866,6 +866,26 @@
     return `${typeFilter}:${modelTypeFilter}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
   }
 
+  // Provider source label (e.g. 'LM Studio', 'DFlash') for the Source column.
+  function modelSourceLabel(model) {
+    const source = String(model?.source || '').trim().toLowerCase();
+    if (source === 'lmstudio') return 'LM Studio';
+    if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return 'DFlash';
+    if (source === 'local' || source === 'library' || !source) return 'Local';
+    if (source === 'other' || source === 'unknown') return 'Other';
+    return String(model.source).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // Source cell: provider label, with the HF publisher kept as a muted suffix.
+  function modelSourceCell(model) {
+    const label = modelSourceLabel(model);
+    const publisher = String(model?.publisher || '').trim();
+    if (publisher && publisher.toLowerCase() !== label.toLowerCase()) {
+      return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(publisher)}</span>`;
+    }
+    return escapeHtml(label);
+  }
+
   function renderTable(filterText, { force = false } = {}) {
     const body = document.getElementById('modelsTableBody');
     if (!body) return;
@@ -948,7 +968,7 @@
           </td>
           <td class="lm-col-meta">${escapeHtml(model.arch || '—')}</td>
           <td class="lm-col-meta">${escapeHtml(model.params || '—')}</td>
-          <td class="lm-col-meta">${escapeHtml(model.publisher || '—')}</td>
+          <td class="lm-col-meta">${modelSourceCell(model)}</td>
           <td class="lm-col-meta">${escapeHtml(size)}</td>
           <td class="lm-col-meta">${escapeHtml(model.modified || '—')}</td>
           <td class="lm-col-action">${loadBtn}</td>

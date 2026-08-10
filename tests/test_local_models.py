@@ -13,6 +13,23 @@ def test_vision_detects_mmproj_sibling(tmp_path: Path):
     assert _has_vision_support(target) is True
 
 
+def test_guess_arch_known_families():
+    from core.local_models import _guess_arch
+
+    assert _guess_arch('ATH-MaaS_OvisOCR2-Q8_0.gguf') == 'ovis'
+    assert _guess_arch('Qwen3.5-27B-Q4_K_M.gguf') == 'qwen'
+    assert _guess_arch('gemma-4-31B_q4_0-it.gguf') == 'gemma4'
+    assert _guess_arch('DeepSeek-R1-Distill-70B-Q4_K_S.gguf') == 'deepseekv2'
+    assert _guess_arch('Llama-3.3-70B-Q4_K_M.gguf') == 'llama'
+    assert _guess_arch('Mistral-7B-Instruct-Q4_K_M.gguf') == 'mistral'
+    assert _guess_arch('whisper-large-v3-q8_0.gguf') == 'whisper'
+    assert _guess_arch('Chandra-OCR-Q4_K_S.gguf') == 'chandra'
+    assert _guess_arch('GLM-4.7-Flash-REAP-23B-Q4_K_S.gguf') == 'glm'
+    assert _guess_arch('gpt-4o-mini-Q4_K_M.gguf') == 'gpt'
+    assert _guess_arch('phi-4-14b-Q4_K_M.gguf') == 'phi'
+    assert _guess_arch('sophia-test-Q4_K_M.gguf') == 'unknown'
+
+
 def test_vision_detects_vl_name(tmp_path: Path):
     target = tmp_path / 'qwen2-vl-7b.gguf'
     target.write_bytes(b'gguf')

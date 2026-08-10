@@ -664,6 +664,11 @@ body.lm-resizing-sidenav {
   text-overflow: ellipsis;
 }
 
+.df-shell .lm-models-table .lm-col-sub {
+  color: var(--text-dim);
+  font-size: 0.85em;
+}
+
 .df-shell .lm-models-table th.lm-col-action,
 .df-shell .lm-models-table td.lm-col-action {
   vertical-align: middle;
