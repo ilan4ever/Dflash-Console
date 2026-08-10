@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import threading
 import time
@@ -287,6 +288,136 @@ def _append_vision_capability(caps: list[str], path: Path | None, *, mmproj_path
     explicit = str(mmproj_path or '').strip()
     if explicit and Path(explicit).is_file():
         caps.append('vision')
+
+
+def _ollama_manifests_root() -> Path | None:
+    """Root of Ollama's model manifests (``~/.ollama/models/manifests``)."""
+    candidates = [
+        Path(os.environ.get('OLLAMA_MODELS') or '') / 'manifests',
+        Path.home() / '.ollama' / 'models' / 'manifests',
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _ollama_blobs_root() -> Path | None:
+    root = _ollama_manifests_root()
+    if root is None:
+        return None
+    return root.parent / 'blobs'
+
+
+def _scan_ollama_models() -> list[dict[str, Any]]:
+    """Discover models installed under Ollama (offline, from its manifests).
+
+    Ollama stores models as content-addressed blobs with a small JSON
+    manifest per model. The manifest lists every layer's byte size and the
+    config blob carries family / parameter size / quantization, so we can
+    present each installed Ollama model in the Model library without needing
+    the Ollama daemon to be running.
+    """
+    manifests_root = _ollama_manifests_root()
+    blobs_root = _ollama_blobs_root()
+    if manifests_root is None:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for manifest_path in manifests_root.rglob('*'):
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        parts = manifest_path.relative_to(manifests_root).parts
+        if len(parts) < 3:
+            continue
+        model_name = str(parts[-2] or '').strip()
+        tag = str(parts[-1] or '').strip()
+        if not model_name:
+            continue
+        label = f'{model_name}:{tag}' if tag and tag.lower() != 'latest' else model_name
+
+        total_size = 0
+        model_digest = ''
+        for layer in manifest.get('layers') or []:
+            if not isinstance(layer, dict):
+                continue
+            if 'image.model' not in str(layer.get('mediaType') or ''):
+                continue
+            try:
+                total_size += int(layer.get('size') or 0)
+            except (TypeError, ValueError):
+                continue
+            digest = str(layer.get('digest') or '')
+            if digest.startswith('sha256:'):
+                model_digest = digest[7:]
+
+        family = ''
+        params = ''
+        quant = ''
+        config = manifest.get('config')
+        if isinstance(config, dict) and blobs_root is not None:
+            digest = str(config.get('digest') or '')
+            if digest.startswith('sha256:'):
+                blob = blobs_root / f'sha256-{digest[7:]}'
+                try:
+                    meta = json.loads(blob.read_text(encoding='utf-8'))
+                except (OSError, json.JSONDecodeError):
+                    meta = {}
+                if isinstance(meta, dict):
+                    family = str(meta.get('model_family') or '')
+                    params = str(meta.get('model_type') or '')
+                    quant = str(meta.get('file_type') or '')
+
+        # Prefer the model blob as the row path when present (it exists and is
+        # the real weights file); otherwise fall back to the manifest file.
+        row_path = str(manifest_path)
+        if blobs_root is not None and model_digest:
+            blob_path = blobs_root / f'sha256-{model_digest}'
+            if blob_path.is_file():
+                row_path = str(blob_path)
+
+        size_gb = round(total_size / (1024 ** 3), 2) if total_size > 0 else None
+        caps = ['llm']
+        if _guess_reasoning(label):
+            caps.append('reasoning')
+        rows.append({
+            'id': f'ollama:{model_name}:{tag}',
+            'server_id': '',
+            'label': label,
+            'filename': label,
+            'path': row_path,
+            'arch': family or _guess_arch(label),
+            'params': params or _guess_params(label),
+            'publisher': 'ollama',
+            'quant': quant or _guess_quant(label),
+            'size_gb': size_gb,
+            'modified': '—',
+            'source': 'ollama',
+            'capabilities': caps,
+            'reasoning': _guess_reasoning(label),
+            'loadable': False,
+            'context_max': 131072,
+            'context_size': 8192,
+            'load_settings': {},
+            'inference_settings': {},
+            'gpu_layers_max': 128,
+            'dflash_stack': False,
+            'stack_status': '',
+            'plain_gguf': False,
+            'kind': 'ollama',
+            'runtime_id': 'ollama',
+            'ollama_model': label,
+        })
+    return sorted(rows, key=lambda row: (row.get('label') or '').lower())
 
 
 def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[str, Any]]:
@@ -860,6 +991,10 @@ def list_local_models(
         row['plain_gguf'] = True
         extras.append(row)
         known_paths.add(path_key)
+
+    # Models installed under Ollama (manifests + blobs) are not .gguf files,
+    # so the disk scan above cannot see them; add them explicitly.
+    extras.extend(_scan_ollama_models())
 
     if not include_dflash_stacks:
         payload = _build_models_payload(config, catalog, extras)

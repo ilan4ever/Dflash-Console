@@ -68,6 +68,75 @@ def test_model_has_reasoning_from_caps_and_names():
     assert model_has_reasoning({'label': 'nomic-embed', 'model_id': 'nomic-embed-text-v1.5'}) is False
 
 
+def test_scan_ollama_models(tmp_path: Path, monkeypatch):
+    import json as json_mod
+
+    from core.local_models import _scan_ollama_models
+
+    manifests = tmp_path / 'manifests' / 'registry.ollama.ai' / 'library' / 'qwen3.5'
+    manifests.mkdir(parents=True)
+    blobs = tmp_path / 'blobs'
+    blobs.mkdir()
+
+    config_digest = 'configblob123'
+    model_digest = 'modelblob456'
+    manifest = {
+        'schemaVersion': 2,
+        'config': {
+            'mediaType': 'application/vnd.docker.container.image.v1+json',
+            'digest': f'sha256:{config_digest}',
+            'size': 400,
+        },
+        'layers': [
+            {
+                'mediaType': 'application/vnd.ollama.image.model',
+                'digest': f'sha256:{model_digest}',
+                'size': 6_597_000_000,
+            },
+            {
+                'mediaType': 'application/vnd.ollama.image.license',
+                'digest': 'sha256:license123',
+                'size': 1000,
+            },
+        ],
+    }
+    (manifests / '9b').write_text(json_mod.dumps(manifest), encoding='utf-8')
+    (blobs / f'sha256-{config_digest}').write_text(
+        json_mod.dumps({
+            'model_format': 'gguf',
+            'model_family': 'qwen35',
+            'model_type': '9.7B',
+            'file_type': 'Q4_K_M',
+        }),
+        encoding='utf-8',
+    )
+    (blobs / f'sha256-{model_digest}').write_bytes(b'gguf-blob')
+
+    monkeypatch.setattr('core.local_models._ollama_manifests_root', lambda: tmp_path / 'manifests')
+    monkeypatch.setattr('core.local_models._ollama_blobs_root', lambda: blobs)
+
+    rows = _scan_ollama_models()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['label'] == 'qwen3.5:9b'
+    assert row['source'] == 'ollama'
+    assert row['size_gb'] == 6.14  # only the model layer (~6.14 GB)
+    assert row['arch'] == 'qwen35'
+    assert row['params'] == '9.7B'
+    assert row['quant'] == 'Q4_K_M'
+    assert row['loadable'] is False
+    assert row['runtime_id'] == 'ollama'
+    assert row['path'].endswith(f'sha256-{model_digest}')
+
+
+def test_scan_ollama_models_skips_when_missing(tmp_path: Path, monkeypatch):
+    from core.local_models import _scan_ollama_models
+
+    monkeypatch.setattr('core.local_models._ollama_manifests_root', lambda: tmp_path / 'manifests')
+    monkeypatch.setattr('core.local_models._ollama_blobs_root', lambda: tmp_path / 'blobs')
+    assert _scan_ollama_models() == []
+
+
 def test_scanned_gguf_reasoning_capability(tmp_path: Path):
     from core.local_models import _scan_gguf
 

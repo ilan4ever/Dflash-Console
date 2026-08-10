@@ -268,6 +268,9 @@
     if (isStackLoadedOnGpu(model)) {
       return '<button class="lm-btn ghost tiny" type="button" data-action="unload-model" title="Remove model from GPU">Unload</button>';
     }
+    if (model?.source === 'ollama') {
+      return '<span class="lm-tag blue" title="Installed in Ollama — runs through the Ollama API (port 11434)">Ollama</span>';
+    }
     if (isDflashAccelerator(model)) {
       return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
     }
@@ -885,6 +888,7 @@
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'lmstudio') return 'LM Studio';
     if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return 'DFlash';
+    if (source === 'ollama') return 'Ollama';
     if (source === 'local' || source === 'library' || !source) return 'Local';
     if (source === 'other' || source === 'unknown') return 'Other';
     return String(model.source).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

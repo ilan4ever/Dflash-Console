@@ -1855,12 +1855,14 @@
 
     const source = sourcePick?.value || '';
     const sourceKey = String(source).trim().toLowerCase();
-    const loadableModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
+    // Ollama models run through the Ollama API — the Console engine cannot
+    // load them, so keep them out of the engine model picker.
+    const loadableModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model) && model?.source !== 'ollama');
     const visibleModels = source
       ? loadableModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
       : loadableModels;
     if (sourcePick && window.DFlashModelGroups?.sourceOptions) {
-      const loadableCatalogModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
+      const loadableCatalogModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model) && model?.source !== 'ollama');
       sourcePick.innerHTML = ['<option value="">All sources</option>',
         ...window.DFlashModelGroups.sourceOptions(loadableCatalogModels).map(([id, label]) =>
           `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`)].join('');
