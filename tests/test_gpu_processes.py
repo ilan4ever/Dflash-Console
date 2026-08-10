@@ -159,6 +159,25 @@ def test_size_gb_from_directory(tmp_path):
     assert size >= 0.12
 
 
+def test_size_gb_sums_split_shards(tmp_path):
+    # First shard is tiny (header); the rest carry the weights. The reported
+    # size must be the sum of ALL shards, not the first part alone.
+    (tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf').write_bytes(b'x' * 1024)
+    (tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00002-of-00003.gguf').write_bytes(b'x' * (2 * 1024 * 1024 * 1024))
+    (tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00003-of-00003.gguf').write_bytes(b'x' * (1 * 1024 * 1024 * 1024))
+    size = _size_gb_from_path(str(tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf'))
+    assert size is not None
+    assert size >= 2.9  # ~3 GB summed, not ~0 GB from the tiny first shard
+
+
+def test_size_gb_single_gguf_not_treated_as_shard(tmp_path):
+    single = tmp_path / 'Qwen3.5-9B-Q4_K_M.gguf'
+    single.write_bytes(b'x' * (128 * 1024 * 1024))
+    size = _size_gb_from_path(str(single))
+    assert size is not None
+    assert size >= 0.12
+
+
 def test_resolve_stt_model_path_from_hub(tmp_path, monkeypatch):
     hub = tmp_path / 'hub'
     snapshot = hub / 'models--Systran--faster-whisper-small.en' / 'snapshots' / 'abc123'

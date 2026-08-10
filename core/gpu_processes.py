@@ -25,6 +25,13 @@ from core.runtime import (
 
 _MIN_VRAM_MIB = 32
 
+# GGUF split-shard naming, e.g. ``Laguna-...-00001-of-00003.gguf``. Only the
+# first shard holds the header (it is tiny), so disk size must sum every part.
+_SPLIT_SHARD_RE = re.compile(
+    r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$',
+    re.I,
+)
+
 _DESKTOP_NOISE = re.compile(
     r'(?:^|[\\/])(?:explorer|ShellHost|SearchHost|StartMenuExperienceHost|LockApp|'
     r'ShellExperienceHost|CrossDeviceResume|TextInputHost|ApplicationFrameHost|'
@@ -253,6 +260,22 @@ def _size_gb_from_path(path: str) -> float | None:
     try:
         resolved = Path(path)
         if resolved.is_file():
+            # Split-shard GGUF: the first shard is mostly header (a few MB), so
+            # report the SUM of all shards instead of the first part alone.
+            match = _SPLIT_SHARD_RE.match(resolved.name)
+            if match:
+                total = 0
+                for sibling in resolved.parent.glob(
+                    f"{match.group('prefix')}-*-of-{match.group('total')}{match.group('suffix')}"
+                ):
+                    if not sibling.is_file():
+                        continue
+                    try:
+                        total += sibling.stat().st_size
+                    except OSError:
+                        continue
+                if total > 0:
+                    return round(total / (1024 ** 3), 2)
             return round(resolved.stat().st_size / (1024 ** 3), 2)
         if resolved.is_dir():
             total = 0
@@ -1162,6 +1185,7 @@ def _cards_from_known_apps(
                 gpus=gpus,
                 gpu_index=lm_gpu_index,
                 vram_gb=vram_by_pid.get(int(service_pid)),
+                size_gb=model.get('size_gb'),
             ))
     ollama_pid = _pid_listening_on_port(11434)
     if ollama_pid:
