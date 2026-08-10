@@ -54,6 +54,24 @@ $ScriptDir = Split-Path -Parent $PSCommandPath
 $RepoRoot = Resolve-Path "$ScriptDir\.."
 $BonsaiRoot = Join-Path $RepoRoot "bonsai-27b"
 $MainBin = Join-Path $RepoRoot "llama.cpp\build\bin\Release\llama-server.exe"
+# Fallback: the checkout that owns the configured models_root. The installed
+# app's data root has no llama.cpp of its own; it reuses the dev checkout's
+# engine via models_root (models_root points into the checkout that ships it).
+$MainBinFallback = ""
+$LocalCfgFile = Join-Path $RepoRoot "config.json"
+if (-not (Test-Path $MainBin) -and (Test-Path $LocalCfgFile)) {
+    try {
+        $LocalCfg = Get-Content $LocalCfgFile -Raw | ConvertFrom-Json
+        if ($LocalCfg.models_root) {
+            $EngineRoot = Split-Path -Parent ([string]$LocalCfg.models_root)
+            $Candidate = Join-Path $EngineRoot "llama.cpp\build\bin\Release\llama-server.exe"
+            if (Test-Path $Candidate -PathType Leaf) { $MainBinFallback = $Candidate }
+        }
+    } catch {
+        # keep the default binary path
+    }
+}
+if (-not (Test-Path $MainBin) -and $MainBinFallback) { $MainBin = $MainBinFallback }
 $BonsaiBin = Join-Path $BonsaiRoot "bin\cuda\llama-server.exe"
 
 $GemmaTarget = Join-Path $RepoRoot "models\google\gemma-4-31B-it-qat-q4_0-gguf\gemma-4-31B_q4_0-it.gguf"

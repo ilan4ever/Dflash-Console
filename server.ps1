@@ -224,8 +224,17 @@ $fallbackBinary = if ($env:ONEVOICE_ROOT) {
 } else {
     ''
 }
-if ($hasEnabledServer -and -not (Test-Path $llamaBinary -PathType Leaf) -and (-not $fallbackBinary -or -not (Test-Path $fallbackBinary -PathType Leaf))) {
-    Write-StartupLine "ERROR: llama-server binary not found under $env:DFLASH_ROOT or ONEVOICE_ROOT" 'Red'
+# Extra fallback: the checkout that owns the configured models_root. This PC's
+# dev install keeps the engine + models together; a separate data root (the
+# installed app) reuses them via models_root without shipping a llama.cpp copy.
+$modelsRootBinary = ''
+if ($cfg -and $cfg.models_root) {
+    $engineRoot = Split-Path -Parent ([string]$cfg.models_root)
+    $candidate = Join-Path $engineRoot 'llama.cpp\build\bin\Release\llama-server.exe'
+    if (Test-Path $candidate -PathType Leaf) { $modelsRootBinary = $candidate }
+}
+if ($hasEnabledServer -and -not (Test-Path $llamaBinary -PathType Leaf) -and (-not $fallbackBinary -or -not (Test-Path $fallbackBinary -PathType Leaf)) -and (-not $modelsRootBinary)) {
+    Write-StartupLine "ERROR: llama-server binary not found under $env:DFLASH_ROOT, ONEVOICE_ROOT, or the models root." 'Red'
     exit 1
 }
 
