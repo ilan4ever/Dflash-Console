@@ -684,6 +684,19 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   background: transparent;
 }
 
+.lm-btn.danger {
+  background: rgba(220, 38, 38, 0.16);
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.lm-btn.danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.28);
+  border-color: rgba(239, 68, 68, 0.8);
+  color: #fecaca;
+}
+
 .lm-btn.small,
 .lm-btn.tiny {
   padding: 4px 8px;
@@ -2356,6 +2369,48 @@ body.lm-resizing-logs {
   align-items: center;
   padding: 22px 24px 14px;
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* Dark in-app delete confirmation (styled to match the shell, no OS dialog). */
+.df-confirm-modal {
+  z-index: 22000;
+}
+
+.df-confirm-modal .lm-modal-backdrop {
+  background: rgba(3, 5, 12, 0.82);
+  backdrop-filter: blur(5px);
+}
+
+.df-confirm-dialog {
+  max-width: min(460px, calc(100vw - 32px));
+  background:
+    linear-gradient(145deg, rgba(239, 68, 68, 0.08), transparent 45%),
+    var(--bg-elevated);
+  border-color: rgba(239, 68, 68, 0.35);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.df-confirm-head {
+  align-items: center;
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.df-confirm-head h2 {
+  margin: 2px 0 0;
+}
+
+.df-confirm-body {
+  padding: 18px 24px 8px;
+  color: var(--text);
+}
+
+.df-confirm-body p {
+  margin: 0 0 8px;
+}
+
+.df-confirm-footer {
+  padding-top: 14px;
 }
 
 .df-update-head h2 {

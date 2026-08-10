@@ -137,6 +137,82 @@ def test_scan_ollama_models_skips_when_missing(tmp_path: Path, monkeypatch):
     assert _scan_ollama_models() == []
 
 
+def test_delete_ollama_model_removes_manifest_and_blobs(tmp_path: Path, monkeypatch):
+    import json as json_mod
+    import urllib.error
+
+    from core.local_models import _delete_ollama_model
+
+    manifests = tmp_path / 'manifests' / 'registry.ollama.ai' / 'library' / 'qwen3.5'
+    manifests.mkdir(parents=True)
+    blobs = tmp_path / 'blobs'
+    blobs.mkdir()
+
+    manifest = {
+        'schemaVersion': 2,
+        'config': {'digest': 'sha256:cfg123', 'size': 100},
+        'layers': [
+            {'mediaType': 'application/vnd.ollama.image.model', 'digest': 'sha256:model456', 'size': 1000},
+        ],
+    }
+    manifest_path = manifests / '9b'
+    manifest_path.write_text(json_mod.dumps(manifest), encoding='utf-8')
+    (blobs / 'sha256-cfg123').write_bytes(b'cfg')
+    (blobs / 'sha256-model456').write_bytes(b'model')
+
+    monkeypatch.setattr('core.local_models._ollama_manifests_root', lambda: tmp_path / 'manifests')
+    monkeypatch.setattr('core.local_models._ollama_blobs_root', lambda: blobs)
+    # Simulate the Ollama daemon being offline so we exercise manual removal.
+    monkeypatch.setattr(
+        'urllib.request.urlopen',
+        lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError('offline')),
+    )
+
+    result = _delete_ollama_model('', model_id='qwen3.5:9b')
+    assert result['success'] is True
+    assert result['method'] == 'files'
+    assert not manifest_path.exists()
+    assert not (blobs / 'sha256-cfg123').exists()
+    assert not (blobs / 'sha256-model456').exists()
+
+
+def test_delete_ollama_model_keeps_shared_blobs(tmp_path: Path, monkeypatch):
+    import json as json_mod
+    import urllib.error
+
+    from core.local_models import _delete_ollama_model
+
+    manifests = tmp_path / 'manifests' / 'registry.ollama.ai' / 'library'
+    a = manifests / 'qwen3.5'
+    b = manifests / 'other'
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    blobs = tmp_path / 'blobs'
+    blobs.mkdir()
+
+    shared = {'mediaType': 'application/vnd.ollama.image.model', 'digest': 'sha256:shared1', 'size': 500}
+    (a / '9b').write_text(json_mod.dumps({'config': {'digest': 'sha256:cfg1', 'size': 10}, 'layers': [shared]}), encoding='utf-8')
+    (b / 'other-model').write_text(json_mod.dumps({'config': {'digest': 'sha256:cfg2', 'size': 10}, 'layers': [shared]}), encoding='utf-8')
+    (blobs / 'sha256-shared1').write_bytes(b'shared')
+    (blobs / 'sha256-cfg1').write_bytes(b'cfg1')
+    (blobs / 'sha256-cfg2').write_bytes(b'cfg2')
+
+    monkeypatch.setattr('core.local_models._ollama_manifests_root', lambda: tmp_path / 'manifests')
+    monkeypatch.setattr('core.local_models._ollama_blobs_root', lambda: blobs)
+    monkeypatch.setattr(
+        'urllib.request.urlopen',
+        lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError('offline')),
+    )
+
+    result = _delete_ollama_model('', model_id='qwen3.5:9b')
+    assert result['success'] is True
+    assert not (a / '9b').exists()
+    # Shared blob must survive (referenced by the other manifest).
+    assert (blobs / 'sha256-shared1').exists()
+    assert not (blobs / 'sha256-cfg1').exists()
+    assert (blobs / 'sha256-cfg2').exists()
+
+
 def test_scanned_gguf_reasoning_capability(tmp_path: Path):
     from core.local_models import _scan_gguf
 

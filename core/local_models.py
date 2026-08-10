@@ -312,6 +312,144 @@ def _ollama_blobs_root() -> Path | None:
     return root.parent / 'blobs'
 
 
+def _resolve_ollama_manifest(model_id: str, path: str, manifests_root: Path) -> Path | None:
+    """Locate an Ollama manifest by model name (``name:tag``) or blob path."""
+    name = str(model_id or '').strip()
+    if name:
+        base, _, tag = name.partition(':')
+        tag = tag or 'latest'
+        for manifest_path in manifests_root.rglob('*'):
+            if not manifest_path.is_file():
+                continue
+            parts = manifest_path.relative_to(manifests_root).parts
+            if len(parts) >= 3 and parts[-2] == base and parts[-1] == tag:
+                return manifest_path
+    if path:
+        try:
+            resolved = Path(path).expanduser().resolve()
+            if resolved.is_file() and 'blobs' in resolved.parts:
+                digest = resolved.name[len('sha256-'):]
+                for manifest_path in manifests_root.rglob('*'):
+                    if not manifest_path.is_file():
+                        continue
+                    try:
+                        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if any(
+                        str(layer.get('digest') or '') == f'sha256:{digest}'
+                        for layer in data.get('layers') or []
+                    ):
+                        return manifest_path
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def _ollama_label_from_manifest(manifest_path: Path, manifests_root: Path) -> str:
+    try:
+        parts = manifest_path.relative_to(manifests_root).parts
+    except ValueError:
+        return ''
+    if len(parts) < 3:
+        return ''
+    name = str(parts[-2] or '').strip()
+    tag = str(parts[-1] or '').strip()
+    return f'{name}:{tag}' if tag and tag.lower() != 'latest' else name
+
+
+def _delete_ollama_model(path: str, model_id: str = '') -> dict[str, Any]:
+    """Remove an installed Ollama model (manifest + unreferenced blobs).
+
+    Prefers the running Ollama daemon (``DELETE /api/delete`` handles shared
+    blob ref-counting); if the daemon is offline it removes the manifest and
+    any blobs no other manifest still references.
+    """
+    manifests_root = _ollama_manifests_root()
+    blobs_root = _ollama_blobs_root()
+    if manifests_root is None:
+        return {'success': False, 'error': 'Ollama models folder not found'}
+
+    manifest_path = _resolve_ollama_manifest(model_id, path, manifests_root)
+    if manifest_path is None:
+        return {'success': False, 'error': 'Ollama model manifest not found'}
+    label = _ollama_label_from_manifest(manifest_path, manifests_root) or str(model_id or '')
+
+    if label:
+        try:
+            import urllib.request
+
+            body = json.dumps({'model': label}).encode('utf-8')
+            request = urllib.request.Request(
+                'http://127.0.0.1:11434/api/delete',
+                data=body,
+                method='DELETE',
+                headers={'Content-Type': 'application/json'},
+            )
+            with urllib.request.urlopen(request, timeout=15):
+                pass
+            return {'success': True, 'method': 'ollama-api', 'model': label}
+        except Exception:
+            pass  # daemon offline — fall back to manual removal below
+
+    digests: set[str] = set()
+    try:
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if isinstance(data, dict):
+        for layer in data.get('layers') or []:
+            if isinstance(layer, dict):
+                digest = str(layer.get('digest') or '')
+                if digest.startswith('sha256:'):
+                    digests.add(digest[7:])
+        config = data.get('config')
+        if isinstance(config, dict):
+            digest = str(config.get('digest') or '')
+            if digest.startswith('sha256:'):
+                digests.add(digest[7:])
+
+    referenced: set[str] = set()
+    for other in manifests_root.rglob('*'):
+        if not other.is_file() or other == manifest_path:
+            continue
+        try:
+            other_data = json.loads(other.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(other_data, dict):
+            continue
+        for layer in other_data.get('layers') or []:
+            if isinstance(layer, dict):
+                digest = str(layer.get('digest') or '')
+                if digest.startswith('sha256:'):
+                    referenced.add(digest[7:])
+        other_config = other_data.get('config')
+        if isinstance(other_config, dict):
+            digest = str(other_config.get('digest') or '')
+            if digest.startswith('sha256:'):
+                referenced.add(digest[7:])
+
+    try:
+        manifest_path.unlink(missing_ok=True)
+    except OSError as exc:
+        return {'success': False, 'error': f'could not remove manifest: {exc}'}
+
+    removed_blobs = 0
+    if blobs_root is not None:
+        for digest in digests:
+            if digest in referenced:
+                continue
+            blob = blobs_root / f'sha256-{digest}'
+            try:
+                if blob.is_file():
+                    blob.unlink()
+                    removed_blobs += 1
+            except OSError:
+                pass
+    return {'success': True, 'method': 'files', 'model': label, 'removed_blobs': removed_blobs}
+
+
 def _scan_ollama_models() -> list[dict[str, Any]]:
     """Discover models installed under Ollama (offline, from its manifests).
 

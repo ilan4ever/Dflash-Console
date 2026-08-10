@@ -2251,8 +2251,22 @@ def fs_reveal(path: str = Query(..., min_length=1)) -> dict[str, Any]:
 
 
 @app.delete('/api/models/file')
-def delete_model_file(path: str = Query(..., min_length=1)) -> dict[str, Any]:
+def delete_model_file(
+    path: str = Query(..., min_length=1),
+    source: str = Query(default=''),
+    model_id: str = Query(default=''),
+) -> dict[str, Any]:
     cfg = load_config()
+    # Ollama models are blobs, not .gguf files, and live outside the Console's
+    # model roots — delete them through Ollama (daemon or manifest + blobs).
+    if str(source or '').strip().lower() == 'ollama':
+        from core.local_models import _delete_ollama_model
+
+        result = _delete_ollama_model(path, model_id=model_id)
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'delete failed')
+        invalidate_model_catalog_cache()
+        return result
     target = Path(path).expanduser().resolve()
     if target.suffix.lower() != '.gguf' or not target.is_file():
         raise HTTPException(status_code=400, detail='not a GGUF file')
@@ -2260,6 +2274,7 @@ def delete_model_file(path: str = Query(..., min_length=1)) -> dict[str, Any]:
     if not allowed or not any(target.is_relative_to(root) for root in allowed):
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
     target.unlink()
+    invalidate_model_catalog_cache()
     return {'success': True, 'path': str(target)}
 
 

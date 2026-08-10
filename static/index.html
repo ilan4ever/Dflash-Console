@@ -1309,6 +1309,29 @@ try {
     </div>
   </div>
 
+  <!-- Dark in-app delete confirmation (no native Windows confirm box). -->
+  <div class="lm-modal df-confirm-modal" id="deleteModelConfirmModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModelConfirmTitle">
+        <div class="lm-modal-head df-confirm-head">
+          <div>
+            <div class="df-update-kicker">Delete model</div>
+            <h2 id="deleteModelConfirmTitle">Delete model?</h2>
+          </div>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="df-confirm-body">
+          <p id="deleteModelConfirmMessage">Are you sure you want to delete this model? This action cannot be undone.</p>
+          <p class="lm-setting-desc" id="deleteModelConfirmSub"></p>
+        </div>
+        <div class="lm-modal-footer df-confirm-footer">
+          <button class="lm-btn ghost" type="button" id="deleteModelCancel">Cancel</button>
+          <button class="lm-btn danger" type="button" id="deleteModelConfirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Dark in-app update prompt; keep update decisions inside the DFlash shell. -->
   <div class="lm-modal df-update-modal" id="desktopUpdateModal" aria-hidden="true">
     <div class="lm-modal-backdrop">

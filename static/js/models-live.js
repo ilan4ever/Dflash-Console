@@ -1125,6 +1125,50 @@
     stackPreflight = { key: '', status: 'idle', result: null };
   }
 
+  // Dark in-app confirmation dialog (never the native Windows confirm box).
+  function openConfirmDialog({ title, message, sub = '', confirmLabel = 'Delete' }) {
+    const modal = document.getElementById('deleteModelConfirmModal');
+    if (!modal) return Promise.resolve(false);
+    const titleEl = document.getElementById('deleteModelConfirmTitle');
+    const messageEl = document.getElementById('deleteModelConfirmMessage');
+    const subEl = document.getElementById('deleteModelConfirmSub');
+    const confirmBtn = document.getElementById('deleteModelConfirm');
+    const cancelBtn = document.getElementById('deleteModelCancel');
+    if (titleEl) titleEl.textContent = title || 'Delete model?';
+    if (messageEl) messageEl.textContent = message || 'Are you sure you want to delete this model? This action cannot be undone.';
+    if (subEl) subEl.textContent = sub || '';
+    if (confirmBtn) confirmBtn.textContent = confirmLabel || 'Delete';
+
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+
+    return new Promise((resolve) => {
+      const backdrop = modal.querySelector('.lm-modal-backdrop');
+      const closeBtn = modal.querySelector('[data-action="close-modal"]');
+      const cleanup = (result) => {
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        if (!document.querySelector('.lm-modal.open')) document.body.classList.remove('modal-open');
+        cancelBtn?.removeEventListener('click', onCancel);
+        confirmBtn?.removeEventListener('click', onConfirm);
+        closeBtn?.removeEventListener('click', onClose);
+        backdrop?.removeEventListener('click', onBackdrop);
+        resolve(result);
+      };
+      const onCancel = () => cleanup(false);
+      const onConfirm = () => cleanup(true);
+      const onClose = () => cleanup(false);
+      const onBackdrop = (e) => {
+        if (e.target === backdrop) cleanup(false);
+      };
+      cancelBtn?.addEventListener('click', onCancel);
+      confirmBtn?.addEventListener('click', onConfirm);
+      closeBtn?.addEventListener('click', onClose);
+      backdrop?.addEventListener('click', onBackdrop);
+    });
+  }
+
   function openContextMenu(event, model) {
     const menu = document.getElementById('modelsContextMenu');
     if (!menu) return;
@@ -1254,8 +1298,13 @@
     if (cmd === 'copy-to-console' || cmd === 'move-to-console') {
       const isMove = cmd === 'move-to-console';
       const name = model.filename || model.label || 'this model';
-      if (isMove && !window.confirm(`Move ${name} into the DFlash Console library? The file will be removed from its current location.`)) {
-        return;
+      if (isMove) {
+        const confirmed = await openConfirmDialog({
+          title: 'Move model?',
+          message: `Move ${name} into the DFlash Console library? The file will be removed from its current location.`,
+          confirmLabel: 'Move',
+        });
+        if (!confirmed) return;
       }
       if (!canImportToConsole(model)) {
         toast('This model cannot be imported into the Console library', false);
@@ -1278,14 +1327,28 @@
     }
     if (cmd === 'delete') {
       if (!model.path || model.loadable) {
-        toast('Only browse-only local GGUF files can be deleted here', false);
+        toast('Only browse-only models can be deleted here', false);
         return;
       }
-      const name = model.filename || model.label || 'this file';
-      if (!window.confirm(`Delete ${name}? This cannot be undone.`)) return;
+      const isOllama = model.source === 'ollama';
+      const name = model.filename || model.label || model.id || 'this model';
+      const confirmed = await openConfirmDialog({
+        title: isOllama ? `Delete ${name}?` : `Delete ${name}?`,
+        message: isOllama
+          ? `Are you sure you want to delete ${name} from Ollama? Its manifest and model files will be removed. This action cannot be undone.`
+          : `Are you sure you want to delete ${name}? This action cannot be undone.`,
+        sub: isOllama ? model.ollama_model || '' : '',
+        confirmLabel: 'Delete',
+      });
+      if (!confirmed) return;
       try {
-        await api(`/api/models/file?path=${encodeURIComponent(model.path)}`, { method: 'DELETE' });
-        toast('Model file deleted');
+        const params = new URLSearchParams({ path: model.path });
+        if (isOllama) {
+          params.set('source', 'ollama');
+          params.set('model_id', model.ollama_model || model.label || '');
+        }
+        const data = await api(`/api/models/file?${params.toString()}`, { method: 'DELETE' });
+        toast(data?.model ? `Deleted ${data.model}` : 'Model deleted');
         if (selectedKey === key) selectedKey = '';
         await refresh({ rebindInspector: true });
       } catch (err) {
