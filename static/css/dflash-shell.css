@@ -2164,6 +2164,46 @@ body.lm-resizing-table-col {
   color: #ecfdf5;
 }
 
+.df-shell .df-docs-pill.donate {
+  color: #ffe9c7;
+  background: rgba(201, 148, 62, 0.18);
+  border-color: rgba(201, 148, 62, 0.45);
+}
+
+.df-shell .df-docs-pill.donate:hover {
+  background: rgba(201, 148, 62, 0.3);
+  color: #fff4e0;
+  border-color: rgba(201, 148, 62, 0.65);
+}
+
+/* —— About: Support / Donate —— */
+.df-shell .df-about-donate {
+  margin-top: 6px;
+  padding: 16px 18px;
+  border: 1px solid rgba(201, 148, 62, 0.28);
+  border-radius: 12px;
+  background:
+    radial-gradient(ellipse 70% 90% at 100% 0%, rgba(201, 148, 62, 0.1), transparent 60%),
+    rgba(255, 255, 255, 0.02);
+}
+
+.df-shell .df-about-donate h2 {
+  color: #f5dfb6 !important;
+}
+
+.df-shell .df-about-donate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.df-shell .df-about-donate .df-about-muted {
+  margin-top: 12px !important;
+  font-size: 11px !important;
+}
+
+
 /* —— Feature grid —— */
 .df-shell .df-docs-feature-grid {
   display: grid;
