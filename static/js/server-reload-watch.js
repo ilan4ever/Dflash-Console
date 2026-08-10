@@ -10,11 +10,25 @@
   let checking = false;
   let timer = null;
   let badgeEl = null;
+  let devBadgeEl = null;
   const bootStorageKey = 'dflashConsole.lastSeenBootId';
 
   function badge() {
     if (!badgeEl) badgeEl = document.getElementById('serverLinkBadge');
     return badgeEl;
+  }
+
+  function devBadge() {
+    if (!devBadgeEl) devBadgeEl = document.getElementById('devServerBadge');
+    return devBadgeEl;
+  }
+
+  // Shown only when the health endpoint reports this is the developer server
+  // (i.e. the UI is being served from the git checkout, not the installed app).
+  function setDeveloperBadge(isDev) {
+    const el = devBadge();
+    if (!el) return;
+    el.classList.toggle('hidden', !isDev);
   }
 
   function setConnectionBadge(isOnline) {
@@ -37,6 +51,7 @@
       const data = await resp.json();
       const nextId = data?.boot_id ? String(data.boot_id) : '';
       const nextUi = data?.ui_version ? String(data.ui_version) : '';
+      setDeveloperBadge(Boolean(data?.dev_server));
       const storedBootId = sessionStorage.getItem(bootStorageKey) || '';
       const restarted = (bootId && nextId && nextId !== bootId)
         || (storedBootId && nextId && nextId !== storedBootId);

@@ -429,6 +429,7 @@ async def health() -> dict[str, Any]:
         'version': APP_VERSION,
         'console_root': configured_root,
         'shell_version': os.environ.get('DFLASH_CONSOLE_SHELL_VERSION', ''),
+        'dev_server': bool((ROOT / '.git').is_dir()),
         'boot_id': _BOOT_ID,
         'boot_at': _BOOT_AT,
         'ui_version': _ui_version(),

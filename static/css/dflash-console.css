@@ -156,6 +156,13 @@ select {
   border-color: rgba(239, 68, 68, 0.35);
 }
 
+.lm-server-link-badge.developer {
+  margin-right: 8px;
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
 .lm-status-feed {
   flex: 0 0 auto;
   width: min(420px, 38vw);
