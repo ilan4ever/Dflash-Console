@@ -98,20 +98,52 @@ function Stop-ListenersOnPort {
     return $freed
 }
 
-function Test-ConsoleApiHealthy {
+function Get-ConsoleApiHealth {
     param([int]$TargetPort)
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:$TargetPort/api/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        if ($response.StatusCode -ne 200) { return $false }
+        if ($response.StatusCode -ne 200) { return $null }
         $payload = $response.Content | ConvertFrom-Json -ErrorAction Stop
-        return (
+        if (
             $payload.success -eq $true -and
             [string]$payload.app -eq 'DFlash Console' -and
             -not [string]::IsNullOrWhiteSpace([string]$payload.boot_id)
-        )
+        ) {
+            return $payload
+        }
     } catch {
-        return $false
+        # no healthy console on the port
     }
+    return $null
+}
+
+function Test-ConsoleApiHealthy {
+    param([int]$TargetPort)
+    return $null -ne (Get-ConsoleApiHealth -TargetPort $TargetPort)
+}
+
+function Stop-ForeignConsoleApi {
+    <#
+    Stop another DFlash Console instance that currently holds the port, so only
+    one Console server ever runs at a time on this machine. Tries a graceful
+    /api/shutdown first (releases engines + gateway), then force-stops whatever
+    still listens on the port.
+    #>
+    param([int]$TargetPort)
+    try {
+        Invoke-WebRequest -Uri "http://127.0.0.1:$TargetPort/api/shutdown" -Method Post -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        # best-effort graceful shutdown; fall through to force stop
+    }
+    for ($i = 0; $i -lt 24; $i++) {
+        Start-Sleep -Milliseconds 500
+        if (-not (Get-ConsoleApiHealth -TargetPort $TargetPort)) {
+            return $true
+        }
+    }
+    $stopped = Stop-StaleConsoleApi -TargetPort $TargetPort
+    Start-Sleep -Milliseconds 500
+    return -not (Get-ConsoleApiHealth -TargetPort $TargetPort)
 }
 
 function Wait-ConsoleApiHealthy {
@@ -199,11 +231,35 @@ if ($hasEnabledServer -and -not (Test-Path $llamaBinary -PathType Leaf) -and (-n
 
 $url = "http://127.0.0.1:$Port/"
 
-if (-not $Restart -and -not $ApiRestart -and (Test-ConsoleApiHealthy -TargetPort $Port)) {
-    Write-Host ''
-    Write-Host "DFlash Console already running at $url" -ForegroundColor Green
-    Write-StartupLine "Already running at $url (no restart requested)" 'Green'
-    exit 0
+if (-not $Restart -and -not $ApiRestart) {
+    $existing = Get-ConsoleApiHealth -TargetPort $Port
+    if ($existing) {
+        $existingRoot = [string]$existing.console_root
+        $myRoot = if ($env:DFLASH_ROOT) { [IO.Path]::GetFullPath($env:DFLASH_ROOT) } else { '' }
+        $sameInstance = $false
+        if ($existingRoot -and $myRoot) {
+            $sameInstance = [string]::Equals(
+                [IO.Path]::GetFullPath($existingRoot),
+                $myRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+        if ($sameInstance) {
+            Write-Host ''
+            Write-Host "DFlash Console already running at $url" -ForegroundColor Green
+            Write-StartupLine "Already running at $url (no restart requested)" 'Green'
+            exit 0
+        }
+        Write-Host ''
+        Write-Host "Another DFlash Console instance ($existingRoot) holds port $Port — stopping it so only one server runs." -ForegroundColor Yellow
+        Write-StartupLine "Stopping foreign Console instance on port $Port (root: $existingRoot)..." 'Yellow'
+        $stopped = Stop-ForeignConsoleApi -TargetPort $Port
+        if ($stopped) {
+            Write-StartupLine "  Foreign Console instance stopped; taking over port $Port." 'Green'
+        } else {
+            Write-StartupLine "  Could not stop the other instance on port $Port." 'Red'
+        }
+    }
 }
 
 Write-Host ''

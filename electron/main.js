@@ -651,6 +651,80 @@ async function stopOwnedServer() {
   }
 }
 
+function requestShutdown(port) {
+  return new Promise((resolve) => {
+    try {
+      const req = http.request(
+        { host: UI_HOST, port, path: '/api/shutdown', method: 'POST', timeout: 3000 },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(true));
+        },
+      );
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => resolve(false));
+      req.end();
+    } catch (_err) {
+      resolve(false);
+    }
+  });
+}
+
+function pidListeningOnPort(port) {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('netstat.exe', ['-ano'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      let out = '';
+      child.stdout.on('data', (chunk) => {
+        out += chunk;
+      });
+      child.on('error', () => resolve(null));
+      child.on('close', () => {
+        const needle = `:${port}`;
+        const line = String(out)
+          .split(/\r?\n/)
+          .find((entry) => entry.includes(needle) && entry.includes('LISTENING'));
+        if (!line) {
+          resolve(null);
+          return;
+        }
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[parts.length - 1];
+        resolve(pid && /^\d+$/.test(pid) ? Number(pid) : null);
+      });
+    } catch (_err) {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Stop a foreign DFlash Console instance that holds the port, so only one
+ * Console server runs at a time on this machine. Graceful /api/shutdown first
+ * (releases engines + gateway), then force-kills whatever still listens.
+ */
+async function stopForeignConsole(port) {
+  await requestShutdown(port);
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const pid = await pidListeningOnPort(port);
+    if (!pid) return true;
+    await sleep(300);
+  }
+  const pid = await pidListeningOnPort(port);
+  if (pid) {
+    spawn('taskkill.exe', ['/F', '/T', '/PID', String(pid)], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+  }
+  await sleep(1500);
+  return !(await pidListeningOnPort(port));
+}
+
 async function ensureBackend() {
   let root = repoRoot();
   let port = configuredPort(root);
@@ -661,10 +735,10 @@ async function ensureBackend() {
     return existing;
   }
 
-  if (existing && app.isPackaged) {
-    throw new Error(
-      `Port ${port} is already used by another Console instance (${existing.console_root || 'unknown'}). Close the other server or dev session, then restart DFlash Console.`,
-    );
+  if (existing) {
+    // A different Console instance (dev or installed) holds the port — stop it
+    // so only one DFlash server runs at a time on this PC, then take over.
+    await stopForeignConsole(port);
   }
 
   root = root || await chooseDataRoot();
