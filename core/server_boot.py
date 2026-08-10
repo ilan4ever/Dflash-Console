@@ -14,6 +14,7 @@ from core.config import (
     get_dflash_root,
     is_embedding_server,
     normalize_hardware_settings,
+    normalize_inference_settings,
     normalize_load_settings,
     normalize_server,
 )
@@ -265,6 +266,7 @@ def _launch_signature(
     idle_seconds = 0 if idle_minutes <= 0 else idle_minutes * 60
     load = normalize_load_settings(server.get('load_settings'))
     hardware = normalize_hardware_settings((cfg or {}).get('hardware_settings'))
+    infer = normalize_inference_settings(server.get('inference_settings'))
     return {
         'context': int(server.get('context_size') or 8192),
         'main_gpu': int(launch.get('main_gpu') or 0),
@@ -280,6 +282,7 @@ def _launch_signature(
         'parallel_slots': int(load.get('parallel_slots') or 4),
         'offload_kv_cache_to_gpu': hardware.get('offload_kv_cache_to_gpu') is not False,
         'model_id': str(server.get('model_id') or ''),
+        'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
         'router_mode': True,
     }
 
@@ -366,6 +369,9 @@ def _spawn_router(
     ]
     if signature['tensor_split']:
         cmd.extend(['-TensorSplit', signature['tensor_split']])
+    reasoning_effort = str(signature.get('reasoning_effort') or 'auto')
+    if reasoning_effort != 'auto':
+        cmd.extend(['-ReasoningEffort', reasoning_effort])
 
     return _spawn_detached(
         cmd,

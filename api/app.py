@@ -1596,8 +1596,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
     import json
     import urllib.error
 
-    from core.chat_proxy import extract_stream_completion_stats, open_upstream_chat_stream, upstream_chat_completion, wants_stream
+    from core.chat_proxy import apply_reasoning_policy, extract_stream_completion_stats, open_upstream_chat_stream, upstream_chat_completion, wants_stream
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
+    from core.local_models import model_has_reasoning
     from core.runtime import api_base_url, build_server_status
 
     cfg = load_config()
@@ -1609,6 +1610,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
     if not base:
         raise HTTPException(status_code=400, detail='engine api_url not configured')
     raw = await request.body()
+    # Non-reasoning models never negotiate reasoning: strip reasoning_effort and
+    # thinking toggles so the API returns the regular chat behaviour.
+    raw = apply_reasoning_policy(raw, reasoning=model_has_reasoning(server))
     content_type = request.headers.get('content-type') or 'application/json'
 
     # llama-server validates the model name against its loaded checkpoint id.

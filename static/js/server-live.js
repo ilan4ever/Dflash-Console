@@ -603,6 +603,19 @@
     document.querySelector('[data-inspector-panel="load"]')?.classList.toggle('read-only-external', external);
   }
 
+  function modelHasReasoning(model) {
+    if (model?.reasoning === true) return true;
+    const caps = Array.isArray(model?.capabilities) ? model.capabilities : [];
+    return caps.includes('reasoning');
+  }
+
+  function syncInspectorReasoningVisibility(model) {
+    const group = document.getElementById('inspectorReasoningGroup');
+    if (!group) return;
+    const reasoning = !!model && modelHasReasoning(model);
+    group.classList.toggle('hidden', !reasoning);
+  }
+
   function clearInspectorPendingReload() {
     inspectorPendingReload = false;
     updateInspectorReloadNotice();
@@ -628,8 +641,10 @@
     if (button) button.disabled = true;
     try {
       await flushInspectorSave();
-      const unloaded = await ejectServer(serverId);
-      if (!unloaded) return;
+      // Router-level flags (context, GPU layers, flash attention, reasoning
+      // effort) only take effect when the engine process restarts. Stop the
+      // router, then the load below boots it fresh with the saved settings.
+      await stopServer(serverId);
       await loadModelOnServer(serverId, { ...model, server_id: serverId });
     } finally {
       updateInspectorReloadNotice();
@@ -1918,7 +1933,6 @@
     }
     if (model) {
       await applyModelSelection(model);
-      renderInspectorEmptyState();
       await window.DFlashModelsLive?.selectModel?.(selectedModelKey, { applyInspector: false });
       await refreshLoadPlan(model);
     } else {
@@ -2098,6 +2112,7 @@
         top_k: parseInt(document.getElementById('inspectorTopK')?.value || '40', 10),
         repeat_penalty: parseFloat(document.getElementById('inspectorRepeatPenalty')?.value || '1.1'),
         max_tokens: parseInt(document.getElementById('inspectorMaxTokens')?.value || '4096', 10),
+        reasoning_effort: document.getElementById('inspectorReasoningEffort')?.value || 'auto',
       },
     };
   }
@@ -2140,6 +2155,10 @@
     if (repeatEl) repeatEl.value = Number(repeatPenalty).toFixed(2);
     const maxTokensEl = document.getElementById('inspectorMaxTokens');
     if (maxTokensEl) maxTokensEl.value = infer.max_tokens ?? 4096;
+    const reasoningEl = document.getElementById('inspectorReasoningEffort');
+    if (reasoningEl) reasoningEl.value = ['auto', 'none', 'low', 'medium', 'high', 'max'].includes(infer.reasoning_effort)
+      ? infer.reasoning_effort
+      : 'auto';
 
     const specGroup = document.getElementById('inspectorSpeculativeGroup');
     const specHint = document.getElementById('inspectorSpeculativeHint');
@@ -2270,11 +2289,19 @@
       if (list.includes('tools')) tags.push('<span class="lm-tag green">tools</span>');
       if (list.includes('ar')) tags.push('<span class="lm-tag blue">AR</span>');
       if (list.includes('dflash')) tags.push(dflashLogoLabel());
+      if (list.includes('reasoning')) tags.push('<span class="lm-tag yellow" title="This model exposes a thinking/reasoning mode">reasoning</span>');
       list.forEach((cap) => {
-        if (cap === 'instruct' || cap === 'tools' || cap === 'ar' || cap === 'dflash') return;
+        if (cap === 'instruct' || cap === 'tools' || cap === 'ar' || cap === 'dflash' || cap === 'reasoning') return;
         tags.push(`<span class="lm-tag blue">${escapeHtml(cap)}</span>`);
       });
       caps.innerHTML = tags.join('') || '—';
+    }
+    const reasoningInfoEl = document.getElementById('inspectorInfoReasoning');
+    if (reasoningInfoEl) {
+      reasoningInfoEl.textContent = modelHasReasoning(model) ? 'Yes — thinking supported' : 'No';
+      reasoningInfoEl.title = modelHasReasoning(model)
+        ? 'This model exposes a thinking/reasoning mode. Set the reasoning effort in the Runtime tab.'
+        : 'Plain chat model: the API returns regular completions without reasoning.';
     }
     const draftRow = document.getElementById('inspectorInfoDraftRow');
     const draftEl = document.getElementById('inspectorInfoDraft');
@@ -2299,6 +2326,7 @@
       document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode('No model selected'));
       document.getElementById('inspectorReloadNotice')?.classList.add('hidden');
       syncInspectorLoadedState(null);
+      syncInspectorReasoningVisibility(null);
     }
   }
 
@@ -2320,6 +2348,8 @@
       external: !!model.external,
     };
     fillInspectorInfo(model);
+    renderInspectorSelectionState(true);
+    syncInspectorReasoningVisibility(model);
     if (!model.external) {
       fillInspectorLoadSettings(getMergedLoadSettings(model));
     }
@@ -2371,6 +2401,7 @@
     const model = modelFromLoadedEntry(selectedServer, selectedRow);
     renderInspectorSelectionState(true);
     fillInspectorInfo(model);
+    syncInspectorReasoningVisibility(model);
     if (!model.external && !inspectorDirty && !inspectorPendingReload && !inspectorFilling) {
       fillInspectorLoadSettings(selectedServer);
     }
@@ -2708,7 +2739,6 @@
       return;
     }
     await applyModelSelection(model);
-    renderInspectorEmptyState();
     activeId = serverId;
     localStorage.setItem('dflashConsole.activeServerId', activeId);
     ensureInspectorVisible();
@@ -2839,12 +2869,13 @@
     const autoSaveIds = [
       'inspectorContext', 'inspectorGpuLayers', 'inspectorCpuThreads', 'inspectorEvalBatch',
       'inspectorPhysicalBatch', 'inspectorFlashAttention', 'inspectorTemperature', 'inspectorTopP',
-      'inspectorTopK', 'inspectorRepeatPenalty', 'inspectorMaxTokens',
+      'inspectorTopK', 'inspectorRepeatPenalty', 'inspectorMaxTokens', 'inspectorReasoningEffort',
     ];
     autoSaveIds.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      const eventName = el.type === 'checkbox' ? 'change' : 'input';
+      const isSelect = el.tagName === 'SELECT';
+      const eventName = (el.type === 'checkbox' || isSelect) ? 'change' : 'input';
       el.addEventListener(eventName, scheduleInspectorAutoSave);
       if (el.type === 'number') {
         el.addEventListener('change', scheduleInspectorAutoSave);

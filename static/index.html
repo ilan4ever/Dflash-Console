@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.21</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.22</span>
           </div>
         </div>
       </div>
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.21</strong>
+                <strong id="dfAboutVersion">v0.2.22</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1006,6 +1006,7 @@ try {
               <div class="lm-info-row" id="inspectorInfoEmbeddingRow"><span>Embedding</span><strong id="inspectorInfoEmbedding">—</strong></div>
               <div class="lm-info-row"><span>Context limit</span><strong id="inspectorInfoContext">—</strong></div>
               <div class="lm-info-row"><span>Features</span><span id="inspectorInfoCaps"></span></div>
+              <div class="lm-info-row"><span>Reasoning</span><strong id="inspectorInfoReasoning">—</strong></div>
               <div class="lm-info-row" id="inspectorInfoDraftRow"><span>Accelerator pair</span><strong id="inspectorInfoDraft">—</strong></div>
               <div class="lm-info-row"><span>Engine profile</span><strong id="inspectorInfoProfile">—</strong></div>
               <div class="lm-info-row"><span>Path</span><code class="lm-info-path" id="inspectorInfoPath">—</code></div>
@@ -1129,6 +1130,24 @@ try {
                   <input type="number" value="1.1" step="0.05" min="1" max="2" class="lm-num lm-stepper-input" id="inspectorRepeatPenalty">
                   <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase repeat penalty">+</button>
                 </div>
+              </div>
+            </section>
+            <section class="lm-field-group" id="inspectorReasoningGroup">
+              <div class="lm-section-head">
+                <h3>Reasoning</h3>
+                <span class="lm-tag yellow" title="This model exposes a thinking/reasoning mode">reasoning</span>
+              </div>
+              <div class="lm-field">
+                <label for="inspectorReasoningEffort">Reasoning effort</label>
+                <span class="lm-hint" id="inspectorReasoningHint">Auto lets external apps &amp; the model decide. Other levels force a thinking budget — reload the model to apply.</span>
+                <select class="lm-select" id="inspectorReasoningEffort" aria-label="Reasoning effort">
+                  <option value="auto">Auto (let app / model decide)</option>
+                  <option value="none">None — no thinking</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="max">Max — unrestricted</option>
+                </select>
               </div>
             </section>
           </div>

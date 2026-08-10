@@ -27,6 +27,37 @@ def wants_stream(raw: bytes) -> bool:
     return parse_chat_body(raw).get('stream') is True
 
 
+def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
+    """Rewrite a chat request body's reasoning controls for the target model.
+
+    Non-reasoning models must behave like a plain chat model: drop
+    ``reasoning_effort`` (and any thinking toggles) so the API never asks for
+    reasoning and the engine keeps its regular output. Reasoning models keep
+    the client's ``reasoning_effort`` untouched so external applications can
+    steer it (the running engine's ``--reasoning``/``--reasoning-budget`` flags
+    from the per-model runtime setting control the actual thinking budget).
+    """
+    if not raw or reasoning:
+        return raw
+    try:
+        body = json.loads(raw.decode('utf-8', errors='replace'))
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(body, dict):
+        return raw
+    changed = False
+    for key in ('reasoning_effort', 'thinking', 'enable_thinking'):
+        if key in body:
+            body.pop(key, None)
+            changed = True
+    if not changed:
+        return raw
+    try:
+        return json.dumps(body).encode('utf-8')
+    except (TypeError, ValueError):
+        return raw
+
+
 def extract_stream_completion_stats(raw: bytes) -> dict[str, Any] | None:
     """Return the last OpenAI-style payload from an SSE stream that includes usage."""
     if not raw:

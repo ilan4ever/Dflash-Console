@@ -1032,6 +1032,13 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   flex-shrink: 0;
 }
 
+.lm-badge.reasoning {
+  color: #fcd34d;
+  border-color: rgba(252, 211, 77, 0.45);
+  background: rgba(252, 211, 77, 0.1);
+  flex-shrink: 0;
+}
+
 .lm-search-item-aside {
   display: flex;
   flex-direction: column;

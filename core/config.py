@@ -46,7 +46,10 @@ DEFAULT_INFERENCE_SETTINGS: dict[str, Any] = {
     'top_k': 40,
     'repeat_penalty': 1.1,
     'max_tokens': 4096,
+    'reasoning_effort': 'auto',
 }
+
+REASONING_EFFORT_LEVELS = ('auto', 'none', 'low', 'medium', 'high', 'max')
 
 DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     # Prefer the fastest/largest GPU as a whole model — never auto layer-split.
@@ -210,12 +213,16 @@ def normalize_load_settings(raw: Any) -> dict[str, Any]:
 def normalize_inference_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(DEFAULT_INFERENCE_SETTINGS)
+    effort = str(raw.get('reasoning_effort') or DEFAULT_INFERENCE_SETTINGS['reasoning_effort']).strip().lower()
+    if effort not in REASONING_EFFORT_LEVELS:
+        effort = DEFAULT_INFERENCE_SETTINGS['reasoning_effort']
     return {
         'temperature': max(0.0, min(2.0, float(raw.get('temperature') if raw.get('temperature') is not None else DEFAULT_INFERENCE_SETTINGS['temperature']))),
         'top_p': max(0.0, min(1.0, float(raw.get('top_p') if raw.get('top_p') is not None else DEFAULT_INFERENCE_SETTINGS['top_p']))),
         'top_k': max(0, min(200, int(raw.get('top_k') if raw.get('top_k') is not None else DEFAULT_INFERENCE_SETTINGS['top_k']))),
         'repeat_penalty': max(1.0, min(2.0, float(raw.get('repeat_penalty') if raw.get('repeat_penalty') is not None else DEFAULT_INFERENCE_SETTINGS['repeat_penalty']))),
         'max_tokens': max(256, min(32768, int(raw.get('max_tokens') if raw.get('max_tokens') is not None else DEFAULT_INFERENCE_SETTINGS['max_tokens']))),
+        'reasoning_effort': effort,
     }
 
 

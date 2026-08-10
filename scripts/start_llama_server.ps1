@@ -44,6 +44,8 @@ param(
     [string]$KvOffload = "on",
     [string]$ModelsPreset = "",
     [int]$Parallel = 0,
+    [ValidateSet("auto", "none", "low", "medium", "high", "max")]
+    [string]$ReasoningEffort = "auto",
     [switch]$RouterMode
 )
 
@@ -79,6 +81,34 @@ $QwenTarget = Join-Path $RepoRoot "models\Qwen3.5-27B-Q4_K_M.gguf"
 $QwenDraft = Join-Path $RepoRoot "models\Qwen3.5-27B-DFlash-F16.gguf"
 $BonsaiTarget = Join-Path $BonsaiRoot "models\ternary-gguf\27B\Ternary-Bonsai-27B-Q2_0.gguf"
 $BonsaiDraft = Join-Path $BonsaiRoot "models\ternary-gguf\27B\Ternary-Bonsai-27B-dspark-Q4_1.gguf"
+
+# Translate a reasoning effort level into llama-server CLI args.
+#   auto   -> no flags (llama-server template default)
+#   none   -> --reasoning off
+#   low    -> --reasoning on --reasoning-budget 512
+#   medium -> --reasoning on --reasoning-budget 2048
+#   high   -> --reasoning on --reasoning-budget 8192
+#   max    -> --reasoning on --reasoning-budget -1 (unrestricted)
+function Get-ReasoningArgs {
+    param(
+        [ValidateSet("auto", "none", "low", "medium", "high", "max")]
+        [string]$ReasoningEffort = "auto"
+    )
+    if ($ReasoningEffort -eq "none") {
+        return @("--reasoning", "off")
+    }
+    if ($ReasoningEffort -eq "auto") {
+        return @()
+    }
+    $budget = switch ($ReasoningEffort) {
+        "low" { 512 }
+        "medium" { 2048 }
+        "high" { 8192 }
+        "max" { -1 }
+        default { -1 }
+    }
+    return @("--reasoning", "on", "--reasoning-budget", "$budget")
+}
 
 if ($RouterMode) {
     if ([string]::IsNullOrWhiteSpace($ModelsPreset)) {
@@ -119,6 +149,9 @@ if ($RouterMode) {
     }
     if ($IdleUnloadSeconds -gt 0) {
         $routerArgs += @("--sleep-idle-seconds", "$IdleUnloadSeconds")
+    }
+    if ($ReasoningEffort -ne "auto") {
+        $routerArgs += (Get-ReasoningArgs -ReasoningEffort $ReasoningEffort)
     }
     Write-Host "=== llama-server router ===" -ForegroundColor Cyan
     Write-Host "Binary: $MainBin"
@@ -188,6 +221,12 @@ if ($SplitMode -ne "none" -and -not [string]::IsNullOrWhiteSpace($TensorSplit)) 
 # Auto-unload when idle: frees VRAM/RAM; next chat request reloads the model.
 if ($IdleUnloadSeconds -gt 0) {
     $argsList += @("--sleep-idle-seconds", "$IdleUnloadSeconds")
+}
+
+# Reasoning/thinking control (only wired for profiles that ship a thinking
+# template; the Console passes -ReasoningEffort from the runtime panel).
+if ($ReasoningEffort -ne "auto") {
+    $argsList += (Get-ReasoningArgs -ReasoningEffort $ReasoningEffort)
 }
 
 switch ($Profile) {

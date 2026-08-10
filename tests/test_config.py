@@ -22,6 +22,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(entry['idle_unload_minutes'], 45)
         self.assertEqual(entry['api_url'], 'http://127.0.0.1:8090/v1')
 
+    def test_normalize_inference_settings_keeps_reasoning_effort(self):
+        normalized = cfg.normalize_inference_settings({'reasoning_effort': 'high'})
+        self.assertEqual(normalized['reasoning_effort'], 'high')
+
+    def test_normalize_inference_settings_defaults_and_rejects_bad_effort(self):
+        defaulted = cfg.normalize_inference_settings(None)
+        self.assertEqual(defaulted['reasoning_effort'], 'auto')
+        bad = cfg.normalize_inference_settings({'reasoning_effort': 'extreme'})
+        self.assertEqual(bad['reasoning_effort'], 'auto')
+
+    def test_reasoning_effort_levels_order(self):
+        # The canonical order surfaced in the UI.
+        self.assertEqual(
+            list(cfg.REASONING_EFFORT_LEVELS),
+            ['auto', 'none', 'low', 'medium', 'high', 'max'],
+        )
+
     def test_save_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'config.json'

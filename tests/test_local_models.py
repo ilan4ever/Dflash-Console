@@ -36,6 +36,53 @@ def test_vision_detects_vl_name(tmp_path: Path):
     assert _has_vision_support(target) is True
 
 
+def test_guess_reasoning_known_names():
+    from core.local_models import _guess_reasoning
+
+    # Explicit reasoning markers.
+    assert _guess_reasoning('DeepSeek-R1-Distill-70B-Q4_K_S.gguf') is True
+    assert _guess_reasoning('Qwen3.5-QwQ-32B-Q4_K_M.gguf') is True
+    assert _guess_reasoning('glm-4.5-air-14B.gguf') is True
+    assert _guess_reasoning('o3-mini-14b.gguf') is True
+    assert _guess_reasoning('phi-4-reasoning-14b.gguf') is True
+    assert _guess_reasoning('kimi-thinking-32b.gguf') is True
+    # Thinking templates from the architecture.
+    assert _guess_reasoning('gemma-4-12b-it-qat-q4-0.gguf') is True
+    assert _guess_reasoning('gemma-4-31B_q4_0-it.gguf') is True
+    assert _guess_reasoning('Qwen3.5-27B-Q4_K_M.gguf') is True
+    # Non-reasoning families.
+    assert _guess_reasoning('Llama-3.3-70B-Q4_K_M.gguf') is False
+    assert _guess_reasoning('Mistral-7B-Instruct-Q4_K_M.gguf') is False
+    assert _guess_reasoning('nomic-embed-text-v1.5.gguf') is False
+    assert _guess_reasoning('whisper-large-v3-q8_0.gguf') is False
+    assert _guess_reasoning('') is False
+
+
+def test_model_has_reasoning_from_caps_and_names():
+    from core.local_models import model_has_reasoning
+
+    assert model_has_reasoning({'capabilities': ['instruct', 'reasoning'], 'label': 'X'}) is True
+    assert model_has_reasoning({'reasoning': True, 'label': 'X'}) is True
+    # Raw server entries fall back to name heuristics.
+    assert model_has_reasoning({'label': 'Gemma 4 12B DFlash', 'model_id': 'gemma-4-12b-it-qat'}) is True
+    assert model_has_reasoning({'label': 'nomic-embed', 'model_id': 'nomic-embed-text-v1.5'}) is False
+
+
+def test_scanned_gguf_reasoning_capability(tmp_path: Path):
+    from core.local_models import _scan_gguf
+
+    root = tmp_path / 'models' / 'gguf'
+    root.mkdir(parents=True)
+    (root / 'gemma-4-12b-it-q4-k-m.gguf').write_bytes(b'gguf')
+    (root / 'nomic-embed-text-v1.5.gguf').write_bytes(b'gguf')
+    rows = _scan_gguf(root, source='library')
+    by_name = {row['filename']: row for row in rows}
+    assert 'reasoning' in by_name['gemma-4-12b-it-q4-k-m.gguf']['capabilities']
+    assert by_name['gemma-4-12b-it-q4-k-m.gguf']['reasoning'] is True
+    assert 'reasoning' not in by_name['nomic-embed-text-v1.5.gguf']['capabilities']
+    assert by_name['nomic-embed-text-v1.5.gguf']['reasoning'] is False
+
+
 def test_scanned_gguf_is_loadable(tmp_path: Path):
     from core.local_models import _scan_gguf
 

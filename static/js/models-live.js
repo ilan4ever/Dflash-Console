@@ -79,6 +79,9 @@
     return !!(
       model
       && !isDflashAccelerator(model)
+      // Already-DFlash models carry the DFlash logo — no need for the
+      // 'DFlash compatible' hint on them.
+      && !isDflashModel(model)
       && (
         (
           isDflashStack(model)
@@ -101,7 +104,7 @@
     if (list.includes('vision')) tags.push('<span class="lm-tag purple">vision</span>');
     if (list.includes('ar')) tags.push('<span class="lm-tag blue">AR</span>');
     list.forEach((cap) => {
-      if (cap === 'instruct' || cap === 'tools' || cap === 'vision' || cap === 'ar' || cap === 'dflash') return;
+      if (cap === 'instruct' || cap === 'tools' || cap === 'vision' || cap === 'ar' || cap === 'dflash' || cap === 'reasoning') return;
       tags.push(`<span class="lm-tag blue">${escapeHtml(cap)}</span>`);
     });
     return tags.join('');
@@ -635,6 +638,17 @@
     return dflashLogoLabel('DFlash');
   }
 
+  function modelHasReasoning(model) {
+    if (model?.reasoning === true) return true;
+    const caps = Array.isArray(model?.capabilities) ? model.capabilities : [];
+    return caps.includes('reasoning');
+  }
+
+  function reasoningBadge(model) {
+    if (!modelHasReasoning(model)) return '';
+    return '<span class="lm-badge reasoning" title="This model exposes a thinking/reasoning mode">Reasoning</span>';
+  }
+
   function downloadJobTitle(job) {
     return window.DFlashDownloadQueue?.getJobLabel?.(job)
       || job.filename
@@ -961,7 +975,7 @@
         <tr class="${modelRowClassName(model, { selected, pinned: pinned.has(key) })}" data-model-key="${escapeHtml(key)}" data-server-id="${escapeHtml(model.server_id || '')}">
           <td class="lm-col-model">
             ${loadedRibbon(model)}
-            <div class="lm-model-title-line"><span class="lm-model-title-text">${escapeHtml(modelTitleLine(model))}</span>${installedBadge(model)}${installedDflashLogo(model)}${pinMark}</div>
+            <div class="lm-model-title-line"><span class="lm-model-title-text">${escapeHtml(modelTitleLine(model))}</span>${installedBadge(model)}${reasoningBadge(model)}${installedDflashLogo(model)}${pinMark}</div>
             <div class="lm-model-tags-line">${capTags(model)}</div>
             ${modelPathHint(model)}
             ${draftHint(model)}
@@ -1564,5 +1578,5 @@
       .catch((err) => toast(err.message, false));
   });
 
-  window.DFlashModelsLive = { refresh, selectModel, loadModel, setTypeFilter };
+  window.DFlashModelsLive = { refresh, selectModel, loadModel, setTypeFilter, modelHasReasoning };
 })();

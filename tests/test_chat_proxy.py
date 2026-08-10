@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from core.chat_proxy import extract_stream_completion_stats, open_upstream_chat_stream, parse_chat_body, upstream_chat_completion, wants_stream
+from core.chat_proxy import apply_reasoning_policy, extract_stream_completion_stats, open_upstream_chat_stream, parse_chat_body, upstream_chat_completion, wants_stream
 
 
 def test_extract_stream_completion_stats():
@@ -26,6 +26,37 @@ def test_wants_stream_true():
 def test_wants_stream_false():
     raw = json.dumps({'messages': [], 'stream': False}).encode()
     assert wants_stream(raw) is False
+
+
+def test_apply_reasoning_policy_strips_for_non_reasoning_model():
+    raw = json.dumps({
+        'model': 'nomic-embed',
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'reasoning_effort': 'high',
+        'thinking': True,
+    }).encode()
+    out = apply_reasoning_policy(raw, reasoning=False)
+    body = json.loads(out)
+    assert 'reasoning_effort' not in body
+    assert 'thinking' not in body
+    assert body['model'] == 'nomic-embed'
+    assert body['messages'] == [{'role': 'user', 'content': 'hi'}]
+
+
+def test_apply_reasoning_policy_keeps_for_reasoning_model():
+    raw = json.dumps({
+        'model': 'gemma-4-12b-it-qat',
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'reasoning_effort': 'high',
+    }).encode()
+    out = apply_reasoning_policy(raw, reasoning=True)
+    body = json.loads(out)
+    assert body['reasoning_effort'] == 'high'
+
+
+def test_apply_reasoning_policy_passthrough_when_no_reasoning_keys():
+    raw = json.dumps({'model': 'x', 'messages': []}).encode()
+    assert apply_reasoning_policy(raw, reasoning=False) == raw
 
 
 def test_upstream_chat_completion_success():

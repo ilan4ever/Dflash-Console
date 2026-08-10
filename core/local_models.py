@@ -38,6 +38,66 @@ _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
 _PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
 _GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)
+# Strong name markers that explicitly signal a reasoning/thinking model.
+_REASONING_RE = re.compile(
+    r'(?:^|[^a-z0-9])(?:'
+    r'r1(?:\.\d+)?|reasoner|reasoning|thinking|think|'
+    r'chain[-_ ]?of[-_ ]?thought|cot(?:[-_ ]?thinking)?|'
+    r'qwq|o1|o3|o4[-_ ]?mini|kimi(?:[-_ ]?thinking)?|'
+    r'glm[-_ ]?4\.5|glm[-_ ]?5|glm[-_ ]?thinking|'
+    r'deepseek[-_ ]?r1|phi[-_ ]?4[-_ ]?reasoning'
+    r')(?:[^a-z0-9]|$)',
+    re.I,
+)
+# Architectures whose chat templates ship a thinking mode (llama.cpp auto).
+_REASONING_FAMILIES = frozenset({'gemma4', 'qwen', 'deepseekv2'})
+
+
+def _guess_reasoning(name: str) -> bool:
+    """Best-effort: does this model expose a reasoning/thinking mode?
+
+    Strong name markers (r1, qwq, reasoning, think, o1/o3, glm-4.5, …) always
+    count. Otherwise we trust the architecture's chat template: gemma4, qwen
+    and deepseekv2 ship thinking templates that llama-server enables in auto
+    mode.
+    """
+    if not name:
+        return False
+    text = str(name)
+    if _REASONING_RE.search(text):
+        return True
+    return _guess_arch(text) in _REASONING_FAMILIES
+
+
+def _append_reasoning_capability(caps: list[str], name: str) -> None:
+    if 'reasoning' in caps:
+        return
+    if _guess_reasoning(name):
+        caps.append('reasoning')
+
+
+def model_has_reasoning(entry: dict[str, Any]) -> bool:
+    """True when a catalog row or raw server entry is reasoning-capable.
+
+    Prefers the precomputed ``capabilities`` (catalog rows) and falls back to
+    name heuristics for raw ``config.json`` server entries at API time.
+    """
+    if not isinstance(entry, dict):
+        return False
+    caps = entry.get('capabilities')
+    if isinstance(caps, list) and 'reasoning' in caps:
+        return True
+    if entry.get('reasoning') is True:
+        return True
+    name = ' '.join(
+        str(entry.get(key) or '')
+        for key in ('label', 'model_id', 'filename', 'id')
+    )
+    return _guess_reasoning(name)
+
+
+def _row_reasoning_field(entry: dict[str, Any]) -> bool:
+    return model_has_reasoning(entry)
 
 
 def _catalog_cache_key(config: dict[str, Any]) -> str:
@@ -255,6 +315,8 @@ def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[st
             }
             caps = row['capabilities']
             _append_vision_capability(caps, path)
+            _append_reasoning_capability(caps, name)
+            row['reasoning'] = 'reasoning' in caps
             rows.append(row)
     except OSError:
         pass
@@ -318,6 +380,7 @@ def _server_catalog_row(
     from core.vision_setup import resolve_mmproj_path
 
     _append_vision_capability(caps, path, mmproj_path=resolve_mmproj_path(server, cfg=cfg))
+    _append_reasoning_capability(caps, str(server.get('label') or server.get('model_id') or ''))
     draft_path = str(draft.get('path') or '') if draft else ''
     draft_path_obj = Path(draft_path) if draft_path else None
     is_enabled = enabled if enabled is not None else server.get('enabled', True) is not False
@@ -341,6 +404,7 @@ def _server_catalog_row(
         'modified': _modified_label(path) if path and path.is_file() else '—',
         'source': 'dflash-profile',
         'capabilities': caps,
+        'reasoning': 'reasoning' in caps,
         'context_max': _context_max_for_profile(str(server.get('profile') or '')),
         'draft_label': draft.get('label') if draft else '',
         'draft_path': draft_path,
@@ -387,6 +451,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
     label = suggest_stack_label(path) if path.is_file() else str(target.get('label') or path.name)
     caps = ['instruct', 'dflash']
     _append_vision_capability(caps, path)
+    _append_reasoning_capability(caps, label)
     # The source reflects where the target file physically lives. A capable
     # target inside the Console's own models folder is a Console DFlash model
     # (dflash-stack); files living under other libraries keep their provider
@@ -411,6 +476,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
         'modified': target.get('modified') or (_modified_label(path) if path.is_file() else '—'),
         'source': source,
         'capabilities': caps,
+        'reasoning': 'reasoning' in caps,
         'context_max': 131072,
         'draft_label': target.get('draft_filename') or '',
         'draft_path': draft_path,

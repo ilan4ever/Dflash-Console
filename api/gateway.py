@@ -30,7 +30,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from core.config import is_embedding_server, list_servers, load_config
+from core.config import is_embedding_server, list_servers, load_config, normalize_inference_settings
+from core.local_models import model_has_reasoning
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
 
@@ -168,6 +169,7 @@ async def list_models() -> dict[str, Any]:
     for server in list_servers(cfg):
         if server.get('enabled', True) is False:
             continue
+        infer = normalize_inference_settings(server.get('inference_settings'))
         data.append({
             'id': str(server.get('id') or ''),
             'object': 'model',
@@ -178,6 +180,8 @@ async def list_models() -> dict[str, Any]:
                 'embedding': is_embedding_server(server),
                 'model_id': str(server.get('model_id') or ''),
                 'api_url': str(server.get('api_url') or ''),
+                'reasoning': model_has_reasoning(server),
+                'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
             },
         })
     return {'object': 'list', 'data': data}
@@ -236,6 +240,10 @@ async def chat_completions(request: Request) -> Response:
             body = json.dumps(payload).encode('utf-8')
         except Exception:
             body = None
+    if body is not None:
+        from core.chat_proxy import apply_reasoning_policy
+
+        body = apply_reasoning_policy(body, reasoning=model_has_reasoning(server))
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
     return await _forward_chat(request, url, body)
 
