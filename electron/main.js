@@ -112,7 +112,15 @@ function repoRoot() {
 
   const override = String(process.env.DFLASH_CONSOLE_ROOT || '').trim();
   if (override && isConsoleRoot(override)) {
-    return path.resolve(override);
+    // The installed (packaged) app is a SEPARATE application with its own data
+    // root. A stale DFLASH_CONSOLE_ROOT that points at the developer git
+    // checkout (inherited from a shell/profile) must not be honored here —
+    // otherwise the installed app reuses the developer server and shows the
+    // Developer badge inside the Electron app. Only non-checkout roots are
+    // accepted as an override in packaged mode.
+    if (!app.isPackaged || !isDevCheckout(override)) {
+      return path.resolve(override);
+    }
   }
 
   if (app.isPackaged) {
