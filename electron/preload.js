@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('DFlashDesktop', {
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  installUpdateNow: () => ipcRenderer.invoke('update-popup:install'),
+  deferUpdate: () => ipcRenderer.invoke('update-popup:later'),
   onUpdateStatus: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, status) => callback(status);

@@ -28,6 +28,9 @@ let isQuitting = false;
 let booting = false;
 let updateService = null;
 let lastAutomaticUpdateCheckAt = 0;
+let updatePopupWindow = null;
+let updatePromptDeferred = false;
+let updatePopupShownFor = '';
 
 const {
   isConsoleRoot,
@@ -262,6 +265,9 @@ function createUpdateService() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update:status', status);
       }
+      if (updatePopupWindow && !updatePopupWindow.isDestroyed()) {
+        updatePopupWindow.webContents.send('update:status', status);
+      }
     },
   });
 }
@@ -282,9 +288,94 @@ async function checkAndDownloadUpdate() {
   if (Date.now() - lastAutomaticUpdateCheckAt < 60 * 1000) return;
   lastAutomaticUpdateCheckAt = Date.now();
   const manifest = await updateService.checkForUpdate();
-  if (manifest && !updateService.getStatus().ready) {
-    await updateService.stageUpdate(manifest);
+  if (manifest) {
+    // Ask first via an always-on-top popup: Install now, or Later (remind again
+    // at the next app start). No silent background download.
+    showUpdatePopup(manifest);
   }
+}
+
+function closeUpdatePopup() {
+  if (updatePopupWindow && !updatePopupWindow.isDestroyed()) {
+    updatePopupWindow.destroy();
+  }
+  updatePopupWindow = null;
+}
+
+function showUpdatePopup(manifest) {
+  if (!manifest) return;
+  if (updatePromptDeferred) return;
+  const version = String(manifest.version || '').trim();
+  if (!version || version === updatePopupShownFor) return;
+  updatePopupShownFor = version;
+  const notes = String(manifest.releaseNotes || '').trim();
+
+  if (updatePopupWindow && !updatePopupWindow.isDestroyed()) {
+    updatePopupWindow.webContents.send('update-popup:show', { version, notes });
+    updatePopupWindow.show();
+    updatePopupWindow.focus();
+    return;
+  }
+
+  updatePopupWindow = new BrowserWindow({
+    width: 500,
+    height: 340,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: false,
+    show: false,
+    title: 'DFlash Console update',
+    backgroundColor: '#0b0f14',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  // Stay above normal windows (and most fullscreen apps) so the user sees it.
+  updatePopupWindow.setAlwaysOnTop(true, 'screen-saver');
+  updatePopupWindow.on('closed', () => {
+    updatePopupWindow = null;
+  });
+  updatePopupWindow.loadFile(path.join(__dirname, 'update-popup.html'), {
+    query: { version, notes },
+  });
+  updatePopupWindow.once('ready-to-show', () => {
+    if (!updatePopupWindow || updatePopupWindow.isDestroyed()) return;
+    updatePopupWindow.show();
+    updatePopupWindow.focus();
+  });
+}
+
+function registerUpdatePopupIpc() {
+  ipcMain.handle('update-popup:install', async () => {
+    if (!updateService) throw new Error('Automatic updates are not configured for this build.');
+    const status = updateService.getStatus();
+    let installerPath = status.ready && status.installerPath ? status.installerPath : null;
+    if (!installerPath) {
+      installerPath = await updateService.stageUpdate();
+    }
+    await updateService.launchInstaller(installerPath, {
+      processId: process.pid,
+      relaunchPath: process.execPath,
+      relaunchArguments: [],
+      onReady: async () => {
+        setTimeout(() => app.quit(), 100);
+      },
+    });
+    return updateService.getStatus();
+  });
+
+  ipcMain.handle('update-popup:later', () => {
+    // In-memory only: the next popup appears on the next app start.
+    updatePromptDeferred = true;
+    closeUpdatePopup();
+    return { deferred: true };
+  });
 }
 
 function iconPath() {
@@ -923,6 +1014,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     updateService = createUpdateService();
     registerAppSettingsIpc();
+    registerUpdatePopupIpc();
     syncStartupRegistration();
     if (updateService) {
       const autoCheckEnabled = () => loadAppSettings().allowAutomaticUpdates !== false;
@@ -955,6 +1047,7 @@ if (!gotLock) {
 
   app.on('before-quit', (event) => {
     isQuitting = true;
+    closeUpdatePopup();
     if (startedByApp && spawnedServer) {
       // Own this server: wait for it to stop (graceful shutdown, then kill
       // fallback) before Electron fully exits so closing the app really
