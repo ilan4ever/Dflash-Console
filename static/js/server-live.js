@@ -865,8 +865,21 @@
 
     menu.classList.remove('hidden');
     menu.setAttribute('aria-hidden', 'false');
-    menu.style.left = `${event.clientX}px`;
-    menu.style.top = `${event.clientY}px`;
+    // Keep the menu fully inside the viewport: flip it upward when the click
+    // is near the bottom of the page, and shift left when it would overflow
+    // the right edge, so the dropdown is never trimmed.
+    const MARGIN = 8;
+    const menuRect = menu.getBoundingClientRect();
+    let menuLeft = event.clientX;
+    let menuTop = event.clientY;
+    if (menuLeft + menuRect.width + MARGIN > window.innerWidth) {
+      menuLeft = Math.max(MARGIN, window.innerWidth - menuRect.width - MARGIN);
+    }
+    if (menuTop + menuRect.height + MARGIN > window.innerHeight) {
+      menuTop = Math.max(MARGIN, event.clientY - menuRect.height - MARGIN);
+    }
+    menu.style.left = `${menuLeft}px`;
+    menu.style.top = `${menuTop}px`;
 
     menu.querySelectorAll('button[data-cmd]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
