@@ -14,6 +14,7 @@ $items = @(
     'api',
     'core',
     'static',
+    'assets',
     'scripts',
     'server.ps1',
     'run.ps1',
