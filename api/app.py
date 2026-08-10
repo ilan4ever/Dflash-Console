@@ -206,6 +206,22 @@ def _start_background_tasks() -> None:
 
     threading.Thread(target=warm_catalog, daemon=True, name='model-catalog-warm').start()
 
+    def auto_register() -> None:
+        try:
+            from core.auto_register import auto_register_console_models
+
+            result = auto_register_console_models()
+            if result.get('registered'):
+                logger.info(
+                    'auto-registered console models: %s',
+                    ', '.join(str(row.get('server_id')) for row in result['registered']),
+                )
+                invalidate_model_catalog_cache()
+        except Exception as exc:
+            logger.exception('auto-register console models failed: %s', exc)
+
+    threading.Thread(target=auto_register, daemon=True, name='auto-register-models').start()
+
     def warm_hf_catalog() -> None:
         try:
             from core.hf_catalog_cache import warm_hf_catalog_cache
@@ -2239,6 +2255,23 @@ def delete_model_file(path: str = Query(..., min_length=1)) -> dict[str, Any]:
 class ModelImportIntoConsoleRequest(BaseModel):
     path: str = Field(..., min_length=1)
     mode: str = Field(default='copy', pattern='^(copy|move)$')
+
+
+@app.post('/api/models/auto-register')
+def models_auto_register() -> dict[str, Any]:
+    """Register any model files found under the Console's own models folder.
+
+    Idempotent: files already covered by a server profile are skipped, existing
+    profiles are never modified, and only the Console's own library is scanned.
+    Run automatically at server startup; this endpoint allows an on-demand run.
+    """
+    from core.auto_register import auto_register_console_models
+
+    cfg = load_config()
+    result = auto_register_console_models(cfg=cfg)
+    if result.get('registered'):
+        invalidate_model_catalog_cache()
+    return result
 
 
 @app.post('/api/models/import-into-console')
