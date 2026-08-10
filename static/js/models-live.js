@@ -362,6 +362,12 @@
 
   function isDflashAccelerator(model) {
     if (model.loadable && isDflashModel(model)) return false;
+    const caps = Array.isArray(model.capabilities) ? model.capabilities : [];
+    // A real DFlash stack target (dflash_stack, a draft_path, or the 'dflash'
+    // capability) is NOT an accelerator. Only bare draft files (e.g.
+    // gemma-4-12B-it-DFlash-Q4_K_M.gguf) are stack-only, even when their label
+    // contains 'DFlash' (e.g. the unregistered "Gemma 12B DFlash" QAT target).
+    if (model.dflash_stack || model.draft_path || caps.includes('dflash')) return false;
     const name = `${model.filename || ''} ${model.label || ''}`.toLowerCase();
     if (!name || name.startsWith('mmproj')) return false;
     return /dflash|dspark/.test(name);
