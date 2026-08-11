@@ -13,7 +13,7 @@ from core.config import ROOT
 
 logger = logging.getLogger(__name__)
 
-_CACHE_VERSION = 6
+_CACHE_VERSION = 7
 _MIN_CACHED_MODELS = {
     'dflash': 8,
     'all-gguf': 8,
@@ -21,12 +21,15 @@ _MIN_CACHED_MODELS = {
 }
 _CACHE_PATH = ROOT / 'logs' / 'hf-catalog-cache.json'
 _REFRESH_SECONDS = 10 * 60
-_WARM_CATEGORIES = ('dflash', 'all-gguf', 'text-generation')
+_DETAIL_REFRESH_SECONDS = 30 * 60
+_WARM_CATEGORIES = ('all', 'dflash', 'all-gguf', 'text-generation')
 
 _lock = threading.Lock()
 _memory: dict[str, dict[str, Any]] = {}
+_detail_memory: dict[str, dict[str, Any]] = {}
 _loaded = False
 _refreshing: set[str] = set()
+_refresh_loop_started = False
 
 
 def _cache_key(*, query: str, sort: str, category: str, limit: int) -> str:
@@ -55,6 +58,9 @@ def _ensure_loaded() -> None:
         entries = payload.get('entries')
         if isinstance(entries, dict):
             _memory.update(entries)
+        details = payload.get('details')
+        if isinstance(details, dict):
+            _detail_memory.update(details)
 
 
 def _save_disk() -> None:
@@ -62,7 +68,10 @@ def _save_disk() -> None:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _CACHE_PATH.with_suffix('.tmp')
         tmp.write_text(
-            json.dumps({'version': _CACHE_VERSION, 'entries': _memory}, ensure_ascii=False),
+            json.dumps(
+                {'version': _CACHE_VERSION, 'entries': _memory, 'details': _detail_memory},
+                ensure_ascii=False,
+            ),
             encoding='utf-8',
         )
         tmp.replace(_CACHE_PATH)
@@ -115,6 +124,76 @@ def put_cached_search(
             'limit': limit,
         }
         _save_disk()
+
+
+def _detail_key(repo_id: str, category: str) -> str:
+    return f'{str(category or "dflash").strip().lower()}|{str(repo_id or "").strip().lower()}'
+
+
+def get_cached_detail(*, repo_id: str, category: str = 'dflash') -> dict[str, Any] | None:
+    _ensure_loaded()
+    with _lock:
+        row = _detail_memory.get(_detail_key(repo_id, category))
+    if not isinstance(row, dict) or not isinstance(row.get('payload'), dict):
+        return None
+    fetched_at = float(row.get('fetched_at') or 0.0)
+    return {
+        'payload': dict(row['payload']),
+        'fetched_at': fetched_at,
+        'age_seconds': max(0.0, time.time() - fetched_at),
+        'stale': time.time() - fetched_at >= _DETAIL_REFRESH_SECONDS,
+    }
+
+
+def put_cached_detail(*, repo_id: str, category: str, payload: dict[str, Any]) -> None:
+    with _lock:
+        _detail_memory[_detail_key(repo_id, category)] = {
+            'fetched_at': time.time(),
+            'payload': dict(payload),
+        }
+        _save_disk()
+
+
+def get_or_fetch_detail(
+    *,
+    repo_id: str,
+    category: str,
+    fetcher: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    cached = get_cached_detail(repo_id=repo_id, category=category)
+    if cached and cached.get('payload'):
+        if cached.get('stale'):
+            _schedule_detail_refresh(repo_id, category, fetcher)
+        payload = dict(cached['payload'])
+        payload['cached'] = True
+        payload['stale'] = bool(cached.get('stale'))
+        payload['cache_age_seconds'] = round(float(cached.get('age_seconds') or 0.0), 1)
+        return payload
+    payload = fetcher()
+    if payload.get('success'):
+        put_cached_detail(repo_id=repo_id, category=category, payload=payload)
+    return payload
+
+
+def _schedule_detail_refresh(repo_id: str, category: str, fetcher: Callable[[], dict[str, Any]]) -> None:
+    key = f'detail|{_detail_key(repo_id, category)}'
+    with _lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def run() -> None:
+        try:
+            payload = fetcher()
+            if payload.get('success'):
+                put_cached_detail(repo_id=repo_id, category=category, payload=payload)
+        except Exception as exc:
+            logger.warning('hf detail background refresh failed: %s', exc)
+        finally:
+            with _lock:
+                _refreshing.discard(key)
+
+    threading.Thread(target=run, daemon=True, name='hf-detail-refresh').start()
 
 
 def _schedule_refresh(key: str, fetcher: Callable[[], dict[str, Any]]) -> None:
@@ -228,3 +307,26 @@ def warm_hf_catalog_cache() -> None:
             daemon=True,
             name=f'hf-warm-{category}',
         ).start()
+
+
+def start_hf_catalog_refresh_loop(*, interval_seconds: float = 600.0) -> None:
+    """Refresh common catalog snapshots periodically without blocking requests."""
+    global _refresh_loop_started
+    with _lock:
+        if _refresh_loop_started:
+            return
+        _refresh_loop_started = True
+
+    def refresh_loop() -> None:
+        while True:
+            time.sleep(max(120.0, float(interval_seconds)))
+            try:
+                warm_hf_catalog_cache()
+            except Exception as exc:
+                logger.warning('hf catalog periodic refresh failed: %s', exc)
+
+    threading.Thread(
+        target=refresh_loop,
+        daemon=True,
+        name='hf-catalog-refresh-loop',
+    ).start()

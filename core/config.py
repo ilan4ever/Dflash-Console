@@ -60,6 +60,13 @@ DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     'offload_kv_cache_to_gpu': True,
 }
 
+# Auto-grow context: when a chat request needs a larger per-slot context than
+# the model is currently loaded with, the Console reloads the model with the
+# larger context (capped at ``context_max``) so the request doesn't overflow.
+# Requests that fit the loaded context share the model as-is (no reload).
+DEFAULT_CONTEXT_AUTO_GROW = True
+DEFAULT_CONTEXT_MAX = 131072
+
 SPECULATIVE_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec'})
 
 
@@ -545,6 +552,7 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
         'model_id': str(entry.get('model_id') or '').strip(),
         'gpu_device': str(entry.get('gpu_device') or 'auto').strip().lower() or 'auto',
         'context_size': max(2048, int(entry.get('context_size') or 8192)),
+        'context_max': max(2048, int(entry.get('context_max') or DEFAULT_CONTEXT_MAX)),
         'idle_unload_minutes': max(0, int(idle_minutes or 0)),
         'enabled': entry.get('enabled', True) is not False,
         'engine_on': entry.get('engine_on') is True,

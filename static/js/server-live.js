@@ -19,6 +19,7 @@
   let allServers = [];
   let externalGpuLoads = [];
   let gpus = [];
+  let totalVramGb = null;
   let showDflashEngines = true;
   let showExternalEngines = true;
   let engineCardsFilter = 'both';
@@ -1352,8 +1353,9 @@
 
   function roleBadge(row) {
     if (row.external) {
-      const label = escapeHtml(cardAppLabel(row));
-      return `<span class="lm-tag orange lm-tag-external-app" title="Loaded outside DFlash Console">External · ${label}</span>`;
+      // The external app name is shown as a centered banner at the top of the
+      // card (see externalPrompt), not as a tag in the labels row.
+      return '';
     }
     const loadedBy = row?.loaded_by || row?.app_label || '';
     const appBadge = loadedBy && !/^dflash\s+console$/i.test(String(loadedBy).trim())
@@ -1445,10 +1447,26 @@
   }
 
   function cardTagMetricsHtml(row) {
+    const vramPct = cardVramPctMetric(row);
     const disk = formatCardGb(cardSizeGb(row));
-    if (!disk) return '';
     const label = row.external ? 'Model' : 'Disk';
-    return `<span class="lm-model-card-metric lm-model-card-tag-metric"><span class="lbl">${label}</span>${escapeHtml(disk)}</span>`;
+    const diskSpan = disk
+      ? `<span class="lm-model-card-metric lm-model-card-tag-metric"><span class="lbl">${label}</span>${escapeHtml(disk)}</span>`
+      : '';
+    if (!vramPct && !diskSpan) return '';
+    return `${vramPct}${diskSpan}`;
+  }
+
+  function cardVramPctMetric(row) {
+    // Show how much of the machine's total VRAM a loaded model consumes.
+    // Prefer the live vram_gb when available; fall back to the model size
+    // (a Q4 GGUF's weights occupy roughly its file size in VRAM).
+    if (!totalVramGb) return '';
+    const used = Number(row?.vram_gb) || cardSizeGb(row);
+    if (!used || used <= 0) return '';
+    const pct = (used / totalVramGb) * 100;
+    const title = `Uses ~${pct.toFixed(1)}% of the machine's ${totalVramGb} GB VRAM (${used.toFixed(1)} GB)`;
+    return `<span class="lm-model-card-metric lm-model-card-tag-metric lm-vram-pct" title="${escapeHtml(title)}"><span class="lbl">VRAM</span>${Math.round(pct)}%</span>`;
   }
 
   function slotInferenceStats(stats) {
@@ -1702,12 +1720,19 @@
       // model directories (STT). The import endpoint validates either; only
       // skip obvious file paths that are neither.
       const importablePath = externalPath && (/^\.gguf$/i.test(externalPath) || isImportableSttDir(externalPath)) ? externalPath : '';
+      // Once a model has been imported into the Console library, don't offer to
+      // import it again when it shows up from an external app — show "Imported".
+      const alreadyImported = !!importablePath && window.DFlashModelsLive?.isModelAlreadyImported?.(importablePath) === true;
       const externalPrompt = row.external
         ? `<div class="lm-model-card-external-prompt">
-            <span>Loaded from outside DFlash Console</span>
-            ${importablePath
-              ? `<button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(importablePath)}" title="Import this model into the DFlash Console library to manage, load and run it here">Import model to Flash Console</button>`
-              : ''}
+            <span class="lm-external-app-name" title="Loaded outside DFlash Console by ${escapeHtml(cardAppLabel(row))}">${escapeHtml(cardAppLabel(row))}</span>
+            <span class="lm-external-prompt-actions">
+              ${alreadyImported
+                ? `<span class="lm-tag green" title="This model is already in the DFlash Console library">Imported ✓</span>`
+                : importablePath
+                  ? `<button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(importablePath)}" title="Import this model into the DFlash Console library to manage, load and run it here">Import model to Flash Console</button>`
+                  : ''}
+            </span>
           </div>`
         : '';
 
@@ -1852,10 +1877,12 @@
       notice.classList.add('is-checking');
       return;
     }
-    if (plan.level === 'ok') return;
+    // Only surface the VRAM warning box when the model cannot be loaded
+    // (block).  Fits (ok) and tight (warn) proceed without the box.
+    if (plan.level !== 'block') return;
     notice.textContent = plan.message || 'GPU memory may be insufficient for this model.';
     notice.classList.remove('hidden');
-    if (plan.level === 'block') notice.classList.add('is-block');
+    notice.classList.add('is-block');
   }
 
   async function refreshLoadPlan(model) {
@@ -1952,8 +1979,8 @@
 
     const selected = catalogModels.find((m) => modelCatalogKey(m) === pick.value);
     if (loadBtn) loadBtn.disabled = !canLoadModel(selected);
-    renderLoadPlanNotice(selected);
-    if (selected) void refreshLoadPlan(selected);
+    // The VRAM/load-plan warning only appears when the user actually presses
+    // Load — never automatically on page load or dropdown selection.
   }
 
   function resetEngineModelPicker() {
@@ -1987,10 +2014,8 @@
     if (model) {
       await applyModelSelection(model);
       await window.DFlashModelsLive?.selectModel?.(selectedModelKey, { applyInspector: false });
-      await refreshLoadPlan(model);
     } else {
       renderInspectorEmptyState();
-      await refreshLoadPlan(null);
     }
   }
 
@@ -2009,7 +2034,10 @@
       else toast('This model is browse-only — wire it to an engine profile in Settings.', false);
       return;
     }
-    if (currentLoadPlanKey === loadPlanKeyFor(model) && currentLoadPlan?.level === 'block') {
+    // Only now, on Load press, check GPU fit and surface the VRAM warning.
+    await refreshLoadPlan(model).catch(() => {});
+    if (currentLoadPlan?.level === 'block') {
+      renderLoadPlanNotice(model); // shows the warning box; the model is not loaded
       toast(currentLoadPlan.message || 'This model does not fit the current GPU memory.', false);
       return;
     }
@@ -2053,7 +2081,6 @@
       if (!gatewayUrl) void loadGatewayUrl({ rerender: true });
     }
     const picked = selectedCatalogModel();
-    renderLoadPlanNotice(picked);
     syncEngineCardsSectionLabel();
   }
 
@@ -2152,6 +2179,7 @@
   function readInspectorLoadSettings() {
     return {
       context_size: parseInt(document.getElementById('inspectorContext')?.value || '65536', 10),
+      context_max: parseInt(document.getElementById('inspectorContextMax')?.value || '131072', 10),
       load_settings: {
         gpu_layers: parseInt(document.getElementById('inspectorGpuLayers')?.value || '99', 10),
         cpu_threads: parseInt(document.getElementById('inspectorCpuThreads')?.value || '9', 10),
@@ -2180,6 +2208,8 @@
     const ctxEl = document.getElementById('inspectorContext');
     if (ctxEl) ctxEl.value = server.context_size || 65536;
     if (ctxEl) ctxEl.max = String(ctxMax);
+    const ctxMaxEl = document.getElementById('inspectorContextMax');
+    if (ctxMaxEl) ctxMaxEl.value = server.context_max || ctxMax;
 
     const gpuEl = document.getElementById('inspectorGpuLayers');
     const gpuLayers = load.gpu_layers ?? 99;
@@ -2428,6 +2458,8 @@
     document.getElementById('serverSettingsPort').value = server.port;
     document.getElementById('serverSettingsHost').value = server.host;
     document.getElementById('serverSettingsContext').value = server.context_size;
+    const ctxMaxEl = document.getElementById('serverSettingsContextMax');
+    if (ctxMaxEl) ctxMaxEl.value = server.context_max || server.context_size || 131072;
     document.getElementById('serverSettingsIdle').value = server.idle_unload_minutes;
     document.getElementById('serverSettingsProfile').value = server.profile;
     const gpuSel = document.getElementById('serverSettingsGpu');
@@ -2614,12 +2646,27 @@
   }
 
   async function refresh(shouldRender = true, { fresh = false } = {}) {
+    void ensureTotalVram();
     if (!catalogLoaded) {
       await refreshCatalog({ shouldRender });
     } else {
       await refreshStatus(shouldRender, { fresh });
     }
     reschedulePoll();
+  }
+
+  async function ensureTotalVram() {
+    // Total VRAM across all GPUs, cached so the engine card VRAM% badge has a
+    // denominator.  Refetch on each refresh is avoided; a null stays null.
+    if (totalVramGb != null) return;
+    try {
+      const data = await api('/api/system-stats', { timeoutMs: 8000 });
+      const gpusData = data?.gpus || [];
+      const total = gpusData.reduce((sum, g) => sum + (Number(g.vram_total_gb) || 0), 0);
+      if (total > 0) totalVramGb = total;
+    } catch (_err) {
+      /* keep null */
+    }
   }
 
   async function refreshAfterUnload() {
@@ -2895,6 +2942,7 @@
       port: parseInt(document.getElementById('serverSettingsPort').value, 10),
       host: document.getElementById('serverSettingsHost').value.trim(),
       context_size: parseInt(document.getElementById('serverSettingsContext').value, 10),
+      context_max: parseInt(document.getElementById('serverSettingsContextMax')?.value || '131072', 10),
       idle_unload_minutes: parseInt(document.getElementById('serverSettingsIdle').value, 10),
       gpu_device: document.getElementById('serverSettingsGpu').value,
       profile: document.getElementById('serverSettingsProfile').value,
@@ -2920,7 +2968,7 @@
     window.DFlashRuntimeSteppers?.bindInspectorSteppers?.();
 
     const autoSaveIds = [
-      'inspectorContext', 'inspectorGpuLayers', 'inspectorCpuThreads', 'inspectorEvalBatch',
+      'inspectorContext', 'inspectorContextMax', 'inspectorGpuLayers', 'inspectorCpuThreads', 'inspectorEvalBatch',
       'inspectorPhysicalBatch', 'inspectorFlashAttention', 'inspectorTemperature', 'inspectorTopP',
       'inspectorTopK', 'inspectorRepeatPenalty', 'inspectorMaxTokens', 'inspectorReasoningEffort',
     ];

@@ -9,9 +9,11 @@
   function colMinWidth(th) {
     const raw = parseInt(th.dataset.colMin || '', 10);
     if (Number.isFinite(raw)) return raw;
-    if (th.classList.contains('lm-col-action')) return 56;
-    if (th.classList.contains('lm-col-model')) return 180;
-    return 44;
+    if (th.classList.contains('lm-col-model')) return 300;
+    if (th.classList.contains('lm-col-action')) return 44;
+    if (th.dataset.colId === 'source') return 48;
+    if (th.dataset.colId === 'updated') return 40;
+    return 36;
   }
 
   function loadWidths(storageKey, headers) {
@@ -33,9 +35,21 @@
     layout()?.setTableColumns?.(storageKey, payload);
   }
 
-  function applyWidths(colEls, widths) {
+  function applyWidths(colEls, widths, headers) {
+    const total = widths.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+    const base = total > 0 ? total : 1;
     colEls.forEach((col, index) => {
-      col.style.width = `${Math.round(widths[index])}px`;
+      const isModel = headers && headers[index]?.classList?.contains('lm-col-model');
+      if (isModel) {
+        // The Model column absorbs whatever the right columns leave over, so it
+        // grows and shrinks with the window (flexible card, never scrolls).
+        col.style.width = 'auto';
+      } else {
+        // Right columns are flexible too: sized as a % of the table so they
+        // scale together when the window changes.
+        const value = Number.isFinite(widths[index]) ? widths[index] : 0;
+        col.style.width = `${((value / base) * 100).toFixed(3)}%`;
+      }
     });
   }
 
@@ -43,10 +57,10 @@
     const raw = parseInt(th.dataset.colDefault || '', 10);
     if (Number.isFinite(raw)) return raw;
     if (th.classList.contains('lm-col-model')) return 420;
-    if (th.classList.contains('lm-col-action')) return 72;
-    if (th.dataset.colId === 'source') return 88;
-    if (th.dataset.colId === 'updated') return 88;
-    return 64;
+    if (th.classList.contains('lm-col-action')) return 52;
+    if (th.dataset.colId === 'source') return 84;
+    if (th.dataset.colId === 'updated') return 48;
+    return 44;
   }
 
   function widthsUsable(widths, headers) {
@@ -69,7 +83,7 @@
           return;
         }
         const widths = measureWidths(table, headers);
-        applyWidths(colEls, widths);
+        applyWidths(colEls, widths, headers);
         table.dataset.colsMeasured = '1';
       });
     }, { threshold: 0.01 });
@@ -162,10 +176,14 @@
         queueRemeasure(table, headers, colEls, storageKey);
       }
     }
-    applyWidths(colEls, widths);
+    applyWidths(colEls, widths, headers);
 
     headers.forEach((th, index) => {
       if (index >= headers.length - 1) return;
+
+      // The Model column is flexible — no fixed resize handle, so it always
+      // adapts to the window / sidebar width.
+      if (th.classList.contains('lm-col-model')) return;
 
       if (th.querySelector('.lm-col-resize-handle')) return;
 
@@ -188,7 +206,7 @@
           next.forEach((value, colIndex) => {
             widths[colIndex] = value;
           });
-          applyWidths(colEls, widths);
+          applyWidths(colEls, widths, headers);
         };
 
         const onUp = () => {
@@ -217,7 +235,7 @@
         next.forEach((value, colIndex) => {
           widths[colIndex] = value;
         });
-        applyWidths(colEls, widths);
+        applyWidths(colEls, widths, headers);
         saveWidths(storageKey, headers, widths);
       });
     });

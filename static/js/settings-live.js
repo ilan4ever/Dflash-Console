@@ -1239,7 +1239,7 @@
     document.getElementById('settingsExportPresets')?.addEventListener('click', () => void exportPresetFiles());
     document.getElementById('settingsImportPresets')?.addEventListener('click', () => void importPresetFiles());
 
-    ['serverSettingsPort', 'serverSettingsHost', 'serverSettingsContext', 'serverSettingsIdle',
+    ['serverSettingsPort', 'serverSettingsHost', 'serverSettingsContext', 'serverSettingsContextMax', 'serverSettingsIdle',
       'serverSettingsProfile', 'serverSettingsGpu'].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;

@@ -12,6 +12,7 @@
   const notifiedJobs = new Set();
   const searchCache = new Map();
   const detailCache = new Map();
+  const SEARCH_CACHE_STORAGE_KEY = 'dflashConsole.hfSearchCache';
   let searchRefreshGen = 0;
   let catalogPrimed = false;
   let listRefreshIndicator = null;
@@ -421,7 +422,12 @@
     const hasText = (pattern) => pattern.test(haystack);
 
     if (catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
-    if (hasText(/dflash|dspark/)) badges.push(catalogDflashLabel());
+    // The logo is reserved for a DFlash stack that is already registered and
+    // loadable in this Console. Text in a README or a compatible tag is not
+    // proof that this repository is installed locally.
+    if (catalogReadyToLoad(model) && catalogDflashCompatible(model)) {
+      badges.push(catalogDflashLabel());
+    }
     if (catalogReadyToLoad(model)) badges.push(catalogBadge('ready to load', 'gold'));
     if (model?.runnable) {
       badges.push(catalogBadge('runnable', 'green', 'Runnable in DFlash Console'));
@@ -473,18 +479,55 @@
     return `${category}|${repoId}`;
   }
 
+  function loadPersistedSearch(key) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SEARCH_CACHE_STORAGE_KEY) || '{}');
+      const row = stored?.[key];
+      return Array.isArray(row?.models) && row.models.length ? row : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistSearchCache(key, value) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SEARCH_CACHE_STORAGE_KEY) || '{}');
+      stored[key] = {
+        models: value.models,
+        fetchedAt: value.fetchedAt,
+        detailById: {},
+      };
+      const entries = Object.entries(stored)
+        .sort(([, a], [, b]) => Number(b?.fetchedAt || 0) - Number(a?.fetchedAt || 0))
+        .slice(0, 12);
+      localStorage.setItem(SEARCH_CACHE_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch {
+      /* A full browser cache must never block catalog rendering. */
+    }
+  }
+
   function getCachedSearch(query, sort, category) {
-    return searchCache.get(searchCacheKey(query, sort, category)) || null;
+    const key = searchCacheKey(query, sort, category);
+    const memory = searchCache.get(key);
+    if (memory) return memory;
+    const persisted = loadPersistedSearch(key);
+    if (persisted) {
+      searchCache.set(key, persisted);
+      return persisted;
+    }
+    return null;
   }
 
   function putCachedSearch(query, sort, category, nextModels) {
     const key = searchCacheKey(query, sort, category);
     const prior = searchCache.get(key);
-    searchCache.set(key, {
+    const value = {
       models: nextModels,
       fetchedAt: Date.now(),
       detailById: prior?.detailById || {},
-    });
+    };
+    searchCache.set(key, value);
+    persistSearchCache(key, value);
   }
 
   function loadingCopy(category) {
@@ -556,7 +599,10 @@
     const key = detailCacheKey(repoId, category);
     if (detailCache.has(key)) return;
     try {
-      const data = await api(`/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`);
+      const data = await api(
+        `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
+        { timeoutMs: 60000 },
+      );
       if (data?.model) detailCache.set(key, data.model);
     } catch {
       /* warm-cache best effort */
@@ -570,9 +616,24 @@
       const category = DEFAULT_CATEGORY;
       const sort = 'downloads';
       const query = '';
-      const key = searchCacheKey(query, sort, category);
-      if (searchCache.has(key)) {
+      if (getCachedSearch(query, sort, category)) {
         catalogPrimed = true;
+        void searchCatalog(query, sort, category)
+          .then((data) => {
+            const rows = data.models || [];
+            putCachedSearch(query, sort, category, rows);
+            if (
+              document.body.dataset.activeView === 'catalog'
+              && !searchInput()?.value?.trim()
+              && currentCategory() === category
+            ) {
+              models = rows;
+              populateCreatorFilter();
+              renderList();
+              restoreVisibleSelection({ preferCache: true });
+            }
+          })
+          .catch(() => {});
         return;
       }
       const data = await searchCatalog('', sort, category);
@@ -1076,7 +1137,10 @@
 
   async function refreshDetail(repoId, category) {
     try {
-      const data = await api(`/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`);
+      const data = await api(
+        `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
+        { timeoutMs: 60000 },
+      );
       detailCache.set(detailCacheKey(repoId, category), data.model);
       if (selectedId === repoId) {
         selectedDetail = data.model;

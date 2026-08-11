@@ -104,6 +104,7 @@
 
   function bindInspectorSteppers() {
     bindStepper('inspectorContext', (input) => contextSteps(input.max));
+    bindStepper('inspectorContextMax', (input) => contextSteps(input.max));
     bindStepper('inspectorGpuLayers', (input) => gpuLayerSteps(input.max));
     bindStepper('inspectorCpuThreads', (input) => cpuThreadSteps(input.max));
     bindStepper('inspectorEvalBatch', (input) => batchSteps(Number(input.min || 32), Number(input.max || 8192)));

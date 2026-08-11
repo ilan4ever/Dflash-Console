@@ -23,6 +23,11 @@
   --ready-frame-glow: transparent;
   --ready-frame-width: 1px;
   --ready-radius: 10px;
+  --external-card-bg: rgba(31, 33, 40, 0.96);
+  --external-card-hover: rgba(43, 46, 55, 0.98);
+  --external-card-selected: rgba(22, 24, 30, 0.98);
+  --external-card-border: rgba(148, 163, 184, 0.24);
+  --external-card-border-strong: rgba(148, 163, 184, 0.36);
   --running-frame: var(--ready-frame);
   --running-frame-hover: var(--ready-frame-hover);
   accent-color: #0a4a42;
@@ -608,6 +613,9 @@ body.lm-resizing-sidenav {
 }
 
 .df-shell .lm-models-table.lm-resizable-table {
+  /* Fixed layout at 100% width: the table always exactly fits the window — it
+     never scrolls and shrinks when the window/sidebar changes. Columns are
+     percentage-based (Model absorbs the rest) so every column flexes. */
   table-layout: fixed;
   width: 100%;
 }
@@ -631,6 +639,16 @@ body.lm-resizing-sidenav {
 .df-shell .lm-models-table:not(.lm-resizable-table) th.lm-col-model,
 .df-shell .lm-models-table:not(.lm-resizable-table) td.lm-col-model {
   width: 1%;
+}
+
+.df-shell .lm-models-table tr.lm-model-row {
+  height: 96px;
+  max-height: 96px;
+}
+
+.df-shell .lm-models-table td.lm-col-model {
+  max-height: 96px;
+  overflow: hidden;
 }
 
 .df-shell .lm-models-table th.lm-col-meta,
@@ -673,8 +691,19 @@ body.lm-resizing-sidenav {
 .df-shell .lm-models-table td.lm-col-action {
   vertical-align: middle;
   white-space: nowrap;
+  width: 82px;
+  min-width: 82px;
+  box-sizing: border-box;
   padding-left: 8px;
-  padding-right: 12px;
+  padding-right: 10px;
+}
+
+/* The resize script writes percentage widths onto the col elements. Reserve
+   real space for the action column so its button cannot be squeezed behind
+   the table's right edge. */
+.df-shell .lm-models-table col:last-child {
+  width: 82px !important;
+  min-width: 82px;
 }
 
 .df-shell .lm-models-table th {
@@ -724,9 +753,18 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-tags-line {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: flex-start;
   gap: 4px;
   margin-top: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.df-shell .lm-model-tags-line .lm-tag {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  line-height: 1.4;
 }
 
 .df-shell .lm-model-draft-hint {
@@ -757,13 +795,14 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-title-text {
   font-weight: 600;
-  /* One line, fills the row: the name takes all available space and pushes the
-     badges (Installed, Reasoning, DFlash, pin) to the right edge. Never add an
-     ellipsis — long names are allowed to extend. */
-  flex: 1 1 auto;
-  min-width: 0;
+  /* Full model name, NEVER trimmed or ellipsized. The name keeps its natural
+     width and the badges (Installed, Reasoning, DFlash, pin) sit immediately
+     to the right of it on the same line. If the line is wider than the card it
+     simply extends (no overlap, no truncation) — the card stays flexible. */
+  flex: 0 0 auto;
   white-space: nowrap;
   overflow: visible;
+  text-overflow: clip;
   font-size: 13px;
   color: var(--text);
 }
@@ -873,6 +912,12 @@ body.lm-resizing-table-col {
 .df-shell .lm-view[data-view="models"] .lm-models-table tbody td:last-child {
   border-right: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 0 var(--ready-radius) var(--ready-radius) 0;
+}
+
+/* Model rows are cards, not a grid: keep the outline on the outer cells only. */
+.df-shell .lm-view[data-view="models"] .lm-models-table tbody td:not(:first-child):not(:last-child) {
+  border-left-color: transparent;
+  border-right-color: transparent;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-path-hint {
@@ -1070,6 +1115,65 @@ body.lm-resizing-table-col {
   border-color: rgba(110, 196, 184, 0.85);
 }
 
+/* EXTERNAL models: deep green surface, matching the external cards on the
+   Engines page (swapped palette — green now means external, deep reddish means
+   Console). Drawn on the cells (td-level) so it is actually visible — a
+   tr-level box-shadow is hidden behind the cell backgrounds. Loaded state is
+   shown by the gold LOADED ribbon. */
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td {
+  background-color: var(--external-card-bg);
+  border-top-color: var(--external-card-border);
+  border-bottom-color: var(--external-card-border);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td:first-child {
+  border-left-color: var(--external-card-border);
+  box-shadow: inset 0 0 0 0.5px var(--external-card-border);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td:last-child {
+  border-right-color: var(--external-card-border);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:hover:not(.selected) td {
+  background-color: var(--external-card-hover);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.loaded-on-gpu td {
+  background-color: var(--external-card-bg);
+  border-color: var(--external-card-border);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.selected td {
+  background: var(--external-card-selected);
+  border-color: var(--external-card-border-strong);
+}
+
+/* Load actions should read as compact buttons, with breathing room from the
+   card edge instead of floating against the right border. */
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  min-width: 58px;
+  height: 26px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 6px;
+  background: rgba(55, 59, 69, 0.96);
+  color: #e2e8f0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.28);
+  vertical-align: middle;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"]:hover {
+  border-color: rgba(203, 213, 225, 0.54);
+  background: rgba(71, 76, 88, 0.98);
+  color: #fff;
+}
+
 .df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected .lm-model-loaded-ribbon {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 2px 12px rgba(212, 175, 55, 0.45);
 }
@@ -1174,8 +1278,8 @@ body.lm-resizing-table-col {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-dim);
-  background: rgba(249, 115, 22, 0.08);
-  border: 1px solid rgba(249, 115, 22, 0.16);
+  background: rgba(6, 78, 59, 0.35);
+  border: 1px solid rgba(52, 211, 153, 0.3);
   border-radius: var(--radius);
 }
 
@@ -1474,7 +1578,7 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-card-compact.external-gpu .lm-model-path,
 .df-shell .lm-model-card-compact.external-gpu.selected .lm-model-path {
-  color: #7dd3fc;
+  color: #86efac;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-metrics {
@@ -1819,34 +1923,69 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-card.external-gpu {
-  border: 0.5px solid rgba(249, 115, 22, 0.24);
-  background: rgba(249, 115, 22, 0.06);
+  border: 0.5px solid var(--external-card-border);
+  background: var(--external-card-bg);
 }
 
 .df-shell .lm-model-card-external-prompt {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 4px 8px 4px 10px;
   font-size: 10px;
-  color: rgba(249, 115, 22, 0.9);
-  background: rgba(120, 53, 15, 0.18);
-  border-bottom: 1px solid rgba(249, 115, 22, 0.18);
+  color: rgba(203, 213, 225, 0.86);
+  background: rgba(43, 46, 55, 0.72);
+  border-bottom: 1px solid var(--external-card-border);
 }
 
-.df-shell .lm-model-card-external-prompt .lm-btn.tiny {
-  padding: 2px 8px;
+/* Centered, dynamic label naming the app that loaded the external model
+   (e.g. OneVoice, LM Studio, Ollama).  The actions stay on the right. */
+.df-shell .lm-model-card-external-prompt .lm-external-app-name {
+  grid-column: 2;
+  justify-self: center;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-external-prompt-actions .lm-btn.tiny {
+  padding: 3px 10px;
   font-size: 10px;
+  font-weight: 600;
   border-radius: 6px;
+  margin-right: 0;
+  background: rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  color: #e2e8f0;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-external-prompt-actions .lm-btn.tiny:hover {
+  background: rgba(148, 163, 184, 0.24);
+  border-color: rgba(148, 163, 184, 0.48);
 }
 
 .df-shell .lm-model-card.external-gpu.ready {
-  box-shadow: inset 0 0 0 0.5px rgba(249, 115, 22, 0.28);
+  box-shadow: inset 0 0 0 0.5px var(--external-card-border);
 }
 
 .df-shell .lm-model-card.external-gpu:hover {
-  background: rgba(249, 115, 22, 0.1);
+  background: var(--external-card-hover);
 }
 
 .df-shell .lm-model-card-live-row {
@@ -2853,10 +2992,29 @@ body.lm-resizing-table-col {
 .df-shell .lm-server-bar-center .lm-engine-load-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
-  flex: 0 1 auto;
+  width: 100%;
+  flex: 1 1 auto;
+}
+
+/* Model pick fills the available width; the Load button stays pinned to the
+   right.  On narrow layouts the group wraps so the button drops below and is
+   right-aligned instead of overlapping the dropdown. */
+.df-shell .lm-server-bar-center .lm-engine-load-group .df-select-wrap:has(#serverModelPick) {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.df-shell .lm-server-bar-center .lm-engine-load-group .df-select-wrap:has(#serverSourcePick) {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.df-shell .lm-server-bar-center .lm-engine-load-group #serverModelLoadBtn {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .df-shell .lm-server-api {
@@ -5147,28 +5305,116 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   line-height: 1.35;
 }
 
-/* Installed local models use a quiet shaded surface instead of a frame. */
+/* DFlash Console (installed) local models use the EXACT same deep brownish-red
+   surface + thin border as the external cards on the Engines page
+   (rgba(249,115,22,...)), so the rows look the same there and in the library.
+   Drawn on the cells (td-level) so it is actually visible. */
 .df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load td {
-  background: rgba(10, 45, 36, 0.72) !important;
-  box-shadow: none !important;
+  background: rgba(249, 115, 22, 0.06) !important;
+  border-top-color: rgba(249, 115, 22, 0.24) !important;
+  border-bottom-color: rgba(249, 115, 22, 0.24) !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load td:first-child {
+  border-left-color: rgba(249, 115, 22, 0.24) !important;
+  box-shadow:
+    inset 0 0.5px 0 0 rgba(249, 115, 22, 0.28),
+    inset 0 -0.5px 0 0 rgba(249, 115, 22, 0.28),
+    inset 0.5px 0 0 0 rgba(249, 115, 22, 0.28) !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load td:last-child {
+  border-right-color: rgba(249, 115, 22, 0.24) !important;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load:hover td {
-  background: rgba(14, 60, 48, 0.86) !important;
+  background: rgba(249, 115, 22, 0.10) !important;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load.selected td {
-  background: rgba(4, 58, 46, 0.96) !important;
+  background: var(--hf-accent) !important;
+  border-color: rgba(249, 115, 22, 0.3) !important;
+  box-shadow: none !important;
+}
+
+/* External models keep the neutral gray surface even when they are loadable
+   (overrides the ready-to-load reddish shading above). */
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td {
+  background: var(--external-card-bg) !important;
+  box-shadow: none !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load:hover td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:hover td {
+  background: var(--external-card-hover) !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load.selected td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.selected td {
+  background: var(--external-card-selected) !important;
   box-shadow: none !important;
 }
 
 .df-shell .lm-search-item.ready-to-load,
 .df-shell .df-catalog-model-card.ready-to-load {
-  background: rgba(10, 45, 36, 0.72);
+  background: rgba(249, 115, 22, 0.06);
   box-shadow: none !important;
 }
 
 .df-shell .lm-search-item.ready-to-load:hover:not(.selected),
 .df-shell .df-catalog-model-card.ready-to-load:hover {
-  background: rgba(14, 60, 48, 0.86);
+  background: rgba(249, 115, 22, 0.10);
+}
+
+/* Engines page: registered/Console model cards use the SAME deep brownish-red
+   surface as the Models page (rgba(249,115,22,...)), so card colors are
+   normalized across the whole app.  External cards keep their neutral gray. */
+.df-shell .lm-model-card.dflash-model,
+.df-shell .lm-model-card-compact.dflash-model {
+  background: rgba(249, 115, 22, 0.06);
+  border-color: rgba(249, 115, 22, 0.24);
+}
+.df-shell .lm-model-card.dflash-model:hover,
+.df-shell .lm-model-card-compact.dflash-model:hover,
+.df-shell .lm-model-card.dflash-model.ready:hover,
+.df-shell .lm-model-card-compact.dflash-model.ready:hover {
+  background: rgba(249, 115, 22, 0.10);
+  border-color: rgba(249, 115, 22, 0.3);
+}
+.df-shell .lm-model-card.dflash-model.selected,
+.df-shell .lm-model-card-compact.dflash-model.selected {
+  background: var(--hf-accent);
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+/* VRAM usage % badge on loaded engine cards (shown left of the disk amount). */
+.df-shell .lm-model-card-metric.lm-vram-pct {
+  color: #c4b5fd;
+  font-variant-numeric: tabular-nums;
+}
+.df-shell .lm-model-card-metric.lm-vram-pct .lbl {
+  color: rgba(196, 181, 253, 0.72);
+}
+
+/* Keep every side of the DFlash ready-to-load frame exactly one pixel. */
+.df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load:not(.external-model) td {
+  border-color: transparent !important;
+  box-shadow:
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load:not(.external-model) td:first-child {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load:not(.external-model) td:last-child {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
 }

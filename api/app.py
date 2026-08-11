@@ -214,7 +214,11 @@ def _start_background_tasks() -> None:
 
     def warm_catalog() -> None:
         try:
-            warm_model_catalog(cfg=load_config())
+            from core.local_models import start_model_catalog_refresh_loop
+
+            cfg = load_config()
+            start_model_catalog_refresh_loop()
+            warm_model_catalog(cfg=cfg)
         except Exception as exc:
             logger.exception('model catalog warm failed: %s', exc)
 
@@ -238,8 +242,9 @@ def _start_background_tasks() -> None:
 
     def warm_hf_catalog() -> None:
         try:
-            from core.hf_catalog_cache import warm_hf_catalog_cache
+            from core.hf_catalog_cache import start_hf_catalog_refresh_loop, warm_hf_catalog_cache
 
+            start_hf_catalog_refresh_loop()
             warm_hf_catalog_cache()
         except Exception as exc:
             logger.exception('hf catalog warm failed: %s', exc)
@@ -292,6 +297,7 @@ class ServerPatch(BaseModel):
     model_id: str | None = None
     gpu_device: str | None = None
     context_size: int | None = None
+    context_max: int | None = None
     idle_unload_minutes: int | None = None
     enabled: bool | None = None
     load_settings: dict[str, Any] | None = None
@@ -310,6 +316,8 @@ class ConfigPatch(BaseModel):
     hardware_settings: dict[str, Any] | None = None
     model_libraries: list[dict[str, Any]] | None = None
     ui_layout: dict[str, Any] | None = None
+    context_auto_grow: bool | None = None
+    context_max: int | None = Field(default=None, ge=2048, le=1048576)
 
 
 class HardwarePatch(BaseModel):
@@ -729,9 +737,14 @@ def hf_model_detail(
     repo_id: str,
     category: str = Query('all-gguf'),
 ) -> dict[str, Any]:
+    from core.hf_catalog_cache import get_or_fetch_detail
     from core.huggingface import get_model_detail
 
-    result = get_model_detail(repo_id, category=category)
+    result = get_or_fetch_detail(
+        repo_id=repo_id,
+        category=category,
+        fetcher=lambda: get_model_detail(repo_id, category=category),
+    )
     if not result.get('success'):
         raise HTTPException(status_code=404, detail=result.get('error') or 'not found')
     return result
@@ -1453,8 +1466,139 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     return result
 
 
-def _ensure_server_ready_for_chat(server_id: str, server: dict[str, Any], cfg: dict[str, Any], *, client_label: str = 'DFlash Console') -> dict[str, Any]:
-    """JIT-load configured checkpoint when chat arrives — only if engine is on."""
+def _loaded_per_slot_context(server: dict[str, Any]) -> int:
+    """Return the live per-slot context (``n_ctx``) of a loaded engine, or 0."""
+    import json as _json
+    import urllib.request
+
+    from core.runtime import api_base_url
+
+    api_url = str(server.get('api_url') or '').strip()
+    base = api_base_url(api_url)
+    if not base:
+        return 0
+    try:
+        with urllib.request.urlopen(base.rstrip('/') + '/models', timeout=2.5) as resp:
+            payload = _json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    except Exception:
+        return 0
+    data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return 0
+    model_id = str(server.get('model_id') or '').strip()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        if model_id and str(entry.get('id') or '') != model_id:
+            continue
+        meta = entry.get('meta')
+        if isinstance(meta, dict):
+            try:
+                nctx = int(meta.get('n_ctx') or 0)
+            except (TypeError, ValueError):
+                nctx = 0
+            if nctx > 0:
+                return nctx
+    return 0
+
+
+def _grow_context_for_chat(
+    server_id: str,
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    required: int,
+    *,
+    client_label: str = 'DFlash Console',
+) -> dict[str, Any]:
+    """Reload a model with a larger per-slot context to fit ``required`` tokens.
+
+    Implements the auto-grow rule: requests that need more context than the
+    model is loaded with cause a reload to the larger context (capped by
+    ``context_max``).  Parallel slots are preserved where VRAM allows, reducing
+    them if the total context would exceed the cap.
+    """
+    import time
+
+    from core.config import normalize_load_settings
+    from core.engine_state import note_engine_loaded
+    from core.runtime import build_server_status
+    from core.server_boot import reload_server
+
+    load = normalize_load_settings(server.get('load_settings'))
+    parallel = max(1, int(load.get('parallel_slots') or 1))
+    configured_ctx = max(2048, int(server.get('context_size') or 8192))
+    # Per-server hard limit: API requests may never grow the context beyond
+    # this.  Falls back to the global context_max, then the default.
+    max_total = max(2048, int(server.get('context_max') or cfg.get('context_max') or 131072))
+    current_per_slot = _loaded_per_slot_context(server)
+    per_slot = max(required, current_per_slot, configured_ctx // parallel)
+    total = per_slot * parallel
+    if total > max_total:
+        parallel = max(1, max_total // per_slot)
+        total = per_slot * parallel
+    if total > max_total:
+        # Hard limit reached even at parallel=1: cap the per-slot context so
+        # API requests can never grow the model beyond the limit.
+        per_slot = max_total
+        total = max_total
+    if total <= configured_ctx and parallel <= int(load.get('parallel_slots') or 4):
+        return build_server_status(server, cfg=cfg)
+
+    _persist_server_merge(
+        cfg,
+        server_id,
+        {'context_size': total, 'load_settings': {'parallel_slots': parallel}},
+    )
+    updated = _require_server(cfg, server_id)
+    result = reload_server(updated)
+    if not result.get('success'):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'error': 'context_grow_failed',
+                'message': str(result.get('error') or 'failed to reload model with larger context'),
+            },
+        )
+    note_engine_loaded(server_id, loaded_by=client_label)
+    _invalidate_status_cache()
+    deadline = time.time() + 180.0
+    while time.time() < deadline:
+        live = build_server_status(updated, cfg=cfg)
+        if live.get('status') == 'loaded' and live.get('loaded_models'):
+            return live
+        if live.get('status') in {'booting', 'running'}:
+            time.sleep(2.0)
+            continue
+        return live
+    raise HTTPException(
+        status_code=503,
+        detail={'error': 'model_not_loaded', 'message': 'reload with larger context did not complete'},
+    )
+
+
+def _configured_per_slot(server: dict[str, Any]) -> int:
+    """Per-slot context the server profile is configured for (ctx // parallel)."""
+    from core.config import normalize_load_settings
+
+    load = normalize_load_settings(server.get('load_settings'))
+    parallel = max(1, int(load.get('parallel_slots') or 1))
+    return max(2048, int(server.get('context_size') or 8192)) // parallel
+
+
+def _ensure_server_ready_for_chat(
+    server_id: str,
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    client_label: str = 'DFlash Console',
+    required_context: int | None = None,
+) -> dict[str, Any]:
+    """JIT-load configured checkpoint when chat arrives — only if engine is on.
+
+    Implements context auto-grow: when a request needs more per-slot context
+    than the loaded model provides, reload with a larger context.  Requests
+    that fit share the already-loaded model (no reload).
+    """
     import time
 
     from core.chat_ready import assess_server_chat_ready, chat_ready_http_error_detail
@@ -1492,10 +1636,24 @@ def _ensure_server_ready_for_chat(server_id: str, server: dict[str, Any], cfg: d
 
     live = build_server_status(server, cfg=cfg)
     if live.get('status') == 'loaded' and live.get('loaded_models'):
+        # Already loaded.  Auto-grow if this request needs more context than
+        # the loaded model provides; otherwise share the model as-is.
+        if required_context and cfg.get('context_auto_grow') is not False:
+            loaded_ctx = _loaded_per_slot_context(server)
+            if loaded_ctx and required_context > loaded_ctx:
+                return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
         return live
 
     if live.get('status') == 'booting':
         return _wait_until_loaded()
+
+    # Not loaded (or the router is up without a loaded checkpoint).  If this
+    # request needs more context than the configured per-slot context, grow it
+    # now so the JIT load (or router restart) uses the larger size.
+    if required_context and cfg.get('context_auto_grow') is not False:
+        configured_per_slot = _configured_per_slot(server)
+        if configured_per_slot and required_context > configured_per_slot:
+            return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
 
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
@@ -1660,20 +1818,33 @@ async def proxy_chat_completions(server_id: str, request: Request):
     import json
     import urllib.error
 
-    from core.chat_proxy import apply_reasoning_policy, extract_stream_completion_stats, open_upstream_chat_stream, upstream_chat_completion, wants_stream
+    from core.chat_proxy import apply_reasoning_policy, estimate_request_context, extract_stream_completion_stats, is_reasoning_only_chunk, open_upstream_chat_stream, upstream_chat_completion, wants_stream
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
     from core.local_models import model_has_reasoning
     from core.runtime import api_base_url, build_server_status
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
-    live = _ensure_server_ready_for_chat(server_id, server, cfg, client_label=_request_client_label(request))
+    raw = await request.body()
+    try:
+        body_json = json.loads(raw.decode('utf-8', errors='replace'))
+    except Exception:
+        body_json = None
+    required_context = (
+        estimate_request_context(body_json) if isinstance(body_json, dict) else 0
+    )
+    live = _ensure_server_ready_for_chat(
+        server_id,
+        server,
+        cfg,
+        client_label=_request_client_label(request),
+        required_context=required_context or None,
+    )
 
     api_url = str(server.get('api_url') or '')
     base = api_base_url(api_url)
     if not base:
         raise HTTPException(status_code=400, detail='engine api_url not configured')
-    raw = await request.body()
     # Non-reasoning models never negotiate reasoning: strip reasoning_effort and
     # thinking toggles so the API returns the regular chat behaviour.
     raw = apply_reasoning_policy(raw, reasoning=model_has_reasoning(server))
@@ -1725,6 +1896,8 @@ async def proxy_chat_completions(server_id: str, request: Request):
             mark_inference_end(server_id)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+        disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
+
         async def stream_body():
             buffer = bytearray()
             try:
@@ -1732,6 +1905,8 @@ async def proxy_chat_completions(server_id: str, request: Request):
                     # Client gone → stop reading; finally closes llama-server.
                     if await request.is_disconnected():
                         break
+                    if disable_reasoning and is_reasoning_only_chunk(chunk):
+                        continue
                     buffer.extend(chunk)
                     yield chunk
             finally:

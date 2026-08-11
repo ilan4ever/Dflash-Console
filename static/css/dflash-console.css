@@ -1928,7 +1928,10 @@ body.lm-resizing-logs {
 .lm-models-table-wrap {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  /* The table is always 100% wide (flexible columns), so it never scrolls
+     horizontally — clipped cell content must not create a scrollbar. */
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-card);
@@ -1995,6 +1998,16 @@ body.lm-resizing-logs {
 
 .lm-model-row.loaded-on-gpu:not(.selected) {
   background: rgba(110, 196, 184, 0.06);
+}
+
+/* Models discovered outside the Console (other apps / scanned folders). The
+   warm orange background is drawn on the cells in dflash-shell.css (td-level,
+   like the loaded teal frame) so it is never hidden behind the cell
+   backgrounds — same colors as the external cards on the Engines page. */
+.lm-tag.external-tag {
+  background: rgba(16, 185, 129, 0.2);
+  color: #a7f3d0;
+  border: 1px solid rgba(16, 185, 129, 0.5);
 }
 
 .lm-model-loaded-ribbon {

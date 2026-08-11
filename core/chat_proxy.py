@@ -27,6 +27,45 @@ def wants_stream(raw: bytes) -> bool:
     return parse_chat_body(raw).get('stream') is True
 
 
+def estimate_request_context(body: dict[str, Any], *, default_output: int = 4096) -> int:
+    """Estimate the context window (in tokens) a chat request needs.
+
+    Returns input_tokens + output_tokens + a safety margin.  The Console uses
+    this to decide whether a request fits the currently-loaded model context or
+    whether the model should be reloaded with a larger context (auto-grow).
+    """
+    if not isinstance(body, dict):
+        return 0
+    total_chars = 0
+    messages = body.get('messages')
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get('content')
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get('text')
+                    if isinstance(text, str):
+                        total_chars += len(text)
+                    elif isinstance(part.get('content'), str):
+                        total_chars += len(part['content'])
+    # ~3 chars/token is a conservative estimate for mixed prose+code, so we
+    # tend to over-estimate and avoid overflow (the goal of auto-grow).
+    input_tokens = max(1, total_chars // 3)
+    try:
+        max_tokens = int(body.get('max_tokens') or 0)
+    except (TypeError, ValueError):
+        max_tokens = 0
+    if max_tokens <= 0:
+        max_tokens = default_output
+    return input_tokens + max_tokens + 512
+
+
 def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
     """Rewrite a chat request body's reasoning controls for the target model.
 
@@ -76,6 +115,40 @@ def extract_stream_completion_stats(raw: bytes) -> dict[str, Any] | None:
         if isinstance(parsed, dict) and isinstance(parsed.get('usage'), dict):
             last = parsed
     return last
+
+
+# SSE data lines that are pure reasoning (no content delta).  We drop these
+# so that clients that do not understand ``reasoning_content`` (e.g. the VS Code
+# custom-LLM-provider extension) receive regular ``content`` deltas without a
+# long silent wait while the model thinks.
+_REASONING_ONLY_LINE_PATTERNS = (
+    b'"reasoning_content":',
+    b'"reasoning_details":',
+)
+
+
+def is_reasoning_only_chunk(chunk: bytes) -> bool:
+    """Return True when *chunk* is an SSE data line that carries only reasoning.
+
+    Keeps the initial ``delta: {"role":"assistant"}`` chunk (so the client
+    knows the turn started), usage chunks, ``[DONE]`` markers, and any chunk
+    that contains a real ``content`` delta.
+    """
+    if not chunk.startswith(b'data: '):
+        return False
+    payload = chunk[5:]
+    if not payload or payload == b'[DONE]' or payload == b'\n':
+        return False
+    # Keep the initial role delta (content is always null there).
+    if b'"delta":{"role":"assistant"' in payload:
+        return False
+    # Keep any chunk that carries a content delta.
+    if b'"content":' in payload:
+        return False
+    for pat in _REASONING_ONLY_LINE_PATTERNS:
+        if pat in payload:
+            return True
+    return False
 
 
 def upstream_chat_completion(url: str, raw: bytes, *, content_type: str = 'application/json') -> tuple[int, dict[str, Any]]:

@@ -35,7 +35,7 @@ from core.local_models import model_has_reasoning
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
 
-_FORWARD_HEADERS = {'content-type', 'accept', 'authorization'}
+_FORWARD_HEADERS = {'content-type', 'accept', 'authorization', 'x-disable-reasoning'}
 
 
 def _console_base(cfg: dict[str, Any]) -> str:
@@ -187,9 +187,17 @@ async def list_models() -> dict[str, Any]:
     return {'object': 'list', 'data': data}
 
 
-async def _forward_chat(request: Request, url: str, body: bytes | None = None) -> Response:
+async def _forward_chat(
+    request: Request,
+    url: str,
+    body: bytes | None = None,
+    *,
+    filter_reasoning: bool = False,
+) -> Response:
     body = body if body is not None else await request.body()
     headers = _pick_headers(request)
+    if filter_reasoning:
+        headers['x-disable-reasoning'] = '1'
     # Always stream upstream so SSE /v1/chat/completions stays incremental.
     async def stream() -> AsyncIterator[bytes]:
         async with httpx.AsyncClient(timeout=None) as client:
@@ -245,7 +253,11 @@ async def chat_completions(request: Request) -> Response:
 
         body = apply_reasoning_policy(body, reasoning=model_has_reasoning(server))
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
-    return await _forward_chat(request, url, body)
+    # Default to filtering reasoning so Copilot and similar clients get
+    # clean content deltas.  Clients that understand reasoning_content can
+    # opt out with X-Disable-Reasoning: 0.
+    filter_reasoning = request.headers.get('X-Disable-Reasoning') != '0'
+    return await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
 
 
 @gateway_app.post('/v1/embeddings')

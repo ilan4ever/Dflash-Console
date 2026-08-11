@@ -33,6 +33,7 @@ _PERSISTED_CACHE_TTL_SECONDS = 24 * 60 * 60
 _PERSISTED_CACHE_PATH = ROOT / 'logs' / 'local-model-catalog-cache.json'
 _CATALOG_REFRESH_LOCK = threading.Lock()
 _CATALOG_REFRESHING = False
+_CATALOG_REFRESH_LOOP_STARTED = False
 
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
@@ -1233,6 +1234,29 @@ def warm_model_catalog(*, cfg: dict[str, Any] | None = None) -> None:
     list_local_models(cfg=cfg, scan_disk=True, force_refresh=True)
 
 
+def start_model_catalog_refresh_loop(*, interval_seconds: float = 300.0) -> None:
+    """Keep the local model snapshot fresh without blocking API requests."""
+    global _CATALOG_REFRESH_LOOP_STARTED
+    with _CATALOG_REFRESH_LOCK:
+        if _CATALOG_REFRESH_LOOP_STARTED:
+            return
+        _CATALOG_REFRESH_LOOP_STARTED = True
+
+    def refresh_loop() -> None:
+        while True:
+            time.sleep(max(60.0, float(interval_seconds)))
+            try:
+                _schedule_catalog_refresh(load_config(), include_dflash_stacks=True)
+            except Exception:
+                pass
+
+    threading.Thread(
+        target=refresh_loop,
+        daemon=True,
+        name='model-catalog-refresh-loop',
+    ).start()
+
+
 def list_local_models(
     *,
     cfg: dict[str, Any] | None = None,
@@ -1258,6 +1282,17 @@ def list_local_models(
             and (now - _CATALOG_CACHE_AT) < _CATALOG_TTL_SECONDS
         ):
             return _CATALOG_CACHE
+        if (
+            not force_refresh
+            and _CATALOG_CACHE
+            and _CATALOG_CACHE_KEY == cache_key
+        ):
+            stale = dict(_CATALOG_CACHE)
+            stale['cached'] = True
+            stale['stale'] = True
+            stale['cache_age_seconds'] = round(max(0.0, now - _CATALOG_CACHE_AT), 1)
+            _schedule_catalog_refresh(config, include_dflash_stacks=True)
+            return stale
     elif (
         not force_refresh
         and _CATALOG_CACHE_PLAIN
@@ -1265,6 +1300,17 @@ def list_local_models(
         and (now - _CATALOG_CACHE_PLAIN_AT) < _CATALOG_TTL_SECONDS
     ):
         return _CATALOG_CACHE_PLAIN
+    elif (
+        not force_refresh
+        and _CATALOG_CACHE_PLAIN
+        and _CATALOG_CACHE_PLAIN_KEY == cache_key
+    ):
+        stale = dict(_CATALOG_CACHE_PLAIN)
+        stale['cached'] = True
+        stale['stale'] = True
+        stale['cache_age_seconds'] = round(max(0.0, now - _CATALOG_CACHE_PLAIN_AT), 1)
+        _schedule_catalog_refresh(config, include_dflash_stacks=False)
+        return stale
 
     if not force_refresh:
         persisted = _read_persisted_catalog(

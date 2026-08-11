@@ -20,6 +20,8 @@
   let hfAcceleratorRevision = 0;
 
   const PINNED_KEY = 'dflashConsole.pinnedModels';
+  const LOCAL_CATALOG_CACHE_KEY = 'dflashConsole.modelLibraryCache';
+  const MODEL_LIST_REFRESH_MS = 5 * 60 * 1000;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -60,6 +62,38 @@
       return JSON.parse(localStorage.getItem('dflashConsole.modelPrefs') || '{}');
     } catch {
       return {};
+    }
+  }
+
+  function loadCachedModelCatalog() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(LOCAL_CATALOG_CACHE_KEY) || 'null');
+      if (
+        !cached
+        || cached.version !== 1
+        || !Array.isArray(cached.models)
+        || !cached.models.length
+      ) {
+        return null;
+      }
+      return cached;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveCachedModelCatalog(data) {
+    if (!data || !Array.isArray(data.models) || !data.models.length) return;
+    try {
+      const { models: _models, ...footer } = data;
+      localStorage.setItem(LOCAL_CATALOG_CACHE_KEY, JSON.stringify({
+        version: 1,
+        saved_at: Date.now(),
+        models: data.models,
+        footer,
+      }));
+    } catch {
+      /* A full browser cache must never block the model library. */
     }
   }
 
@@ -254,23 +288,26 @@
     return !!model?.path && !modelHasVision(model);
   }
 
-  function capTags(model) {
+  function capTags(model, visibleCount) {
     const modality = modalityBadge(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const compatibility = isDflashConvertible(model) ? dflashCompatibilityBadge() : '';
     const accelerator = isDflashAccelerator(model) ? acceleratorBadge() : '';
     const hfAccelerator = isHfAcceleratorAvailable(model) ? hfAcceleratorBadge() : '';
     const split = splitShardBadge(model);
-    const dup = duplicateTag(model);
+    const dup = duplicateTag(model, visibleCount);
     const weak = weakMatchTag(model);
+    const ext = needsExternalTag(model)
+      ? '<span class="lm-tag external-tag" title="This model lives outside the DFlash Console library (another app or a scanned folder)">External</span>'
+      : '';
     const caps = capabilityTags(model.capabilities, {
       loadable: model.loadable && !isDflashAccelerator(model) && !modelFileMissing(model) && model.stack_status !== 'unregistered',
       port: model.port,
     });
     if (isDflashStack(model)) {
-      return modality + status + compatibility + accelerator + hfAccelerator + split + caps + dup + weak;
+      return modality + ext + status + compatibility + accelerator + hfAccelerator + split + caps + dup + weak;
     }
-    return modality + status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
+    return modality + ext + status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
   }
 
   function stackActionButton(model) {
@@ -338,19 +375,23 @@
     return '';
   }
 
-  function duplicateTag(model) {
+  function duplicateTag(model, visibleCount) {
     if (!model.duplicate_group) return '';
     const count = model.duplicate_count || 2;
-    const paths = Array.isArray(model.duplicate_paths) ? model.duplicate_paths : [];
-    const uniquePaths = new Set(paths.map((path) => normalizeModelPath(path)).filter(Boolean));
     const identical = model.duplicate_identical !== false;
-    const title = identical
-      ? `This model has ${count} identical copies on disk. Console shows one preferred entry; no files were deleted.`
-      : uniquePaths.size <= 1
-        ? 'Same file is listed more than once in the library (for example stack + plain GGUF). Prefer the stack card.'
-        : `This exact filename exists in ${count} folders on disk. Pick the copy you want for this stack.`;
-    const label = identical ? `${count} copies` : `same name ×${count}`;
-    return `<span class="lm-tag yellow" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+    if (identical) {
+      // Identical files are collapsed by the backend into one row with a count.
+      const title = `This model has ${count} identical copies on disk. Console shows one preferred entry; no files were deleted.`;
+      return `<span class="lm-tag yellow" title="${escapeHtml(title)}">${count} copies</span>`;
+    }
+    // "same name" — several different files share the filename. Show the number
+    // of copies ACTUALLY listed (external duplicates are collapsed when the
+    // Console has its own copy) and explain the on-disk total in the tooltip,
+    // so the badge always matches the cards you can see.
+    const shown = Math.max(0, Number(visibleCount) || 0);
+    if (shown < 2) return '';
+    const title = `This filename exists in ${count} folders on this PC. ${shown} copies are shown here (the Console copy plus any loaded instance); the rest are collapsed to avoid duplicates.`;
+    return `<span class="lm-tag yellow" title="${escapeHtml(title)}">same name ×${shown}</span>`;
   }
 
   function weakMatchTag(model) {
@@ -414,6 +455,91 @@
     const size = model.draft_size_gb != null ? ` · ${model.draft_size_gb} GB` : '';
     const quant = model.draft_quant && model.draft_quant !== '—' ? ` ${model.draft_quant}` : '';
     return `<div class="lm-model-draft-hint">draft ${escapeHtml(name)}${escapeHtml(quant)}${escapeHtml(size)}</div>`;
+  }
+
+  // True when the Console's own library already contains a model with the same
+  // file name as this external path — i.e. it was already imported once, so the
+  // UI should not offer to import it again (shows "Imported ✓" instead).
+  // Handles plain paths AND Hugging Face hub-cache paths, where the model name
+  // lives in a "models--<org>--<name>" folder (e.g. OneVoice/STT uses those).
+  function isModelAlreadyImported(externalPath) {
+    const segments = String(externalPath || '').split(/[/\\]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+    if (!segments.length) return false;
+    const candidates = new Set();
+    for (const seg of segments) {
+      candidates.add(seg);
+      // models--Systran--faster-whisper-small.en → faster-whisper-small.en
+      const hub = seg.match(/^models--.+?--(.+)$/);
+      if (hub) candidates.add(hub[1]);
+    }
+    const libraryNames = (models || [])
+      .filter((m) => {
+        const source = m.source || '';
+        return source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack';
+      })
+      .map((m) => String(m.path || '').split(/[/\\]/).pop()?.trim().toLowerCase())
+      .filter(Boolean);
+    if (!libraryNames.length) return false;
+    return [...candidates].some((c) => libraryNames.includes(c));
+  }
+
+  // A Console model is one the Console itself manages (its own library,
+  // profiles or stacks). Everything else was discovered on disk or in another
+  // app and is treated as external.
+  function isConsoleModel(model) {
+    const source = String(model?.source || '').trim().toLowerCase();
+    return source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack';
+  }
+
+  function isExternalModel(model) {
+    return !isConsoleModel(model);
+  }
+
+  // Best-effort name of the external app/folder a model was discovered in.
+  function externalAppLabel(model) {
+    const path = String(model?.path || '').replace(/\\/g, '/').toLowerCase();
+    if (path.includes('onevoice')) return 'OneVoice';
+    if (path.includes('.lmstudio')) return 'LM Studio';
+    if (path.includes('huggingface')) return 'Hugging Face hub';
+    return '';
+  }
+
+  // Ambiguous external sources (scanned folders) get the explicit "External"
+  // tag; LM Studio / Ollama already have clear source labels.
+  function needsExternalTag(model) {
+    const source = String(model?.source || '').trim().toLowerCase();
+    return source === 'library' || source === 'local' || source === 'other' || source === 'unknown' || !source;
+  }
+
+  // Collapse duplicate on-disk copies of the same model in the library table:
+  // when the Console has its own copy, keep only that one plus any currently
+  // loaded external instance, and hide the other external duplicates (they
+  // remain visible as engine cards and are importable from there). Groups with
+  // no Console copy are kept whole so external models stay importable.
+  function dedupeExternalCopies(rows) {
+    const groups = new Map();
+    for (const model of rows) {
+      const file = String(model?.filename || model?.label || '').trim().toLowerCase();
+      if (!file) continue;
+      if (!groups.has(file)) groups.set(file, []);
+      groups.get(file).push(model);
+    }
+    const keep = new Set();
+    for (const group of groups.values()) {
+      if (group.length < 2) {
+        group.forEach((m) => keep.add(m));
+        continue;
+      }
+      const hasConsole = group.some((m) => isConsoleModel(m));
+      if (!hasConsole) {
+        group.forEach((m) => keep.add(m));
+        continue;
+      }
+      for (const m of group) {
+        if (isConsoleModel(m) || isStackLoadedOnGpu(m)) keep.add(m);
+      }
+    }
+    return rows.filter((m) => keep.has(m));
   }
 
   function mergeModelsWithState(catalogModels, serversData, browsePrefs) {
@@ -901,25 +1027,28 @@
     return `${typeFilter}:${modelTypeFilter}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
   }
 
-  // Provider source label (e.g. 'LM Studio', 'DFlash') for the Source column.
+  // Provider source label for the Source column. Anything the Console does not
+  // manage is labeled External (LM Studio / Ollama keep their clear names).
   function modelSourceLabel(model) {
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'lmstudio') return 'LM Studio';
     if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return 'DFlash';
     if (source === 'ollama') return 'Ollama';
-    if (source === 'local' || source === 'library' || !source) return 'Local';
-    if (source === 'other' || source === 'unknown') return 'Other';
-    return String(model.source).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    // library / local / other / unknown / empty → discovered outside the Console.
+    return 'External';
   }
 
-  // Source cell: provider label, with the HF publisher kept as a muted suffix.
+  // Source cell: provider label, with the external app and HF publisher kept as
+  // muted suffixes (e.g. "External · OneVoice · Systran").
   function modelSourceCell(model) {
     const label = modelSourceLabel(model);
+    const app = externalAppLabel(model);
     const publisher = String(model?.publisher || '').trim();
-    if (publisher && publisher.toLowerCase() !== label.toLowerCase()) {
-      return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(publisher)}</span>`;
-    }
-    return escapeHtml(label);
+    const sub = [];
+    if (app && app.toLowerCase() !== label.toLowerCase()) sub.push(app);
+    if (publisher && publisher.toLowerCase() !== label.toLowerCase() && publisher.toLowerCase() !== app.toLowerCase()) sub.push(publisher);
+    if (!sub.length) return escapeHtml(label);
+    return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(sub.join(' · '))}</span>`;
   }
 
   function loadingRowHtml(message = 'Loading your model library…', note = 'Scanning configured folders. Your models will appear here shortly.') {
@@ -967,6 +1096,16 @@
       if (aScore !== bScore) return aScore - bScore;
       return String(a.label || '').localeCompare(String(b.label || ''));
     });
+    // Hide redundant external copies when the Console already has the model.
+    const visibleRows = dedupeExternalCopies(catalogRows);
+    // How many copies of each filename are actually shown — used so the
+    // "same name ×N" badge matches the visible cards (not the on-disk total).
+    const visibleNameCounts = new Map();
+    for (const m of visibleRows) {
+      const file = String(m?.filename || m?.label || '').trim().toLowerCase();
+      if (!file) continue;
+      visibleNameCounts.set(file, (visibleNameCounts.get(file) || 0) + 1);
+    }
 
     if (typeFilter === 'downloading') {
       body.innerHTML = activeDownloads.length
@@ -975,7 +1114,7 @@
       return;
     }
 
-    if (!catalogRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
+    if (!visibleRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
       if (catalogLoading) {
         // Catalog is still being fetched — show progress, not an empty state.
         body.innerHTML = loadingRowHtml();
@@ -1000,19 +1139,20 @@
 
     body.innerHTML = [
       ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
-      ...catalogRows.map((model) => {
+      ...visibleRows.map((model) => {
       const key = modelKey(model);
       const selected = key === selectedKey;
       const pinnedClass = pinned.has(key) ? ' pinned' : '';
       const pinMark = pinned.has(key) ? '<span class="lm-model-pin" title="Pinned">📌</span>' : '';
       const loadBtn = stackActionButton(model);
       const size = formatSizeGb(model.size_gb);
+      const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
       return `
-        <tr class="${modelRowClassName(model, { selected, pinned: pinned.has(key) })}" data-model-key="${escapeHtml(key)}" data-server-id="${escapeHtml(model.server_id || '')}">
+        <tr class="${modelRowClassName(model, { selected, pinned: pinned.has(key) })}${isExternalModel(model) ? ' external-model' : ''}" data-model-key="${escapeHtml(key)}" data-server-id="${escapeHtml(model.server_id || '')}">
           <td class="lm-col-model">
             ${loadedRibbon(model)}
-            <div class="lm-model-title-line"><span class="lm-model-title-text">${escapeHtml(modelTitleLine(model))}</span>${installedBadge(model)}${reasoningBadge(model)}${installedDflashLogo(model)}${pinMark}</div>
-            <div class="lm-model-tags-line">${capTags(model)}</div>
+            <div class="lm-model-title-line"><span class="lm-model-title-text" title="${escapeHtml(modelTitleLine(model))}">${escapeHtml(modelTitleLine(model))}</span>${installedBadge(model)}${reasoningBadge(model)}${installedDflashLogo(model)}${pinMark}</div>
+            <div class="lm-model-tags-line">${capTags(model, dupVisible)}</div>
             ${modelPathHint(model)}
             ${draftHint(model)}
           </td>
@@ -1357,32 +1497,20 @@
       return;
     }
     if (cmd === 'copy-to-console' || cmd === 'move-to-console') {
-      const isMove = cmd === 'move-to-console';
-      const name = model.filename || model.label || 'this model';
-      if (isMove) {
-        const confirmed = await openConfirmDialog({
-          title: 'Move model?',
-          message: `Move ${name} into the DFlash Console library? The file will be removed from its current location.`,
-          confirmLabel: 'Move',
-        });
-        if (!confirmed) return;
-      }
       if (!canImportToConsole(model)) {
         toast('This model cannot be imported into the Console library', false);
         return;
       }
-      try {
-        const data = await api('/api/models/import-into-console', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: model.path, mode: isMove ? 'move' : 'copy' }),
-        });
-        toast(`${isMove ? 'Moved' : 'Copied'} ${name} into DFlash Console library`);
+      // Always go through the import wizard so the user picks Copy vs Move
+      // (with overwrite/abort handling) — the same flow as the external cards.
+      const result = await importModelWithWizard({
+        path: model.path,
+        name: model.filename || model.label || '',
+        defaultMode: cmd === 'move-to-console' ? 'move' : 'copy',
+      });
+      if (result && !result.canceled) {
         await refresh({ rebindInspector: true });
         if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh();
-        if (data?.library_path && selectedKey === key) selectedKey = '';
-      } catch (err) {
-        toast(err.message || 'Could not import model into Console library', false);
       }
       return;
     }
@@ -1669,6 +1797,7 @@
       throw err;
     }
     models = mergeModelsWithState(data.models || [], serversData, loadBrowsePrefs());
+    saveCachedModelCatalog(data);
     catalogLoading = false;
     renderFooter(data);
     renderTable(filter, { force: true });
@@ -1764,11 +1893,21 @@
       if (document.body.dataset.activeView === 'models') {
         void refresh().catch(() => {});
       }
-    }, 5000);
+    }, MODEL_LIST_REFRESH_MS);
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    const cached = loadCachedModelCatalog();
+    if (cached) {
+      models = cached.models;
+      meta = cached.footer || {};
+      catalogLoading = false;
+    }
     bind();
+    if (cached) {
+      renderFooter(meta);
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    }
     const tableWrap = document.querySelector('.lm-view[data-view="models"] .lm-models-table-wrap');
     tableWrap?.addEventListener('mouseenter', () => { pollPaused = true; });
     tableWrap?.addEventListener('mouseleave', () => { pollPaused = false; });
@@ -1821,10 +1960,10 @@
   // Wizard for importing an external model file into the Console library —
   // lets the user choose Copy (keep the original) or Move (remove it from its
   // current location). Resolves with 'copy' | 'move' | null (null = cancelled).
-  function openImportToConsoleWizard({ path = '', name = '' } = {}) {
+  function openImportToConsoleWizard({ path = '', name = '', defaultMode = 'copy' } = {}) {
     return new Promise((resolve) => {
       const modal = document.getElementById('importToConsoleModal');
-      if (!modal) { resolve('copy'); return; }
+      if (!modal) { resolve(defaultMode === 'move' ? 'move' : 'copy'); return; }
       const titleEl = document.getElementById('importToConsoleTitle');
       const pathEl = document.getElementById('importToConsolePath');
       const confirmBtn = document.getElementById('importToConsoleConfirm');
@@ -1832,6 +1971,10 @@
       const backdrop = modal.querySelector('.lm-modal-backdrop');
       const closeBtn = modal.querySelector('[data-action="close-modal"]');
       const label = name || String(path || '').split(/[\\/]/).pop() || 'this model';
+      // Respect the requested default mode (Move for "Move to Flash Console").
+      modal.querySelectorAll('input[name="importMode"]').forEach((radio) => {
+        radio.checked = radio.value === (defaultMode === 'move' ? 'move' : 'copy');
+      });
       if (titleEl) titleEl.textContent = `Import ${label} to Flash Console?`;
       if (pathEl) pathEl.textContent = path || '';
       const cleanup = (result) => {
@@ -1915,8 +2058,8 @@
   // 3) refresh the Model library + Engines dropdown so it shows up, and 4) load
   // it as a new DFlash Console model. Returns { canceled } so callers can skip
   // the refresh when the user backs out.
-  async function importModelWithWizard({ path = '', name = '', unload = null } = {}) {
-    const mode = await openImportToConsoleWizard({ path, name });
+  async function importModelWithWizard({ path = '', name = '', unload = null, defaultMode = 'copy' } = {}) {
+    const mode = await openImportToConsoleWizard({ path, name, defaultMode });
     if (!mode) return { canceled: true };
     if (!path) {
       toast('This model has no file path to import', false);
@@ -1990,5 +2133,6 @@
     revealModelFromEngineCard,
     openImportToConsoleWizard,
     importModelWithWizard,
+    isModelAlreadyImported,
   };
 })();

@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.25</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.33</span>
           </div>
         </div>
       </div>
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.25</strong>
+                <strong id="dfAboutVersion">v0.2.33</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -854,8 +854,12 @@ try {
                   <p class="lm-setting-desc">Default limits when this engine loads a model.</p>
                 </div>
                 <div class="lm-setting-row">
-                  <div><strong>Default context</strong><p class="lm-setting-desc">Starting context window on load</p></div>
-                  <input type="number" class="lm-num" id="serverSettingsContext" value="65536">
+                  <div><strong>Context window (API)</strong><p class="lm-setting-desc">Starting context on load — external API requests may grow it up to the limit below</p></div>
+                  <input type="number" class="lm-num" id="serverSettingsContext" value="65536" min="2048" step="1024">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Context window limit</strong><p class="lm-setting-desc">Hard cap — API requests can never exceed this</p></div>
+                  <input type="number" class="lm-num" id="serverSettingsContextMax" value="131072" min="2048" step="1024">
                 </div>
                 <div class="lm-setting-row">
                   <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model unloads · 0 = never</p></div>
@@ -1021,12 +1025,21 @@ try {
             </div>
             <section class="lm-field-group">
               <div class="lm-field">
-                <label>Context window</label>
-                <span class="lm-hint" id="inspectorContextHint">Model supports up to 262144 tokens.</span>
+                <label>Context window (API)</label>
+                <span class="lm-hint" id="inspectorContextHint">Starting context — API requests may grow it up to the limit below.</span>
                 <div class="lm-stepper">
                   <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease context">−</button>
                   <input type="number" value="65536" min="2048" max="262144" step="1024" class="lm-num lm-stepper-input" id="inspectorContext">
                   <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase context">+</button>
+                </div>
+              </div>
+              <div class="lm-field">
+                <label>Context window limit</label>
+                <span class="lm-hint">Hard cap — API requests can never exceed this.</span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease context limit">−</button>
+                  <input type="number" value="131072" min="2048" max="1048576" step="1024" class="lm-num lm-stepper-input" id="inspectorContextMax">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase context limit">+</button>
                 </div>
               </div>
               <div class="lm-field">
