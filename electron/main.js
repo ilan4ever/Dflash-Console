@@ -329,7 +329,7 @@ function showUpdatePopup(manifest) {
 
   updatePopupWindow = new BrowserWindow({
     width: 500,
-    height: 340,
+    height: 460,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -337,6 +337,7 @@ function showUpdatePopup(manifest) {
     alwaysOnTop: true,
     skipTaskbar: false,
     show: false,
+    autoHideMenuBar: true,
     title: 'DFlash Console update',
     backgroundColor: '#0b0f14',
     webPreferences: {
@@ -1101,9 +1102,11 @@ if (!gotLock) {
       setTimeout(() => {
         if (autoCheckEnabled()) void checkAndDownloadUpdate().catch(() => {});
       }, 3000);
+      // Check for updates every minute while the app runs (the check itself is
+      // throttled to once per minute in checkAndDownloadUpdate).
       setInterval(() => {
         if (autoCheckEnabled()) void checkAndDownloadUpdate().catch(() => {});
-      }, 5 * 60 * 1000);
+      }, 60 * 1000);
       app.on('browser-window-focus', () => {
         if (autoCheckEnabled()) void checkAndDownloadUpdate().catch(() => {});
       });

@@ -18,7 +18,13 @@
       --danger: #f87171;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; }
+    html, body { height: 100%; overflow: hidden; scrollbar-width: none; -ms-overflow-style: none; }
+    /* This dialog never shows scrollbars. If one is ever forced, keep it dark. */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: #0b0f14; }
+    ::-webkit-scrollbar-thumb { background: #2a3a52; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #33465f; }
+    html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
     body {
       background: var(--bg);
       color: var(--text);
@@ -64,9 +70,12 @@
       color: var(--muted);
       font-size: 12px;
       line-height: 1.5;
-      max-height: 74px;
-      overflow: auto;
+      max-height: 150px;
+      overflow-y: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
     }
+    .notes::-webkit-scrollbar { display: none; width: 0; height: 0; }
     .progress-wrap { display: none; margin-top: 14px; }
     .progress-wrap.visible { display: block; }
     .progress-track {
