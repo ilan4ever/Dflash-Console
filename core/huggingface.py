@@ -20,6 +20,12 @@ HF_API = 'https://huggingface.co/api'
 HF_BASE = 'https://huggingface.co'
 
 HF_CATEGORIES: dict[str, dict[str, Any]] = {
+    'all': {
+        'label': 'All models',
+        'search': '',
+        'filter': '',
+        'gguf_only': False,
+    },
     'dflash': {
         'label': 'DFlash Accelerator',
         'search': 'dflash gguf',
@@ -444,6 +450,13 @@ def infer_model_lab(
     title: str = '',
     base_model: str = '',
 ) -> str:
+    # The publisher (author) is the "lab" the UI groups and filters by —
+    # prefer its alias over base-model/tag patterns so e.g.
+    # microsoft/VibeVoice-Realtime-0.5B (built on Qwen) is labeled Microsoft,
+    # not Qwen.
+    alias = _author_lab_alias(author)
+    if alias:
+        return alias
     if base_model:
         matched = _lab_from_patterns(base_model)
         if matched:
@@ -458,9 +471,6 @@ def infer_model_lab(
     matched = _lab_from_patterns(haystack)
     if matched:
         return matched
-    alias = _author_lab_alias(author)
-    if alias:
-        return alias
     clean_author = str(author or '').strip()
     if clean_author:
         return clean_author.replace('-', ' ').title()
@@ -601,7 +611,10 @@ def _hf_modality_fields(
     if tag == 'automatic-speech-recognition' or 'whisper' in hay or 'faster-whisper' in hay:
         modality, runtime_id, kind = 'speech-to-text', 'stt', 'repo'
     elif tag == 'text-to-speech' or 'piper' in hay or 'tts' in hay or 'kokoro' in hay:
-        modality, runtime_id, kind = 'text-to-speech', 'piper', 'repo'
+        if 'vibevoice' in hay or 'vibevoice' in str(label or '').lower():
+            modality, runtime_id, kind = 'text-to-speech', 'vibevoice', 'repo'
+        else:
+            modality, runtime_id, kind = 'text-to-speech', 'piper', 'repo'
     elif tag == 'feature-extraction':
         modality = 'embedding'
         runtime_id = 'llama-server' if has_gguf else ''
@@ -760,7 +773,9 @@ def search_models(
             elif cat.get('filter'):
                 params['filter'] = str(cat['filter'])
     else:
-        params['search'] = str(cat.get('search') or 'gguf')
+        default_search = str(cat.get('search') or '')
+        if default_search:
+            params['search'] = default_search
         if cat.get('filter'):
             params['filter'] = str(cat['filter'])
     url = f'{HF_API}/models?{urllib.parse.urlencode(params)}'
@@ -803,6 +818,16 @@ def search_models(
                     enrich_sizes=cat_key == 'dflash',
                 )
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+            pass
+    # Exact repo-id lookup: when the user types a full "org/repo" id (e.g.
+    # microsoft/VibeVoice-Realtime-0.5B) the search may still miss it — fetch
+    # it directly from the Hub so ANY model on Hugging Face is discoverable.
+    if not models and needle and '/' in needle:
+        try:
+            detail = get_model_detail(needle, category=cat_key)
+            if detail.get('success') and isinstance(detail.get('model'), dict):
+                models = [detail['model']]
+        except Exception:
             pass
     models.sort(
         key=lambda row: (

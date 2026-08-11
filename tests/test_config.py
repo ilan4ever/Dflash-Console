@@ -495,8 +495,48 @@ class ConfigTests(unittest.TestCase):
             'servers': [{'id': 'one', 'port': 8090, 'host': '127.0.0.1'}],
             'runtimes': [{'id': 'rt', 'runtime_id': 'piper', 'port': 8910}],
         }):
-            self.assertEqual(cfg.suggest_runtime_port(), 8911)
-            self.assertEqual(cfg.suggest_server_port(), 8091)
+            # No live listeners in the test: reserved 8910 is skipped -> 8911.
+            with patch('socket.create_connection', side_effect=OSError):
+                self.assertEqual(cfg.suggest_runtime_port(), 8911)
+                self.assertEqual(cfg.suggest_server_port(), 8091)
+
+    def test_suggest_runtime_port_skips_live_listeners(self):
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_connect(addr, timeout=0.4):
+            host, port = addr[0], addr[1]
+            if port in (8910, 8911):
+                raise OSError('connection refused')  # free
+            return FakeConn()  # 8912+ already has a listener
+
+        with patch.object(cfg, 'load_config', return_value={
+            'ui_port': 8900,
+            'servers': [],
+            'runtimes': [],
+        }):
+            with patch('socket.create_connection', side_effect=fake_connect):
+                # 8910/8911 are free, 8912+ are live -> pick 8910.
+                self.assertEqual(cfg.suggest_runtime_port(), 8910)
+
+        def fake_connect_all_live(addr, timeout=0.4):
+            host, port = addr[0], addr[1]
+            if port < 8918:
+                return FakeConn()  # band ports are live
+            raise OSError('connection refused')  # 8918+ free
+
+        with patch.object(cfg, 'load_config', return_value={
+            'ui_port': 8900,
+            'servers': [],
+            'runtimes': [],
+        }):
+            with patch('socket.create_connection', side_effect=fake_connect_all_live):
+                # Every band port is live -> fall past the band to a free port.
+                self.assertEqual(cfg.suggest_runtime_port(), 8918)
 
     def test_reserved_ports_covers_ui_servers_and_runtimes(self):
         ports = cfg.reserved_ports({

@@ -817,6 +817,8 @@ def _probe_lmstudio_loaded_models(host: str = '127.0.0.1', port: int = 1234) -> 
             loaded.append({
                 'model_id': model_id,
                 'title': title,
+                'display_name': str(entry.get('display_name') or entry.get('id') or entry.get('key') or model_id),
+                'publisher': str(entry.get('publisher') or ''),
                 'quantization': quant,
                 'state': state,
                 'size_gb': round(float(entry.get('size_bytes') or 0) / (1024 ** 3), 2)
@@ -1105,6 +1107,9 @@ def _make_api_external_card(
     gpu_index: int = 0,
     vram_gb: float | None = None,
     size_gb: float | None = None,
+    display_name: str = '',
+    publisher: str = '',
+    quantization: str = '',
 ) -> dict[str, Any]:
     gpu = next((g for g in gpus if int(g.get('index', -1)) == gpu_index), None)
     gpu_display = str(gpu.get('display_name') or format_gpu_display_name(str(gpu.get('name') or ''), gpu_index))
@@ -1140,6 +1145,9 @@ def _make_api_external_card(
         'command_line': '',
         'api_url': api_url,
         'model_id': model_id,
+        'display_name': display_name,
+        'publisher': publisher,
+        'quantization': quantization,
         'listen_port': listen_port,
         'unload_method': 'api' if unload_via_api else 'kill',
         'card_state': 'ready',
@@ -1186,6 +1194,9 @@ def _cards_from_known_apps(
                 gpu_index=lm_gpu_index,
                 vram_gb=vram_by_pid.get(int(service_pid)),
                 size_gb=model.get('size_gb'),
+                display_name=str(model.get('display_name') or ''),
+                publisher=str(model.get('publisher') or ''),
+                quantization=str(model.get('quantization') or ''),
             ))
     ollama_pid = _pid_listening_on_port(11434)
     if ollama_pid:
@@ -1207,23 +1218,119 @@ def _cards_from_known_apps(
     return cards
 
 
+_API_KEY_RE = re.compile(r'--api-key[=\s]+(\S+)', re.I)
+_API_KEY_CACHE: dict[int, tuple[float, str]] = {}
+
+
+def _api_key_from_cmdline(command_line: str) -> str:
+    match = _API_KEY_RE.search(str(command_line or ''))
+    if not match:
+        return ''
+    return match.group(1).strip('"\'')
+
+
+def _api_key_for_process(pid: int, fallback_cmdline: str = '') -> str:
+    """API key a llama-server worker was launched with.
+
+    LM Studio workers are started with ``--api-key <token>``; their native
+    endpoints (e.g. /slots) return 401 without it. Query the process command
+    line once per pid and cache the key for 60s to keep status polls cheap.
+    """
+    key_pid = int(pid or 0)
+    now = time.time()
+    cached = _API_KEY_CACHE.get(key_pid)
+    if cached and (now - cached[0]) < 60.0:
+        return cached[1]
+    key = _api_key_from_cmdline(fallback_cmdline)
+    if not key and key_pid > 0:
+        details = _query_process_details([key_pid]).get(key_pid, {})
+        key = _api_key_from_cmdline(str(details.get('command_line') or ''))
+    _API_KEY_CACHE[key_pid] = (now, key)
+    return key
+
+
 def _attach_external_inference_stats(card: dict[str, Any]) -> dict[str, Any]:
-    """Poll llama-server /slots for token metrics on external GPU model cards."""
+    """Poll llama-server /slots for token metrics on external GPU model cards.
+
+    Any llama-server-backed kind (LLM, OCR, vision, embedding, translation, …)
+    exposes /slots, so attach live IN/OUT/SPEED stats whenever the card has an
+    API URL. fetch_inference_stats fails gracefully (returns empty stats) for
+    endpoints without /slots, so STT/TTS cards simply keep showing zeros.
+    """
     api_url = str(card.get('api_url') or '').strip()
-    model_kind = str(card.get('model_kind') or '').lower()
-    if not api_url or model_kind not in {'llm', 'embedding'}:
+    if not api_url:
         return card
     pid = int(card.get('pid') or 0)
     server_id = f'external-{pid}' if pid > 0 else str(card.get('id') or '')
     from core.inference_stats import fetch_inference_stats
+
+    # LM Studio workers require their --api-key on /slots; extract it from the
+    # worker's command line (cached per pid) and pass it along.
+    api_key = ''
+    if str(card.get('app_source') or '').lower() == 'lmstudio':
+        api_key = _api_key_for_process(pid, fallback_cmdline=str(card.get('command_line') or ''))
 
     enriched = dict(card)
     enriched['inference_stats'] = fetch_inference_stats(
         api_url,
         server_id=server_id,
         model_id=str(card.get('model_id') or card.get('model_name') or ''),
+        api_key=api_key,
     )
     return enriched
+
+
+def _normalize_model_token(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+
+def _external_cards_refer_same_model(api_card: dict[str, Any], process_card: dict[str, Any]) -> bool:
+    """True when an API-derived external card is just another view of the same
+    model already shown by a GPU-process card (which carries the real file path
+    and can therefore offer Copy to Console)."""
+    if str(api_card.get('app_source') or '') != str(process_card.get('app_source') or ''):
+        return False
+    path_norm = _normalize_model_token(str(process_card.get('model_path') or ''))
+    if not path_norm:
+        return False
+    tokens = [
+        _normalize_model_token(str(api_card.get('model_id') or '')),
+        _normalize_model_token(str(api_card.get('display_name') or '')),
+    ]
+    if not any(token and token in path_norm for token in tokens):
+        return False
+    quant = _normalize_model_token(str(api_card.get('quantization') or ''))
+    if quant and quant not in path_norm:
+        return False
+    return True
+
+
+def _dedupe_external_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop API-derived cards (from LM Studio / Ollama /models endpoints) that
+    duplicate a GPU-process card for the same model. The process card carries the
+    real file path (Copy to Console) — showing both is confusing."""
+    process_cards = [c for c in cards if str(c.get('id') or '').startswith('external-gpu-')]
+    if not process_cards:
+        return cards
+    kept: list[dict[str, Any]] = []
+    for card in cards:
+        if str(card.get('id') or '').startswith('external-api-'):
+            if any(_external_cards_refer_same_model(card, p) for p in process_cards):
+                continue
+        kept.append(card)
+    return kept
+
+
+def _external_card_path_missing(card: dict[str, Any]) -> bool:
+    """True when an external card references a model path that no longer exists
+    on disk (file or directory was moved/deleted) — such a card must not show."""
+    path = str(card.get('model_path') or card.get('path') or '').strip()
+    if not path:
+        return False
+    try:
+        return not Path(path).exists()
+    except OSError:
+        return False
 
 
 def get_external_gpu_loads(
@@ -1290,6 +1397,11 @@ def get_external_gpu_loads(
             seen_ids.add(card_id)
             cards.append(card)
 
+    cards = _dedupe_external_cards(cards)
+    # Never show a card for a model file that no longer exists on disk (e.g.
+    # after the file was moved or deleted) — a card for a missing file is
+    # misleading. Applies to every external card.
+    cards = [card for card in cards if not _external_card_path_missing(card)]
     cards.sort(key=lambda item: (-float(item.get('vram_mb') or 0), str(item.get('title') or '')))
     return [_attach_external_inference_stats(card) for card in cards]
 

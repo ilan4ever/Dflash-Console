@@ -398,13 +398,35 @@ def suggest_server_port(*, cfg: dict[str, Any] | None = None) -> int:
 
 
 def suggest_runtime_port(*, cfg: dict[str, Any] | None = None) -> int:
-    """Suggest a free port for a non-llama runtime (prefers the 8910+ band)."""
+    """Suggest a free port for a non-llama runtime (prefers the 8910+ band).
+
+    Skips ports that are already reserved in config AND ports with a live
+    listener (e.g. an orphaned worker from a previous session still holding a
+    port), so two runtimes never collide on the same loopback port.
+    """
     config = cfg or load_config()
     used = set(reserved_ports(config))
+
+    def _live(port: int) -> bool:
+        import socket
+
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=0.4):
+                return True
+        except OSError:
+            return False
+
     for port in DEFAULT_RUNTIME_PORTS:
-        if port not in used:
-            return port
-    return max(used) + 1 if used else 8910
+        if port in used:
+            continue
+        if _live(port):
+            used.add(port)
+            continue
+        return port
+    candidate = (max(used) + 1) if used else 8910
+    while candidate < 65535 and _live(candidate):
+        candidate += 1
+    return candidate
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -601,6 +623,15 @@ def normalize_runtime(entry: dict[str, Any]) -> dict[str, Any]:
         'vram_budget_mb': max(0, int(entry.get('vram_budget_mb') or 0)),
         'allow_cpu_fallback': entry.get('allow_cpu_fallback') is not False,
         'enabled': entry.get('enabled', True) is not False,
+        # STT-specific settings (faster-whisper + whisper.cpp)
+        'compute_type': str(entry.get('compute_type') or 'auto').strip(),
+        'language': str(entry.get('language') or '').strip(),
+        'task': str(entry.get('task') or 'transcribe').strip() or 'transcribe',
+        'beam_size': max(1, min(16, int(entry.get('beam_size') or 5))),
+        'vad_filter': entry.get('vad_filter') is True,
+        'temperature': max(0.0, min(2.0, float(entry.get('temperature') if entry.get('temperature') is not None else 0.0))),
+        'cpu_threads': max(0, int(entry.get('cpu_threads') or 0)),
+        'num_workers': max(0, int(entry.get('num_workers') or 0)),
     }
 
 
@@ -614,6 +645,47 @@ def list_runtimes(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if normalized['id']:
             result.append(normalized)
     return result
+
+
+def ensure_runtime_entry(
+    runtime_id: str,
+    *,
+    label: str = '',
+    port: int = 0,
+    device_policy: str = 'auto',
+    defaults: dict[str, Any] | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Add a ``runtimes[]`` entry for a non-llama runtime if missing, then persist.
+
+    Fresh installs and first imports need a persistent entry so the Speech &
+    runtimes settings panel lists the runtime and its settings survive restarts.
+    Idempotent: an existing entry for ``runtime_id`` is returned unchanged.
+    """
+    config = dict(cfg or load_config())
+    entries = config.get('runtimes')
+    if not isinstance(entries, list):
+        entries = []
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get('runtime_id') or '') == str(runtime_id):
+            return entry
+    entry = {
+        'id': f'runtime-{runtime_id}',
+        'runtime_id': str(runtime_id),
+        'label': str(label or runtime_id),
+        'port': int(port) or 0,
+        'device_policy': str(device_policy or 'auto'),
+        'enabled': True,
+    }
+    if isinstance(defaults, dict):
+        entry.update(defaults)
+    entries.append(entry)
+    config['runtimes'] = entries
+    try:
+        save_config(config)
+    except Exception:
+        pass
+    return entry
 
 
 def normalize_model_libraries(raw: Any, *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:

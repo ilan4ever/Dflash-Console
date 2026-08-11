@@ -2413,6 +2413,65 @@ body.lm-resizing-logs {
   padding-top: 14px;
 }
 
+/* Import-to-Console wizard: positive action, so use a teal accent instead of
+   the delete dialog's red tint. */
+.df-import-dialog {
+  background:
+    linear-gradient(145deg, rgba(61, 203, 190, 0.10), transparent 45%),
+    var(--bg-elevated);
+  border-color: rgba(61, 203, 190, 0.35);
+}
+
+.df-import-options {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+
+.df-import-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.df-import-option:hover {
+  border-color: rgba(61, 203, 190, 0.5);
+  background: rgba(61, 203, 190, 0.05);
+}
+
+.df-import-option input[type="radio"] {
+  margin-top: 3px;
+  accent-color: #3dcbbe;
+}
+
+.df-import-option strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.df-import-option .lm-setting-desc {
+  display: block;
+  margin-top: 2px;
+}
+
+.lm-setting-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lm-runtime-settings-card .lm-setting-row:has(.lm-setting-actions) {
+  align-items: center;
+}
+
 .df-update-head h2 {
   margin: 4px 0 0;
   color: var(--text);

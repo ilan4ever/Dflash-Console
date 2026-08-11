@@ -197,30 +197,102 @@ def is_under_console_models(path: str | Path, *, preset: str = 'dflash', cfg: di
         return False
 
 
+def is_faster_whisper_dir(path: str | Path) -> bool:
+    """True when ``path`` is a directory containing a faster-whisper model.bin."""
+    try:
+        target = Path(str(path)).expanduser().resolve()
+    except OSError:
+        return False
+    return target.is_dir() and (target / 'model.bin').is_file()
+
+
+def _faster_whisper_import_name(source: Path) -> str:
+    """Friendly folder name for an imported faster-whisper model.
+
+    Uses the HF repo name (``models--<org>--<name>`` ancestor) when available so
+    the destination folder carries a whisper marker and a readable label
+    (e.g. ``faster-whisper-small.en``) instead of the raw snapshot hash.
+    """
+    try:
+        for part in source.parents:
+            if part.name.startswith('models--'):
+                bits = part.name.split('--', 2)
+                if len(bits) >= 3:
+                    return bits[2]
+                if len(bits) == 2:
+                    return bits[1]
+    except OSError:
+        pass
+    return source.name
+
+
 def import_single_model_file(
     source_path: str,
     *,
     mode: str = 'copy',
     preset: str = 'dflash',
     folder_name: str | None = None,
+    overwrite: bool = False,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Copy or move a single GGUF file into the Console's own model library.
+    """Copy or move a single external model into the Console's own library.
 
-    Used to bring external models (e.g. from LM Studio or a raw download folder)
-    into the DFlash Console library so they are managed, registered and grouped
-    as Console models. ``mode`` is ``copy`` (default) or ``move``.
+    Accepts either a single ``.gguf`` file (managed by llama-server) or a
+    faster-whisper **model directory** (contains ``model.bin``; managed by the
+    faster-whisper STT runtime). ``mode`` is ``copy`` (default) or ``move``.
+
+    The destination folder is deterministic (the repo/friendly name). If a model
+    with the same name already exists in the Console library and ``overwrite``
+    is false, the import is refused and ``{'success': False, 'exists': True,
+    'existing_path': ...}`` is returned so the caller can prompt the user to
+    overwrite or abort — instead of silently creating a ``name-2`` duplicate.
     """
     config = cfg or load_config()
     mode_key = str(mode or 'copy').strip().lower()
     if mode_key not in ('copy', 'move'):
         mode_key = 'copy'
     source = Path(os.path.expanduser(str(source_path or '').strip())).resolve()
-    if not source.is_file() or source.suffix.lower() != '.gguf':
-        raise ValueError('source is not a GGUF file')
+    is_fw_dir = is_faster_whisper_dir(source)
+    if not ((source.is_file() and source.suffix.lower() == '.gguf') or is_fw_dir):
+        raise ValueError('source is not a GGUF file or a faster-whisper model directory')
     root = _console_import_root(preset, cfg=config)
     root.mkdir(parents=True, exist_ok=True)
-    dest_dir = _unique_dest(root, folder_name or source.stem)
+
+    if is_fw_dir:
+        dest_dir = root / (folder_name or _faster_whisper_import_name(source))
+        if dest_dir.exists():
+            if not overwrite:
+                return {
+                    'success': False,
+                    'exists': True,
+                    'existing_path': str(dest_dir),
+                    'error': f'{dest_dir.name} already exists in the DFlash Console library',
+                }
+            shutil.rmtree(dest_dir, ignore_errors=True)
+        if mode_key == 'move':
+            shutil.move(str(source), str(dest_dir))
+        else:
+            shutil.copytree(source, dest_dir)
+        return {
+            'success': True,
+            'mode': mode_key,
+            'source_path': str(source),
+            'library_path': str(dest_dir),
+            'preset': preset,
+            'runtime_id': 'faster-whisper',
+            'model_kind': 'faster-whisper',
+        }
+
+    dest_dir = root / (folder_name or source.stem)
+    if dest_dir.exists():
+        if not overwrite:
+            return {
+                'success': False,
+                'exists': True,
+                'existing_path': str(dest_dir),
+                'error': f'{dest_dir.name} already exists in the DFlash Console library',
+            }
+        shutil.rmtree(dest_dir, ignore_errors=True)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
     if mode_key == 'move':

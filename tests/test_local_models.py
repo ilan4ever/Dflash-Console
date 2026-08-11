@@ -353,3 +353,100 @@ def test_stack_path_access_matches_enabled_model_libraries(tmp_path: Path):
     _mark_stack_path_access(rows, cfg)
 
     assert [row['stack_path_allowed'] for row in rows] == [True, False, False]
+
+
+def test_scan_faster_whisper_discovers_model_dirs(tmp_path: Path):
+    from core.local_models import _scan_faster_whisper
+
+    model_dir = tmp_path / 'models--Systran--faster-whisper-small.en' / 'snapshots' / 'abc123'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'model.bin').write_bytes(b'0' * 256)
+
+    rows = _scan_faster_whisper(tmp_path, source='test')
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['runtime_id'] == 'faster-whisper'
+    assert row['kind'] == 'dir'
+    assert Path(row['path']) == model_dir
+    assert row['arch'] == 'whisper'
+    # Friendly name + publisher derived from the HF repo layout.
+    assert row['filename'] == 'faster-whisper-small.en'
+    assert row['publisher'] == 'Systran'
+
+
+def test_scan_faster_whisper_excludes_translation_ctranslate2(tmp_path: Path):
+    from core.local_models import _scan_faster_whisper
+
+    # CTranslate2 NLLB/M2M translation packages also ship model.bin but must
+    # NOT be listed as faster-whisper STT models.
+    trans = tmp_path / 'models' / 'translate' / 'libre' / 'packages' / 'translate-sq_en-1_9' / 'model'
+    trans.mkdir(parents=True)
+    (trans / 'model.bin').write_bytes(b'0' * 256)
+    (trans / 'config.json').write_text('{"model_type": "nllb"}')
+
+    rows = _scan_faster_whisper(tmp_path, source='test')
+    assert rows == []
+
+
+def test_scan_faster_whisper_detects_whisper_config_without_model_type(tmp_path: Path):
+    from core.local_models import _scan_faster_whisper
+
+    # Imported faster-whisper copies keep the whisper config.json which often
+    # has no model_type field but does carry whisper-specific keys.
+    model_dir = tmp_path / 'models' / 'small.en'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'model.bin').write_bytes(b'0' * 256)
+    (model_dir / 'config.json').write_text('{"alignment_heads": [[6, 6]], "lang_ids": [50259]}')
+
+    rows = _scan_faster_whisper(tmp_path, source='test')
+    assert len(rows) == 1
+    assert rows[0]['runtime_id'] == 'faster-whisper'
+    assert Path(rows[0]['path']) == model_dir
+
+
+
+def test_annotate_runtime_fields_faster_whisper_for_stt_dirs(tmp_path: Path):
+    from core.local_models import _annotate_runtime_fields
+
+    model_dir = tmp_path / 'faster-whisper-small.en'
+    model_dir.mkdir()
+    (model_dir / 'model.bin').write_bytes(b'0' * 128)
+    row = {
+        'path': str(model_dir),
+        'label': 'faster-whisper-small.en',
+        'filename': 'faster-whisper-small.en',
+        'loadable': True,
+    }
+    _annotate_runtime_fields(row)
+    assert row['modality'] == 'speech-to-text'
+    assert row['runtime_id'] == 'faster-whisper'
+    assert row['kind'] == 'dir'
+
+
+def test_annotate_runtime_fields_whisper_cpp_for_gguf(tmp_path: Path):
+    from core.local_models import _annotate_runtime_fields
+
+    gguf = tmp_path / 'whisper-large-v3-q8_0.gguf'
+    gguf.write_bytes(b'0' * 128)
+    row = {
+        'path': str(gguf),
+        'label': 'whisper-large-v3-q8_0.gguf',
+        'filename': 'whisper-large-v3-q8_0.gguf',
+        'loadable': True,
+    }
+    _annotate_runtime_fields(row)
+    assert row['modality'] == 'speech-to-text'
+    assert row['runtime_id'] == 'stt'
+
+
+def test_annotate_path_status_accepts_faster_whisper_dirs(tmp_path: Path):
+    from core.local_models import _annotate_path_status
+
+    model_dir = tmp_path / 'fw-small'
+    model_dir.mkdir()
+    (model_dir / 'model.bin').write_bytes(b'0')
+    row = {'path': str(model_dir), 'kind': 'dir', 'runtime_id': 'faster-whisper'}
+    _annotate_path_status(row)
+    assert row['path_missing'] is False
+    assert row.get('loadable') is not False
+

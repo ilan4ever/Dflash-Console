@@ -357,8 +357,8 @@ def _match_completion_slot(
         return None
 
 
-def _fetch_json(url: str, *, timeout: float = 0.9) -> Any:
-    request = urllib.request.Request(url, method='GET')
+def _fetch_json(url: str, *, timeout: float = 0.9, headers: dict[str, str] | None = None) -> Any:
+    request = urllib.request.Request(url, method='GET', headers=headers or {})
     with urllib.request.urlopen(request, timeout=timeout) as resp:
         return json.loads(resp.read().decode('utf-8', errors='replace') or 'null')
 
@@ -564,6 +564,7 @@ def fetch_inference_stats(
     *,
     server_id: str = '',
     model_id: str = '',
+    api_key: str = '',
 ) -> dict[str, Any]:
     """Return context load and last-request throughput for a running engine."""
     base = api_base_url(api_url)
@@ -604,7 +605,16 @@ def fetch_inference_stats(
         model = str(model_id or '').strip()
         if model:
             slots_url = f'{slots_url}?{urlencode({"model": model})}'
-        slots_payload = _fetch_json(slots_url)
+        # LM Studio workers (and some llama-server setups) require an API key on
+        # their native endpoints — without it /slots returns 401. Only pass the
+        # header when a key is available so plain llama-server calls are unchanged.
+        if api_key:
+            slots_payload = _fetch_json(
+                slots_url,
+                headers={'Authorization': f'Bearer {api_key.strip()}'},
+            )
+        else:
+            slots_payload = _fetch_json(slots_url)
         raw = slots_payload if isinstance(slots_payload, list) else (slots_payload or {}).get('slots') or []
         raw_slots = [row for row in raw if isinstance(row, dict)]
         stats['parallel_slots'] = len(raw_slots) or None

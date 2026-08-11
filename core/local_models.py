@@ -39,6 +39,7 @@ _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
 _PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
 _GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)
+_FW_WHISPER_RE = re.compile(r'whisper', re.I)
 # Strong name markers that explicitly signal a reasoning/thinking model.
 _REASONING_RE = re.compile(
     r'(?:^|[^a-z0-9])(?:'
@@ -592,6 +593,157 @@ def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[st
     return rows
 
 
+def _is_faster_whisper_model_dir(path: Path) -> bool:
+    """True when a ``model.bin`` directory is a faster-whisper (whisper) model.
+
+    Checks the model ``config.json`` ``model_type``/``architectures`` first,
+    then falls back to whisper markers in meaningful path segments (the folder
+    name, an HF ``models--<org>--<name>`` repo segment, or an ``stt`` folder).
+    This deliberately excludes other CTranslate2 snapshots that also ship
+    ``model.bin`` (e.g. NLLB / M2M translation packages) and avoids matching
+    unrelated temp/workspace folders that merely contain the word "whisper".
+    """
+    if _FW_WHISPER_RE.search(path.name):
+        return True
+    config = path / 'config.json'
+    if config.is_file():
+        try:
+            data = json.loads(config.read_text(encoding='utf-8', errors='replace'))
+            model_type = str(data.get('model_type') or '')
+            architectures = str(data.get('architectures') or '')
+            if _FW_WHISPER_RE.search(model_type) or _FW_WHISPER_RE.search(architectures):
+                return True
+            # Whisper CTranslate2 configs often drop model_type/architectures
+            # but keep whisper-specific fields (alignment heads, language ids).
+            if any(key in data for key in ('alignment_heads', 'lang_ids', 'suppress_ids')):
+                return True
+        except (OSError, ValueError):
+            pass
+    parts = list(path.parts)
+    if any(part.startswith('models--') and _FW_WHISPER_RE.search(part) for part in parts):
+        return True
+    lowered = {part.lower() for part in parts}
+    return 'stt' in lowered
+
+
+def _faster_whisper_display_name(path: Path) -> tuple[str, str]:
+    """Friendly name + publisher for a faster-whisper model directory.
+
+    HF snapshots live under ``models--<org>--<name>/snapshots/<hash>``; use the
+    repo name as the display name and the org as the publisher. Other layouts
+    fall back to the directory name.
+    """
+    try:
+        for part in path.parents:
+            if part.name.startswith('models--'):
+                bits = part.name.split('--', 2)
+                if len(bits) >= 3:
+                    return bits[2], bits[1]
+                if len(bits) == 2:
+                    return bits[1], bits[0]
+    except OSError:
+        pass
+    return path.name, ''
+
+
+def _scan_faster_whisper(root: Path, *, source: str, max_dirs: int = 200) -> list[dict[str, Any]]:
+    """Discover faster-whisper model directories (contain ``model.bin``).
+
+    faster-whisper models are CTranslate2 whisper snapshots: a directory
+    holding ``model.bin`` plus ``config.json`` / ``tokenizer.json``. They run
+    on the ``faster-whisper`` runtime and can be imported into the Console
+    library. Only *whisper* model dirs are picked up — other CTranslate2
+    snapshots (e.g. NLLB / M2M translation packages) are excluded.
+    """
+    if not root.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        for path in root.rglob('model.bin'):
+            if len(rows) >= max_dirs:
+                break
+            parent = path.parent
+            if not _is_faster_whisper_model_dir(parent):
+                continue
+            key = str(parent).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            display, publisher = _faster_whisper_display_name(parent)
+            rows.append({
+                'id': display.replace('_', '-').lower()[:120],
+                'path': str(parent),
+                'filename': display,
+                'label': display,
+                'arch': 'whisper',
+                'params': _guess_params(display),
+                'publisher': publisher or _publisher(parent),
+                'quant': _guess_quant(display) if _QUANT_RE.search(display) else 'f16',
+                'size_gb': _size_gb(path),
+                'modified': _modified_label(parent),
+                'source': source,
+                'kind': 'dir',
+                'runtime_id': 'faster-whisper',
+                'capabilities': ['instruct', 'stt'],
+            })
+    except OSError:
+        pass
+    return rows
+
+
+def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dict[str, Any]]:
+    """Discover Microsoft VibeVoice TTS model directories.
+
+    VibeVoice models are Transformers safetensors directories (config.json +
+    model.safetensors + preprocessor_config.json) whose config declares the
+    ``vibevoice_streaming`` model type. They run on the ``vibevoice`` runtime.
+    """
+    if not root.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        for config in root.rglob('config.json'):
+            if len(rows) >= max_dirs:
+                break
+            parent = config.parent
+            key = str(parent).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if not (parent / 'model.safetensors').is_file():
+                continue
+            try:
+                data = json.loads(config.read_text(encoding='utf-8', errors='replace'))
+            except (OSError, ValueError):
+                continue
+            model_type = str(data.get('model_type') or '')
+            architectures = str(data.get('architectures') or '')
+            if 'vibevoice' not in (model_type + ' ' + architectures).lower():
+                continue
+            display = parent.name
+            rows.append({
+                'id': display.replace('_', '-').lower()[:120],
+                'path': str(parent),
+                'filename': display,
+                'label': display,
+                'arch': 'vibevoice',
+                'params': _guess_params(display),
+                'publisher': _publisher(parent),
+                'quant': 'f16',
+                'size_gb': _size_gb(parent / 'model.safetensors'),
+                'modified': _modified_label(parent),
+                'source': source,
+                'kind': 'dir',
+                'runtime_id': 'vibevoice',
+                'capabilities': ['instruct', 'tts'],
+            })
+    except OSError:
+        pass
+    return rows
+
+
 def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Represent a multi-file GGUF model as one row with its combined size."""
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
@@ -880,7 +1032,12 @@ def _annotate_path_status(row: dict[str, Any]) -> None:
         row['loadable'] = False
         return
     path = Path(path_text)
-    missing = not path.is_file()
+    # faster-whisper models are directories (model.bin + config.json + ...),
+    # so a directory path is present when the directory itself exists.
+    if str(row.get('kind') or '').lower() == 'dir' or str(row.get('runtime_id') or '') == 'faster-whisper':
+        missing = not path.is_dir()
+    else:
+        missing = not path.is_file()
     row['path_missing'] = missing
     if missing:
         row['loadable'] = False
@@ -918,7 +1075,7 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
         modality = 'ocr'
     elif re.search(r'whisper|speech|asr|parakeet|wav2vec|faster[-_]whisper', haystack):
         modality = 'speech-to-text'
-    elif re.search(r'text.?to.?speech|tts|piper|kokoro|bark', haystack):
+    elif re.search(r'text.?to.?speech|tts|piper|kokoro|bark|vibevoice', haystack):
         modality = 'text-to-speech'
     elif re.search(r'translat|nllb|madlad|seamless|tower', haystack):
         modality = 'translation'
@@ -929,9 +1086,39 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
     row.setdefault('modality', modality)
     runtime_id = 'llama-server'
     if modality == 'text-to-speech':
-        runtime_id = 'piper'
+        # VibeVoice TTS models are safetensors dirs (config.json declares the
+        # vibevoice_streaming model_type) and run on the vibevoice runtime;
+        # other TTS models map to piper.
+        stt_path = str(row.get('path') or '')
+        vv_is_dir = False
+        try:
+            vv_cfg = Path(stt_path).expanduser() / 'config.json'
+            if vv_cfg.is_file():
+                vv_data = json.loads(vv_cfg.read_text(encoding='utf-8', errors='replace'))
+                vv_text = (str(vv_data.get('model_type') or '') + ' ' + str(vv_data.get('architectures') or '')).lower()
+                vv_is_dir = 'vibevoice' in vv_text and (Path(stt_path) / 'model.safetensors').is_file()
+        except (OSError, ValueError):
+            vv_is_dir = False
+        if vv_is_dir:
+            runtime_id = 'vibevoice'
+            row['kind'] = 'dir'
+        else:
+            runtime_id = 'piper'
     elif modality == 'speech-to-text':
-        runtime_id = 'stt'
+        # faster-whisper models are directories holding model.bin (CTranslate2
+        # snapshots); whisper.cpp models are single .gguf/.bin files. Pick the
+        # right STT runtime so load/import dispatch to the correct adapter.
+        stt_path = str(row.get('path') or '')
+        try:
+            stt_path_obj = Path(stt_path).expanduser()
+            stt_is_dir = stt_path_obj.is_dir() and (stt_path_obj / 'model.bin').is_file()
+        except OSError:
+            stt_is_dir = False
+        if stt_is_dir:
+            runtime_id = 'faster-whisper'
+            row['kind'] = 'dir'
+        else:
+            runtime_id = 'stt'
     row.setdefault('runtime_id', runtime_id)
     row.setdefault('kind', 'file')
     row.setdefault('catalog_visible', True)
@@ -1101,6 +1288,8 @@ def list_local_models(
     scanned: list[dict[str, Any]] = []
     for root, source in disk_scan_roots(config):
         scanned.extend(_scan_gguf(root, source=source))
+        scanned.extend(_scan_faster_whisper(root, source=source))
+        scanned.extend(_scan_vibevoice(root, source=source))
 
     extras: list[dict[str, Any]] = []
     known_paths = {str(row.get('path') or '').lower() for row in catalog.values()}

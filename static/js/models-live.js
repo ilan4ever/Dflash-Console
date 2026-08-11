@@ -4,6 +4,9 @@
 
   let models = [];
   let meta = {};
+  // True while the model catalog is being fetched (first load) so the table
+  // shows a loading row instead of the misleading "No models match this filter."
+  let catalogLoading = true;
   let selectedKey = localStorage.getItem('dflashConsole.selectedModelKey') || '';
   let loadedServerIds = new Set();
   let loadedPathKeys = new Set();
@@ -24,6 +27,15 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  // Normalize a search string so HF/name separators are interchangeable:
+  // `baidu/Unlimited-OCR` (Hugging Face style) also matches a local file
+  // `baidu.Unlimited-OCR.Q3_K_M` (dots), `baidu-unlimited-ocr`, or spaces.
+  function normalizeSearchText(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[/._\-\s\\]+/g, '');
   }
 
   function modelKey(model) {
@@ -379,9 +391,10 @@
     return /dflash|dspark/.test(name);
   }
 
-  // External GGUF files that are not already inside the Console's own library
-  // can be copied/moved into the Console folder so they register under DFlash
-  // Console and are managed by the app.
+  // External models that are not already inside the Console's own library can
+  // be copied/moved into the Console folder so they register under DFlash
+  // Console and are managed by the app: GGUF files (llama-server) and
+  // faster-whisper model directories (STT runtime).
   function canImportToConsole(model) {
     if (!model?.path) return false;
     if (model.source === 'dflash' || model.source === 'dflash-profile' || model.source === 'dflash-stack') {
@@ -389,7 +402,10 @@
     }
     if (isDflashAccelerator(model)) return false;
     if (model.loadable && model.server_id) return false;
-    return String(model.path).toLowerCase().endsWith('.gguf');
+    const path = String(model.path);
+    if (path.toLowerCase().endsWith('.gguf')) return true;
+    if (model.kind === 'dir' || model.runtime_id === 'faster-whisper') return true;
+    return false;
   }
 
   function draftHint(model) {
@@ -695,15 +711,16 @@
   }
 
   function filterDownloadJobs(jobs, needle) {
-    if (!needle) return jobs;
+    const n = normalizeSearchText(needle);
+    if (!n) return jobs;
     return jobs.filter((job) => {
-      const hay = [
+      const hay = normalizeSearchText([
         downloadJobTitle(job),
         job.repo_id,
         job.filename,
         job.path,
-      ].join(' ').toLowerCase();
-      return hay.includes(needle);
+      ].join(' '));
+      return hay.includes(n);
     });
   }
 
@@ -859,18 +876,19 @@
   }
 
   function modelsRenderSignature(filterText) {
-    const needle = String(filterText || '').trim().toLowerCase();
+    const needle = normalizeSearchText(filterText);
     const rows = models.filter((model) => {
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (typeFilter === 'downloading') return false;
+      if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
-      const hay = [
+      const hay = normalizeSearchText([
         model.label, model.id, model.path, model.publisher, model.arch, model.quant,
         model.draft_label, model.draft_filename, model.draft_path, model.stack_status,
-      ].join(' ').toLowerCase();
+      ].join(' '));
       return hay.includes(needle);
     }).map((model) => [
       modelKey(model),
@@ -904,13 +922,21 @@
     return escapeHtml(label);
   }
 
+  function loadingRowHtml(message = 'Loading your model library…', note = 'Scanning configured folders. Your models will appear here shortly.') {
+    return `<tr class="lm-models-loading-row"><td colspan="7">
+      <span class="lm-models-loading-spinner" aria-hidden="true"></span>
+      <span>${escapeHtml(message)}</span>
+      <small>${escapeHtml(note)}</small>
+    </td></tr>`;
+  }
+
   function renderTable(filterText, { force = false } = {}) {
     const body = document.getElementById('modelsTableBody');
     if (!body) return;
     const signature = modelsRenderSignature(filterText);
     if (!force && signature === lastRenderSignature) return;
     lastRenderSignature = signature;
-    const needle = String(filterText || '').trim().toLowerCase();
+    const needle = normalizeSearchText(filterText);
     const pinned = loadPinnedSet();
     const activeDownloads = filterDownloadJobs(getActiveDownloadJobs(), needle);
     const visibleDownloads = modelTypeFilter === 'hf-accelerator' ? [] : activeDownloads;
@@ -919,12 +945,13 @@
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (typeFilter === 'downloading') return false;
+      if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
-      const hay = [
+      const hay = normalizeSearchText([
         model.label, model.id, model.path, model.publisher, model.arch, model.quant,
         model.draft_label, model.draft_filename, model.draft_path, model.stack_status,
-      ].join(' ').toLowerCase();
+      ].join(' '));
       return hay.includes(needle);
     }).sort((a, b) => {
       const aPin = pinned.has(modelKey(a)) ? 0 : 1;
@@ -949,6 +976,11 @@
     }
 
     if (!catalogRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
+      if (catalogLoading) {
+        // Catalog is still being fetched — show progress, not an empty state.
+        body.innerHTML = loadingRowHtml();
+        return;
+      }
       const emptyLabel = modelTypeFilter === 'hf-accelerator'
         ? hfAcceleratorStatus === 'loading'
           ? 'Checking Hugging Face for compatible DFlash accelerators…'
@@ -1126,7 +1158,7 @@
   }
 
   // Dark in-app confirmation dialog (never the native Windows confirm box).
-  function openConfirmDialog({ title, message, sub = '', confirmLabel = 'Delete' }) {
+  function openConfirmDialog({ title, message, sub = '', confirmLabel = 'Delete', kicker = '', cancelLabel = 'Cancel' }) {
     const modal = document.getElementById('deleteModelConfirmModal');
     if (!modal) return Promise.resolve(false);
     const titleEl = document.getElementById('deleteModelConfirmTitle');
@@ -1134,10 +1166,13 @@
     const subEl = document.getElementById('deleteModelConfirmSub');
     const confirmBtn = document.getElementById('deleteModelConfirm');
     const cancelBtn = document.getElementById('deleteModelCancel');
+    const kickerEl = modal.querySelector('.df-update-kicker');
     if (titleEl) titleEl.textContent = title || 'Delete model?';
     if (messageEl) messageEl.textContent = message || 'Are you sure you want to delete this model? This action cannot be undone.';
     if (subEl) subEl.textContent = sub || '';
     if (confirmBtn) confirmBtn.textContent = confirmLabel || 'Delete';
+    if (cancelBtn) cancelBtn.textContent = cancelLabel || 'Cancel';
+    if (kickerEl) kickerEl.textContent = kicker || '';
 
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
@@ -1169,6 +1204,32 @@
     });
   }
 
+  // Remove a just-deleted model from the local catalog so its card disappears
+  // right away instead of lingering as "missing file" while the backend catalog
+  // rescan catches up.
+  function dropModelFromLibrary(model) {
+    const deletedPaths = new Set(
+      [model.path, model.draft_path].filter(Boolean).map((p) => String(p).toLowerCase()),
+    );
+    const deletedIds = new Set(
+      [model.id, model.server_id, model.ollama_model].filter(Boolean).map((x) => String(x).toLowerCase()),
+    );
+    const source = String(model.source || '').toLowerCase();
+    models = models.filter((m) => {
+      if (source === 'ollama' && m.ollama_model && model.ollama_model
+        && String(m.ollama_model).toLowerCase() === String(model.ollama_model).toLowerCase()) {
+        return false;
+      }
+      if (m.path && deletedPaths.has(String(m.path).toLowerCase())) return false;
+      if (m.draft_path && deletedPaths.has(String(m.draft_path).toLowerCase())) return false;
+      if (m.server_id && deletedIds.has(String(m.server_id).toLowerCase())) return false;
+      if (m.id && deletedIds.has(String(m.id).toLowerCase())) return false;
+      return true;
+    });
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    renderFooter();
+  }
+
   function openContextMenu(event, model) {
     const menu = document.getElementById('modelsContextMenu');
     if (!menu) return;
@@ -1191,8 +1252,8 @@
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="Download vision projector from Hugging Face and wire it to this model">Add vision support…</button>
-      ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">Copy to DFlash Console</button>
-      <button type="button" data-cmd="move-to-console">Move to DFlash Console</button>` : ''}
+      ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">Import to Flash Console</button>
+      <button type="button" data-cmd="move-to-console">Move to Flash Console</button>` : ''}
       <hr>
       <div id="modelsStackAction">${stackMenuActionHtml(model)}</div>
       ${isDflashAccelerator(model)
@@ -1348,9 +1409,15 @@
           params.set('model_id', model.ollama_model || model.label || '');
         }
         const data = await api(`/api/models/file?${params.toString()}`, { method: 'DELETE' });
-        toast(data?.model ? `Deleted ${data.model}` : 'Model deleted');
+        const removedProfiles = Array.isArray(data?.removed_profiles) ? data.removed_profiles : [];
+        toast(data?.model
+          ? `Deleted ${data.model}`
+          : (removedProfiles.length ? `Deleted ${removedProfiles.join(', ')}` : 'Model deleted'));
         if (selectedKey === key) selectedKey = '';
-        await refresh({ rebindInspector: true });
+        // Drop the deleted model's card locally immediately, then rescan the
+        // catalog so it does not reappear as "missing file".
+        dropModelFromLibrary(model);
+        await refresh({ rebindInspector: true, forceCatalogRefresh: true });
       } catch (err) {
         toast(err.message, false);
       }
@@ -1358,10 +1425,15 @@
   }
 
   function renderFooter(data) {
-    meta = data || meta;
+    if (data) meta = data;
     const stats = document.getElementById('modelsFooterStats');
     const path = document.getElementById('modelsFooterPath');
     const hint = document.getElementById('modelsFooterHint');
+    if (catalogLoading) {
+      if (stats) stats.textContent = 'Loading models…';
+      if (hint) hint.textContent = 'Scanning configured folders. Your models will appear here shortly.';
+      return;
+    }
     if (stats) {
       const activeCount = getActiveDownloadJobs().length;
       if (typeFilter === 'downloading') {
@@ -1506,6 +1578,38 @@
       toast('This file is not available to load.', false);
       return;
     }
+    // STT / TTS models run on their own runtime adapters (whisper.cpp,
+    // faster-whisper, piper), not a llama-server engine. Use the unified
+    // loader which dispatches by the catalog row's runtime_id.
+    const runtimeId = String(model.runtime_id || '');
+    if (runtimeId === 'stt' || runtimeId === 'faster-whisper' || runtimeId === 'piper') {
+      const isFw = runtimeId === 'faster-whisper';
+      window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
+        secondary: isFw ? 'Loading faster-whisper model into GPU' : 'Loading speech model',
+        ttlMs: 180000,
+      });
+      try {
+        const data = await api('/api/models/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: model.path, model_id: model.model_id || model.id || '' }),
+        });
+        if (data?.loaded) {
+          toast(`${model.label || model.id} loaded`);
+          window.DFlashStatusFeed?.note(
+            `${model.label || model.id} ready`,
+            data.device ? `${data.device} · ${data.compute_type || ''}` : 'STT ready',
+          );
+        }
+      } catch (err) {
+        toast(err.message || 'Could not load speech model', false);
+      }
+      await refresh({ rebindInspector: true });
+      if (window.DFlashServerLive?.refresh) {
+        await window.DFlashServerLive.refresh(true, { fresh: true });
+      }
+      return;
+    }
     let serverId = model.server_id;
     if (model.plain_gguf || !serverId) {
       const active = window.DFlashServerLive.activeServer?.();
@@ -1540,12 +1644,32 @@
 
   async function refresh({ rebindInspector = false, forceCatalogRefresh = false } = {}) {
     const filter = document.getElementById('modelsFilterInput')?.value || '';
+    // Only the first load needs the loading state; polling refreshes keep the
+    // current rows on screen (no flicker).
+    const firstLoad = models.length === 0;
+    if (firstLoad) {
+      catalogLoading = true;
+      renderTable(filter, { force: true });
+      renderFooter();
+    }
     const modelsPath = forceCatalogRefresh ? '/api/models?refresh=1' : '/api/models';
-    const [data, serversData] = await Promise.all([
-      api(modelsPath, { timeoutMs: 45000 }),
-      fetchServersForLibrary(),
-    ]);
+    let data;
+    let serversData;
+    try {
+      [data, serversData] = await Promise.all([
+        api(modelsPath, { timeoutMs: 45000 }),
+        fetchServersForLibrary(),
+      ]);
+    } catch (err) {
+      if (firstLoad) {
+        catalogLoading = false;
+        renderTable(filter, { force: true });
+        renderFooter();
+      }
+      throw err;
+    }
     models = mergeModelsWithState(data.models || [], serversData, loadBrowsePrefs());
+    catalogLoading = false;
     renderFooter(data);
     renderTable(filter, { force: true });
     if (!selectedKey || !models.some((m) => modelKey(m) === selectedKey)) {
@@ -1658,5 +1782,213 @@
       .catch((err) => toast(err.message, false));
   });
 
-  window.DFlashModelsLive = { refresh, selectModel, loadModel, setTypeFilter, modelHasReasoning };
+  // From an engine card: jump to the same model in the Model library and select
+  // it so the user can Load / set up a stack / delete / etc. Returns true when
+  // a matching library model was found.
+  async function revealModelFromEngineCard({ path = '', serverId = '', modelId = '', label = '' } = {}) {
+    if (!models.length) {
+      try { await refresh(); } catch (_err) { /* catalog may be empty */ }
+    }
+    const norm = (v) => String(v || '').replace(/\\/g, '/').toLowerCase();
+    const pathKey = norm(path);
+    const serverKey = norm(serverId);
+    const idKey = norm(modelId);
+    const labelKey = norm(label);
+    const found = models.find((m) => {
+      if (pathKey && m.path && norm(m.path) === pathKey) return true;
+      if (serverKey && m.server_id && norm(m.server_id) === serverKey) return true;
+      if (idKey && m.id && norm(m.id) === idKey) return true;
+      if (idKey && m.model_id && norm(m.model_id) === idKey) return true;
+      if (labelKey && m.label && norm(m.label) === labelKey) return true;
+      return false;
+    });
+    if (!found) return false;
+    // Make sure the row is visible regardless of the current filters.
+    if (typeFilter !== 'all') setTypeFilter('all');
+    const input = document.getElementById('modelsFilterInput');
+    if (input && input.value) {
+      input.value = '';
+      renderTable('', { force: true });
+    }
+    await selectModel(modelKey(found), { applyInspector: true });
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`[data-model-key="${CSS.escape(modelKey(found))}"]`);
+      row?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    });
+    return true;
+  }
+
+  // Wizard for importing an external model file into the Console library —
+  // lets the user choose Copy (keep the original) or Move (remove it from its
+  // current location). Resolves with 'copy' | 'move' | null (null = cancelled).
+  function openImportToConsoleWizard({ path = '', name = '' } = {}) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('importToConsoleModal');
+      if (!modal) { resolve('copy'); return; }
+      const titleEl = document.getElementById('importToConsoleTitle');
+      const pathEl = document.getElementById('importToConsolePath');
+      const confirmBtn = document.getElementById('importToConsoleConfirm');
+      const cancelBtn = document.getElementById('importToConsoleCancel');
+      const backdrop = modal.querySelector('.lm-modal-backdrop');
+      const closeBtn = modal.querySelector('[data-action="close-modal"]');
+      const label = name || String(path || '').split(/[\\/]/).pop() || 'this model';
+      if (titleEl) titleEl.textContent = `Import ${label} to Flash Console?`;
+      if (pathEl) pathEl.textContent = path || '';
+      const cleanup = (result) => {
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        if (!document.querySelector('.lm-modal.open')) document.body.classList.remove('modal-open');
+        cancelBtn?.removeEventListener('click', onCancel);
+        confirmBtn?.removeEventListener('click', onConfirm);
+        closeBtn?.removeEventListener('click', onCancel);
+        backdrop?.removeEventListener('click', onBackdrop);
+        resolve(result);
+      };
+      const currentMode = () => {
+        const checked = modal.querySelector('input[name="importMode"]:checked');
+        return checked?.value === 'move' ? 'move' : 'copy';
+      };
+      const onCancel = () => cleanup(null);
+      const onConfirm = () => cleanup(currentMode());
+      const onBackdrop = (e) => { if (e.target === backdrop) cleanup(null); };
+      cancelBtn?.addEventListener('click', onCancel);
+      confirmBtn?.addEventListener('click', onConfirm);
+      closeBtn?.addEventListener('click', onCancel);
+      backdrop?.addEventListener('click', onBackdrop);
+      modal.classList.add('open');
+      modal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
+    });
+  }
+
+  // Unload a model currently loaded in an external app (e.g. LM Studio) so the
+  // file is released before a Copy/Move, and no stale external card lingers.
+  async function unloadExternalModel({ pid, api_url = '', model_id = '' } = {}) {
+    if (!pid) return false;
+    try {
+      await api(`/api/gpu/processes/${encodeURIComponent(pid)}/unload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_url, model_id }),
+      });
+      return true;
+    } catch (_err) {
+      // Non-fatal: continue even if the external unload failed.
+      return false;
+    }
+  }
+
+  // After importing a model, refresh BOTH the Model library and the Engines
+  // dropdown catalog, then confirm the copy is actually registered in the
+  // catalog (i.e. really present in the Flash Console folder + visible).
+  async function refreshImportedModelViews(libraryPath) {
+    if (window.DFlashServerLive?.refreshCatalog) {
+      await window.DFlashServerLive.refreshCatalog({ force: true, shouldRender: true });
+    }
+    if (!libraryPath) return false;
+    const key = String(libraryPath).replace(/\\/g, '/').toLowerCase();
+    await refresh({ forceCatalogRefresh: true });
+    return models.some((m) => m.path && String(m.path).replace(/\\/g, '/').toLowerCase() === key);
+  }
+
+  // After importing a file into the Console library, load it as a DFlash model
+  // on the active engine so the user can start using it right away.
+  async function loadImportedModel(libraryPath, { skipRefresh = false } = {}) {
+    try {
+      if (!skipRefresh) await refresh({ forceCatalogRefresh: true });
+      const key = String(libraryPath || '').replace(/\\/g, '/').toLowerCase();
+      const imported = models.find((m) => m.path && String(m.path).replace(/\\/g, '/').toLowerCase() === key);
+      if (!imported) {
+        toast('Model imported, but it was not found in the library to load it', false);
+        return false;
+      }
+      await loadModel(imported);
+      return true;
+    } catch (err) {
+      toast(err.message || 'Could not load the imported model', false);
+      return false;
+    }
+  }
+
+  // Open the import wizard, then: 1) unload the external model, 2) Copy/Move it
+  // into the Console library (asking before overwriting an existing model),
+  // 3) refresh the Model library + Engines dropdown so it shows up, and 4) load
+  // it as a new DFlash Console model. Returns { canceled } so callers can skip
+  // the refresh when the user backs out.
+  async function importModelWithWizard({ path = '', name = '', unload = null } = {}) {
+    const mode = await openImportToConsoleWizard({ path, name });
+    if (!mode) return { canceled: true };
+    if (!path) {
+      toast('This model has no file path to import', false);
+      return { canceled: true };
+    }
+    const label = name || String(path).split(/[\\/]/).pop() || 'model';
+    let data;
+    try {
+      // 1) Unload the model from the external app first — this frees the file
+      //    so a Move works and no stale external card is left behind.
+      if (unload && (unload.pid || unload.api_url)) {
+        await unloadExternalModel(unload);
+      }
+      // 2) Import the file into the Console library.
+      data = await api('/api/models/import-into-console', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, mode, overwrite: false }),
+      });
+    } catch (err) {
+      toast(err.message || 'Could not import model into Console library', false);
+      return { canceled: true, error: err };
+    }
+
+    // The model already exists in the Console library — never create a silent
+    // duplicate. Ask whether to overwrite the existing copy or abort.
+    if (data?.exists) {
+      const overwrite = await openConfirmDialog({
+        title: 'Model already exists',
+        message: `${label} is already in the Flash Console library. Overwrite the existing copy?`,
+        sub: data.existing_path || path,
+        confirmLabel: 'Overwrite',
+        cancelLabel: 'Abort',
+        kicker: 'Import model',
+      });
+      if (!overwrite) {
+        toast('Import cancelled — the model already exists in Flash Console');
+        return { canceled: true };
+      }
+      try {
+        data = await api('/api/models/import-into-console', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, mode, overwrite: true }),
+        });
+      } catch (err) {
+        toast(err.message || 'Could not overwrite the model', false);
+        return { canceled: true, error: err };
+      }
+    }
+
+    // 3) Refresh the library + Engines dropdown and verify the copy is there.
+    const libraryPath = data?.library_path || data?.path || '';
+    const verified = await refreshImportedModelViews(libraryPath);
+    if (verified) {
+      toast(`${mode === 'move' ? 'Moved' : 'Imported'} ${label} into Flash Console`);
+    } else {
+      toast(`${label} copied to the Flash Console folder — it will appear after the next scan`, false);
+    }
+    // 4) Load it as a new DFlash Console model on the active engine.
+    if (libraryPath) await loadImportedModel(libraryPath, { skipRefresh: true });
+    return { canceled: false, data, mode, verified };
+  }
+
+  window.DFlashModelsLive = {
+    refresh,
+    selectModel,
+    loadModel,
+    setTypeFilter,
+    modelHasReasoning,
+    revealModelFromEngineCard,
+    openImportToConsoleWizard,
+    importModelWithWizard,
+  };
 })();

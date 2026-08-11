@@ -17,11 +17,12 @@
   let listRefreshIndicator = null;
   const CATALOG_REFRESH_MS = 10 * 60 * 1000;
 
-  const DEFAULT_CATEGORY = 'all-gguf';
+  const DEFAULT_CATEGORY = 'all';
   const CATEGORY_LABELS = {
+    all: 'All models',
     dflash: 'DFlash / speculative',
     'text-generation': 'Text generation',
-    'all-gguf': 'All models',
+    'all-gguf': 'All GGUF',
     'text-to-speech': 'Text-to-speech',
     'automatic-speech-recognition': 'Speech-to-text',
     'image-to-text': 'OCR / image-to-text',
@@ -268,21 +269,29 @@
     }
     const lab = currentCreator();
     if (!lab) return rows;
-    return rows.filter((model) => modelLab(model) === lab);
+    const needle = String(lab).trim().toLowerCase();
+    return rows.filter((model) => String(modelLab(model)).trim().toLowerCase() === needle);
   }
 
   function populateCreatorFilter() {
     const select = document.getElementById('hfSearchCreator');
     if (!select) return;
     const previous = select.value;
-    const resultLabs = [...new Set(models.map((model) => modelLab(model)).filter(Boolean))];
-    const labs = [...new Set([...COMMON_LABS, ...resultLabs])]
-      .sort((a, b) => a.localeCompare(b));
+    // Dedupe labs case-insensitively so "Microsoft" and "microsoft" collapse
+    // into one option (the backend lab is the publisher, e.g. Microsoft).
+    const labSet = new Map();
+    const addLab = (lab) => {
+      const key = String(lab || '').trim().toLowerCase();
+      if (key && key !== '—' && !labSet.has(key)) labSet.set(key, String(lab).trim());
+    };
+    COMMON_LABS.forEach(addLab);
+    (models || []).forEach((model) => addLab(modelLab(model)));
+    const labs = [...labSet.values()].sort((a, b) => a.localeCompare(b));
     select.innerHTML = [
       '<option value="">All labs</option>',
       ...labs.map((lab) => `<option value="${escapeHtml(lab)}">${escapeHtml(lab)}</option>`),
     ].join('');
-    select.value = previous && labs.includes(previous) ? previous : '';
+    select.value = previous && labs.some((lab) => lab.toLowerCase() === previous.toLowerCase()) ? previous : '';
     window.DFlashSelectTheme?.enhanceAll?.(select.closest('.df-catalog-toolbar'));
   }
 
@@ -362,7 +371,10 @@
   }
 
   function catalogInstalledBadge() {
-    return '<span class="lm-tag gold dflash-logo-label catalog-installed-logo" role="img" aria-label="Installed" title="Installed"></span>';
+    // Plain "Installed" text — found on this PC via a local folder (e.g. LM
+    // Studio). Never use the DFlash logo here: that would wrongly imply the
+    // model lives in DFlash Console.
+    return '<span class="lm-tag green" title="Installed locally on this PC">Installed</span>';
   }
 
   function catalogBadge(label, tone = 'blue', title = '') {

@@ -808,9 +808,23 @@
             vram_budget_mb: Number(row.vram_budget_mb) || 0,
             adapter_installed: row.adapter_installed === true,
             manifest: manifests[row.runtime_id] || null,
+            compute_type: row.compute_type || 'auto',
+            language: row.language || '',
+            task: row.task || 'transcribe',
+            beam_size: Number(row.beam_size) || 5,
+            vad_filter: row.vad_filter === true,
+            temperature: Number(row.temperature ?? 0),
+            cpu_threads: Number(row.cpu_threads) || 0,
+            num_workers: Number(row.num_workers) || 0,
+            running: row.running === true,
+            active_model: row.active_model || '',
+            active_device: row.active_device || '',
+            active_compute_type: row.active_compute_type || '',
+            cfg_scale: Number(row.cfg_scale ?? 1.5),
+            ddpm_steps: Number(row.ddpm_steps) || 5,
           };
-          rt._voices = rt.runtime_id === 'piper' ? await loadRuntimeVoices(rt.runtime_id) : [];
-          rt._models = rt.runtime_id === 'stt' ? await loadRuntimeSttModels() : [];
+          rt._voices = (rt.runtime_id === 'piper' || rt.runtime_id === 'vibevoice') ? await loadRuntimeVoices(rt.runtime_id) : [];
+          rt._models = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper') ? await loadRuntimeSttModels() : [];
           draft.push(rt);
         }
         runtimeDraft = draft;
@@ -829,22 +843,81 @@
               const path = m.path || '';
               return `<option value="${escapeHtml(path)}" ${rt.default_model === path ? 'selected' : ''}>${escapeHtml(m.filename || m.label || path)}</option>`;
             }).join('');
-            const defaultVoiceRow = rt.runtime_id === 'piper'
+            const defaultVoiceRow = (rt.runtime_id === 'piper' || rt.runtime_id === 'vibevoice')
               ? `<div class="lm-setting-row">
-                <div><strong>Default voice</strong><p class="lm-setting-desc">Piper voice used by the Playground Speak tab</p></div>
+                <div><strong>Default voice</strong><p class="lm-setting-desc">${rt.runtime_id === 'vibevoice' ? 'VibeVoice voice preset (speaker)' : 'Piper voice used by the Playground Speak tab'}</p></div>
                 <select class="lm-select" data-rt-field="default_voice" data-rt-index="${index}">
                   <option value="">Default (first)</option>
                   ${voiceOptions}
                 </select>
               </div>`
               : '';
-            const defaultModelRow = rt.runtime_id === 'stt'
+            const defaultModelRow = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper')
               ? `<div class="lm-setting-row">
                 <div><strong>Default STT model</strong><p class="lm-setting-desc">Whisper model used by the Playground Transcribe tab</p></div>
                 <select class="lm-select" data-rt-field="default_model" data-rt-index="${index}">
                   <option value="">Default (first)</option>
                   ${modelOptions}
                 </select>
+              </div>`
+              : '';
+            const sttSettingsRows = rt.runtime_id === 'faster-whisper'
+              ? `<div class="lm-setting-row">
+                <div><strong>Compute type</strong><p class="lm-setting-desc">Precision for the model (GPU: float16 / int8_float16; CPU: int8)</p></div>
+                <select class="lm-select" data-rt-field="compute_type" data-rt-index="${index}">
+                  <option value="auto" ${rt.compute_type === 'auto' ? 'selected' : ''}>Auto</option>
+                  <option value="float16" ${rt.compute_type === 'float16' ? 'selected' : ''}>float16 (GPU)</option>
+                  <option value="int8_float16" ${rt.compute_type === 'int8_float16' ? 'selected' : ''}>int8_float16 (GPU)</option>
+                  <option value="int8" ${rt.compute_type === 'int8' ? 'selected' : ''}>int8 (CPU)</option>
+                  <option value="float32" ${rt.compute_type === 'float32' ? 'selected' : ''}>float32</option>
+                </select>
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Language</strong><p class="lm-setting-desc">Leave empty for auto-detect (e.g. en, he, fr)</p></div>
+                <input type="text" class="lm-input" data-rt-field="language" data-rt-index="${index}" value="${escapeHtml(rt.language)}" placeholder="auto">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Task</strong><p class="lm-setting-desc">Transcribe (as spoken) or translate to English</p></div>
+                <select class="lm-select" data-rt-field="task" data-rt-index="${index}">
+                  <option value="transcribe" ${rt.task === 'translate' ? '' : 'selected'}>Transcribe</option>
+                  <option value="translate" ${rt.task === 'translate' ? 'selected' : ''}>Translate to English</option>
+                </select>
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Beam size</strong><p class="lm-setting-desc">Search width — higher is more accurate but slower (1–16)</p></div>
+                <input type="number" class="lm-num" min="1" max="16" data-rt-field="beam_size" data-rt-index="${index}" value="${rt.beam_size}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>VAD filter</strong><p class="lm-setting-desc">Skip silent segments with a voice-activity detector</p></div>
+                <label class="lm-toggle"><input type="checkbox" data-rt-field="vad_filter" data-rt-index="${index}" ${rt.vad_filter ? 'checked' : ''}><span class="lm-toggle-track"></span></label>
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>CPU threads</strong><p class="lm-setting-desc">0 = faster-whisper default</p></div>
+                <input type="number" class="lm-num" min="0" data-rt-field="cpu_threads" data-rt-index="${index}" value="${rt.cpu_threads}">
+              </div>`
+              : '';
+            const sttControls = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper' || rt.runtime_id === 'vibevoice')
+              ? `<div class="lm-setting-row">
+                  <div>
+                    <strong>Status</strong>
+                    <p class="lm-setting-desc">${rt.running
+                      ? `Running · ${escapeHtml(String(rt.active_model).split(/[\\/]/).pop() || 'model')} · ${escapeHtml(rt.active_device || '')}${rt.active_compute_type ? ` ${escapeHtml(rt.active_compute_type)}` : ''}`
+                      : 'Not running — load a model to start it'}</p>
+                  </div>
+                  <div class="lm-setting-actions">
+                    <button class="lm-btn ghost small" type="button" data-action="stt-unload" data-rt-index="${index}" ${rt.running ? '' : 'disabled'}>Unload</button>
+                    <button class="lm-btn primary small" type="button" data-action="stt-load" data-rt-index="${index}" ${rt.adapter_installed ? '' : 'disabled'}>${rt.running ? 'Reload' : 'Load model'}</button>
+                  </div>
+                </div>`
+              : '';
+            const vibevoiceRows = rt.runtime_id === 'vibevoice'
+              ? `<div class="lm-setting-row">
+                <div><strong>CFG scale</strong><p class="lm-setting-desc">Classifier-free guidance for speech diffusion (higher = more expressive)</p></div>
+                <input type="number" class="lm-num" min="0.5" max="10" step="0.5" data-rt-field="cfg_scale" data-rt-index="${index}" value="${rt.cfg_scale}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>DDPM steps</strong><p class="lm-setting-desc">Diffusion inference steps — higher is better quality, slower (1–20)</p></div>
+                <input type="number" class="lm-num" min="1" max="20" data-rt-field="ddpm_steps" data-rt-index="${index}" value="${rt.ddpm_steps}">
               </div>`
               : '';
             return `
@@ -854,6 +927,7 @@
                 <code>${escapeHtml(rt.runtime_id)}</code>
                 ${installedTag}
               </div>
+              ${sttControls}
               <div class="lm-setting-row">
                 <div><strong>Device policy</strong><p class="lm-setting-desc">auto · gpu · cpu</p></div>
                 <select class="lm-select" data-rt-field="device_policy" data-rt-index="${index}">
@@ -864,6 +938,8 @@
               </div>
               ${defaultVoiceRow}
               ${defaultModelRow}
+              ${sttSettingsRows}
+              ${vibevoiceRows}
               <div class="lm-setting-row">
                 <div><strong>Allow CPU fallback</strong><p class="lm-setting-desc">Fall back to CPU when GPU memory is tight</p></div>
                 <label class="lm-toggle"><input type="checkbox" data-rt-field="allow_cpu_fallback" data-rt-index="${index}" ${rt.allow_cpu_fallback ? 'checked' : ''}><span class="lm-toggle-track"></span></label>
@@ -901,6 +977,32 @@
     }
   }
 
+  // Load or unload an STT runtime (whisper.cpp / faster-whisper) from the
+  // Speech & runtimes panel. Uses the runtime's default_model when set.
+  async function runSttAction(index, action) {
+    const rt = runtimeDraft[index];
+    if (!rt) return;
+    const runtimeId = rt.runtime_id;
+    try {
+      if (action === 'unload') {
+        await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/unload`, { method: 'POST', timeoutMs: 20000 });
+        toast(`${rt.label} unloaded`);
+      } else {
+        let path = rt.default_model || (Array.isArray(rt._models) && rt._models[0]?.path) || '';
+        const body = path ? JSON.stringify({ path }) : undefined;
+        await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/load`, {
+          method: 'POST',
+          body,
+          timeoutMs: 120000,
+        });
+        toast(`${rt.label} model loaded`);
+      }
+      void refreshRuntimesPanel();
+    } catch (err) {
+      toast(err.message || 'STT action failed', false);
+    }
+  }
+
   async function persistRuntimes() {
     document.querySelectorAll('[data-rt-field]').forEach((el) => {
       const index = Number(el.dataset.rtIndex);
@@ -912,6 +1014,14 @@
       else if (field === 'default_model') row.default_model = el.value;
       else if (field === 'allow_cpu_fallback') row.allow_cpu_fallback = el.checked;
       else if (field === 'vram_budget_mb') row.vram_budget_mb = Math.max(0, Number(el.value) || 0);
+      else if (field === 'compute_type') row.compute_type = el.value;
+      else if (field === 'language') row.language = el.value;
+      else if (field === 'task') row.task = el.value;
+      else if (field === 'beam_size') row.beam_size = Math.max(1, Math.min(16, Number(el.value) || 5));
+      else if (field === 'vad_filter') row.vad_filter = el.checked;
+      else if (field === 'cpu_threads') row.cpu_threads = Math.max(0, Number(el.value) || 0);
+      else if (field === 'cfg_scale') row.cfg_scale = Math.max(0.5, Math.min(10, Number(el.value) || 1.5));
+      else if (field === 'ddpm_steps') row.ddpm_steps = Math.max(1, Math.min(20, Number(el.value) || 5));
     });
     const payload = runtimeDraft.map((row) => ({
       id: row.id,
@@ -923,6 +1033,16 @@
       default_model: row.default_model,
       allow_cpu_fallback: row.allow_cpu_fallback,
       vram_budget_mb: row.vram_budget_mb,
+      compute_type: row.compute_type,
+      language: row.language,
+      task: row.task,
+      beam_size: row.beam_size,
+      vad_filter: row.vad_filter,
+      temperature: row.temperature,
+      cpu_threads: row.cpu_threads,
+      num_workers: row.num_workers,
+      cfg_scale: row.cfg_scale,
+      ddpm_steps: row.ddpm_steps,
     }));
     const body = { runtimes: payload };
     const stopToggle = document.getElementById('runtimeStopOthersToggle');
@@ -1105,6 +1225,12 @@
     document.getElementById('settingsHardwareCopy')?.addEventListener('click', copyHardwareInfo);
     document.getElementById('settingsMcpCopy')?.addEventListener('click', copyMcpJson);
     document.getElementById('runtimeSettingsSave')?.addEventListener('click', () => void persistRuntimes());
+    document.getElementById('runtimeSettingsList')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="stt-load"], [data-action="stt-unload"]');
+      if (!btn) return;
+      const action = btn.dataset.action === 'stt-unload' ? 'unload' : 'load';
+      void runSttAction(Number(btn.dataset.rtIndex || 0), action);
+    });
     document.getElementById('settingsAddLibrary')?.addEventListener('click', openLibraryBrowse);
     document.getElementById('settingsScanLibrary')?.addEventListener('click', openLibraryScan);
     document.getElementById('settingsDownloadLibrary')?.addEventListener('change', scheduleLibrariesSave);

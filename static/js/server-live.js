@@ -240,6 +240,19 @@
       .replace(/"/g, '&quot;');
   }
 
+  // An external path is importable when it is a .gguf file OR a directory-like
+  // path (faster-whisper model directories have no file extension and often
+  // live under HF snapshot folders). Files with an obvious extension are not
+  // importable through import-into-console.
+  function isImportableSttDir(pathValue) {
+    const text = String(pathValue || '').trim();
+    if (!text) return false;
+    const last = String(text.split(/[\\/]/).pop() || '');
+    if (/\.gguf$/i.test(text)) return false; // handled by the .gguf branch
+    if (/\.[a-z0-9]{1,8}$/i.test(last)) return false; // looks like a file
+    return true; // extension-less path → likely a model directory
+  }
+
   function getServerAction(serverId) {
     return serverId ? (serverActions.get(serverId) || null) : null;
   }
@@ -848,6 +861,7 @@
     const loading = row.card_state === 'loading';
     const url = gatewayUrl || server.reachable_url || '';
     const path = row.path || '';
+    const identifier = server?.model_id || row?.model_id || row?.model_name || row?.id || '';
     const isEmbedding = server.engine_mode === 'embedding'
       || server.model_kind === 'embedding'
       || row.model_kind === 'embedding'
@@ -858,7 +872,10 @@
       <button type="button" data-cmd="runtime">Show runtime settings</button>
       <button type="button" data-cmd="copy-url"${url ? '' : ' disabled'}>Copy API URL</button>
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
+      <button type="button" data-cmd="copy-identifier"${identifier ? '' : ' disabled'} title="Copy the model identifier">Copy identifier</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
+      <hr>
+      <button type="button" data-cmd="goto-library" title="Open the same model in the Model library to load it, set it up or delete it">Go to model in Model library</button>
       <hr>
       <button type="button" data-cmd="unload"${ready && row.ejectable ? '' : ' disabled'} title="${isEmbedding ? 'Stop embedding engine and unload its model' : 'Unload model'}">Unload</button>
       <button type="button" data-cmd="cancel"${loading && row.ejectable ? '' : ' disabled'}>Cancel load</button>`;
@@ -911,6 +928,24 @@
       if (!path) return;
       await navigator.clipboard.writeText(path);
       toast('Model path copied');
+      return;
+    }
+    if (cmd === 'copy-identifier') {
+      const identifier = server?.model_id || row?.model_id || row?.model_name || row?.id || '';
+      if (!identifier) return;
+      await navigator.clipboard.writeText(identifier);
+      toast('Model identifier copied');
+      return;
+    }
+    if (cmd === 'goto-library') {
+      if (window.DFlashShell?.setView) window.DFlashShell.setView('models');
+      const found = await window.DFlashModelsLive?.revealModelFromEngineCard?.({
+        path: row?.model_path || row?.path || server?.model_path || '',
+        serverId: server?.id || row?.server_id || '',
+        modelId: server?.model_id || row?.model_id || row?.model_name || row?.id || '',
+        label: server?.label || row?.label || '',
+      });
+      if (!found) toast('This model is not in the Model library', false);
       return;
     }
     if (cmd === 'metadata') {
@@ -1657,13 +1692,22 @@
         installedBadge,
         statusBadge: badge,
       });
-      // External GPU models are loaded from outside the Console. Remind the user
-      // they can bring the file under Console control with one click (copy).
+      // External GPU models are loaded from outside the Console. Always label
+      // them clearly as OUTSIDE DFlash (even API-only entries without a local
+      // file path, e.g. LM Studio models) so it is obvious which models are
+      // inside vs outside the Console. The Copy-to-Console action only applies
+      // when there is an actual file to copy.
       const externalPath = row?.model_path || row?.path || '';
-      const externalPrompt = row.external && externalPath
+      // Importing to the Console works for GGUF model files AND faster-whisper
+      // model directories (STT). The import endpoint validates either; only
+      // skip obvious file paths that are neither.
+      const importablePath = externalPath && (/^\.gguf$/i.test(externalPath) || isImportableSttDir(externalPath)) ? externalPath : '';
+      const externalPrompt = row.external
         ? `<div class="lm-model-card-external-prompt">
             <span>Loaded from outside DFlash Console</span>
-            <button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(externalPath)}" title="Copy this model file into the DFlash Console library for full control">Copy to Console</button>
+            ${importablePath
+              ? `<button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(importablePath)}" title="Import this model into the DFlash Console library to manage, load and run it here">Import model to Flash Console</button>`
+              : ''}
           </div>`
         : '';
 
@@ -1689,26 +1733,20 @@
         e.stopPropagation();
         const path = btn.getAttribute('data-path');
         if (!path) return;
-        btn.disabled = true;
-        btn.textContent = 'Copying…';
-        try {
-          const data = await api('/api/models/import-into-console', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path, mode: 'copy' }),
-          });
-          window.DFlashStatusFeed?.setTransient?.('Copied model into DFlash Console library', {
-            secondary: 'It now registers under DFlash Console.',
-            ttlMs: 4000,
-          });
+        // Pass the external card's unload info so the wizard unloads the model
+        // from LM Studio before importing (frees the file, avoids stale cards).
+        const card = btn.closest('.lm-model-card');
+        const pid = card ? Number(card.getAttribute('data-external-pid') || 0) : 0;
+        const row = pid ? externalGpuLoads.find((entry) => Number(entry.pid) === pid) : null;
+        const result = await window.DFlashModelsLive?.importModelWithWizard?.({
+          path,
+          name: String(path).split(/[\\/]/).pop() || '',
+          unload: row
+            ? { pid, api_url: row.api_url || '', model_id: row.model_id || '' }
+            : null,
+        });
+        if (result && !result.canceled) {
           await refresh(true, { fresh: true });
-        } catch (err) {
-          window.DFlashStatusFeed?.setTransient?.(err.message || 'Could not copy model into Console', {
-            secondary: 'Try again or use the Models page.',
-            ttlMs: 5000,
-          });
-          btn.disabled = false;
-          btn.textContent = 'Copy to Console';
         }
       });
     });
@@ -2999,5 +3037,6 @@
     resetEngineModelPicker,
     rememberInspectorTab,
     focusInspectorTab,
+    refreshCatalog,
   };
 })();

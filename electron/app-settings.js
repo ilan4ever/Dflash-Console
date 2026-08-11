@@ -68,6 +68,12 @@ function resolveStartupExe() {
 function applyWindowsStartup(enabled) {
   if (process.platform !== 'win32') return;
   const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+  // reg.exe writes its error text straight to the shared console (it bypasses
+  // the child's stdout/stderr pipes), so when the Run value is missing the
+  // startup terminal would show "The system was unable to find the specified
+  // registry key or value." Use stdio 'ignore' to keep app startup clean; exit
+  // codes still propagate through the thrown Error.
+  const regQuiet = { windowsHide: true, stdio: 'ignore' };
   try {
     if (enabled) {
       const exe = resolveStartupExe();
@@ -75,12 +81,12 @@ function applyWindowsStartup(enabled) {
       execFileSync(
         'reg',
         ['add', regKey, '/v', 'DFlash Console', '/t', 'REG_SZ', '/d', exe, '/f'],
-        { windowsHide: true },
+        regQuiet,
       );
       return;
     }
     try {
-      execFileSync('reg', ['delete', regKey, '/v', 'DFlash Console', '/f'], { windowsHide: true });
+      execFileSync('reg', ['delete', regKey, '/v', 'DFlash Console', '/f'], regQuiet);
     } catch (_err) {
       // Entry may already be absent.
     }

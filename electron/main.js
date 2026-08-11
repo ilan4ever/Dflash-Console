@@ -249,6 +249,8 @@ function readUpdatePublicKey() {
 }
 
 function createUpdateService() {
+  // The developer app never auto-updates — only the installed app does.
+  if (!app.isPackaged) return null;
   const config = readUpdateConfig();
   const manifestUrl = String(
     process.env.DFLASH_UPDATE_MANIFEST_URL
@@ -689,7 +691,10 @@ function startConsoleServer(port = DEFAULT_PORT) {
       detached: false,
       env: {
         ...process.env,
-        DFLASH_CONSOLE_SHELL_VERSION: app.getVersion(),
+        // Only the installed app marks its server as shell-owned. The developer
+        // app leaves this unset so /api/health reports dev_server=true (git
+        // checkout + no shell version) and the Developer badge shows.
+        ...(app.isPackaged ? { DFLASH_CONSOLE_SHELL_VERSION: app.getVersion() } : {}),
         // App-owned servers release their managed engines on shutdown.
         DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN: '1',
       },
@@ -798,6 +803,49 @@ function pidListeningOnPort(port) {
       resolve(null);
     }
   });
+}
+
+/**
+ * Close the OTHER DFlash Console desktop app (developer <-> installed) so only
+ * one desktop app runs at a time, per the two-apps-close-each-other
+ * requirement. The other app's MAIN process is matched by name/command line
+ * and force-killed together with its whole process tree (which also tears down
+ * the server it owns on 8900; ensureBackend()/stopForeignConsole() then free
+ * the port for us). Best effort — never blocks startup.
+ */
+function closeOtherApp() {
+  const selfPid = process.pid;
+  // Installed app: close any running developer Electron app for this repo.
+  // Developer app: close any running installed DFlash Console app.
+  const script = app.isPackaged
+    ? `
+$self = ${selfPid}
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -eq 'electron.exe' -and
+  $_.CommandLine -and
+  $_.CommandLine -notmatch '--type=' -and
+  $_.ProcessId -ne $self -and
+  $_.CommandLine.Contains('Dflash-Console')
+} | ForEach-Object { & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null }
+`
+    : `
+$self = ${selfPid}
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -eq 'DFlash Console.exe' -and
+  $_.CommandLine -and
+  $_.CommandLine -notmatch '--type=' -and
+  $_.ProcessId -ne $self
+} | ForEach-Object { & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null }
+`;
+  try {
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+  } catch (_err) {
+    // best effort — the server takeover below still frees the port
+  }
 }
 
 /**
@@ -963,6 +1011,17 @@ async function createWindow() {
     mainWindow.hide();
   });
 
+  mainWindow.on('minimize', (event) => {
+    // "Minimize to system tray": hide into the tray instead of the taskbar.
+    // The setting previously only handled the close (X) button, so clicking
+    // the minimize button still landed in the taskbar.
+    if (!loadAppSettings().minimizeToTray) return;
+    if (!tray) ensureTray();
+    if (!tray) return; // tray unavailable (e.g. no icon) — allow normal minimize
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: 'deny' };
@@ -979,6 +1038,9 @@ async function boot() {
   if (booting) return;
   booting = true;
   buildMenu();
+  // Two separate apps (developer checkout and installed app): starting one
+  // closes the other so only one desktop app runs at a time.
+  closeOtherApp();
   if (loadAppSettings().showSplashOnStartup) {
     createSplashWindow();
   }
@@ -1001,6 +1063,16 @@ async function boot() {
   } else {
     closeSplashWindow();
   }
+}
+
+// The developer app is a SEPARATE application from the installed app. Give it
+// its own userData folder so its single-instance lock, app settings and
+// console-root persistence do not collide with the installed app (which uses
+// %APPDATA%\DFlash Console). Electron derives the default userData from
+// productName, so without this both apps would share one single-instance lock
+// and the developer app would silently quit while the installed app runs.
+if (!app.isPackaged) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'dflash-console'));
 }
 
 const gotLock = app.requestSingleInstanceLock();

@@ -740,9 +740,11 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-title-line {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 3px;
+  gap: 6px;
   min-width: 0;
+  width: 100%;
 }
 
 .df-shell .lm-model-title-line .dflash-logo-label {
@@ -755,11 +757,13 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-title-text {
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+  /* One line, fills the row: the name takes all available space and pushes the
+     badges (Installed, Reasoning, DFlash, pin) to the right edge. Never add an
+     ellipsis — long names are allowed to extend. */
   flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: visible;
   font-size: 13px;
   color: var(--text);
 }
@@ -1456,9 +1460,11 @@ body.lm-resizing-table-col {
   min-width: 0;
   max-width: none;
   font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Show the full model name — never trim it with an ellipsis. */
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .df-shell .lm-model-card-compact.dflash-model .lm-model-path,

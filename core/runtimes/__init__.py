@@ -23,11 +23,14 @@ from core.runtimes.base import (
     MODALITY_TASKS,
     MODALITY_TEXT_TO_SPEECH,
     MODALITY_VISION,
+    RUNTIME_FASTER_WHISPER,
     RUNTIME_LLAMA_SERVER,
     RUNTIME_PIPER,
     RUNTIME_STT,
+    RUNTIME_VIBEVOICE,
     RuntimeAdapter,
 )
+from core.runtimes.faster_whisper import FasterWhisperRuntimeAdapter
 from core.runtimes.noop import NoopRuntimeAdapter
 from core.runtimes.piper import PiperRuntimeAdapter
 from core.runtimes.registry import (
@@ -40,6 +43,7 @@ from core.runtimes.registry import (
     write_process_tokens_manifest,
 )
 from core.runtimes.stt import SttRuntimeAdapter
+from core.runtimes.vibevoice import VibeVoiceRuntimeAdapter
 
 # The no-op adapter is always available so the UI can list installed adapters
 # before any real inference runtime ships.
@@ -50,6 +54,12 @@ register_runtime_adapter(PiperRuntimeAdapter())
 # whisper.cpp whisper-server STT adapter (server mode). Registered always;
 # reports installed=false until runtimes/stt/whisper-server.exe exists.
 register_runtime_adapter(SttRuntimeAdapter())
+# faster-whisper / CTranslate2 STT adapter (server mode). Registered always;
+# reports installed=false until the venv under runtimes/faster-whisper/ exists.
+register_runtime_adapter(FasterWhisperRuntimeAdapter())
+# VibeVoice realtime TTS adapter (server mode). Registered always; reports
+# installed=false until the venv under runtimes/vibevoice/ exists.
+register_runtime_adapter(VibeVoiceRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -62,13 +72,17 @@ __all__ = [
     'MODALITY_TASKS',
     'MODALITY_TEXT_TO_SPEECH',
     'MODALITY_VISION',
-    'RUNTIME_LLAMA_SERVER',
-    'RUNTIME_PIPER',
-    'RUNTIME_STT',
-    'RuntimeAdapter',
+    RUNTIME_FASTER_WHISPER,
+    RUNTIME_LLAMA_SERVER,
+    RUNTIME_PIPER,
+    RUNTIME_STT,
+    RUNTIME_VIBEVOICE,
+    RuntimeAdapter,
     'NoopRuntimeAdapter',
     'PiperRuntimeAdapter',
     'SttRuntimeAdapter',
+    'FasterWhisperRuntimeAdapter',
+    'VibeVoiceRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',
     'register_runtime_adapter',

@@ -2,6 +2,7 @@ from core.gpu_processes import (
     _attach_external_inference_stats,
     _classify_app,
     _external_card_detail,
+    _external_card_path_missing,
     _is_gpu_model_load,
     _model_hint_from_cmdline,
     _probe_lmstudio_loaded_models,
@@ -193,7 +194,7 @@ def test_resolve_stt_model_path_from_hub(tmp_path, monkeypatch):
 def test_attach_external_inference_stats(monkeypatch):
     monkeypatch.setattr(
         'core.inference_stats.fetch_inference_stats',
-        lambda url, server_id='', model_id='': {'tokens_loaded': 128, 'generation_tokens': 42, 'tokens_per_second': 12.3},
+        lambda url, server_id='', model_id='', api_key='': {'tokens_loaded': 128, 'generation_tokens': 42, 'tokens_per_second': 12.3},
     )
     card = _attach_external_inference_stats({
         'api_url': 'http://127.0.0.1:8891',
@@ -202,8 +203,28 @@ def test_attach_external_inference_stats(monkeypatch):
     })
     assert card['inference_stats']['tokens_loaded'] == 128
 
-    skipped = _attach_external_inference_stats({'model_kind': 'speech-to-text', 'api_url': 'http://127.0.0.1:1'})
+    # Any llama-server-backed kind with an API URL is polled (LLM/OCR/vision…);
+    # cards without an API URL are skipped.
+    ocr = _attach_external_inference_stats({
+        'api_url': 'http://127.0.0.1:8891',
+        'model_kind': 'ocr',
+        'pid': 1234,
+    })
+    assert ocr['inference_stats']['tokens_loaded'] == 128
+
+    skipped = _attach_external_inference_stats({'model_kind': 'speech-to-text', 'api_url': ''})
     assert 'inference_stats' not in skipped
+
+
+def test_external_card_path_missing(tmp_path):
+    existing = tmp_path / 'model.gguf'
+    existing.write_bytes(b'GGUF')
+    assert _external_card_path_missing({'model_path': str(existing)}) is False
+    assert _external_card_path_missing({'model_path': str(tmp_path)}) is False  # directory counts as existing
+    assert _external_card_path_missing({'model_path': str(tmp_path / 'gone.gguf')}) is True
+    assert _external_card_path_missing({'model_path': ''}) is False
+    assert _external_card_path_missing({'path': str(tmp_path / 'gone2.gguf')}) is True
+    assert _external_card_path_missing({}) is False
 
 
 def test_unload_external_requires_current_approved_gpu_process(monkeypatch):

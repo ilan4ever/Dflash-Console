@@ -37,7 +37,9 @@ MODALITY_LABELS: dict[str, str] = {
 # their own ids through the registry.
 RUNTIME_LLAMA_SERVER = 'llama-server'
 RUNTIME_PIPER = 'piper'
-RUNTIME_STT = 'stt'  # engine decided by the STT spike (whisper.cpp vs faster-whisper)
+RUNTIME_STT = 'stt'  # whisper.cpp whisper-server STT adapter
+RUNTIME_FASTER_WHISPER = 'faster-whisper'  # faster-whisper / CTranslate2 STT adapter
+RUNTIME_VIBEVOICE = 'vibevoice'  # Microsoft VibeVoice realtime TTS adapter
 
 # execution_mode values
 EXECUTION_MODE_SERVER = 'server'

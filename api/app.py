@@ -110,8 +110,22 @@ def _stop_gateway_server() -> None:
 def _write_runtime_process_manifest() -> None:
     """Write process-identity + per-runtime bundle manifests at boot."""
     try:
+        from core.config import ensure_runtime_entry, load_config
         from core.runtimes import write_bundle_manifests, write_process_tokens_manifest
 
+        # Fresh installs / first run need a persistent runtime entry for the
+        # faster-whisper and vibevoice adapters so the Speech & runtimes panel
+        # lists them and their settings survive restarts. Idempotent.
+        ensure_runtime_entry(
+            'faster-whisper',
+            label='Faster-Whisper STT',
+            cfg=load_config(),
+        )
+        ensure_runtime_entry(
+            'vibevoice',
+            label='VibeVoice TTS',
+            cfg=load_config(),
+        )
         write_process_tokens_manifest()
         write_bundle_manifests()
     except Exception:
@@ -785,13 +799,15 @@ def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
             'body': {'model_path': path},
             'hint': f'loads on server {server_id}; then use /api/servers/{server_id}/v1/chat/completions',
         }
+    stt_route = 'faster-whisper' if runtime_id == 'faster-whisper' else 'stt'
+    tts_route = 'vibevoice' if runtime_id == 'vibevoice' else 'piper'
     return {
         'method': 'POST',
         'path': '/api/models/load',
         'body': body,
         'hint': {
-            'speech-to-text': 'then POST /api/runtimes/stt/v1/audio/transcriptions (multipart file=audio)',
-            'text-to-speech': 'then POST /api/runtimes/piper/v1/audio/speech {"input": "...", "voice": "..."}',
+            'speech-to-text': f'then POST /api/runtimes/{stt_route}/v1/audio/transcriptions (multipart file=audio)',
+            'text-to-speech': f'then POST /api/runtimes/{tts_route}/v1/audio/speech {{"input": "...", "voice": "..."}}',
             'embedding': 'then POST /api/servers/{server_id}/v1/embeddings {"input": [...]}',
         }.get(modality, ''),
     }
@@ -861,6 +877,22 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
             'how_to_use': 'POST /api/runtimes/stt/v1/audio/transcriptions (multipart: file=<audio>)',
             **result,
         }
+    if runtime_id == 'faster-whisper':
+        adapter = get_runtime_adapter('faster-whisper')
+        model_payload: dict[str, Any] = {'path': resolved_path}
+        if body.load_settings:
+            model_payload['load_settings'] = dict(body.load_settings)
+        result = adapter.load(model_payload)
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'faster-whisper load failed')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'faster-whisper',
+            'loaded': True,
+            'how_to_use': 'POST /api/runtimes/faster-whisper/v1/audio/transcriptions (multipart: file=<audio>)',
+            **result,
+        }
     if runtime_id == 'piper':
         adapter = get_runtime_adapter('piper')
         result = adapter.load({'path': resolved_path})
@@ -872,6 +904,22 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
             'runtime_id': 'piper',
             'loaded': True,
             'how_to_use': 'POST /api/runtimes/piper/v1/audio/speech {"input": "...", "voice": "en_US-lessac-medium"}',
+            **result,
+        }
+    if runtime_id == 'vibevoice':
+        adapter = get_runtime_adapter('vibevoice')
+        model_payload: dict[str, Any] = {'path': resolved_path}
+        if body.load_settings:
+            model_payload['load_settings'] = dict(body.load_settings)
+        result = adapter.load(model_payload)
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'VibeVoice load failed')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'vibevoice',
+            'loaded': True,
+            'how_to_use': 'POST /api/runtimes/vibevoice/v1/audio/speech {"input": "...", "voice": "en-Carter_man"}',
             **result,
         }
 
@@ -1059,6 +1107,8 @@ def runtimes_status() -> dict[str, Any]:
         })
     for runtime in list_runtimes(cfg):
         runtime_id = str(runtime.get('runtime_id') or '')
+        adapter = get_runtime_adapter(runtime_id)
+        health = adapter.health() if adapter is not None and callable(getattr(adapter, 'health', None)) else {}
         merged.append({
             'id': str(runtime.get('id') or ''),
             'kind': 'runtime',
@@ -1073,7 +1123,21 @@ def runtimes_status() -> dict[str, Any]:
             'vram_budget_mb': runtime.get('vram_budget_mb'),
             'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
             'enabled': runtime.get('enabled', True) is not False,
-            'adapter_installed': get_runtime_adapter(runtime_id) is not None,
+            'adapter_installed': adapter is not None,
+            # STT-specific settings (faster-whisper + whisper.cpp)
+            'compute_type': runtime.get('compute_type') or 'auto',
+            'language': runtime.get('language') or '',
+            'task': runtime.get('task') or 'transcribe',
+            'beam_size': runtime.get('beam_size') or 5,
+            'vad_filter': runtime.get('vad_filter') is True,
+            'temperature': runtime.get('temperature'),
+            'cpu_threads': runtime.get('cpu_threads') or 0,
+            'num_workers': runtime.get('num_workers') or 0,
+            # Live adapter health (running state, active model, device)
+            'running': health.get('running') is True,
+            'active_model': health.get('active_model') or '',
+            'active_device': health.get('device') or '',
+            'active_compute_type': health.get('compute_type') or '',
         })
     adapters = [{
         'runtime_id': adapter.runtime_id,
@@ -2250,6 +2314,59 @@ def fs_reveal(path: str = Query(..., min_length=1)) -> dict[str, Any]:
     return result
 
 
+def _servers_referencing_model(path: Path, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Configured server profiles whose model file is ``path``.
+
+    Must run while the file still exists: resolving a server's model_id to a
+    path depends on the file being present. As a fallback, a server whose
+    ``model_id``/``id`` equals the file's derived id (stem with ``_``->``-``,
+    lowercased — the same rule the catalog uses) is also treated as a match.
+    """
+    try:
+        from core.local_models import _normalize_path_key, _resolve_stack_pair
+    except Exception:
+        return []
+    tkey = _normalize_path_key(str(path))
+    derived_id = str(path.stem).replace('_', '-').lower()
+    servers = list(cfg.get('servers') or [])
+    matching: list[dict[str, Any]] = []
+    for server in servers:
+        pair = _resolve_stack_pair(server, cfg=cfg)
+        matched = False
+        for row in (pair or []):
+            model_path = str((row or {}).get('path') or '')
+            if model_path and _normalize_path_key(model_path) == tkey:
+                matched = True
+                break
+        if not matched and derived_id:
+            server_model = str(server.get('model_id') or '').lower()
+            server_id = str(server.get('id') or '').lower()
+            if server_model == derived_id or server_id == derived_id:
+                matched = True
+        if matched:
+            matching.append(server)
+    return matching
+
+
+def _remove_servers_from_config(cfg: dict[str, Any], servers: list[dict[str, Any]]) -> list[str]:
+    """Remove the given server profiles from config and persist. Returns removed ids."""
+    if not servers:
+        return []
+    removed_ids = [str(s.get('id') or s.get('model_id') or 'unknown') for s in servers]
+    drop = {str(s.get('id') or ''): True for s in servers if s.get('id')}
+    all_servers = list(cfg.get('servers') or [])
+    kept = [s for s in all_servers if str(s.get('id') or '') not in drop]
+    if len(kept) == len(all_servers):
+        return []
+    cfg['servers'] = kept
+    try:
+        from core.config import save_config
+        save_config(cfg)
+    except Exception:
+        return []
+    return removed_ids
+
+
 @app.delete('/api/models/file')
 def delete_model_file(
     path: str = Query(..., min_length=1),
@@ -2273,14 +2390,23 @@ def delete_model_file(
     allowed = _allowed_model_roots(cfg)
     if not allowed or not any(target.is_relative_to(root) for root in allowed):
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
+    # Find profiles referencing this model BEFORE deleting the file — path
+    # resolution needs the file present. Removes the model card entirely instead
+    # of leaving a lingering "missing file" entry.
+    matching = _servers_referencing_model(target, cfg)
     target.unlink()
     invalidate_model_catalog_cache()
-    return {'success': True, 'path': str(target)}
+    removed = _remove_servers_from_config(cfg, matching)
+    result: dict[str, Any] = {'success': True, 'path': str(target)}
+    if removed:
+        result['removed_profiles'] = removed
+    return result
 
 
 class ModelImportIntoConsoleRequest(BaseModel):
     path: str = Field(..., min_length=1)
     mode: str = Field(default='copy', pattern='^(copy|move)$')
+    overwrite: bool = Field(default=False)
 
 
 @app.post('/api/models/auto-register')
@@ -2302,23 +2428,39 @@ def models_auto_register() -> dict[str, Any]:
 
 @app.post('/api/models/import-into-console')
 def model_import_into_console(body: ModelImportIntoConsoleRequest) -> dict[str, Any]:
-    """Copy or move a single external GGUF into the Console's own model library.
+    """Copy or move a single external model into the Console's own library.
 
-    Lets users bring models they downloaded elsewhere (e.g. LM Studio or a raw
-    folder) into the DFlash Console folder so they are managed and registered as
-    Console models. ``mode`` is ``copy`` (default, keeps the original) or
-    ``move`` (removes the original from its current location).
+    Accepts either a single ``.gguf`` file (managed by llama-server) or a
+    faster-whisper **model directory** (contains ``model.bin``; managed by the
+    faster-whisper STT runtime). ``mode`` is ``copy`` (default, keeps the
+    original) or ``move`` (removes the original from its current location).
+
+    When a model with the same name already exists in the Console library and
+    ``overwrite`` is false, returns ``{'success': False, 'exists': True,
+    'existing_path': ...}`` (HTTP 200) so the UI can ask the user whether to
+    overwrite or abort instead of silently creating a duplicate.
     """
-    from core.library_import import import_single_model_file
+    from core.config import ensure_runtime_entry
+    from core.library_import import import_single_model_file, is_faster_whisper_dir
 
     cfg = load_config()
     source = Path(body.path).expanduser().resolve()
-    if source.suffix.lower() != '.gguf' or not source.is_file():
-        raise HTTPException(status_code=400, detail='not a GGUF file')
+    is_fw_dir = is_faster_whisper_dir(source)
+    if not ((source.suffix.lower() == '.gguf' and source.is_file()) or is_fw_dir):
+        raise HTTPException(status_code=400, detail='not a GGUF file or a faster-whisper model directory')
     try:
-        result = import_single_model_file(str(source), mode=body.mode, cfg=cfg)
+        result = import_single_model_file(
+            str(source),
+            mode=body.mode,
+            overwrite=body.overwrite,
+            cfg=cfg,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.get('exists'):
+        return result
+    if result.get('runtime_id') == 'faster-whisper':
+        ensure_runtime_entry('faster-whisper', label='Faster-Whisper STT', cfg=cfg)
     invalidate_model_catalog_cache()
     return result
 

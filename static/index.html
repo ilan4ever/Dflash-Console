@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.23</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.24</span>
           </div>
         </div>
       </div>
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.23</strong>
+                <strong id="dfAboutVersion">v0.2.24</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -543,7 +543,8 @@ try {
                 <div class="df-catalog-toolbar-group">
                   <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
                   <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
-                    <option value="all-gguf" selected>All models</option>
+                    <option value="all" selected>All models</option>
+                    <option value="all-gguf">All GGUF</option>
                     <option value="dflash">DFlash Accelerator</option>
                     <option value="text-generation">Text generation (GGUF)</option>
                     <option value="text-to-speech">Text-to-speech</option>
@@ -627,7 +628,7 @@ try {
                     <p class="lm-setting-desc">What happens when you close the window or restart your PC.</p>
                   </div>
                   <div class="lm-setting-row">
-                    <div><strong>Minimize to system tray</strong><p class="lm-setting-desc">Closing the window hides it in the tray instead of quitting.</p></div>
+                    <div><strong>Minimize to system tray</strong><p class="lm-setting-desc">Minimizing or closing the window hides it in the tray instead of the taskbar.</p></div>
                     <label class="lm-toggle small"><input type="checkbox" id="appSettingsMinimizeTray" checked><span class="lm-toggle-track"></span></label>
                   </div>
                   <div class="lm-setting-row">
@@ -1327,6 +1328,46 @@ try {
         <div class="lm-modal-footer df-confirm-footer">
           <button class="lm-btn ghost" type="button" id="deleteModelCancel">Cancel</button>
           <button class="lm-btn danger" type="button" id="deleteModelConfirm">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import-to-Console wizard: lets the user choose Copy (keep the original
+       file) or Move (remove it from its current location). -->
+  <div class="lm-modal df-confirm-modal" id="importToConsoleModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-confirm-dialog df-import-dialog" role="dialog" aria-modal="true" aria-labelledby="importToConsoleTitle">
+        <div class="lm-modal-head df-confirm-head">
+          <div>
+            <div class="df-update-kicker">Import model</div>
+            <h2 id="importToConsoleTitle">Import model to Flash Console?</h2>
+          </div>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="df-confirm-body">
+          <p id="importToConsoleMessage">This model lives outside the DFlash Console library (for example in LM Studio or another app). Import it to manage, load and run it here — then you can load, unload and change its settings in the Console.</p>
+          <p class="lm-setting-desc df-catalog-installed-path" id="importToConsolePath"></p>
+          <div class="df-import-options">
+            <label class="df-import-option">
+              <input type="radio" name="importMode" value="copy" checked>
+              <div>
+                <strong>Copy to Console library</strong>
+                <span class="lm-setting-desc">Keeps the original model where it is and adds a copy under Flash Console.</span>
+              </div>
+            </label>
+            <label class="df-import-option">
+              <input type="radio" name="importMode" value="move">
+              <div>
+                <strong>Move to Console library</strong>
+                <span class="lm-setting-desc">Removes the model from its current location and moves it under Flash Console.</span>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div class="lm-modal-footer df-confirm-footer">
+          <button class="lm-btn ghost" type="button" id="importToConsoleCancel">Cancel</button>
+          <button class="lm-btn df-btn-accent" type="button" id="importToConsoleConfirm">Import</button>
         </div>
       </div>
     </div>
