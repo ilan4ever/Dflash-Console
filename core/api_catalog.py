@@ -133,7 +133,7 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
-    <li>About page with ILAN AVIV attribution, version, MIT license, and project links</li>
+    <li>About page with ILAN AVIV attribution, version, GNU AGPL v3-or-later license, and project links</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
     <li>Model library filters for DFlash stacks, accelerators, Hugging Face accelerator availability, downloads, and loaded models</li>
     <li>Hugging Face catalog with README details, install detection, and download progress</li>
@@ -146,14 +146,15 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>Maintainer and public project</h3>
   <p>
-    DFlash Console is developed and maintained by <strong>ILAN AVIV</strong> under the MIT License.
+    DFlash Console is developed and maintained by <strong>ILAN AVIV</strong> under
+    the GNU Affero General Public License version 3 or later.
     Visit the <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener">source repository</a>,
     <a href="https://github.com/ilan4ever" target="_blank" rel="noopener">developer profile</a>, or
     <a href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>.
-    The MIT license requires retaining the copyright and license notice. When
-    redistributing or building on this project, please also link the source
-    repository in your README, About page, or project documentation. This is
-    an attribution request, not an additional MIT license condition.
+    The AGPL requires retaining the copyright and license notices and providing
+    corresponding source when its distribution or network-use terms apply.
+    There is no warranty for the covered work. See the repository license and
+    trademark policy for the complete terms.
   </p>
 </section>
 

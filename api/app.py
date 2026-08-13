@@ -357,6 +357,10 @@ class PresetsImportBody(BaseModel):
     files: dict[str, str] = Field(default_factory=dict)
 
 
+class SetupCompleteRequest(BaseModel):
+    libraries: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ServerLoadRequest(BaseModel):
     context_size: int | None = None
     load_settings: dict[str, Any] | None = None
@@ -601,6 +605,28 @@ def import_presets(body: PresetsImportBody) -> dict[str, Any]:
         (presets_dir / safe_name).write_text(str(content), encoding='utf-8')
         written += 1
     return {'success': True, 'written': written, 'presets_dir': str(presets_dir)}
+
+
+@app.get('/api/setup/scan')
+def setup_scan() -> dict[str, Any]:
+    from core.setup import build_setup_scan_payload
+
+    return build_setup_scan_payload(cfg=load_config())
+
+
+@app.post('/api/setup/complete')
+def setup_complete(body: SetupCompleteRequest) -> dict[str, Any]:
+    from core.setup import complete_setup
+
+    cfg = complete_setup(body.libraries, cfg=load_config())
+    _save_config_checked(cfg)
+    invalidate_model_catalog_cache()
+    _invalidate_status_cache()
+    return {
+        'success': True,
+        'setup_complete': True,
+        'model_libraries': cfg.get('model_libraries') or [],
+    }
 
 
 @app.get('/api/model-libraries/scan')

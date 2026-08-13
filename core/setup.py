@@ -19,6 +19,14 @@ def is_setup_complete(cfg: dict[str, Any] | None = None) -> bool:
     libs = config.get('model_libraries')
     if isinstance(libs, list) and libs:
         return True
+    # Older Console configurations predate model_libraries. A configured
+    # server or explicit models_root proves that setup already happened; do
+    # not interrupt those users with the first-run wizard after an upgrade.
+    servers = config.get('servers')
+    if isinstance(servers, list) and any(isinstance(row, dict) for row in servers):
+        return True
+    if str(config.get('models_root') or '').strip():
+        return True
     return False
 
 

@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.2.32
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.11
 
 ---
 
@@ -120,6 +120,30 @@ registry); CLI runtimes use `port: 0`.
 ---
 
 ## Recent improvements
+
+### v0.3.6 — full mobile model names
+
+| Feature | Description |
+|---------|-------------|
+| **Engine cards** | Narrow views keep the complete model name visible before the compact status details. |
+
+### v0.3.4 — clearer catalog model variants
+
+| Feature | Description |
+|---------|-------------|
+| **Catalog model cards** | Cards show approximate disk size beneath the update age and identify accelerator checkpoints, GGUF models, and full model weights at a glance. |
+
+### v0.3.3 — higher sidebar restore control
+
+| Feature | Description |
+|---------|-------------|
+| **Collapsed sidebar arrow** | The restore control is raised while preserving its original colors and appearance. |
+
+### v0.3.2 — responsive engine cards
+
+| Feature | Description |
+|---------|-------------|
+| **Portrait/split-window layout** | Engine cards switch to compact summaries at narrow browser widths; long names stay on one line while status, memory, token, and unload information remain visible. Desktop card layout is unchanged. |
 
 ### v0.3.0-dev — multi-modal runtime
 
@@ -322,15 +346,19 @@ Dflash-Console/
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
 │   ├── ARCHITECTURE.md     # Public architecture overview
+│   ├── LICENSING.md        # AGPL and redistribution guide
 │   ├── RELEASING.md        # GitHub and Windows release process
 │   └── ui/                 # UI panel design notes
 ├── run.ps1                 # Full reset and background API startup
 ├── package.json            # Electron desktop packaging
 ├── config.example.json     # Template configuration
-├── CONTRIBUTING.md         # Contribution workflow
+├── CONTRIBUTING.md         # Contribution workflow and AGPL terms
+├── CODE_OF_CONDUCT.md      # Community standards
 ├── SUPPORT.md              # Questions, bugs, and contact channels
 ├── SECURITY.md             # Vulnerability reporting
-└── LICENSE                 # MIT license
+├── TRADEMARKS.md           # DFlash name and logo policy
+├── NOTICE.md               # Copyright and third-party notices
+└── LICENSE                 # GNU AGPL v3 or later
 ```
 
 ---
@@ -404,22 +432,33 @@ include `config.json`, access tokens, model weights, or private logs.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](./LICENSE).
+This project is licensed under the **GNU Affero General Public License
+version 3 or later (AGPL-3.0-or-later)**. See [LICENSE](./LICENSE).
+
+AGPL-covered source may be used, studied, modified, and redistributed under
+the license terms. If you distribute a modified version, or run a modified
+version as a network service, the AGPL source-sharing obligations apply. The
+DFlash name, logo, and other marks are not granted by the software license;
+see [TRADEMARKS.md](./TRADEMARKS.md). Third-party runtimes, binaries, model
+weights, and other assets remain under their own licenses; see
+[NOTICE.md](./NOTICE.md).
+The AGPL migration begins with the `0.3.0` release; earlier versions retain
+the license that accompanied their distribution.
 
 ---
 
 ## Credits
 
 DFlash Console is developed and maintained by **ILAN AVIV**. The project is
-open source under the MIT License. See the [developer profile](https://github.com/ilan4ever),
+free software under the GNU AGPL v3 or later. See the [developer profile](https://github.com/ilan4ever),
 [source repository](https://github.com/ilan4ever/Dflash-Console), and related
 [DFlash project](https://github.com/ilan4ever/Dflash).
 
-The MIT license requires redistributors to retain the copyright and license
-notice. When you redistribute or build on DFlash Console, please also include
-a link to the [DFlash Console source repository](https://github.com/ilan4ever/Dflash-Console)
-in your README, About page, or other project documentation. This link is an
-attribution request and does not add conditions to the MIT license.
+When you redistribute or build on DFlash Console, retain the copyright and
+license notices and provide the corresponding source as required by the AGPL.
+Please also include a link to the
+[DFlash Console source repository](https://github.com/ilan4ever/Dflash-Console)
+in your README, About page, or other project documentation.
 
 ---
 

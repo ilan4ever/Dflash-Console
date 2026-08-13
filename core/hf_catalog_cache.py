@@ -13,8 +13,9 @@ from core.config import ROOT
 
 logger = logging.getLogger(__name__)
 
-_CACHE_VERSION = 7
+_CACHE_VERSION = 8
 _MIN_CACHED_MODELS = {
+    'supported': 8,
     'dflash': 8,
     'all-gguf': 8,
     'text-generation': 8,
@@ -22,7 +23,7 @@ _MIN_CACHED_MODELS = {
 _CACHE_PATH = ROOT / 'logs' / 'hf-catalog-cache.json'
 _REFRESH_SECONDS = 10 * 60
 _DETAIL_REFRESH_SECONDS = 30 * 60
-_WARM_CATEGORIES = ('all', 'dflash', 'all-gguf', 'text-generation')
+_WARM_CATEGORIES = ('supported', 'dflash', 'all-gguf', 'text-generation')
 
 _lock = threading.Lock()
 _memory: dict[str, dict[str, Any]] = {}

@@ -20,7 +20,11 @@ $items = @(
     'run.ps1',
     'requirements.txt',
     'requirements.lock',
-    'config.example.json'
+    'config.example.json',
+    'LICENSE',
+    'NOTICE.md',
+    'TRADEMARKS.md',
+    'docs\LICENSING.md'
 )
 
 foreach ($item in $items) {
@@ -29,6 +33,7 @@ foreach ($item in $items) {
         throw "Missing runtime item: $source"
     }
     $target = Join-Path $dest $item
+    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
     if ((Get-Item -LiteralPath $source).PSIsContainer) {
         Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
     } else {

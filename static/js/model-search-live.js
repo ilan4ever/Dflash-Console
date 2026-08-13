@@ -14,12 +14,17 @@
   const detailCache = new Map();
   const SEARCH_CACHE_STORAGE_KEY = 'dflashConsole.hfSearchCache';
   let searchRefreshGen = 0;
+  let listDetailWarmGen = 0;
   let catalogPrimed = false;
   let listRefreshIndicator = null;
+  let catalogContextModel = null;
   const CATALOG_REFRESH_MS = 10 * 60 * 1000;
+  const LIST_DETAIL_WARM_WORKERS = 4;
+  const listDetailPending = new Map();
 
-  const DEFAULT_CATEGORY = 'all';
+  const DEFAULT_CATEGORY = 'supported';
   const CATEGORY_LABELS = {
+    supported: 'Supported in Console',
     all: 'All models',
     dflash: 'DFlash / speculative',
     'text-generation': 'Text generation',
@@ -297,15 +302,21 @@
   }
 
   function listSizeLabel(model) {
-    if (model.size_label && model.size_label !== '—') return model.size_label;
-    if (model.size_gb != null) return `${model.size_gb} GB`;
+    const label = String(model?.size_label || '').trim();
+    if (label && !/^(?:—|-)$/.test(label)) return label;
+    if (model?.size_gb != null) return `${model.size_gb} GB`;
     return '—';
   }
 
   function listAgeLabel(model) {
-    if (model.updated_days != null) return `${model.updated_days} days`;
-    if (model.updated_ago && model.updated_ago !== '—') return model.updated_ago;
+    if (model?.updated_days != null) return `${model.updated_days} days`;
+    if (model?.updated_ago && model.updated_ago !== '—') return model.updated_ago;
     return '—';
+  }
+
+  function listDiskLabel(model) {
+    const size = listSizeLabel(model);
+    return size === '—' ? 'Disk —' : `Disk ${size}`;
   }
 
   function modelTitle(model) {
@@ -398,6 +409,185 @@
       'gold',
       'Download a GGUF file first, then create the DFlash stack from the Models tab',
     );
+  }
+
+  function catalogListHasGguf(model) {
+    const tags = Array.isArray(model?.tags)
+      ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
+      : [];
+    return model?.has_gguf === true
+      || Number(model?.gguf_count || 0) > 0
+      || tags.some((tag) => tag === 'gguf' || tag.includes('gguf'));
+  }
+
+  function catalogListIsFullModelRepo(model) {
+    if (catalogListHasGguf(model)) return false;
+    const tags = Array.isArray(model?.tags)
+      ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
+      : [];
+    return tags.some((tag) => tag === 'safetensors' || tag === 'transformers');
+  }
+
+  function catalogListTaskLabel(model) {
+    const task = String(model?.pipeline_tag || '').trim();
+    if (task) return `${task} · Hugging Face model`;
+    const modalityLabels = {
+      llm: 'Language model',
+      embedding: 'Embedding model',
+      vision: 'Vision model',
+      'speech-to-text': 'Speech model',
+      'text-to-speech': 'Speech model',
+    };
+    const modality = modalityLabels[String(model?.modality || '').trim()];
+    return modality ? `${modality} · Hugging Face model` : 'Hugging Face model';
+  }
+
+  function catalogListKindBadge(model) {
+    const tags = Array.isArray(model?.tags)
+      ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
+      : [];
+    const id = String(model?.id || '').toLowerCase();
+    const hasAcceleratorMarker = model?.accelerator_only === true
+      || tags.some((tag) => /dflash|dspark|draft-model|speculative-decoding|speculator|eagle3/.test(tag))
+      || /(?:-dflash(?:[-_.]|\/|$)|-dspark(?:[-_.]|\/|$)|eagle3)/i.test(id);
+    if (hasAcceleratorMarker) {
+      return catalogBadge(
+        'ACCELERATOR',
+        'gold',
+        'Draft or accelerator checkpoint — pair it with its target model; it is not the full model',
+      );
+    }
+
+    if (catalogListHasGguf(model)) {
+      return catalogBadge('GGUF', 'blue', 'Quantized GGUF model file for llama.cpp-compatible runtimes');
+    }
+
+    if (catalogListIsFullModelRepo(model)) {
+      return catalogBadge(
+        'FULL MODEL',
+        'purple',
+        'Full model weights, usually SafeTensors/Transformers — not an accelerator-only checkpoint',
+      );
+    }
+
+    return '';
+  }
+
+  function catalogListBadges(model) {
+    const kind = catalogListKindBadge(model);
+    const compatible = catalogDflashCompatible(model) && !kind
+      ? catalogDflashCompatibleBadge()
+      : '';
+    return `${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kind}${compatible}`;
+  }
+
+  function catalogListShowsNotRunnableNote(model) {
+    if (model?.runnable === true) return false;
+    if (catalogReadyToLoad(model)) return false;
+    if (catalogInstalled(model)) return false;
+    if (model?.accelerator_only === true) return false;
+    if (catalogListHasGguf(model)) return false;
+    return catalogListIsFullModelRepo(model);
+  }
+
+  function catalogModelUrl(model) {
+    const url = String(model?.url || '').trim();
+    if (url) return url;
+    const id = String(model?.id || '').trim();
+    if (!id || !id.includes('/')) return '';
+    return `https://huggingface.co/${id}`;
+  }
+
+  function hideCatalogContextMenu() {
+    const menu = document.getElementById('hfCatalogContextMenu');
+    if (!menu) return;
+    menu.classList.add('hidden');
+    menu.setAttribute('aria-hidden', 'true');
+    catalogContextModel = null;
+  }
+
+  function positionContextMenu(menu, event) {
+    const margin = 8;
+    menu.classList.remove('hidden');
+    menu.setAttribute('aria-hidden', 'false');
+    const rect = menu.getBoundingClientRect();
+    let left = event.clientX;
+    let top = event.clientY;
+    if (left + rect.width + margin > window.innerWidth) {
+      left = Math.max(margin, window.innerWidth - rect.width - margin);
+    }
+    if (top + rect.height + margin > window.innerHeight) {
+      top = Math.max(margin, event.clientY - rect.height - margin);
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  async function runCatalogContextCommand(cmd, model) {
+    if (!model) return;
+    if (cmd === 'copy-id') {
+      await navigator.clipboard.writeText(model.id || '');
+      toast('Repo id copied');
+      return;
+    }
+    if (cmd === 'copy-url') {
+      const url = catalogModelUrl(model);
+      if (!url) return;
+      await navigator.clipboard.writeText(url);
+      toast('Hugging Face URL copied');
+      return;
+    }
+    if (cmd === 'open-hf') {
+      const url = catalogModelUrl(model);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (cmd === 'metadata') {
+      const modal = document.getElementById('modelMetadataModal');
+      const pre = document.getElementById('modelMetadataBody');
+      if (pre) pre.textContent = JSON.stringify(model, null, 2);
+      modal?.classList.add('open');
+      modal?.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
+      return;
+    }
+    if (cmd === 'create-stack') {
+      await selectModel(model.id, { preferCache: true, backgroundDetail: false });
+      document.getElementById('hfCreateStackBtn')?.click();
+      return;
+    }
+    if (cmd === 'refresh-detail') {
+      void selectModel(model.id, { preferCache: false, backgroundDetail: false });
+    }
+  }
+
+  function openCatalogContextMenu(event, model) {
+    const menu = document.getElementById('hfCatalogContextMenu');
+    if (!menu || !model?.id) return;
+    catalogContextModel = model;
+    const hfUrl = catalogModelUrl(model);
+    const canStack = catalogDflashCompatible(model) || catalogListHasGguf(model);
+    menu.innerHTML = `
+      <button type="button" data-cmd="copy-id">Copy identifier</button>
+      <button type="button" data-cmd="copy-url"${hfUrl ? '' : ' disabled'}>Copy Hugging Face URL</button>
+      <button type="button" data-cmd="open-hf"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
+      <button type="button" data-cmd="metadata">Show metadata</button>
+      <hr>
+      <button type="button" data-cmd="create-stack"${canStack ? '' : ' disabled'}>Create DFlash stack</button>
+      <button type="button" data-cmd="refresh-detail">Refresh details</button>`;
+    positionContextMenu(menu, event);
+    menu.querySelectorAll('button[data-cmd]').forEach((btn) => {
+      btn.addEventListener('click', (clickEvent) => {
+        clickEvent.stopPropagation();
+        void runCatalogContextCommand(btn.dataset.cmd, model);
+        hideCatalogContextMenu();
+      });
+    });
+  }
+
+  function catalogListNotRunnableNote(model) {
+    if (!catalogListShowsNotRunnableNote(model)) return '';
+    return `<span class="lm-search-item-run-note" title="This format cannot be loaded in DFlash Console yet. You can still browse and download files from Hugging Face.">Can't run here yet</span>`;
   }
 
   function catalogHaystack(model) {
@@ -530,6 +720,14 @@
     persistSearchCache(key, value);
   }
 
+  function persistCurrentListMetadata() {
+    const key = searchCacheKey(searchInput()?.value?.trim() || '', currentSort(), currentCategory());
+    const cached = searchCache.get(key);
+    if (!cached) return;
+    cached.models = models;
+    persistSearchCache(key, cached);
+  }
+
   function loadingCopy(category) {
     return {
       listTitle: 'Loading model catalog',
@@ -595,17 +793,105 @@
     else renderDetailPlaceholder('Select a model to view details, README, and download GGUF files.');
   }
 
-  async function prefetchDetail(repoId, category) {
+  function requestDetail(repoId, category) {
     const key = detailCacheKey(repoId, category);
-    if (detailCache.has(key)) return;
+    const cached = detailCache.get(key);
+    if (cached) return Promise.resolve(cached);
+    const pending = listDetailPending.get(key);
+    if (pending) return pending;
+
+    let request;
+    request = api(
+      `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
+      { timeoutMs: 60000 },
+    ).then((data) => {
+      if (!data?.model) throw new Error('Model details unavailable');
+      detailCache.set(key, data.model);
+      return data.model;
+    }).finally(() => {
+      if (listDetailPending.get(key) === request) listDetailPending.delete(key);
+    });
+    listDetailPending.set(key, request);
+    return request;
+  }
+
+  function mergeCatalogListDetail(repoId, detail) {
+    const row = models.find((model) => model.id === repoId);
+    if (!row || !detail) return false;
+    const fields = [
+      'size_gb',
+      'size_label',
+      'size_bytes',
+      'accelerator_only',
+      'has_gguf',
+      'gguf_count',
+      'file_count',
+      'has_files',
+      'local_ready',
+      'local_installs',
+      'catalog_ready_to_load',
+      'runnable',
+      'download_files',
+      'gguf_files',
+      'tags',
+    ];
+    let changed = false;
+    fields.forEach((field) => {
+      if (detail[field] === undefined || row[field] === detail[field]) return;
+      row[field] = detail[field];
+      changed = true;
+    });
+    return changed;
+  }
+
+  async function prefetchDetail(repoId, category) {
     try {
-      const data = await api(
-        `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
-        { timeoutMs: 60000 },
-      );
-      if (data?.model) detailCache.set(key, data.model);
+      return await requestDetail(repoId, category);
     } catch {
       /* warm-cache best effort */
+      return null;
+    }
+  }
+
+  let listWarmRenderTimer = null;
+
+  function scheduleListWarmRender() {
+    if (listWarmRenderTimer) return;
+    listWarmRenderTimer = window.setTimeout(() => {
+      listWarmRenderTimer = null;
+      renderList();
+    }, 120);
+  }
+
+  async function warmListDetails(rows, category) {
+    const candidates = (rows || []).filter((model) => listSizeLabel(model) === '—');
+    if (!candidates.length) return;
+
+    const run = ++listDetailWarmGen;
+    let cursor = 0;
+    let changed = false;
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const model = candidates[cursor];
+        cursor += 1;
+        const detail = await prefetchDetail(model.id, category);
+        if (run !== listDetailWarmGen) return;
+        if (detail && mergeCatalogListDetail(model.id, detail)) {
+          changed = true;
+          persistCurrentListMetadata();
+          scheduleListWarmRender();
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: LIST_DETAIL_WARM_WORKERS }, () => worker()),
+    );
+    if (changed && run === listDetailWarmGen) {
+      if (listWarmRenderTimer) {
+        window.clearTimeout(listWarmRenderTimer);
+        listWarmRenderTimer = null;
+      }
+      renderList();
     }
   }
 
@@ -683,12 +969,12 @@
     list.innerHTML = visible.map((model) => {
       const selected = model.id === selectedId ? ' selected' : '';
       const ready = catalogReadyToLoad(model) ? ' ready-to-load' : '';
-      const compatible = catalogDflashCompatible(model) ? catalogDflashCompatibleBadge() : '';
+      const listBadges = catalogListBadges(model);
       const description = modelDescription(model);
       const labName = modelLab(model);
       const descLine = description
         ? `<span class="lm-search-item-summary">${escapeHtml(description)}</span>`
-        : `<span class="lm-search-item-summary">${escapeHtml(model.pipeline_tag || 'GGUF model')} · Hugging Face model</span>`;
+        : `<span class="lm-search-item-summary">${escapeHtml(catalogListTaskLabel(model))}</span>`;
       const metaLine = description
         ? `<span class="lm-search-item-desc">
             <span class="lm-search-item-author">${escapeHtml(labName)}</span>
@@ -705,12 +991,13 @@
             <span class="lm-search-item-name">${escapeHtml(modelTitle(model))}</span>
             ${descLine}
             ${metaLine}
+            ${catalogListNotRunnableNote(model)}
           </div>
           <div class="lm-search-item-aside">
-            <div class="lm-search-item-badge-slot">${catalogInstalled(model) ? catalogInstalledBadge() : ''}${compatible}</div>
+            <div class="lm-search-item-badge-slot">${listBadges}</div>
             <div class="lm-search-item-stats">
-              <span class="lm-search-item-stat">${escapeHtml(listSizeLabel(model))}</span>
-              <span class="lm-search-item-stat">${escapeHtml(listAgeLabel(model))}</span>
+              <span class="lm-search-item-stat lm-search-item-stat-age" title="Hugging Face last update">${escapeHtml(listAgeLabel(model))}</span>
+              <span class="lm-search-item-stat lm-search-item-stat-disk" title="Approximate downloadable model size on disk">${escapeHtml(listDiskLabel(model))}</span>
             </div>
           </div>
         </button>`;
@@ -718,7 +1005,14 @@
 
     list.querySelectorAll('.lm-search-item').forEach((btn) => {
       btn.addEventListener('click', () => {
+        hideCatalogContextMenu();
         void selectModel(btn.dataset.repoId, { preferCache: true, backgroundDetail: true });
+      });
+      btn.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const model = models.find((row) => row.id === btn.dataset.repoId);
+        if (model) openCatalogContextMenu(event, model);
       });
     });
   }
@@ -962,11 +1256,13 @@
             ${avatarImg(model.author, model.author_avatar_url, 'lm-hf-avatar')}
             <div class="lm-search-detail-identity">
               <div class="lm-search-detail-title-row">
-                <h2 title="${escapeHtml(model.id)}">${escapeHtml(modelTitle(model))}</h2>
+                <div class="lm-search-detail-title-group">
+                  <h2 title="${escapeHtml(model.id)}">${escapeHtml(modelTitle(model))}</h2>
+                  <button class="lm-icon-btn tiny lm-search-copy-repo" type="button" id="hfCopyRepo" title="Copy repo id" aria-label="Copy repo id">⧉</button>
+                </div>
                 <div class="lm-search-detail-tools" id="hfDownloadButtonTools">
                   <button class="lm-btn ghost small" type="button" id="hfCreateStackBtn">Create DFlash stack</button>
-                  <button class="lm-icon-btn tiny" type="button" id="hfCopyRepo" title="Copy repo id">⧉</button>
-                  <a class="lm-btn ghost small" href="${escapeHtml(model.url)}" target="_blank" rel="noopener noreferrer">Open HF</a>
+                  <a class="lm-btn ghost small" href="${escapeHtml(model.url || catalogModelUrl(model))}" target="_blank" rel="noopener noreferrer">Open HF</a>
                 </div>
               </div>
               <div class="df-catalog-model-badges">${catalogDetailBadges(model)}</div>
@@ -1068,6 +1364,7 @@
       models = cached.models;
       populateCreatorFilter();
       renderList();
+      void warmListDetails(visibleModels(), category);
       restoreVisibleSelection({ preferCache: true });
       background = true;
     } else if (!background) {
@@ -1089,6 +1386,7 @@
         if (!background) renderDetailPlaceholder();
       }
       renderList();
+      void warmListDetails(visibleModels(), category);
       const visible = visibleModels();
       if (!selectedId && visible[0]) {
         await selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
@@ -1137,13 +1435,13 @@
 
   async function refreshDetail(repoId, category) {
     try {
-      const data = await api(
-        `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
-        { timeoutMs: 60000 },
-      );
-      detailCache.set(detailCacheKey(repoId, category), data.model);
+      const model = await requestDetail(repoId, category);
+      if (mergeCatalogListDetail(repoId, model)) {
+        persistCurrentListMetadata();
+        renderList();
+      }
       if (selectedId === repoId) {
-        selectedDetail = data.model;
+        selectedDetail = model;
         renderDetail(selectedDetail);
       }
     } catch (err) {
@@ -1316,6 +1614,11 @@
     });
     document.getElementById('hfSearchCategory')?.addEventListener('change', () => void runSearch());
     document.getElementById('hfSearchCreator')?.addEventListener('change', onCreatorFilterChange);
+    document.addEventListener('click', hideCatalogContextMenu);
+    document.addEventListener('scroll', hideCatalogContextMenu, true);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideCatalogContextMenu();
+    });
     const ready = window.DFlashUiLayout?.whenReady?.() ?? Promise.resolve();
     ready.then(() => setupSearchResize());
     if (queueUnsubscribe) queueUnsubscribe();

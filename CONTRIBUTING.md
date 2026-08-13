@@ -2,6 +2,25 @@
 
 Thanks for helping improve DFlash Console.
 
+## License and contribution terms
+
+DFlash Console is free software under the
+[GNU Affero General Public License version 3 or later](./LICENSE).
+Contributions accepted into this repository are intended to be distributed
+under the same license. By submitting a contribution, you confirm that you
+have the right to submit it and that it does not knowingly include
+third-party code or assets whose terms conflict with the project license.
+
+You retain copyright in your contribution. The project may copy, modify, and
+redistribute accepted contributions as part of DFlash Console under the AGPL
+and any later version permitted by the project notices. We do not require a
+copyright assignment. If a future contribution requires separate commercial
+licensing, the maintainer will ask for a separate written agreement rather
+than assuming that right from a pull request.
+
+The DFlash name and logo are governed by
+[TRADEMARKS.md](./TRADEMARKS.md), not by the AGPL.
+
 ## Before you start
 
 1. Check existing issues and pull requests for related work.

@@ -2,7 +2,9 @@
 
 This project uses GitHub Issues and Discussions for public communication. The
 Windows binaries are published as GitHub Release assets, not committed to the
-source repository.
+source repository. DFlash Console source is released under the GNU AGPL v3 or
+later; review [LICENSING.md](./LICENSING.md), [NOTICE.md](../NOTICE.md), and
+[TRADEMARKS.md](../TRADEMARKS.md) before publishing a distribution.
 
 ## 1. Configure the repository
 
@@ -53,7 +55,9 @@ About page, and README synchronized:
 .\scripts\bump-version.ps1
 ```
 
-Review the generated changes, commit them, and push `main`. Do not commit
+Review the generated changes, commit them, and push `main`. Confirm that the
+release source, corresponding-source instructions, copyright notices, and
+third-party notices are included. Do not commit
 `config.json`, model weights, logs, `node_modules`, or `dist-electron`.
 
 The Windows release workflow requires these repository secrets before it will

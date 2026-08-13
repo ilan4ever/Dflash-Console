@@ -371,17 +371,17 @@ for interactive testing.
 Open **About** in either the browser or Electron app for:
 
 - Developer attribution: **ILAN AVIV**
-- Current application version and MIT license
+- Current application version and GNU AGPL v3-or-later license
 - Links to the Console source repository, developer profile, and DFlash project
-- Attribution guidance: retain the MIT copyright/license notice and, when
-  redistributing or building on the project, link the source repository in your
-  README, About page, or project documentation
+- Attribution guidance: retain the AGPL copyright/license notices, provide
+  corresponding source when required by the AGPL, and link the source
+  repository in your README, About page, or project documentation
 - A summary of the FastAPI + llama-server runtime
 - The local-only security boundary and external Electron data-root behavior
 
-The source link is a request for clear attribution, not an additional condition
-on the MIT license. The About page is informational; it does not change
-configuration or contact external services.
+The DFlash name and logo are separate trademarks or protected branding; see
+the repository `TRADEMARKS.md`. The About page is informational; it does not
+change configuration or contact external services.
 
 ---
 

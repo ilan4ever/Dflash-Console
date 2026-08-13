@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from core.huggingface import _gguf_files, _preferred_gguf_file, _preferred_gguf_size, _quant_rank
+from core.huggingface import (
+    _gguf_files,
+    _preferred_download_size,
+    _preferred_gguf_file,
+    _preferred_gguf_size,
+    _quant_rank,
+)
 
 
 def test_quant_rank_prefers_q4_k_m():
@@ -24,3 +30,15 @@ def test_preferred_gguf_file_picks_q4_k_m():
     assert size_gb is not None
     assert 'GB' in size_label
     assert size_gb < 30
+
+
+def test_preferred_download_size_uses_safetensors_when_no_gguf():
+    siblings = [
+        {'rfilename': 'config.json', 'size': 1200},
+        {'rfilename': 'model.safetensors', 'size': 130_000_000},
+        {'rfilename': 'tokenizer.json', 'size': 2_000_000},
+    ]
+    size_gb, size_label = _preferred_download_size(siblings)
+    assert size_gb is not None
+    assert size_gb > 0.1
+    assert 'GB' in size_label

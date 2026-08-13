@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.2.33</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.11</span>
           </div>
         </div>
       </div>
@@ -440,13 +440,14 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.2.33</strong>
+                <strong id="dfAboutVersion">v0.3.11</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">License</span>
-                <strong>MIT License</strong>
+                <strong>GNU AGPL v3-or-later</strong>
                 <a href="https://github.com/ilan4ever/Dflash-Console/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Read the license</a>
+                <span>No warranty. You may run, modify, and redistribute covered source under the AGPL terms.</span>
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Runtime</span>
@@ -493,12 +494,14 @@ try {
             <section class="df-docs-section-block">
               <h2>Attribution</h2>
               <p>
-                The MIT license requires redistributors to retain the copyright
-                and license notice. When you redistribute or build on DFlash
-                Console, please also link to the
+                The GNU AGPL requires retaining the copyright and license
+                notices and providing corresponding source when its terms
+                apply. When you redistribute or build on DFlash Console,
+                please also link to the
                 <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener noreferrer">DFlash Console source repository</a>
-                in your README, About page, or project documentation. This is an
-                attribution request, not an additional MIT license condition.
+                in your README, About page, or project documentation. The
+                DFlash name and logo are governed separately by
+                <a href="https://github.com/ilan4ever/Dflash-Console/blob/main/TRADEMARKS.md" target="_blank" rel="noopener noreferrer">TRADEMARKS.md</a>.
               </p>
             </section>
 
@@ -543,7 +546,8 @@ try {
                 <div class="df-catalog-toolbar-group">
                   <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
                   <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
-                    <option value="all" selected>All models</option>
+                    <option value="supported" selected>Supported in Console</option>
+                    <option value="all">All models</option>
                     <option value="all-gguf">All GGUF</option>
                     <option value="dflash">DFlash Accelerator</option>
                     <option value="text-generation">Text generation (GGUF)</option>
@@ -1306,6 +1310,7 @@ try {
   </div>
 
   <div id="modelsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
+  <div id="hfCatalogContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="serverCardContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="chatSessionContextMenu" class="lm-context-menu df-chat-session-context-menu hidden" role="menu" aria-hidden="true"></div>
 

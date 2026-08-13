@@ -20,6 +20,13 @@ HF_API = 'https://huggingface.co/api'
 HF_BASE = 'https://huggingface.co'
 
 HF_CATEGORIES: dict[str, dict[str, Any]] = {
+    'supported': {
+        'label': 'Supported in Console',
+        'search': '',
+        'filter': '',
+        'gguf_only': False,
+        'composite': True,
+    },
     'all': {
         'label': 'All models',
         'search': '',
@@ -69,6 +76,23 @@ HF_CATEGORIES: dict[str, dict[str, Any]] = {
         'gguf_only': False,
     },
 }
+
+SUPPORTED_SOURCE_CATEGORIES = (
+    'dflash',
+    'all-gguf',
+    'automatic-speech-recognition',
+    'text-to-speech',
+    'image-to-text',
+    'feature-extraction',
+)
+
+_SUPPORTED_MODALITIES = frozenset({
+    'llm',
+    'vision',
+    'embedding',
+    'speech-to-text',
+    'text-to-speech',
+})
 
 _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml', '.mlmodel')
 
@@ -295,14 +319,21 @@ def _preferred_gguf_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
     return min(files, key=_catalog_file_sort_key)
 
 
-def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
-    preferred = _preferred_gguf_file(_gguf_files(siblings))
+def _size_from_preferred_file(preferred: dict[str, Any] | None) -> tuple[float | None, str]:
     if not preferred:
         return None, '—'
     size_gb = preferred.get('size_gb')
     if not isinstance(size_gb, (int, float)):
         return None, '—'
     return float(size_gb), f'{float(size_gb):g} GB'
+
+
+def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
+    return _size_from_preferred_file(_preferred_gguf_file(_gguf_files(siblings)))
+
+
+def _preferred_download_size(siblings: list[Any] | None) -> tuple[float | None, str]:
+    return _size_from_preferred_file(_preferred_gguf_file(_model_files(siblings, gguf_only=False)))
 
 
 _ACCELERATOR_MAX_SIZE_GB = 8.0
@@ -656,6 +687,8 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     downloadable = _model_files(siblings, gguf_only=False)
     last_modified = str(raw.get('lastModified') or raw.get('createdAt') or '')
     size_gb, size_label = _preferred_gguf_size(siblings)
+    if size_gb is None:
+        size_gb, size_label = _preferred_download_size(siblings)
     accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
     updated_days = _days_since(last_modified)
     repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
@@ -714,17 +747,14 @@ def _summaries_from_models(
     with ThreadPoolExecutor(max_workers=min(12, len(rows))) as pool:
         for index, row in enumerate(rows):
             repo_id = str(row.get('id') or '')
-            marker_text = ' '.join([
-                repo_id,
-                ' '.join(str(tag) for tag in row.get('tags') or []),
-            ]).lower()
-            if not repo_id or not re.search(r'dflash|dspark', marker_text):
+            if not repo_id:
+                continue
+            if row.get('size_label') and str(row.get('size_label')) != '—':
+                continue
+            if isinstance(row.get('size_gb'), (int, float)):
                 continue
             raw = raw_by_index.get(index)
-            if not raw or any(
-                item.get('size_gb') is not None
-                for item in _gguf_files(raw.get('siblings'))
-            ):
+            if not raw:
                 continue
             futures[pool.submit(_fetch_repo_tree, repo_id)] = (index, raw)
 
@@ -742,6 +772,88 @@ def _summaries_from_models(
     return rows
 
 
+def _is_console_supported_model(row: dict[str, Any]) -> bool:
+    """True when a catalog row can be downloaded or run in DFlash Console."""
+    if bool(row.get('accelerator_only')):
+        return True
+    if bool(row.get('runnable')):
+        return True
+    if bool(row.get('has_gguf')) or int(row.get('gguf_count') or 0) > 0:
+        return True
+    modality = str(row.get('modality') or '').strip().lower()
+    if modality in ('llm', 'embedding', 'vision'):
+        return False
+    if modality not in _SUPPORTED_MODALITIES:
+        return False
+    return bool(
+        row.get('downloadable')
+        or row.get('has_files')
+        or int(row.get('file_count') or 0) > 0
+    )
+
+
+def _search_supported_models(
+    query: str = '',
+    *,
+    limit: int = 25,
+    sort: str = 'downloads',
+) -> dict[str, Any]:
+    """Merge supported Console modalities (GGUF, STT, TTS, OCR, embeddings)."""
+    needle = str(query or '').strip()
+    response_limit = max(1, min(int(limit), 50))
+    sort_key = sort if sort in ('downloads', 'likes', 'lastModified', 'createdAt') else 'downloads'
+    per_source = response_limit if needle else max(
+        8,
+        (response_limit + len(SUPPORTED_SOURCE_CATEGORIES) - 1) // len(SUPPORTED_SOURCE_CATEGORIES),
+    )
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    merged: dict[str, dict[str, Any]] = {}
+
+    def fetch_category(category: str) -> list[dict[str, Any]]:
+        payload = search_models(needle, limit=per_source, sort=sort_key, category=category)
+        return [row for row in (payload.get('models') or []) if isinstance(row, dict)]
+
+    with ThreadPoolExecutor(max_workers=len(SUPPORTED_SOURCE_CATEGORIES)) as pool:
+        futures = {
+            pool.submit(fetch_category, category): category
+            for category in SUPPORTED_SOURCE_CATEGORIES
+        }
+        for future in as_completed(futures):
+            try:
+                rows = future.result()
+            except Exception:
+                continue
+            for row in rows:
+                repo_id = str(row.get('id') or '').strip()
+                if not repo_id or repo_id in merged:
+                    continue
+                if _is_console_supported_model(row):
+                    merged[repo_id] = row
+
+    models = list(merged.values())
+    if not models and needle and '/' in needle:
+        try:
+            detail = get_model_detail(needle, category='all')
+            if detail.get('success') and isinstance(detail.get('model'), dict):
+                candidate = detail['model']
+                if _is_console_supported_model(candidate):
+                    models = [candidate]
+        except Exception:
+            pass
+
+    models.sort(
+        key=lambda row: (
+            0 if 'dflash' in str(row.get('id') or '').lower() else 1,
+            0 if bool(row.get('has_gguf')) or int(row.get('gguf_count') or 0) > 0 else 1,
+            -int(row.get('downloads') or 0),
+        ),
+    )
+    models = models[:response_limit]
+    return {'success': True, 'models': models, 'query': needle, 'category': 'supported'}
+
+
 def search_models(
     query: str = '',
     *,
@@ -752,9 +864,11 @@ def search_models(
 ) -> dict[str, Any]:
     needle = str(query or '').strip()
     cat_key = str(category or 'dflash').strip().lower()
+    response_limit = max(1, min(int(limit), 50))
+    if cat_key == 'supported':
+        return _search_supported_models(query=needle, limit=response_limit, sort=sort)
     cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
     use_gguf_only = cat.get('gguf_only', True) if gguf_only is None else gguf_only
-    response_limit = max(1, min(int(limit), 50))
     hf_limit = 50 if cat_key == 'dflash' and not needle else response_limit
     params: dict[str, str | int] = {
         'limit': hf_limit,
@@ -785,10 +899,7 @@ def search_models(
         return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
-    models = _summaries_from_models(
-        payload,
-        enrich_sizes=cat_key == 'dflash',
-    )
+    models = _summaries_from_models(payload, enrich_sizes=True)
     if use_gguf_only:
         models = [
             row for row in models
@@ -815,7 +926,7 @@ def search_models(
             if isinstance(fallback_payload, list):
                 models = _summaries_from_models(
                     fallback_payload,
-                    enrich_sizes=cat_key == 'dflash',
+                    enrich_sizes=True,
                 )
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             pass
@@ -837,9 +948,29 @@ def search_models(
         ),
     )
     from core.config import load_config
+    from core.hf_catalog_cache import get_cached_detail
     from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
 
     config = load_config()
+    for row in models:
+        if row.get('size_label') and str(row.get('size_label')) != '—':
+            continue
+        if isinstance(row.get('size_gb'), (int, float)):
+            continue
+        repo_id = str(row.get('id') or '')
+        if not repo_id:
+            continue
+        cached = get_cached_detail(repo_id=repo_id, category=cat_key)
+        cached_model = (cached or {}).get('payload', {}).get('model')
+        if not isinstance(cached_model, dict):
+            continue
+        cached_label = str(cached_model.get('size_label') or '').strip()
+        if cached_label and cached_label != '—':
+            row['size_label'] = cached_label
+            if isinstance(cached_model.get('size_gb'), (int, float)):
+                row['size_gb'] = float(cached_model['size_gb'])
+            if isinstance(cached_model.get('size_bytes'), int):
+                row['size_bytes'] = cached_model['size_bytes']
     for row in models:
         repo_id = str(row.get('id') or '')
         tags = list(row.get('tags') or [])
@@ -863,8 +994,11 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     repo = str(repo_id or '').strip().strip('/')
     if not repo or '/' not in repo:
         return {'success': False, 'error': 'invalid repo id'}
-    cat = HF_CATEGORIES.get(str(category or 'dflash').strip().lower(), HF_CATEGORIES['dflash'])
+    cat_key = str(category or 'dflash').strip().lower()
+    cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
     use_gguf_only = bool(cat.get('gguf_only', True))
+    if cat_key in ('supported', 'all'):
+        use_gguf_only = False
     url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
     try:
         raw = _request_json(url)
@@ -894,7 +1028,9 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)
     files = gguf_files if use_gguf_only else downloadable_files
     preferred = _preferred_gguf_file(files)
-    summary = _summary_from_model(raw)
+    enriched_raw = dict(raw)
+    enriched_raw['siblings'] = siblings
+    summary = _summary_from_model(enriched_raw)
     # Prefer the recommended quant size for the detail summary when siblings omit them.
     if preferred and isinstance(preferred.get('size_gb'), (int, float)):
         summary['size_gb'] = float(preferred['size_gb'])

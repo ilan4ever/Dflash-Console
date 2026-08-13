@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 
 BASE = 'http://127.0.0.1:8900'
-SID = 'gemma-12b-ar'
+SID = 'gemma-31b-dflash'
 
 # (method, path_template, params)
 GET_TESTS = [

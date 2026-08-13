@@ -10,6 +10,11 @@ def test_setup_complete_defaults_for_existing_libraries():
     assert is_setup_complete(cfg) is True
 
 
+def test_setup_complete_for_legacy_server_configuration():
+    cfg = {'servers': [{'id': 'legacy-server', 'port': 8090}]}
+    assert is_setup_complete(cfg) is True
+
+
 def test_setup_incomplete_when_flag_false():
     cfg = {'setup_complete': False, 'model_libraries': [{'id': 'a', 'path': 'C:/models'}]}
     assert is_setup_complete(cfg) is False
@@ -36,3 +41,15 @@ def test_candidate_to_library_preserves_path(tmp_path: Path):
     lib = candidate_to_library(row, index=0)
     assert lib['path'] == str(root)
     assert lib['download_default'] is True
+
+
+def test_setup_routes_are_registered():
+    from api.app import app
+
+    routes = {
+        (route.path, method)
+        for route in app.routes
+        for method in (getattr(route, 'methods', None) or set())
+    }
+    assert ('/api/setup/scan', 'GET') in routes
+    assert ('/api/setup/complete', 'POST') in routes

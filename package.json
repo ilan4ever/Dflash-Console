@@ -1,14 +1,14 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.2.33",
+  "version": "0.3.11",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "ILAN AVIV",
   "repository": "github:ilan4ever/Dflash-Console",
   "bugs": "https://github.com/ilan4ever/Dflash-Console/issues",
   "homepage": "https://github.com/ilan4ever/Dflash-Console#readme",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "scripts": {
     "electron": "electron .",

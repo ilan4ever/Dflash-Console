@@ -3,7 +3,9 @@
 DFlash Console is a local control plane for llama.cpp-compatible inference
 engines. It combines a FastAPI service with a static HTML/CSS/JavaScript UI.
 The optional Electron shell opens the same UI and starts the local service.
-The project is developed and maintained by **ILAN AVIV** under the MIT License.
+The project is developed and maintained by **ILAN AVIV** under the GNU Affero
+General Public License version 3 or later. See the repository
+[LICENSE](../LICENSE) and [TRADEMARKS.md](../TRADEMARKS.md).
 
 ## Components
 
