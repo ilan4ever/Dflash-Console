@@ -40,6 +40,7 @@ RUNTIME_PIPER = 'piper'
 RUNTIME_STT = 'stt'  # whisper.cpp whisper-server STT adapter
 RUNTIME_FASTER_WHISPER = 'faster-whisper'  # faster-whisper / CTranslate2 STT adapter
 RUNTIME_VIBEVOICE = 'vibevoice'  # Microsoft VibeVoice realtime TTS adapter
+RUNTIME_TRANSFORMERS = 'transformers'  # Hugging Face Transformers / PyTorch LLM adapter
 
 # execution_mode values
 EXECUTION_MODE_SERVER = 'server'

@@ -1710,11 +1710,12 @@
     // faster-whisper, piper), not a llama-server engine. Use the unified
     // loader which dispatches by the catalog row's runtime_id.
     const runtimeId = String(model.runtime_id || '');
-    if (runtimeId === 'stt' || runtimeId === 'faster-whisper' || runtimeId === 'piper') {
+    if (runtimeId === 'stt' || runtimeId === 'faster-whisper' || runtimeId === 'piper' || runtimeId === 'transformers' || runtimeId === 'vibevoice') {
       const isFw = runtimeId === 'faster-whisper';
+      const isTf = runtimeId === 'transformers';
       window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
-        secondary: isFw ? 'Loading faster-whisper model into GPU' : 'Loading speech model',
-        ttlMs: 180000,
+        secondary: isTf ? 'Loading Transformers model into GPU/CPU' : (isFw ? 'Loading faster-whisper model into GPU' : 'Loading speech model'),
+        ttlMs: 300000,
       });
       try {
         const data = await api('/api/models/load', {

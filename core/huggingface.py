@@ -628,6 +628,14 @@ def _enrich_models_from_readme(models: list[dict[str, Any]]) -> list[dict[str, A
     return [row if row is not None else models[idx] for idx, row in enumerate(enriched)]
 
 
+def _transformers_runtime_available() -> bool:
+    try:
+        from core.runtimes.transformers_hf import TransformersRuntimeAdapter
+        return TransformersRuntimeAdapter.is_installed()
+    except Exception:
+        return False
+
+
 def _hf_modality_fields(
     *,
     pipeline_tag: str,
@@ -656,6 +664,10 @@ def _hf_modality_fields(
         kind = 'file' if has_gguf else 'repo'
     elif has_gguf:
         modality, runtime_id, kind = 'llm', 'llama-server', 'file'
+    elif tag == 'text2text-generation' or 't5' in hay or 'seq2seq' in hay:
+        modality, runtime_id, kind = 'translation', 'transformers', 'repo'
+    elif tag in ('text-generation', 'conversational', 'question-answering') or not has_gguf:
+        modality, runtime_id, kind = 'llm', 'transformers', 'repo'
     else:
         modality, runtime_id, kind = 'llm', '', 'repo'
     task = {
@@ -663,15 +675,17 @@ def _hf_modality_fields(
         'text-to-speech': 'speech',
         'embedding': 'embed',
         'vision': 'vision',
+        'translation': 'translate',
         'llm': 'chat',
     }.get(modality, 'chat')
+    transformers_ready = runtime_id == 'transformers' and _transformers_runtime_available()
     return {
         'modality': modality,
         'runtime_id': runtime_id,
         'kind': kind,
         'catalog_visible': True,
-        'downloadable': bool(downloadable) or has_gguf,
-        'runnable': runtime_id == 'llama-server',
+        'downloadable': bool(downloadable) or has_gguf or kind == 'repo',
+        'runnable': (runtime_id == 'llama-server' and has_gguf) or transformers_ready,
         'family': '',
         'task': task,
     }
@@ -782,6 +796,12 @@ def _is_console_supported_model(row: dict[str, Any]) -> bool:
         return True
     modality = str(row.get('modality') or '').strip().lower()
     if modality in ('llm', 'embedding', 'vision'):
+        if modality == 'llm' and str(row.get('runtime_id') or '') == 'transformers':
+            return bool(
+                row.get('downloadable')
+                or row.get('has_files')
+                or int(row.get('file_count') or 0) > 0
+            )
         return False
     if modality not in _SUPPORTED_MODALITIES:
         return False
@@ -1228,6 +1248,105 @@ def start_download(
         'job_id': job_id,
         'path': str(dest),
         'library_id': (library_id or '') if not dest_path else '',
+    }
+
+
+def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['status'] = 'error'
+                job['error'] = f'huggingface_hub is not installed: {exc}'
+        return
+    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['progress'] = 5.0
+        local_dir = snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(dest),
+            local_dir_use_symlinks=False,
+            token=token.strip() if token else None,
+        )
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['status'] = 'done'
+                job['path'] = str(local_dir)
+                job['progress'] = 100.0
+        from core.local_models import invalidate_model_catalog_cache
+        invalidate_model_catalog_cache()
+    except Exception as exc:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['status'] = 'error'
+                job['error'] = str(exc)
+
+
+def start_repo_download(
+    repo_id: str,
+    *,
+    library_id: str | None = None,
+    dest_path: str | None = None,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Download a full Hugging Face model repository into the models library."""
+    config = cfg or load_config()
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return {'success': False, 'error': 'repo_id is required (org/name)'}
+    if dest_path:
+        dest = Path(str(dest_path)).expanduser().resolve()
+        if not _is_under_allowed_model_root(dest, config):
+            return {'success': False, 'error': 'download destination is not under an allowed model directory'}
+    else:
+        library = get_library_by_id(library_id, config) if library_id else None
+        root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()
+        author, repo_name = repo.split('/', 1)
+        dest = root / author / repo_name
+    if dest.is_dir() and any(dest.iterdir()):
+        from core.hf_local_match import find_repo_local_installs
+        existing = find_repo_local_installs(repo, cfg=config)
+        if existing:
+            return {
+                'success': False,
+                'error': 'This model repository is already installed on this PC',
+                'already_installed': True,
+                'matches': existing,
+                'path': existing[0].get('path'),
+            }
+    suffix = abs(hash(repo + str(dest))) % 1_000_000
+    job_id = f'{int(time.time())}-{suffix:06d}'
+    with _jobs_lock:
+        _download_jobs[job_id] = {
+            'id': job_id,
+            'repo_id': repo,
+            'filename': '',
+            'status': 'downloading',
+            'progress': 0.0,
+            'bytes_read': 0,
+            'bytes_total': None,
+            'path': str(dest),
+            'library_id': (library_id or '') if not dest_path else '',
+            'started_at': time.time(),
+            'post_action': None,
+            'kind': 'repo',
+        }
+    thread = threading.Thread(target=_repo_download_worker, args=(job_id, repo, dest), daemon=True)
+    thread.start()
+    return {
+        'success': True,
+        'job_id': job_id,
+        'path': str(dest),
+        'library_id': (library_id or '') if not dest_path else '',
+        'kind': 'repo',
     }
 
 

@@ -421,11 +421,13 @@
   }
 
   function catalogListIsFullModelRepo(model) {
-    if (catalogListHasGguf(model)) return false;
-    const tags = Array.isArray(model?.tags)
-      ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
-      : [];
-    return tags.some((tag) => tag === 'safetensors' || tag === 'transformers');
+    return String(model?.kind || '') === 'repo'
+      && !catalogListHasGguf(model)
+      && String(model?.runtime_id || '') === 'transformers';
+  }
+
+  function catalogIsTransformersRepo(model) {
+    return String(model?.kind || '') === 'repo' && String(model?.runtime_id || '') === 'transformers';
   }
 
   function catalogListTaskLabel(model) {
@@ -1221,30 +1223,36 @@
     if (!pane || !model) return;
     const files = Array.isArray(model.download_files) ? model.download_files
       : (Array.isArray(model.gguf_files) ? model.gguf_files : []);
+    const isRepo = catalogIsTransformersRepo(model);
     const fileOptions = files.map((file, idx) =>
       `<option value="${escapeHtml(file.filename)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(file.label)}</option>`,
     ).join('');
     const initialSize = formatCatalogFileSize(files[0]);
-    const fileSizeEl = files.length
+    const fileSizeEl = files.length && !isRepo
       ? `<span class="df-catalog-file-size${initialSize ? '' : ' hidden'}" id="hfSelectedFileSize" title="${initialSize ? `File size on disk: ${escapeHtml(initialSize)}` : ''}">${escapeHtml(initialSize)}</span>`
       : '';
-    const filePick = files.length > 1
+    const filePick = !isRepo && files.length > 1
       ? `<div class="df-catalog-file-row">
           <label class="df-catalog-field-label" for="hfFilePick">Quantization</label>
           <select class="lm-select small" id="hfFilePick">${fileOptions}</select>
         </div>`
-      : (files.length === 1
+      : (!isRepo && files.length === 1
         ? `<input type="hidden" id="hfFilePick" value="${escapeHtml(files[0].filename)}">`
         : '');
-    const downloadBtn = files.length
-      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
-      : '';
+    const downloadBtn = isRepo
+      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download-repo" title="Download the full model repository from Hugging Face">↓ Download full model</button>'
+      : (files.length
+        ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
+        : '');
     const savePath = downloadTargetLabel(downloadLibraryId);
-    const downloadNote = files.length
-      ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
+    const downloadNote = isRepo
+      ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">Downloads the full Hugging Face repo folder to <code>${escapeHtml(savePath)}</code>. Requires the Transformers runtime in Settings.</p>
          <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
-      : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>';
-    const downloadStatus = files.length
+      : (files.length
+        ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
+         <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
+        : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>');
+    const downloadStatus = (files.length || isRepo)
       ? '<p class="lm-search-download-status hidden" id="hfDownloadStatus"></p>'
       : '';
 
@@ -1332,6 +1340,11 @@
       event.preventDefault();
       event.stopPropagation();
       const btn = document.getElementById('hfDownloadBtn');
+      const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
+      if (btn?.dataset.action === 'download-repo') {
+        void startRepoDownload(model.id, libraryId, model);
+        return;
+      }
       const filename = getSelectedFilename();
       if (!filename || btn?.disabled || btn?.dataset.action === 'downloading') return;
       if (btn?.dataset.action === 'load') {
@@ -1339,7 +1352,6 @@
         openInstalledModel(install);
         return;
       }
-      const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
       void startDownload(model.id, filename, libraryId, model);
     });
     updateSelectedFileSize(files);
@@ -1512,6 +1524,43 @@
           path: data.path,
         });
       }
+    } catch (err) {
+      toast(err.message || 'Download failed', false);
+    }
+  }
+
+  async function startRepoDownload(repoId, libraryId, model) {
+    if (model?.local_ready) {
+      toast('Already installed on this PC — use Load model', false);
+      return;
+    }
+    window.DFlashStatusFeed?.setTransient('Starting repository download…', { secondary: repoId, ttlMs: 60000 });
+    try {
+      const body = { repo_id: repoId };
+      if (libraryId) body.library_id = libraryId;
+      const resp = await fetch('/api/hf/download-repo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        const detail = data?.detail || data;
+        if (detail?.already_installed || data?.already_installed) {
+          toast('Already installed on this PC — use Load model', false);
+          return;
+        }
+        const message = typeof detail === 'string' ? detail : (detail?.error || `HTTP ${resp.status}`);
+        throw new Error(message);
+      }
+      window.DFlashDownloadQueue?.track?.({
+        jobId: data.job_id,
+        repoId,
+        filename: '(full repo)',
+        label: model ? modelTitle(model) : repoId,
+        path: data.path,
+      });
+      toast('Repository download started — see progress above');
     } catch (err) {
       toast(err.message || 'Download failed', false);
     }

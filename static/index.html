@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.11</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.12</span>
           </div>
         </div>
       </div>
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.11</strong>
+                <strong id="dfAboutVersion">v0.3.12</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -934,7 +934,28 @@ try {
 
             <div class="lm-settings-panel" data-settings-panel="rt-runtimes">
               <div class="lm-settings-header"><h2>Speech &amp; runtimes</h2></div>
-              <p class="lm-setting-desc">Manage non-llama runtimes — Piper TTS, Whisper STT — installed as native bundles under <code>runtimes/</code>. Each writes a <code>manifest.json</code> at boot; device rules here are per-runtime (llama stacks use global hardware settings).</p>
+              <p class="lm-setting-desc">Manage non-llama runtimes — Piper TTS, Whisper STT, Transformers (PyTorch) — installed as native bundles under <code>runtimes/</code>. Heavy runtimes are downloaded on demand; the installer stays lightweight.</p>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Transformers / PyTorch runtime</strong>
+                  <p class="lm-setting-desc">Required to run Hugging Face SafeTensors models (OPT, Qwen, T5, …). Installs torch + transformers into <code>runtimes/transformers/venv</code>.</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div>
+                    <strong>Install status</strong>
+                    <p class="lm-setting-desc" id="transformersRuntimeStatus">Checking…</p>
+                  </div>
+                  <div class="lm-setting-actions">
+                    <select class="lm-select small" id="transformersTorchVariant" title="PyTorch build">
+                      <option value="auto" selected>Auto (GPU if available)</option>
+                      <option value="cuda">CUDA</option>
+                      <option value="cpu">CPU only</option>
+                    </select>
+                    <button class="lm-btn primary small" type="button" id="transformersRuntimeInstall">Install / repair</button>
+                  </div>
+                </div>
+              </section>
 
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">

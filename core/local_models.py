@@ -745,6 +745,56 @@ def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dic
     return rows
 
 
+def _scan_transformers(root: Path, *, source: str, max_dirs: int = 200) -> list[dict[str, Any]]:
+    """Discover Hugging Face Transformers model directories (safetensors + config.json)."""
+    if not root.is_dir():
+        return []
+    from core.runtimes.transformers_hf import is_transformers_model_dir
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        for config in root.rglob('config.json'):
+            if len(rows) >= max_dirs:
+                break
+            parent = config.parent
+            key = str(parent).lower()
+            if key in seen:
+                continue
+            if not is_transformers_model_dir(parent):
+                continue
+            seen.add(key)
+            display = parent.name
+            try:
+                data = json.loads(config.read_text(encoding='utf-8', errors='replace'))
+                model_type = str(data.get('model_type') or 'transformers')
+            except (OSError, ValueError):
+                model_type = 'transformers'
+            weight = parent / 'model.safetensors'
+            if not weight.is_file():
+                shards = list(parent.glob('model-*.safetensors'))
+                weight = shards[0] if shards else parent / 'pytorch_model.bin'
+            rows.append({
+                'id': display.replace('_', '-').lower()[:120],
+                'path': str(parent),
+                'filename': display,
+                'label': display,
+                'arch': model_type,
+                'params': _guess_params(display),
+                'publisher': _publisher(parent),
+                'quant': 'f16',
+                'size_gb': _size_gb(weight if weight.is_file() else parent),
+                'modified': _modified_label(parent),
+                'source': source,
+                'kind': 'dir',
+                'runtime_id': 'transformers',
+                'capabilities': ['instruct', 'llm'],
+            })
+    except OSError:
+        pass
+    return rows
+
+
 def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Represent a multi-file GGUF model as one row with its combined size."""
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
@@ -1035,7 +1085,7 @@ def _annotate_path_status(row: dict[str, Any]) -> None:
     path = Path(path_text)
     # faster-whisper models are directories (model.bin + config.json + ...),
     # so a directory path is present when the directory itself exists.
-    if str(row.get('kind') or '').lower() == 'dir' or str(row.get('runtime_id') or '') == 'faster-whisper':
+    if str(row.get('kind') or '').lower() == 'dir' or str(row.get('runtime_id') or '') in ('faster-whisper', 'transformers', 'vibevoice'):
         missing = not path.is_dir()
     else:
         missing = not path.is_file()
@@ -1120,6 +1170,15 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
             row['kind'] = 'dir'
         else:
             runtime_id = 'stt'
+    elif modality in ('llm', 'translation'):
+        model_path = str(row.get('path') or '')
+        try:
+            from core.runtimes.transformers_hf import is_transformers_model_dir
+            if is_transformers_model_dir(Path(model_path).expanduser()):
+                runtime_id = 'transformers'
+                row['kind'] = 'dir'
+        except Exception:
+            pass
     row.setdefault('runtime_id', runtime_id)
     row.setdefault('kind', 'file')
     row.setdefault('catalog_visible', True)
@@ -1336,6 +1395,7 @@ def list_local_models(
         scanned.extend(_scan_gguf(root, source=source))
         scanned.extend(_scan_faster_whisper(root, source=source))
         scanned.extend(_scan_vibevoice(root, source=source))
+        scanned.extend(_scan_transformers(root, source=source))
 
     extras: list[dict[str, Any]] = []
     known_paths = {str(row.get('path') or '').lower() for row in catalog.values()}

@@ -27,6 +27,7 @@ from core.runtimes.base import (
     RUNTIME_LLAMA_SERVER,
     RUNTIME_PIPER,
     RUNTIME_STT,
+    RUNTIME_TRANSFORMERS,
     RUNTIME_VIBEVOICE,
     RuntimeAdapter,
 )
@@ -43,6 +44,7 @@ from core.runtimes.registry import (
     write_process_tokens_manifest,
 )
 from core.runtimes.stt import SttRuntimeAdapter
+from core.runtimes.transformers_hf import TransformersRuntimeAdapter
 from core.runtimes.vibevoice import VibeVoiceRuntimeAdapter
 
 # The no-op adapter is always available so the UI can list installed adapters
@@ -60,6 +62,9 @@ register_runtime_adapter(FasterWhisperRuntimeAdapter())
 # VibeVoice realtime TTS adapter (server mode). Registered always; reports
 # installed=false until the venv under runtimes/vibevoice/ exists.
 register_runtime_adapter(VibeVoiceRuntimeAdapter())
+# Transformers / PyTorch LLM adapter (server mode). Registered always; reports
+# installed=false until the venv under runtimes/transformers/ exists.
+register_runtime_adapter(TransformersRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -76,12 +81,14 @@ __all__ = [
     RUNTIME_LLAMA_SERVER,
     RUNTIME_PIPER,
     RUNTIME_STT,
+    RUNTIME_TRANSFORMERS,
     RUNTIME_VIBEVOICE,
     RuntimeAdapter,
     'NoopRuntimeAdapter',
     'PiperRuntimeAdapter',
     'SttRuntimeAdapter',
     'FasterWhisperRuntimeAdapter',
+    'TransformersRuntimeAdapter',
     'VibeVoiceRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',

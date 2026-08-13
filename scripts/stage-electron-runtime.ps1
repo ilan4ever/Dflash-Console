@@ -16,6 +16,7 @@ $items = @(
     'static',
     'assets',
     'scripts',
+    'runtime-bundles',
     'server.ps1',
     'run.ps1',
     'requirements.txt',

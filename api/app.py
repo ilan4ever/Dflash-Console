@@ -333,6 +333,15 @@ class HfDownloadRequest(BaseModel):
     library_id: str | None = None
 
 
+class HfRepoDownloadRequest(BaseModel):
+    repo_id: str = Field(..., min_length=3)
+    library_id: str | None = None
+
+
+class TransformersInstallRequest(BaseModel):
+    torch_variant: str = Field(default='auto', pattern='^(auto|cuda|cpu)$')
+
+
 class VisionSetupRequest(BaseModel):
     model_path: str = Field(..., min_length=1)
     server_id: str | None = None
@@ -807,6 +816,18 @@ def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
     return result
 
 
+@app.post('/api/hf/download-repo')
+def hf_download_repo(body: HfRepoDownloadRequest) -> dict[str, Any]:
+    from core.huggingface import start_repo_download
+
+    result = start_repo_download(body.repo_id, library_id=body.library_id, cfg=load_config())
+    if not result.get('success'):
+        if result.get('already_installed'):
+            raise HTTPException(status_code=409, detail=result)
+        raise HTTPException(status_code=400, detail=result.get('error') or 'repo download failed')
+    return result
+
+
 @app.get('/api/hf/download/{job_id}')
 def hf_download_status(job_id: str) -> dict[str, Any]:
     from core.huggingface import get_download_job
@@ -959,6 +980,24 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
             'runtime_id': 'vibevoice',
             'loaded': True,
             'how_to_use': 'POST /api/runtimes/vibevoice/v1/audio/speech {"input": "...", "voice": "en-Carter_man"}',
+            **result,
+        }
+    if runtime_id == 'transformers':
+        adapter = get_runtime_adapter('transformers')
+        model_payload: dict[str, Any] = {'path': resolved_path}
+        if body.load_settings:
+            model_payload['load_settings'] = dict(body.load_settings)
+        result = adapter.load(model_payload)
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'Transformers load failed')
+        from core.config import ensure_runtime_entry
+        ensure_runtime_entry('transformers', label='Transformers (PyTorch)', cfg=cfg)
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'transformers',
+            'loaded': True,
+            'how_to_use': 'POST /api/runtimes/transformers/v1/chat/completions',
             **result,
         }
 
@@ -1148,6 +1187,9 @@ def runtimes_status() -> dict[str, Any]:
         runtime_id = str(runtime.get('runtime_id') or '')
         adapter = get_runtime_adapter(runtime_id)
         health = adapter.health() if adapter is not None and callable(getattr(adapter, 'health', None)) else {}
+        installed = health.get('installed')
+        if installed is None:
+            installed = adapter is not None
         merged.append({
             'id': str(runtime.get('id') or ''),
             'kind': 'runtime',
@@ -1162,7 +1204,7 @@ def runtimes_status() -> dict[str, Any]:
             'vram_budget_mb': runtime.get('vram_budget_mb'),
             'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
             'enabled': runtime.get('enabled', True) is not False,
-            'adapter_installed': adapter is not None,
+            'adapter_installed': installed is True,
             # STT-specific settings (faster-whisper + whisper.cpp)
             'compute_type': runtime.get('compute_type') or 'auto',
             'language': runtime.get('language') or '',
@@ -1311,6 +1353,45 @@ def runtime_stop(runtime_id: str) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'stop failed')
     return {'success': True, 'runtime_id': runtime_id, 'stopped': True, **result}
+
+
+@app.post('/api/runtimes/transformers/install')
+def transformers_runtime_install(body: TransformersInstallRequest) -> dict[str, Any]:
+    from core.transformers_runtime_install import start_install
+
+    result = start_install(torch_variant=body.torch_variant)
+    if not result.get('success') and not result.get('already_installed'):
+        raise HTTPException(status_code=409, detail=result.get('error') or 'install failed')
+    return result
+
+
+@app.get('/api/runtimes/transformers/install')
+def transformers_runtime_install_status() -> dict[str, Any]:
+    from core.transformers_runtime_install import install_status
+
+    return {'success': True, **install_status()}
+
+
+@app.post('/api/runtimes/{runtime_id}/v1/chat/completions')
+async def runtime_chat_completions(runtime_id: str, request: Request) -> Any:
+    """Console-proxied OpenAI chat/completions for the Transformers runtime."""
+    if str(runtime_id or '') != 'transformers':
+        raise HTTPException(status_code=404, detail='chat completions proxy is only available for transformers')
+    adapter = _require_runtime_adapter(runtime_id)
+    chat_fn = getattr(adapter, 'chat_completion', None)
+    if not callable(chat_fn):
+        raise HTTPException(status_code=400, detail='adapter does not support chat completions')
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f'invalid JSON body: {exc}') from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='JSON object body required')
+    result = chat_fn(payload)
+    if not result.get('success'):
+        raise HTTPException(status_code=500, detail=result.get('error') or 'chat completion failed')
+    body = {key: value for key, value in result.items() if key != 'success'}
+    return body
 
 
 @app.post('/api/runtimes/{runtime_id}/v1/audio/speech')

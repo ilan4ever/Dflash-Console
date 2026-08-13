@@ -767,6 +767,7 @@
   }
 
   async function refreshRuntimesPanel() {
+    void refreshTransformersInstallStatus();
     const listEl = document.getElementById('runtimeSettingsList');
     const summaryEl = document.getElementById('runtimeContentionSummary');
     if (!listEl) return;
@@ -896,7 +897,7 @@
                 <input type="number" class="lm-num" min="0" data-rt-field="cpu_threads" data-rt-index="${index}" value="${rt.cpu_threads}">
               </div>`
               : '';
-            const sttControls = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper' || rt.runtime_id === 'vibevoice')
+            const sttControls = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper' || rt.runtime_id === 'vibevoice' || rt.runtime_id === 'transformers')
               ? `<div class="lm-setting-row">
                   <div>
                     <strong>Status</strong>
@@ -1000,6 +1001,59 @@
       void refreshRuntimesPanel();
     } catch (err) {
       toast(err.message || 'STT action failed', false);
+    }
+  }
+
+  async function refreshTransformersInstallStatus() {
+    const statusEl = document.getElementById('transformersRuntimeStatus');
+    const installBtn = document.getElementById('transformersRuntimeInstall');
+    if (!statusEl) return;
+    try {
+      const data = await api('/api/runtimes/transformers/install', { timeoutMs: 8000 });
+      const status = String(data?.status || (data?.installed ? 'installed' : 'idle'));
+      if (data?.installed) {
+        statusEl.textContent = 'Installed — SafeTensors / PyTorch models can be loaded.';
+        if (installBtn) installBtn.textContent = 'Repair';
+      } else if (status === 'installing') {
+        statusEl.textContent = 'Installing torch + transformers… this can take several minutes.';
+        if (installBtn) installBtn.disabled = true;
+      } else if (status === 'error') {
+        statusEl.textContent = data?.error || 'Install failed — try again.';
+        if (installBtn) {
+          installBtn.disabled = false;
+          installBtn.textContent = 'Retry install';
+        }
+      } else {
+        statusEl.textContent = 'Not installed — required for Hugging Face full-model repos.';
+        if (installBtn) {
+          installBtn.disabled = false;
+          installBtn.textContent = 'Install / repair';
+        }
+      }
+      if (status === 'installing') {
+        window.setTimeout(() => void refreshTransformersInstallStatus(), 4000);
+      }
+    } catch (err) {
+      statusEl.textContent = err.message || 'Could not read install status.';
+    }
+  }
+
+  async function installTransformersRuntime() {
+    const variant = document.getElementById('transformersTorchVariant')?.value || 'auto';
+    const installBtn = document.getElementById('transformersRuntimeInstall');
+    if (installBtn) installBtn.disabled = true;
+    try {
+      await api('/api/runtimes/transformers/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ torch_variant: variant }),
+        timeoutMs: 15000,
+      });
+      toast('Transformers runtime install started');
+      void refreshTransformersInstallStatus();
+    } catch (err) {
+      toast(err.message || 'Could not start install', false);
+      if (installBtn) installBtn.disabled = false;
     }
   }
 
@@ -1225,6 +1279,7 @@
     document.getElementById('settingsHardwareCopy')?.addEventListener('click', copyHardwareInfo);
     document.getElementById('settingsMcpCopy')?.addEventListener('click', copyMcpJson);
     document.getElementById('runtimeSettingsSave')?.addEventListener('click', () => void persistRuntimes());
+    document.getElementById('transformersRuntimeInstall')?.addEventListener('click', () => void installTransformersRuntime());
     document.getElementById('runtimeSettingsList')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-action="stt-load"], [data-action="stt-unload"]');
       if (!btn) return;
