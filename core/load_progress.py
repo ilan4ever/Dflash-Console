@@ -146,6 +146,13 @@ def model_load_failure_message(lines: list[str]) -> str | None:
             'Model load failed: the model could not be allocated in GPU memory. '
             'Lower GPU layers, reduce context or parallel slots, or choose a smaller model.'
         )
+    arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", combined, flags=re.I)
+    if arch_match:
+        arch = arch_match.group(1)
+        return (
+            f'Model load failed: llama-server does not support the {arch} architecture yet. '
+            'Update llama.cpp to the latest CUDA build, or use a model format this engine supports.'
+        )
     return 'Model load failed. Open the engine log for the detailed loader message.'
 
 

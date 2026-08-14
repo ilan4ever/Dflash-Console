@@ -321,3 +321,38 @@ def validate_model_path(
     if roots and not any(target.is_relative_to(root) for root in roots):
         raise ValueError('path not under allowed model directories')
     return target
+
+
+def is_deletable_model_path(path: Path) -> bool:
+    """True when ``path`` is a single GGUF file or a model directory we manage."""
+    try:
+        target = path.expanduser().resolve()
+    except OSError:
+        return False
+    if target.suffix.lower() == '.gguf' and target.is_file():
+        return True
+    if not target.is_dir():
+        return False
+    if (target / 'config.json').is_file():
+        return True
+    if (target / 'model.safetensors').is_file() or any(target.glob('model-*.safetensors')):
+        return True
+    if (target / 'model.bin').is_file():
+        return True
+    return any(target.glob('*.gguf'))
+
+
+def validate_deletable_model_path(
+    path_text: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    allowed_dirs: list[Path] | None = None,
+) -> Path:
+    """Resolve a library model path that may be deleted (file or directory)."""
+    target = Path(path_text).expanduser().resolve()
+    if not is_deletable_model_path(target):
+        raise ValueError('not a deletable model file or directory')
+    roots = allowed_dirs if allowed_dirs is not None else allowed_model_roots(cfg)
+    if roots and not any(target.is_relative_to(root) for root in roots):
+        raise ValueError('path not under allowed model directories')
+    return target

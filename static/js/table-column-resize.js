@@ -10,7 +10,7 @@
     const raw = parseInt(th.dataset.colMin || '', 10);
     if (Number.isFinite(raw)) return raw;
     if (th.classList.contains('lm-col-model')) return 300;
-    if (th.classList.contains('lm-col-action')) return 44;
+    if (th.classList.contains('lm-col-action')) return 68;
     if (th.dataset.colId === 'source') return 48;
     if (th.dataset.colId === 'updated') return 40;
     return 36;
@@ -57,7 +57,7 @@
     const raw = parseInt(th.dataset.colDefault || '', 10);
     if (Number.isFinite(raw)) return raw;
     if (th.classList.contains('lm-col-model')) return 420;
-    if (th.classList.contains('lm-col-action')) return 52;
+    if (th.classList.contains('lm-col-action')) return 72;
     if (th.dataset.colId === 'source') return 84;
     if (th.dataset.colId === 'updated') return 48;
     return 44;

@@ -5,6 +5,28 @@ from pathlib import Path
 from core.local_models import _has_vision_support
 
 
+def test_server_catalog_row_non_dflash_is_loadable_when_target_ready(tmp_path: Path):
+    from core.local_models import _server_catalog_row
+
+    target = tmp_path / 'nomic-embed-text-v1.5.Q8_0.gguf'
+    target.write_bytes(b'gguf')
+    server = {
+        'id': 'nomic-embed',
+        'model_id': 'nomic-embed-text-v1.5',
+        'label': 'nomic-embed-text-v1.5.Q8_0',
+        'profile': 'nomic-embed',
+        'port': 8093,
+        'enabled': True,
+        'engine_mode': 'embedding',
+        'model_stack': [
+            {'role': 'target', 'path': str(target), 'label': target.name},
+        ],
+    }
+    row = _server_catalog_row(server, cfg={'model_paths': {}})
+    assert row['loadable'] is True
+    assert row['stack_status'] == ''
+
+
 def test_vision_detects_mmproj_sibling(tmp_path: Path):
     target = tmp_path / 'gemma-4-12b-it.gguf'
     projector = tmp_path / 'mmproj-gemma-4-12b-it-f16.gguf'
@@ -110,7 +132,7 @@ def test_scan_ollama_models(tmp_path: Path, monkeypatch):
         }),
         encoding='utf-8',
     )
-    (blobs / f'sha256-{model_digest}').write_bytes(b'gguf-blob')
+    (blobs / f'sha256-{model_digest}').write_bytes(b'GGUF' + b'\x00' * 12 + b'weights')
 
     monkeypatch.setattr('core.local_models._ollama_manifests_root', lambda: tmp_path / 'manifests')
     monkeypatch.setattr('core.local_models._ollama_blobs_root', lambda: blobs)
@@ -124,8 +146,9 @@ def test_scan_ollama_models(tmp_path: Path, monkeypatch):
     assert row['arch'] == 'qwen35'
     assert row['params'] == '9.7B'
     assert row['quant'] == 'Q4_K_M'
-    assert row['loadable'] is False
-    assert row['runtime_id'] == 'ollama'
+    assert row['loadable'] is True
+    assert row['plain_gguf'] is True
+    assert row['model_id'] == 'qwen3.5-9b'
     assert row['path'].endswith(f'sha256-{model_digest}')
 
 

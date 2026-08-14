@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.12
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.18
 
 ---
 
@@ -386,6 +386,9 @@ Dflash-Console/
 | `GET` | `/api/fs/browse` | Folder picker for library paths |
 | `GET` | `/api/hf/search` | Hugging Face model search |
 | `POST` | `/api/hf/download` | Download GGUF into a library |
+| `POST` | `/api/hf/install` | Search → download → load in one call |
+| `GET` | `/api/status/loaded` | Currently loaded models (engines + runtimes) |
+| `GET` | `/api/status/report` | Full report: CPU/RAM/VRAM, engines, loaded models |
 | `DELETE` | `/api/logs/{id}` | Clear engine log file |
 
 Full route list: `api/app.py` or **Documentation** tab in the UI.

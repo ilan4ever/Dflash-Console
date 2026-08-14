@@ -259,9 +259,20 @@
     return document.getElementById('hfSearchSort')?.value === 'installed';
   }
 
+  function fitsMachineOnly() {
+    return document.getElementById('hfSearchSort')?.value === 'fits_machine';
+  }
+
+  function acceleratorsOnly() {
+    return document.getElementById('hfSearchSort')?.value === 'accelerators';
+  }
+
   function currentSort() {
     const value = document.getElementById('hfSearchSort')?.value || 'downloads';
-    return value === 'installed' ? 'downloads' : value;
+    if (value === 'installed' || value === 'fits_machine' || value === 'accelerators') {
+      return 'downloads';
+    }
+    return value;
   }
 
   function modelLab(model) {
@@ -272,6 +283,12 @@
     let rows = models;
     if (installedOnly()) {
       rows = rows.filter((model) => catalogInstalled(model));
+    }
+    if (acceleratorsOnly()) {
+      rows = rows.filter((model) => model?.accelerator_only);
+    }
+    if (fitsMachineOnly()) {
+      rows = rows.filter((model) => model?.fits_machine === true);
     }
     const lab = currentCreator();
     if (!lab) return rows;
@@ -303,8 +320,12 @@
 
   function listSizeLabel(model) {
     const label = String(model?.size_label || '').trim();
-    if (label && !/^(?:—|-)$/.test(label)) return label;
-    if (model?.size_gb != null) return `${model.size_gb} GB`;
+    if (label && !/^(?:—|-)$/i.test(label) && !/^0(?:\.0+)?\s*gb$/i.test(label)) return label;
+    if (model?.size_gb != null && Number(model.size_gb) > 0) return `${model.size_gb} GB`;
+    const smallest = model?.smallest_quant_gb;
+    if (smallest != null && smallest > 0) return `${smallest} GB`;
+    const best = model?.best_fit_quant_gb;
+    if (best != null && best > 0) return `~${best} GB`;
     return '—';
   }
 
@@ -403,6 +424,19 @@
     return category === 'dflash' || /dflash|dspark/i.test(catalogHaystack(model));
   }
 
+  function catalogFitsMachine(model) {
+    return model?.fits_machine === true;
+  }
+
+  function catalogFitsMachineBadge(model) {
+    if (!catalogFitsMachine(model)) return '';
+    const best = model?.best_fit_quant_gb;
+    const title = best
+      ? `At least one GGUF quant fits your GPU VRAM (best fit ~${best} GB)`
+      : 'At least one GGUF quant in this repo should fit your GPU VRAM';
+    return `<span class="lm-tag green" title="${escapeHtml(title)}">Fits PC</span>`;
+  }
+
   function catalogDflashCompatibleBadge() {
     return catalogBadge(
       'DFlash compatible',
@@ -421,13 +455,11 @@
   }
 
   function catalogListIsFullModelRepo(model) {
-    return String(model?.kind || '') === 'repo'
-      && !catalogListHasGguf(model)
-      && String(model?.runtime_id || '') === 'transformers';
-  }
-
-  function catalogIsTransformersRepo(model) {
-    return String(model?.kind || '') === 'repo' && String(model?.runtime_id || '') === 'transformers';
+    if (catalogListHasGguf(model)) return false;
+    const tags = Array.isArray(model?.tags)
+      ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
+      : [];
+    return tags.some((tag) => tag === 'safetensors' || tag === 'transformers');
   }
 
   function catalogListTaskLabel(model) {
@@ -480,7 +512,7 @@
     const compatible = catalogDflashCompatible(model) && !kind
       ? catalogDflashCompatibleBadge()
       : '';
-    return `${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kind}${compatible}`;
+    return `${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kind}${compatible}`;
   }
 
   function catalogListShowsNotRunnableNote(model) {
@@ -662,9 +694,11 @@
     return badges.join('');
   }
 
+  const FIT_CACHE_VERSION = 'v6';
+
   function searchCacheKey(query, sort, category) {
     const installed = installedOnly() ? '1' : '0';
-    return `${category}|${sort}|${installed}|${query}`;
+    return `${FIT_CACHE_VERSION}|${category}|${sort}|${installed}|${query}`;
   }
 
   function detailCacheKey(repoId, category) {
@@ -836,6 +870,13 @@
       'download_files',
       'gguf_files',
       'tags',
+      'fits_machine',
+      'fits_machine_uncertain',
+      'fits_machine_reason',
+      'best_fit_quant_gb',
+      'smallest_quant_gb',
+      'fits_budget_gb',
+      'quant_options_gb',
     ];
     let changed = false;
     fields.forEach((field) => {
@@ -866,7 +907,7 @@
   }
 
   async function warmListDetails(rows, category) {
-    const candidates = (rows || []).filter((model) => listSizeLabel(model) === '—');
+    const candidates = (rows || []).filter((model) => listSizeLabel(model) === '—' || listDiskLabel(model) === 'Disk —');
     if (!candidates.length) return;
 
     const run = ++listDetailWarmGen;
@@ -926,7 +967,7 @@
       }
       const data = await searchCatalog('', sort, category);
       const rows = data.models || [];
-      searchCache.set(key, { models: rows, fetchedAt: Date.now(), detailById: {} });
+      putCachedSearch(query, sort, category, rows);
       catalogPrimed = true;
       if (rows[0]?.id) void prefetchDetail(rows[0].id, category);
     } catch {
@@ -936,11 +977,13 @@
 
   async function searchCatalog(query, sort, category) {
     const path = `/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`;
+    const slowCategory = category === 'supported' || category === 'all-gguf';
+    const timeoutMs = slowCategory ? 120000 : 30000;
     try {
-      return await api(path, { timeoutMs: 30000 });
+      return await api(path, { timeoutMs });
     } catch (firstError) {
       // Hugging Face can transiently stall; retry once before showing an empty catalog.
-      return api(path, { timeoutMs: 30000 }).catch(() => { throw firstError; });
+      return api(path, { timeoutMs }).catch(() => { throw firstError; });
     }
   }
 
@@ -962,6 +1005,8 @@
       const creator = currentCreator();
       const hint = installedOnly()
         ? 'No installed models in this search. Try another query or pick a different filter.'
+        : fitsMachineOnly()
+        ? 'No models in this search fit your GPU VRAM. Try another query or clear the filter.'
         : creator
         ? `No ${creator} models in this search. Try another lab or clear the filter.`
         : `No models found for ${escapeHtml(categoryLabel(category))}. Try another search or category.`;
@@ -990,13 +1035,15 @@
         <button type="button" class="lm-search-item${selected}${ready}" data-repo-id="${escapeHtml(model.id)}">
           ${avatarImg(model.author, model.author_avatar_url, 'lm-hf-avatar sm')}
           <div class="lm-search-item-main">
-            <span class="lm-search-item-name">${escapeHtml(modelTitle(model))}</span>
+            <div class="lm-search-item-title-row">
+              <span class="lm-search-item-name">${escapeHtml(modelTitle(model))}</span>
+              ${listBadges ? `<div class="lm-search-item-badge-slot">${listBadges}</div>` : ''}
+            </div>
             ${descLine}
             ${metaLine}
             ${catalogListNotRunnableNote(model)}
           </div>
           <div class="lm-search-item-aside">
-            <div class="lm-search-item-badge-slot">${listBadges}</div>
             <div class="lm-search-item-stats">
               <span class="lm-search-item-stat lm-search-item-stat-age" title="Hugging Face last update">${escapeHtml(listAgeLabel(model))}</span>
               <span class="lm-search-item-stat lm-search-item-stat-disk" title="Approximate downloadable model size on disk">${escapeHtml(listDiskLabel(model))}</span>
@@ -1223,36 +1270,30 @@
     if (!pane || !model) return;
     const files = Array.isArray(model.download_files) ? model.download_files
       : (Array.isArray(model.gguf_files) ? model.gguf_files : []);
-    const isRepo = catalogIsTransformersRepo(model);
     const fileOptions = files.map((file, idx) =>
       `<option value="${escapeHtml(file.filename)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(file.label)}</option>`,
     ).join('');
     const initialSize = formatCatalogFileSize(files[0]);
-    const fileSizeEl = files.length && !isRepo
+    const fileSizeEl = files.length
       ? `<span class="df-catalog-file-size${initialSize ? '' : ' hidden'}" id="hfSelectedFileSize" title="${initialSize ? `File size on disk: ${escapeHtml(initialSize)}` : ''}">${escapeHtml(initialSize)}</span>`
       : '';
-    const filePick = !isRepo && files.length > 1
+    const filePick = files.length > 1
       ? `<div class="df-catalog-file-row">
           <label class="df-catalog-field-label" for="hfFilePick">Quantization</label>
           <select class="lm-select small" id="hfFilePick">${fileOptions}</select>
         </div>`
-      : (!isRepo && files.length === 1
+      : (files.length === 1
         ? `<input type="hidden" id="hfFilePick" value="${escapeHtml(files[0].filename)}">`
         : '');
-    const downloadBtn = isRepo
-      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download-repo" title="Download the full model repository from Hugging Face">↓ Download full model</button>'
-      : (files.length
-        ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
-        : '');
+    const downloadBtn = files.length
+      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
+      : '';
     const savePath = downloadTargetLabel(downloadLibraryId);
-    const downloadNote = isRepo
-      ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">Downloads the full Hugging Face repo folder to <code>${escapeHtml(savePath)}</code>. Requires the Transformers runtime in Settings.</p>
+    const downloadNote = files.length
+      ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
          <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
-      : (files.length
-        ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
-         <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
-        : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>');
-    const downloadStatus = (files.length || isRepo)
+      : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>';
+    const downloadStatus = files.length
       ? '<p class="lm-search-download-status hidden" id="hfDownloadStatus"></p>'
       : '';
 
@@ -1340,11 +1381,6 @@
       event.preventDefault();
       event.stopPropagation();
       const btn = document.getElementById('hfDownloadBtn');
-      const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
-      if (btn?.dataset.action === 'download-repo') {
-        void startRepoDownload(model.id, libraryId, model);
-        return;
-      }
       const filename = getSelectedFilename();
       if (!filename || btn?.disabled || btn?.dataset.action === 'downloading') return;
       if (btn?.dataset.action === 'load') {
@@ -1352,6 +1388,7 @@
         openInstalledModel(install);
         return;
       }
+      const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
       void startDownload(model.id, filename, libraryId, model);
     });
     updateSelectedFileSize(files);
@@ -1529,43 +1566,6 @@
     }
   }
 
-  async function startRepoDownload(repoId, libraryId, model) {
-    if (model?.local_ready) {
-      toast('Already installed on this PC — use Load model', false);
-      return;
-    }
-    window.DFlashStatusFeed?.setTransient('Starting repository download…', { secondary: repoId, ttlMs: 60000 });
-    try {
-      const body = { repo_id: repoId };
-      if (libraryId) body.library_id = libraryId;
-      const resp = await fetch('/api/hf/download-repo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        const detail = data?.detail || data;
-        if (detail?.already_installed || data?.already_installed) {
-          toast('Already installed on this PC — use Load model', false);
-          return;
-        }
-        const message = typeof detail === 'string' ? detail : (detail?.error || `HTTP ${resp.status}`);
-        throw new Error(message);
-      }
-      window.DFlashDownloadQueue?.track?.({
-        jobId: data.job_id,
-        repoId,
-        filename: '(full repo)',
-        label: model ? modelTitle(model) : repoId,
-        path: data.path,
-      });
-      toast('Repository download started — see progress above');
-    } catch (err) {
-      toast(err.message || 'Download failed', false);
-    }
-  }
-
   function setupSearchResize() {
     const layout = document.getElementById('hfSearchLayout');
     const left = document.getElementById('hfSearchLeft');
@@ -1658,7 +1658,7 @@
   function bind() {
     searchInput()?.addEventListener('input', scheduleSearch);
     document.getElementById('hfSearchSort')?.addEventListener('change', () => {
-      if (installedOnly()) onListFilterChange();
+      if (installedOnly() || fitsMachineOnly() || acceleratorsOnly()) onListFilterChange();
       else void runSearch();
     });
     document.getElementById('hfSearchCategory')?.addEventListener('change', () => void runSearch());

@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.12</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.18</span>
           </div>
         </div>
       </div>
@@ -336,8 +336,8 @@ try {
           <div class="lm-models-toolbar">
             <div class="lm-models-toolbar-right">
               <div class="lm-models-filter" role="group" aria-label="Model filter">
-                <button type="button" class="lm-filter-chip" data-models-filter="all" data-tooltip="Shows every local model, including regular GGUF files and DFlash profiles.">All models</button>
-                <button type="button" class="lm-filter-chip active" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash accelerator and ready to run.">DFlash stacks</button>
+                <button type="button" class="lm-filter-chip active" data-models-filter="all" data-tooltip="Shows every local model, including regular GGUF files and DFlash profiles.">All models</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash accelerator and ready to run.">DFlash stacks</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash or DSpark draft checkpoint files.">Accelerators</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="downloading" data-tooltip="Shows models currently downloading from Hugging Face.">Downloading</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="loaded" data-tooltip="Shows only models currently loaded on the GPU.">Loaded</button>
@@ -369,7 +369,7 @@ try {
                   <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
                   <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
                   <th class="lm-col-meta" data-col-id="updated" data-col-min="64">Updated</th>
-                  <th class="lm-col-action" data-col-id="action" data-col-min="56"></th>
+                  <th class="lm-col-action" data-col-id="action" data-col-min="68" data-col-default="72"></th>
                 </tr>
               </thead>
               <tbody id="modelsTableBody">
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.12</strong>
+                <strong id="dfAboutVersion">v0.3.18</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -546,8 +546,7 @@ try {
                 <div class="df-catalog-toolbar-group">
                   <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
                   <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
-                    <option value="supported" selected>Supported in Console</option>
-                    <option value="all">All models</option>
+                    <option value="all" selected>All models</option>
                     <option value="all-gguf">All GGUF</option>
                     <option value="dflash">DFlash Accelerator</option>
                     <option value="text-generation">Text generation (GGUF)</option>
@@ -565,6 +564,7 @@ try {
                     <option value="likes">Most liked</option>
                     <option value="accelerators">Accelerators only</option>
                     <option value="installed">Installed only</option>
+                    <option value="fits_machine">Fits this PC</option>
                   </select>
                 </div>
                 <div class="df-catalog-toolbar-group df-catalog-toolbar-group-full">

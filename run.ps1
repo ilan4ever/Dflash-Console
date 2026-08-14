@@ -7,6 +7,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+if ($env:ONEVOICE_ORCHESTRATED_CONSOLE_START -eq '1') {
+    Write-Host 'Skipping DFlash Console run.ps1 — OneVoice is orchestrating Console startup (no UI, no restart).' -ForegroundColor Yellow
+    exit 0
+}
+
 $serverScript = Join-Path $PSScriptRoot 'server.ps1'
 $electronScript = Join-Path $PSScriptRoot 'scripts\run-electron.ps1'
 

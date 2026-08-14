@@ -242,8 +242,9 @@ def _start_background_tasks() -> None:
 
     def warm_hf_catalog() -> None:
         try:
-            from core.hf_catalog_cache import start_hf_catalog_refresh_loop, warm_hf_catalog_cache
+            from core.hf_catalog_cache import preload_hf_catalog_cache, start_hf_catalog_refresh_loop, warm_hf_catalog_cache
 
+            preload_hf_catalog_cache()
             start_hf_catalog_refresh_loop()
             warm_hf_catalog_cache()
         except Exception as exc:
@@ -333,13 +334,24 @@ class HfDownloadRequest(BaseModel):
     library_id: str | None = None
 
 
-class HfRepoDownloadRequest(BaseModel):
-    repo_id: str = Field(..., min_length=3)
+class HfInstallRequest(BaseModel):
+    """Search Hugging Face, download model files, and optionally load into an engine."""
+    query: str | None = Field(default=None, max_length=200)
+    repo_id: str | None = Field(default=None, max_length=200)
+    filename: str | None = Field(default=None, max_length=260)
+    category: str = Field(default='supported', max_length=80)
+    sort: str = Field(default='downloads', max_length=40)
+    search_limit: int = Field(default=25, ge=1, le=50)
+    result_index: int = Field(default=0, ge=0, le=49)
     library_id: str | None = None
-
-
-class TransformersInstallRequest(BaseModel):
-    torch_variant: str = Field(default='auto', pattern='^(auto|cuda|cpu)$')
+    download_all_shards: bool = True
+    wait: bool = True
+    wait_timeout_seconds: int = Field(default=3600, ge=10, le=7200)
+    load: bool = True
+    server_id: str | None = None
+    context_size: int | None = Field(default=None, ge=2048, le=1048576)
+    load_settings: dict[str, Any] | None = None
+    inference_settings: dict[str, Any] | None = None
 
 
 class VisionSetupRequest(BaseModel):
@@ -408,6 +420,11 @@ class AudioSpeechRequest(BaseModel):
 class RuntimeLoadRequest(BaseModel):
     voice: str = Field(default='', max_length=120)
     path: str = Field(default='', max_length=1024)
+
+
+class RuntimeUnloadRequest(BaseModel):
+    model_id: str | None = Field(default=None, max_length=200)
+    ollama_model: str | None = Field(default=None, max_length=200)
 
 
 class EmbedBatchRequest(BaseModel):
@@ -724,6 +741,14 @@ def patch_hardware(body: HardwarePatch) -> dict[str, Any]:
     return {'success': True, 'hardware_settings': merged}
 
 
+@app.get('/api/hardware/fit-budget')
+def hardware_fit_budget() -> dict[str, Any]:
+    """VRAM budget used by the Model catalog “fits this PC” badge and filter."""
+    from core.hf_model_fit import machine_fit_budget_gb
+
+    return {'success': True, **machine_fit_budget_gb(cfg=load_config())}
+
+
 @app.get('/api/runtime-recommendations')
 def runtime_recommendations(
     server_id: str | None = Query(None, max_length=80),
@@ -816,18 +841,6 @@ def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
     return result
 
 
-@app.post('/api/hf/download-repo')
-def hf_download_repo(body: HfRepoDownloadRequest) -> dict[str, Any]:
-    from core.huggingface import start_repo_download
-
-    result = start_repo_download(body.repo_id, library_id=body.library_id, cfg=load_config())
-    if not result.get('success'):
-        if result.get('already_installed'):
-            raise HTTPException(status_code=409, detail=result)
-        raise HTTPException(status_code=400, detail=result.get('error') or 'repo download failed')
-    return result
-
-
 @app.get('/api/hf/download/{job_id}')
 def hf_download_status(job_id: str) -> dict[str, Any]:
     from core.huggingface import get_download_job
@@ -843,6 +856,55 @@ def hf_downloads(active: bool = Query(default=False)) -> dict[str, Any]:
     from core.huggingface import list_download_jobs
 
     return list_download_jobs(active_only=active)
+
+
+@app.post('/api/hf/install')
+def hf_install(body: HfInstallRequest) -> dict[str, Any]:
+    """Search Hugging Face, download the selected GGUF, and optionally load it."""
+    from core.hf_install import execute_hf_install
+
+    result = execute_hf_install(
+        query=body.query,
+        repo_id=body.repo_id,
+        filename=body.filename,
+        category=body.category,
+        sort=body.sort,
+        search_limit=body.search_limit,
+        result_index=body.result_index,
+        library_id=body.library_id,
+        download_all_shards=body.download_all_shards,
+        wait=body.wait,
+        wait_timeout_seconds=body.wait_timeout_seconds,
+        load=body.load,
+        server_id=body.server_id,
+        context_size=body.context_size,
+        load_settings=body.load_settings,
+        inference_settings=body.inference_settings,
+        cfg=load_config(),
+    )
+    if body.load and result.get('load'):
+        _invalidate_status_cache()
+    return result
+
+
+@app.get('/api/status/loaded')
+def status_loaded() -> dict[str, Any]:
+    """Currently loaded models across engines and non-llama runtimes."""
+    from core.status_report import get_loaded_models_payload
+
+    return get_loaded_models_payload(cfg=load_config())
+
+
+@app.get('/api/status/report')
+async def status_report(include_external: bool = Query(default=True)) -> dict[str, Any]:
+    """Full machine report: CPU/RAM/VRAM, engines, runtimes, and loaded models."""
+    from core.status_report import get_status_report_payload
+
+    return await asyncio.to_thread(
+        get_status_report_payload,
+        cfg=load_config(),
+        include_external=include_external,
+    )
 
 
 def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
@@ -900,152 +962,20 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
     For llama-server loads you may pass ``server_id`` to pick the engine;
     otherwise the first enabled engine that matches the modality is used.
     """
-    from core.engine_state import note_engine_loaded
-    from core.memory_guardrails import assess_load
+    from core.catalog_load import execute_catalog_load
 
-    cfg = load_config()
-    catalog = list_local_models(cfg=cfg)
-    models = catalog.get('models') or []
-    path = str(body.path or '').strip()
-    target = next(
-        (m for m in models if isinstance(m, dict) and str(m.get('path') or '') == path),
-        None,
+    result = execute_catalog_load(
+        path=body.path,
+        model_id=body.model_id,
+        server_id=body.server_id,
+        context_size=body.context_size,
+        load_settings=body.load_settings,
+        inference_settings=body.inference_settings,
+        loaded_by='api:/api/models/load',
+        cfg=load_config(),
     )
-    if target is None and body.model_id:
-        target = next(
-            (m for m in models if isinstance(m, dict) and str(m.get('model_id') or '') == str(body.model_id)),
-            None,
-        )
-    if target is None:
-        raise HTTPException(status_code=404, detail='model not found in the local catalog (use path or model_id from GET /api/models)')
-    modality = str(target.get('modality') or 'llm')
-    runtime_id = str(target.get('runtime_id') or 'llama-server')
-    resolved_path = str(target.get('path') or path)
-
-    from core.runtimes import get_runtime_adapter
-
-    if runtime_id == 'stt':
-        adapter = get_runtime_adapter('stt')
-        result = adapter.load({'path': resolved_path})
-        if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'STT load failed')
-        return {
-            'success': True,
-            'modality': modality,
-            'runtime_id': 'stt',
-            'loaded': True,
-            'how_to_use': 'POST /api/runtimes/stt/v1/audio/transcriptions (multipart: file=<audio>)',
-            **result,
-        }
-    if runtime_id == 'faster-whisper':
-        adapter = get_runtime_adapter('faster-whisper')
-        model_payload: dict[str, Any] = {'path': resolved_path}
-        if body.load_settings:
-            model_payload['load_settings'] = dict(body.load_settings)
-        result = adapter.load(model_payload)
-        if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'faster-whisper load failed')
-        return {
-            'success': True,
-            'modality': modality,
-            'runtime_id': 'faster-whisper',
-            'loaded': True,
-            'how_to_use': 'POST /api/runtimes/faster-whisper/v1/audio/transcriptions (multipart: file=<audio>)',
-            **result,
-        }
-    if runtime_id == 'piper':
-        adapter = get_runtime_adapter('piper')
-        result = adapter.load({'path': resolved_path})
-        if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'TTS load failed')
-        return {
-            'success': True,
-            'modality': modality,
-            'runtime_id': 'piper',
-            'loaded': True,
-            'how_to_use': 'POST /api/runtimes/piper/v1/audio/speech {"input": "...", "voice": "en_US-lessac-medium"}',
-            **result,
-        }
-    if runtime_id == 'vibevoice':
-        adapter = get_runtime_adapter('vibevoice')
-        model_payload: dict[str, Any] = {'path': resolved_path}
-        if body.load_settings:
-            model_payload['load_settings'] = dict(body.load_settings)
-        result = adapter.load(model_payload)
-        if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'VibeVoice load failed')
-        return {
-            'success': True,
-            'modality': modality,
-            'runtime_id': 'vibevoice',
-            'loaded': True,
-            'how_to_use': 'POST /api/runtimes/vibevoice/v1/audio/speech {"input": "...", "voice": "en-Carter_man"}',
-            **result,
-        }
-    if runtime_id == 'transformers':
-        adapter = get_runtime_adapter('transformers')
-        model_payload: dict[str, Any] = {'path': resolved_path}
-        if body.load_settings:
-            model_payload['load_settings'] = dict(body.load_settings)
-        result = adapter.load(model_payload)
-        if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'Transformers load failed')
-        from core.config import ensure_runtime_entry
-        ensure_runtime_entry('transformers', label='Transformers (PyTorch)', cfg=cfg)
-        return {
-            'success': True,
-            'modality': modality,
-            'runtime_id': 'transformers',
-            'loaded': True,
-            'how_to_use': 'POST /api/runtimes/transformers/v1/chat/completions',
-            **result,
-        }
-
-    # llama-server family: llm / embedding / vision / ocr / translation.
-    server = None
-    if body.server_id:
-        server = get_server(cfg, body.server_id)
-        if server is None:
-            raise HTTPException(status_code=404, detail=f'unknown server_id: {body.server_id}')
-    else:
-        candidates = [s for s in list_servers(cfg) if s.get('enabled', True)]
-        if modality == 'embedding':
-            server = next((s for s in candidates if is_embedding_server(s)), None)
-        else:
-            server = next((s for s in candidates if not is_embedding_server(s)), None)
-    if server is None:
-        raise HTTPException(status_code=409, detail=f'no enabled server can run a {modality} model — pass server_id')
-
-    server = normalize_server(dict(server))
-    candidate = {**server, 'adhoc_model_path': resolved_path}
-    if body.context_size is not None:
-        candidate['context_size'] = int(body.context_size)
-    if body.load_settings:
-        candidate['load_settings'] = normalize_load_settings(body.load_settings)
-    if body.inference_settings:
-        candidate['inference_settings'] = normalize_inference_settings(body.inference_settings)
-
-    check = assess_load(candidate, cfg=cfg)
-    if check.get('level') == 'block':
-        raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
-    result = load_server_checkpoint(server, cfg=cfg, model_path=resolved_path, model_id=body.model_id)
-    if not result.get('success'):
-        raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
-    note_engine_loaded(str(server.get('id') or ''), loaded_by='api:/api/models/load')
     _invalidate_status_cache()
-    if modality == 'embedding':
-        how_to_use = f'POST /api/servers/{server["id"]}/v1/embeddings {{"input": ["text", ...]}}'
-    else:
-        how_to_use = f'POST /api/servers/{server["id"]}/v1/chat/completions'
-    return {
-        'success': True,
-        'modality': modality,
-        'runtime_id': 'llama-server',
-        'server_id': str(server.get('id') or ''),
-        'loaded': True,
-        'how_to_use': how_to_use,
-        **result,
-    }
+    return result
 
 
 @app.get('/api/models/vision/plan')
@@ -1187,9 +1117,6 @@ def runtimes_status() -> dict[str, Any]:
         runtime_id = str(runtime.get('runtime_id') or '')
         adapter = get_runtime_adapter(runtime_id)
         health = adapter.health() if adapter is not None and callable(getattr(adapter, 'health', None)) else {}
-        installed = health.get('installed')
-        if installed is None:
-            installed = adapter is not None
         merged.append({
             'id': str(runtime.get('id') or ''),
             'kind': 'runtime',
@@ -1204,7 +1131,7 @@ def runtimes_status() -> dict[str, Any]:
             'vram_budget_mb': runtime.get('vram_budget_mb'),
             'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
             'enabled': runtime.get('enabled', True) is not False,
-            'adapter_installed': installed is True,
+            'adapter_installed': adapter is not None,
             # STT-specific settings (faster-whisper + whisper.cpp)
             'compute_type': runtime.get('compute_type') or 'auto',
             'language': runtime.get('language') or '',
@@ -1314,11 +1241,19 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
 
 
 @app.post('/api/runtimes/{runtime_id}/unload')
-def runtime_unload(runtime_id: str) -> dict[str, Any]:
+def runtime_unload(runtime_id: str, body: RuntimeUnloadRequest | None = None) -> dict[str, Any]:
     adapter = _require_runtime_adapter(runtime_id)
     unload_fn = getattr(adapter, 'unload', None)
     if not callable(unload_fn):
         raise HTTPException(status_code=400, detail='adapter does not support unload')
+    payload: dict[str, Any] = {}
+    if body is not None:
+        if body.ollama_model:
+            payload['ollama_model'] = body.ollama_model
+        if body.model_id:
+            payload['model_id'] = body.model_id
+    if runtime_id == 'ollama':
+        return {'success': True, 'runtime_id': runtime_id, **unload_fn(payload or None)}
     return {'success': True, 'runtime_id': runtime_id, **unload_fn()}
 
 
@@ -1353,45 +1288,6 @@ def runtime_stop(runtime_id: str) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'stop failed')
     return {'success': True, 'runtime_id': runtime_id, 'stopped': True, **result}
-
-
-@app.post('/api/runtimes/transformers/install')
-def transformers_runtime_install(body: TransformersInstallRequest) -> dict[str, Any]:
-    from core.transformers_runtime_install import start_install
-
-    result = start_install(torch_variant=body.torch_variant)
-    if not result.get('success') and not result.get('already_installed'):
-        raise HTTPException(status_code=409, detail=result.get('error') or 'install failed')
-    return result
-
-
-@app.get('/api/runtimes/transformers/install')
-def transformers_runtime_install_status() -> dict[str, Any]:
-    from core.transformers_runtime_install import install_status
-
-    return {'success': True, **install_status()}
-
-
-@app.post('/api/runtimes/{runtime_id}/v1/chat/completions')
-async def runtime_chat_completions(runtime_id: str, request: Request) -> Any:
-    """Console-proxied OpenAI chat/completions for the Transformers runtime."""
-    if str(runtime_id or '') != 'transformers':
-        raise HTTPException(status_code=404, detail='chat completions proxy is only available for transformers')
-    adapter = _require_runtime_adapter(runtime_id)
-    chat_fn = getattr(adapter, 'chat_completion', None)
-    if not callable(chat_fn):
-        raise HTTPException(status_code=400, detail='adapter does not support chat completions')
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f'invalid JSON body: {exc}') from exc
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail='JSON object body required')
-    result = chat_fn(payload)
-    if not result.get('success'):
-        raise HTTPException(status_code=500, detail=result.get('error') or 'chat completion failed')
-    body = {key: value for key, value in result.items() if key != 'success'}
-    return body
 
 
 @app.post('/api/runtimes/{runtime_id}/v1/audio/speech')

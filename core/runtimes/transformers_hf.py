@@ -191,6 +191,8 @@ class TransformersRuntimeAdapter:
             for key, value in load_settings.items():
                 if key in _DEFAULT_SETTINGS and value is not None:
                     settings[key] = value
+        if 'glm-ocr' in model_path.lower() or 'glm_ocr' in model_path.lower():
+            settings['trust_remote_code'] = True
         policy = str(profile.get('device_policy') or 'auto').strip().lower()
         if settings.get('device') in ('auto', '', None):
             settings['device'] = {'gpu': 'cuda', 'cpu': 'cpu'}.get(policy, 'auto')

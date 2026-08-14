@@ -292,6 +292,15 @@ def _append_vision_capability(caps: list[str], path: Path | None, *, mmproj_path
         caps.append('vision')
 
 
+def _is_gguf_file(path: Path) -> bool:
+    """True when a file begins with the GGUF magic (Ollama blobs are raw GGUF)."""
+    try:
+        with path.open('rb') as handle:
+            return handle.read(4) == b'GGUF'
+    except OSError:
+        return False
+
+
 def _ollama_manifests_root() -> Path | None:
     """Root of Ollama's model manifests (``~/.ollama/models/manifests``)."""
     candidates = [
@@ -520,22 +529,32 @@ def _scan_ollama_models() -> list[dict[str, Any]]:
         # Prefer the model blob as the row path when present (it exists and is
         # the real weights file); otherwise fall back to the manifest file.
         row_path = str(manifest_path)
+        gguf_blob = False
         if blobs_root is not None and model_digest:
             blob_path = blobs_root / f'sha256-{model_digest}'
-            if blob_path.is_file():
+            if blob_path.is_file() and _is_gguf_file(blob_path):
                 row_path = str(blob_path)
+                gguf_blob = True
 
         size_gb = round(total_size / (1024 ** 3), 2) if total_size > 0 else None
         caps = ['llm']
+        gguf_arch = ''
+        if gguf_blob:
+            from core.gguf_meta import read_gguf_architecture
+
+            gguf_arch = read_gguf_architecture(row_path)
+            if gguf_arch == 'glmocr':
+                caps.extend(['ocr', 'vision'])
         if _guess_reasoning(label):
             caps.append('reasoning')
+        model_id = re.sub(r'[^a-z0-9._-]+', '-', label.lower())[:80].strip('-') or label
         rows.append({
             'id': f'ollama:{model_name}:{tag}',
             'server_id': '',
             'label': label,
             'filename': label,
             'path': row_path,
-            'arch': family or _guess_arch(label),
+            'arch': gguf_arch or family or _guess_arch(label),
             'params': params or _guess_params(label),
             'publisher': 'ollama',
             'quant': quant or _guess_quant(label),
@@ -544,7 +563,7 @@ def _scan_ollama_models() -> list[dict[str, Any]]:
             'source': 'ollama',
             'capabilities': caps,
             'reasoning': _guess_reasoning(label),
-            'loadable': False,
+            'loadable': gguf_blob,
             'context_max': 131072,
             'context_size': 8192,
             'load_settings': {},
@@ -552,9 +571,8 @@ def _scan_ollama_models() -> list[dict[str, Any]]:
             'gpu_layers_max': 128,
             'dflash_stack': False,
             'stack_status': '',
-            'plain_gguf': False,
-            'kind': 'ollama',
-            'runtime_id': 'ollama',
+            'plain_gguf': gguf_blob,
+            'model_id': model_id,
             'ollama_model': label,
         })
     return sorted(rows, key=lambda row: (row.get('label') or '').lower())
@@ -745,56 +763,6 @@ def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dic
     return rows
 
 
-def _scan_transformers(root: Path, *, source: str, max_dirs: int = 200) -> list[dict[str, Any]]:
-    """Discover Hugging Face Transformers model directories (safetensors + config.json)."""
-    if not root.is_dir():
-        return []
-    from core.runtimes.transformers_hf import is_transformers_model_dir
-
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    try:
-        for config in root.rglob('config.json'):
-            if len(rows) >= max_dirs:
-                break
-            parent = config.parent
-            key = str(parent).lower()
-            if key in seen:
-                continue
-            if not is_transformers_model_dir(parent):
-                continue
-            seen.add(key)
-            display = parent.name
-            try:
-                data = json.loads(config.read_text(encoding='utf-8', errors='replace'))
-                model_type = str(data.get('model_type') or 'transformers')
-            except (OSError, ValueError):
-                model_type = 'transformers'
-            weight = parent / 'model.safetensors'
-            if not weight.is_file():
-                shards = list(parent.glob('model-*.safetensors'))
-                weight = shards[0] if shards else parent / 'pytorch_model.bin'
-            rows.append({
-                'id': display.replace('_', '-').lower()[:120],
-                'path': str(parent),
-                'filename': display,
-                'label': display,
-                'arch': model_type,
-                'params': _guess_params(display),
-                'publisher': _publisher(parent),
-                'quant': 'f16',
-                'size_gb': _size_gb(weight if weight.is_file() else parent),
-                'modified': _modified_label(parent),
-                'source': source,
-                'kind': 'dir',
-                'runtime_id': 'transformers',
-                'capabilities': ['instruct', 'llm'],
-            })
-    except OSError:
-        pass
-    return rows
-
-
 def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Represent a multi-file GGUF model as one row with its combined size."""
     groups: dict[tuple[str, str, int], list[dict[str, Any]]] = defaultdict(list)
@@ -859,13 +827,17 @@ def _server_catalog_row(
     has_dflash = 'dflash' in caps
     target_ready = bool(path and path.is_file())
     draft_ready = bool(draft_path_obj and draft_path_obj.is_file())
+    if has_dflash:
+        loadable = is_enabled and target_ready and draft_ready
+    else:
+        loadable = is_enabled and target_ready
     return {
         'id': str(server.get('model_id') or server.get('id')),
         'server_id': str(server.get('id') or ''),
         'label': str(server.get('label') or server.get('model_id') or ''),
         'profile': str(server.get('profile') or ''),
         'port': int(server.get('port') or 0),
-        'loadable': is_enabled and has_dflash and target_ready and draft_ready,
+        'loadable': loadable,
         'path': str(target.get('path') or '') if target else '',
         'filename': path.name if path and path.name else '',
         'arch': _guess_arch(str(server.get('label') or path.name if path else '')),
@@ -1085,7 +1057,7 @@ def _annotate_path_status(row: dict[str, Any]) -> None:
     path = Path(path_text)
     # faster-whisper models are directories (model.bin + config.json + ...),
     # so a directory path is present when the directory itself exists.
-    if str(row.get('kind') or '').lower() == 'dir' or str(row.get('runtime_id') or '') in ('faster-whisper', 'transformers', 'vibevoice'):
+    if str(row.get('kind') or '').lower() == 'dir' or str(row.get('runtime_id') or '') == 'faster-whisper':
         missing = not path.is_dir()
     else:
         missing = not path.is_file()
@@ -1120,10 +1092,10 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
     ).lower()
     if engine_mode == 'embedding' or profile in EMBEDDING_PROFILES:
         modality = 'embedding'
+    elif 'ocr' in caps or re.search(r'ocr|chandra|ovis|paddleocr|olmocr', haystack):
+        modality = 'ocr'
     elif 'vision' in caps or re.search(r'vision|multimodal|[-_]vl[-_]|mmproj|image', haystack):
         modality = 'vision'
-    elif re.search(r'ocr|chandra|ovis|paddleocr|olmocr', haystack):
-        modality = 'ocr'
     elif re.search(r'whisper|speech|asr|parakeet|wav2vec|faster[-_]whisper', haystack):
         modality = 'speech-to-text'
     elif re.search(r'text.?to.?speech|tts|piper|kokoro|bark|vibevoice', haystack):
@@ -1170,15 +1142,17 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
             row['kind'] = 'dir'
         else:
             runtime_id = 'stt'
-    elif modality in ('llm', 'translation'):
-        model_path = str(row.get('path') or '')
-        try:
-            from core.runtimes.transformers_hf import is_transformers_model_dir
-            if is_transformers_model_dir(Path(model_path).expanduser()):
-                runtime_id = 'transformers'
-                row['kind'] = 'dir'
-        except Exception:
-            pass
+    elif modality == 'ocr':
+        from core.gguf_meta import read_gguf_architecture
+        from core.ocr_setup import GLMOCR_TRANSFORMERS_REPO, llama_server_supports_glmocr
+
+        ocr_path = str(row.get('path') or '')
+        arch = read_gguf_architecture(ocr_path) if ocr_path else str(row.get('arch') or '').lower()
+        if arch == 'glmocr' and not llama_server_supports_glmocr():
+            runtime_id = 'transformers'
+            row['hf_repo'] = GLMOCR_TRANSFORMERS_REPO
+            row['plain_gguf'] = False
+            row['kind'] = 'dir'
     row.setdefault('runtime_id', runtime_id)
     row.setdefault('kind', 'file')
     row.setdefault('catalog_visible', True)
@@ -1395,7 +1369,6 @@ def list_local_models(
         scanned.extend(_scan_gguf(root, source=source))
         scanned.extend(_scan_faster_whisper(root, source=source))
         scanned.extend(_scan_vibevoice(root, source=source))
-        scanned.extend(_scan_transformers(root, source=source))
 
     extras: list[dict[str, Any]] = []
     known_paths = {str(row.get('path') or '').lower() for row in catalog.values()}

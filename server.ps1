@@ -2,7 +2,9 @@ param(
     [int]$Port = 0,
     [switch]$Foreground,
     [switch]$Restart,
-    [switch]$ApiRestart
+    [switch]$ApiRestart,
+    # OneVoice run.ps1: only start when the API is fully down; never kill a healthy Console.
+    [switch]$DelegatedStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -239,8 +241,19 @@ if ($hasEnabledServer -and -not (Test-Path $llamaBinary -PathType Leaf) -and (-n
 }
 
 $url = "http://127.0.0.1:$Port/"
+$orchestratedStart = $DelegatedStart -or ([string]$env:ONEVOICE_ORCHESTRATED_CONSOLE_START -eq '1')
 
-if (-not $Restart -and -not $ApiRestart) {
+if ($DelegatedStart -or $orchestratedStart) {
+    $delegatedExisting = Get-ConsoleApiHealth -TargetPort $Port
+    if ($delegatedExisting) {
+        Write-Host ''
+        Write-Host "DFlash Console already running at $url" -ForegroundColor Green
+        Write-StartupLine "Delegated start: Console already healthy (no restart)" 'Green'
+        exit 0
+    }
+}
+
+if (-not $Restart -and -not $ApiRestart -and -not $DelegatedStart) {
     $existing = Get-ConsoleApiHealth -TargetPort $Port
     if ($existing) {
         $existingRoot = [string]$existing.console_root
@@ -318,11 +331,29 @@ if ($Restart) {
     Write-StartupLine 'Gentle start — preserving running llama-server engines' 'Gray'
 }
 
-$stale = Stop-StaleConsoleApi -TargetPort $Port
-if ($stale.Count -gt 0) {
-    Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
-} else {
-    Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+if (-not $orchestratedStart) {
+    $stale = Stop-StaleConsoleApi -TargetPort $Port
+    if ($stale.Count -gt 0) {
+        Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
+    } else {
+        Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+    }
+} elseif (-not (Test-ConsoleApiHealthy -TargetPort $Port)) {
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        Write-StartupLine 'Orchestrated start — waiting for existing Console API to become healthy...' 'Gray'
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            if (Test-ConsoleApiHealthy -TargetPort $Port) {
+                Write-StartupLine '  Existing Console API became healthy (no restart)' 'Green'
+                exit 0
+            }
+            Start-Sleep -Seconds 1
+        }
+    }
+    $stale = Stop-StaleConsoleApi -TargetPort $Port
+    if ($stale.Count -gt 0) {
+        Write-StartupLine "  Orchestrated start — cleared stale listener: $($stale -join ', ')" 'DarkYellow'
+    }
 }
 
 if ($cfg -and $cfg.servers) {
@@ -398,10 +429,14 @@ if (-not (Wait-ConsoleApiHealthy -TargetPort $Port -Process $proc)) {
     }
     exit 1
 }
-Write-StartupLine "Open UI: $url" 'Green'
-Write-Host ''
-Write-Host "DFlash Console is running at $url" -ForegroundColor Green
-Write-Host "Logs: $StartupLog" -ForegroundColor DarkGray
-Write-Host 'Use .\server.ps1 -Restart for a full engine reset.' -ForegroundColor DarkGray
-Write-Host 'Use .\server.ps1 -Foreground to attach this terminal.' -ForegroundColor DarkGray
-Write-Host ''
+if (-not $orchestratedStart) {
+    Write-StartupLine "Open UI: $url" 'Green'
+    Write-Host ''
+    Write-Host "DFlash Console is running at $url" -ForegroundColor Green
+    Write-Host "Logs: $StartupLog" -ForegroundColor DarkGray
+    Write-Host 'Use .\server.ps1 -Restart for a full engine reset.' -ForegroundColor DarkGray
+    Write-Host 'Use .\server.ps1 -Foreground to attach this terminal.' -ForegroundColor DarkGray
+    Write-Host ''
+} else {
+    Write-StartupLine "Console API ready at $url (orchestrated — UI not opened)" 'Green'
+}

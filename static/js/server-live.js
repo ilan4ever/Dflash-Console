@@ -1935,12 +1935,12 @@
     const sourceKey = String(source).trim().toLowerCase();
     // Ollama models run through the Ollama API — the Console engine cannot
     // load them, so keep them out of the engine model picker.
-    const loadableModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model) && model?.source !== 'ollama');
+    const loadableModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
     const visibleModels = source
       ? loadableModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
       : loadableModels;
     if (sourcePick && window.DFlashModelGroups?.sourceOptions) {
-      const loadableCatalogModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model) && model?.source !== 'ollama');
+      const loadableCatalogModels = catalogModels.filter((model) => !isAcceleratorOnlyModel(model));
       sourcePick.innerHTML = ['<option value="">All sources</option>',
         ...window.DFlashModelGroups.sourceOptions(loadableCatalogModels).map(([id, label]) =>
           `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`)].join('');
@@ -2782,7 +2782,7 @@
       const body = {};
       if (shouldSendModelPath(model, serverId)) {
         body.model_path = model.path;
-        if (model.id) body.model_id = model.id;
+        if (model.model_id || model.id) body.model_id = model.model_id || model.id;
       }
       const result = await api(`/api/servers/${encodeURIComponent(serverId)}/load`, {
         method: 'POST',
@@ -2796,11 +2796,11 @@
         toast('Model already loaded');
         window.DFlashStatusFeed?.note(`${label} ready`, `Port :${result.port || '—'}`);
         completed = true;
-      } else {
+      } else if (result?.loaded) {
         const loaded = await waitUntilModelLoaded(serverId);
-        if (loaded?.status === 'loaded') {
+        if (loaded?.status === 'loaded' || loaded?.loaded_models?.length) {
           toast('Model loaded');
-          window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded.port || '—'}`);
+          window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded?.port || result.port || '—'}`);
           clearInspectorPendingReload();
           completed = true;
         } else if (loaded?.status === 'error') {

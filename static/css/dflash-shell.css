@@ -692,19 +692,25 @@ body.lm-resizing-sidenav {
 .df-shell .lm-models-table td.lm-col-action {
   vertical-align: middle;
   white-space: nowrap;
-  width: 82px;
-  min-width: 82px;
+  width: 72px;
+  min-width: 72px;
   box-sizing: border-box;
-  padding-left: 8px;
-  padding-right: 10px;
+  padding-left: 6px;
+  padding-right: 8px;
 }
 
 /* The resize script writes percentage widths onto the col elements. Reserve
    real space for the action column so its button cannot be squeezed behind
    the table's right edge. */
 .df-shell .lm-models-table col:last-child {
-  width: 82px !important;
-  min-width: 82px;
+  width: 72px !important;
+  min-width: 72px;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action.has-action-stack,
+.df-shell .lm-view[data-view="models"] .lm-models-table th.lm-col-action.has-action-stack {
+  width: 72px;
+  min-width: 72px;
 }
 
 .df-shell .lm-models-table th {
@@ -1152,7 +1158,13 @@ body.lm-resizing-table-col {
 
 /* Load actions should read as compact buttons, with breathing room from the
    card edge instead of floating against the right border. */
-.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"] {
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-action-btn,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"],
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-llm"],
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="unload-model"],
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="setup-stack"],
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="open-folder"],
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="enable-stack"] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1160,19 +1172,35 @@ body.lm-resizing-table-col {
   min-width: 58px;
   height: 26px;
   margin: 0;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 1px solid rgba(148, 163, 184, 0.38);
   border-radius: 6px;
   background: rgba(55, 59, 69, 0.96);
   color: #e2e8f0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.28);
   vertical-align: middle;
+  font-size: 11px;
+  line-height: 1;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"]:hover {
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-action-btn:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-model"]:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="load-llm"]:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="unload-model"]:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="setup-stack"]:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="open-folder"]:hover,
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="enable-stack"]:hover {
   border-color: rgba(203, 213, 225, 0.54);
   background: rgba(71, 76, 88, 0.98);
   color: #fff;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-action-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 58px;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected .lm-model-loaded-ribbon {
@@ -3621,21 +3649,51 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   align-items: flex-start;
 }
 
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-name {
+  flex: 1 1 0;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  align-self: flex-start;
+  gap: 3px;
+  max-width: 46%;
+  margin-top: 1px;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-desc {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.35;
+}
+
 .df-shell .lm-view[data-view="catalog"] .lm-search-item-aside {
   padding-top: 0;
   padding-right: 0;
 }
 
-.df-shell .lm-view[data-view="catalog"] .lm-search-item-badge-slot {
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 3px;
-  max-width: 170px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.df-shell .lm-view[data-view="catalog"] .lm-search-item-badge-slot .lm-tag {
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot .lm-tag {
   flex: 0 0 auto;
   padding: 2px 5px;
   font-size: 8px;

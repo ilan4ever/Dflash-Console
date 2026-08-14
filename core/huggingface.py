@@ -199,7 +199,9 @@ def _model_files(siblings: list[Any] | None, *, gguf_only: bool = True) -> list[
             lfs = entry.get('lfs')
             if isinstance(lfs, dict) and isinstance(lfs.get('size'), int):
                 size = lfs['size']
-        size_gb = round(int(size) / (1024 ** 3), 2) if isinstance(size, int) and size > 0 else None
+        from core.hf_model_fit import bytes_to_size_gb
+
+        size_gb = bytes_to_size_gb(size)
         files.append({
             'filename': name,
             'size_bytes': size if isinstance(size, int) and size > 0 else None,
@@ -323,7 +325,7 @@ def _size_from_preferred_file(preferred: dict[str, Any] | None) -> tuple[float |
     if not preferred:
         return None, '—'
     size_gb = preferred.get('size_gb')
-    if not isinstance(size_gb, (int, float)):
+    if not isinstance(size_gb, (int, float)) or float(size_gb) <= 0:
         return None, '—'
     return float(size_gb), f'{float(size_gb):g} GB'
 
@@ -703,11 +705,23 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     size_gb, size_label = _preferred_gguf_size(siblings)
     if size_gb is None:
         size_gb, size_label = _preferred_download_size(siblings)
-    accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
     updated_days = _days_since(last_modified)
     repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
     lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
     has_gguf = any(name.endswith('.gguf') for name in tags) or bool(_gguf_files(siblings))
+    gguf_files = _gguf_files(siblings)
+    if not size_gb or float(size_gb) <= 0:
+        from core.hf_model_fit import repo_disk_size_gb
+
+        files_for_size = gguf_files if has_gguf else downloadable
+        disk_gb = repo_disk_size_gb(files_for_size, has_gguf=has_gguf)
+        if disk_gb and disk_gb > 0:
+            size_gb = disk_gb
+            size_label = f'{disk_gb:g} GB'
+    if isinstance(size_gb, (int, float)) and float(size_gb) <= 0:
+        size_gb = None
+        size_label = '—'
+    accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
     modality_fields = _hf_modality_fields(
         pipeline_tag=str(raw.get('pipeline_tag') or ''),
         has_gguf=has_gguf,
@@ -734,13 +748,72 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'tags': tags,
         'pipeline_tag': str(raw.get('pipeline_tag') or ''),
         'description': description,
-        'gguf_count': len(_gguf_files(siblings)),
+        'gguf_count': len(gguf_files),
         'file_count': len(downloadable),
         'has_gguf': has_gguf,
         'has_files': bool(downloadable),
+        'gguf_files': gguf_files,
+        'download_files': downloadable,
         'size_bytes': int(size_gb * (1024 ** 3)) if isinstance(size_gb, (int, float)) and size_gb > 0 else None,
         **modality_fields,
     }
+
+
+def _row_needs_size_enrich(row: dict[str, Any]) -> bool:
+    label = str(row.get('size_label') or '').strip()
+    if label and label not in ('—', '0 GB', '0.0 GB'):
+        return False
+    size_gb = row.get('size_gb')
+    if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+        return False
+    return True
+
+
+def _enrich_summaries_sizes(
+    rows: list[dict[str, Any]],
+    raw_items: list[dict[str, Any]] | None = None,
+    *,
+    max_fetches: int = 10,
+) -> list[dict[str, Any]]:
+    """Fill missing list-card sizes from the Hub tree (bounded, parallel)."""
+    if not rows or max_fetches <= 0:
+        return rows
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    raw_by_id: dict[str, dict[str, Any]] = {}
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        repo_id = str(item.get('id') or item.get('modelId') or '').strip()
+        if repo_id:
+            raw_by_id[repo_id] = item
+
+    futures: dict[Any, tuple[int, dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=min(8, max_fetches)) as pool:
+        for index, row in enumerate(rows):
+            if not _row_needs_size_enrich(row):
+                continue
+            repo_id = str(row.get('id') or '').strip()
+            if not repo_id:
+                continue
+            if len(futures) >= max_fetches:
+                break
+            raw = raw_by_id.get(repo_id) or {'id': repo_id, 'siblings': row.get('gguf_files') or []}
+            futures[pool.submit(_fetch_repo_tree, repo_id)] = (index, raw)
+
+        for future in as_completed(futures):
+            index, raw = futures[future]
+            try:
+                tree = future.result()
+            except Exception:
+                continue
+            if not tree:
+                continue
+            enriched = dict(raw)
+            enriched['siblings'] = _siblings_with_sizes(raw.get('siblings'), tree)
+            rows[index] = _summary_from_model(enriched)
+    return rows
 
 
 def _summaries_from_models(
@@ -758,14 +831,18 @@ def _summaries_from_models(
 
     raw_by_index = dict(enumerate(raw_items))
     futures = {}
-    with ThreadPoolExecutor(max_workers=min(12, len(rows))) as pool:
+    tree_budget = min(8, len(rows))
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
         for index, row in enumerate(rows):
             repo_id = str(row.get('id') or '')
             if not repo_id:
                 continue
             if row.get('size_label') and str(row.get('size_label')) != '—':
                 continue
-            if isinstance(row.get('size_gb'), (int, float)):
+            size_gb = row.get('size_gb')
+            if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+                continue
+            if len(futures) >= tree_budget:
                 continue
             raw = raw_by_index.get(index)
             if not raw:
@@ -784,6 +861,112 @@ def _summaries_from_models(
             enriched['siblings'] = _siblings_with_sizes(raw.get('siblings'), tree)
             rows[index] = _summary_from_model(enriched)
     return rows
+
+
+def _normalize_repo_slug(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', str(value or '').strip().lower()).strip('-')
+
+
+def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[str, Any]]:
+    """Resolve a full repo id or slug (e.g. deepseek/deepseek-v4-flash) to Hub models."""
+    query = str(needle or '').strip().strip('/')
+    if not query:
+        return []
+
+    normalized = query.lower()
+    slug = _normalize_repo_slug(query.split('/')[-1] if '/' in query else query)
+    found: dict[str, dict[str, Any]] = {}
+
+    def add_model(model: dict[str, Any] | None) -> None:
+        if not isinstance(model, dict):
+            return
+        repo_id = str(model.get('id') or '').strip()
+        if repo_id and repo_id not in found:
+            found[repo_id] = model
+
+    detail = get_model_detail(query, category=category)
+    if detail.get('success') and isinstance(detail.get('model'), dict):
+        add_model(detail['model'])
+
+    search_terms = []
+    if '/' in query:
+        search_terms.append(query)
+    if slug:
+        search_terms.append(slug.replace('-', ' '))
+        search_terms.append(slug)
+    for term in search_terms:
+        params = {
+            'limit': 12,
+            'sort': 'downloads',
+            'direction': '-1',
+            'full': 'true',
+            'search': term,
+        }
+        try:
+            payload = _request_json(f'{HF_API}/models?{urllib.parse.urlencode(params)}', timeout=20)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            repo_id = str(item.get('id') or item.get('modelId') or '').strip()
+            if not repo_id:
+                continue
+            repo_slug = _normalize_repo_slug(repo_id.split('/')[-1])
+            repo_lower = repo_id.lower()
+            if repo_lower == normalized or (
+                slug and (repo_slug == slug or slug in repo_slug or repo_slug in slug)
+            ):
+                add_model(_summary_from_model(item))
+
+    models = list(found.values())
+    # Enrich only the best match with full detail (README/files) when needed.
+    models.sort(
+        key=lambda row: (
+            0 if str(row.get('id') or '').lower() == normalized else 1,
+            0 if slug and _normalize_repo_slug(str(row.get('id') or '').split('/')[-1]) == slug else 1,
+            -int(row.get('downloads') or 0),
+        ),
+    )
+    best_id = str(models[0].get('id') or '').strip() if models else ''
+    if best_id and not models[0].get('download_files') and not models[0].get('gguf_files'):
+        detail = get_model_detail(best_id, category=category)
+        if detail.get('success') and isinstance(detail.get('model'), dict):
+            found[best_id] = detail['model']
+            models = list(found.values())
+            models.sort(
+                key=lambda row: (
+                    0 if str(row.get('id') or '').lower() == normalized else 1,
+                    0 if slug and _normalize_repo_slug(str(row.get('id') or '').split('/')[-1]) == slug else 1,
+                    -int(row.get('downloads') or 0),
+                ),
+            )
+    return models
+
+
+def _prepend_repo_lookup(
+    models: list[dict[str, Any]],
+    needle: str,
+    *,
+    category: str,
+    supported_only: bool = False,
+) -> list[dict[str, Any]]:
+    """When the user types an org/repo id, resolve it even if text search returned other rows."""
+    if not needle or '/' not in needle:
+        return models
+    matches = _lookup_hf_repo_models(needle, category=category)
+    if supported_only:
+        matches = [row for row in matches if _is_console_supported_model(row)]
+    if not matches:
+        return models
+    merged: dict[str, dict[str, Any]] = {str(row.get('id') or ''): row for row in models if row.get('id')}
+    for row in reversed(matches):
+        repo_id = str(row.get('id') or '').strip()
+        if repo_id:
+            merged[repo_id] = row
+    return list(merged.values())
 
 
 def _is_console_supported_model(row: dict[str, Any]) -> bool:
@@ -832,7 +1015,20 @@ def _search_supported_models(
     merged: dict[str, dict[str, Any]] = {}
 
     def fetch_category(category: str) -> list[dict[str, Any]]:
-        payload = search_models(needle, limit=per_source, sort=sort_key, category=category)
+        from core.hf_catalog_cache import search_with_cache
+
+        payload = search_with_cache(
+            query=needle,
+            sort=sort_key,
+            category=category,
+            limit=per_source,
+            fetcher=lambda cat=category: search_models(
+                needle,
+                limit=per_source,
+                sort=sort_key,
+                category=cat,
+            ),
+        )
         return [row for row in (payload.get('models') or []) if isinstance(row, dict)]
 
     with ThreadPoolExecutor(max_workers=len(SUPPORTED_SOURCE_CATEGORIES)) as pool:
@@ -853,16 +1049,7 @@ def _search_supported_models(
                     merged[repo_id] = row
 
     models = list(merged.values())
-    if not models and needle and '/' in needle:
-        try:
-            detail = get_model_detail(needle, category='all')
-            if detail.get('success') and isinstance(detail.get('model'), dict):
-                candidate = detail['model']
-                if _is_console_supported_model(candidate):
-                    models = [candidate]
-        except Exception:
-            pass
-
+    models = _prepend_repo_lookup(models, needle, category='supported', supported_only=True)
     models.sort(
         key=lambda row: (
             0 if 'dflash' in str(row.get('id') or '').lower() else 1,
@@ -871,6 +1058,12 @@ def _search_supported_models(
         ),
     )
     models = models[:response_limit]
+    if not needle:
+        models = _enrich_summaries_sizes(models, max_fetches=3)
+    from core.config import load_config
+    from core.hf_model_fit import annotate_hf_models_fit
+
+    annotate_hf_models_fit(models, cfg=load_config(), category='supported')
     return {'success': True, 'models': models, 'query': needle, 'category': 'supported'}
 
 
@@ -919,7 +1112,9 @@ def search_models(
         return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
-    models = _summaries_from_models(payload, enrich_sizes=True)
+    models = _summaries_from_models(payload, enrich_sizes=False)
+    if not needle:
+        models = _enrich_summaries_sizes(models, payload, max_fetches=3)
     if use_gguf_only:
         models = [
             row for row in models
@@ -946,20 +1141,15 @@ def search_models(
             if isinstance(fallback_payload, list):
                 models = _summaries_from_models(
                     fallback_payload,
-                    enrich_sizes=True,
+                    enrich_sizes=False,
                 )
+                if not needle:
+                    models = _enrich_summaries_sizes(models, fallback_payload, max_fetches=3)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             pass
     # Exact repo-id lookup: when the user types a full "org/repo" id (e.g.
-    # microsoft/VibeVoice-Realtime-0.5B) the search may still miss it — fetch
-    # it directly from the Hub so ANY model on Hugging Face is discoverable.
-    if not models and needle and '/' in needle:
-        try:
-            detail = get_model_detail(needle, category=cat_key)
-            if detail.get('success') and isinstance(detail.get('model'), dict):
-                models = [detail['model']]
-        except Exception:
-            pass
+    # deepseek/deepseek-v4-flash) the search may still miss it — resolve directly.
+    models = _prepend_repo_lookup(models, needle, category=cat_key, supported_only=False)
     models.sort(
         key=lambda row: (
             0 if 'dflash' in str(row.get('id') or '').lower() else 1,
@@ -973,9 +1163,11 @@ def search_models(
 
     config = load_config()
     for row in models:
-        if row.get('size_label') and str(row.get('size_label')) != '—':
+        label = str(row.get('size_label') or '').strip()
+        if label and label not in ('—', '0 GB', '0.0 GB'):
             continue
-        if isinstance(row.get('size_gb'), (int, float)):
+        size_gb = row.get('size_gb')
+        if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
             continue
         repo_id = str(row.get('id') or '')
         if not repo_id:
@@ -1007,6 +1199,9 @@ def search_models(
     if cat_key == 'dflash':
         models = [row for row in models if row.get('accelerator_only')]
     models = models[:response_limit]
+    from core.hf_model_fit import annotate_hf_models_fit
+
+    annotate_hf_models_fit(models, cfg=config, category=cat_key)
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
@@ -1052,7 +1247,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     enriched_raw['siblings'] = siblings
     summary = _summary_from_model(enriched_raw)
     # Prefer the recommended quant size for the detail summary when siblings omit them.
-    if preferred and isinstance(preferred.get('size_gb'), (int, float)):
+    if preferred and isinstance(preferred.get('size_gb'), (int, float)) and float(preferred['size_gb']) > 0:
         summary['size_gb'] = float(preferred['size_gb'])
         summary['size_label'] = f"{float(preferred['size_gb']):g} GB"
     description = _truncate_text(_card_description(card) or summary.get('description') or '')
@@ -1070,31 +1265,87 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     local_installs = local_installs_for_files(repo, filenames, cfg=config)
     repo_installs = find_repo_local_installs(repo, cfg=config)
 
+    from core.hf_model_fit import assess_hf_model_fit
+
+    model_payload = {
+        **summary,
+        'title': title,
+        'description': description,
+        'tags': tags,
+        'gguf_files': gguf_files,
+        'download_files': files,
+        'default_download': preferred.get('filename') if preferred else '',
+        'accelerator_only': _is_accelerator_only_repo(
+            siblings,
+            repo_id=repo,
+            size_gb=float(preferred['size_gb']) if preferred and isinstance(preferred.get('size_gb'), (int, float)) else summary.get('size_gb'),
+        ),
+        'local_installs': local_installs,
+        'local_ready': bool(repo_installs),
+        'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
+        'readme': readme,
+        'url': f'{HF_BASE}/{repo}',
+        'gated': bool(raw.get('gated')),
+        'private': bool(raw.get('private')),
+        'category': str(category or 'dflash'),
+    }
+    model_payload.update(
+        assess_hf_model_fit(
+            model_payload,
+            cfg=config,
+            gguf_files=gguf_files,
+            download_files=files,
+        ),
+    )
+
     return {
         'success': True,
-        'model': {
-            **summary,
-            'title': title,
-            'description': description,
-            'tags': tags,
-            'gguf_files': gguf_files,
-            'download_files': files,
-            'default_download': preferred.get('filename') if preferred else '',
-            'accelerator_only': _is_accelerator_only_repo(
-                siblings,
-                repo_id=repo,
-                size_gb=float(preferred['size_gb']) if preferred and isinstance(preferred.get('size_gb'), (int, float)) else summary.get('size_gb'),
-            ),
-            'local_installs': local_installs,
-            'local_ready': bool(repo_installs),
-            'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
-            'readme': readme,
-            'url': f'{HF_BASE}/{repo}',
-            'gated': bool(raw.get('gated')),
-            'private': bool(raw.get('private')),
-            'category': str(category or 'dflash'),
-        },
+        'model': model_payload,
     }
+
+
+def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: str = '') -> None:
+    """Fetch config/tokenizer files when only weights were downloaded as a single file."""
+    try:
+        target = dest_dir.expanduser().resolve()
+    except OSError:
+        return
+    if not target.is_dir():
+        return
+    has_weights = (target / 'model.safetensors').is_file() or any(target.glob('model-*.safetensors'))
+    if not has_weights:
+        return
+    if (target / 'config.json').is_file() and (target / 'tokenizer.json').is_file():
+        return
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return
+    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if job:
+            job['status'] = 'downloading'
+            job['progress'] = max(float(job.get('progress') or 0), 95.0)
+            job['kind'] = 'repo-complete'
+    try:
+        snapshot_download(
+            repo_id=str(repo_id),
+            local_dir=str(target),
+            local_dir_use_symlinks=False,
+            token=token.strip() if token else None,
+        )
+    except Exception as exc:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['post_action_error'] = f'companion files: {exc}'
+        return
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if job:
+            job['path'] = str(target)
+            job['progress'] = 100.0
 
 
 def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> None:
@@ -1126,6 +1377,8 @@ def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> No
                             job['bytes_total'] = total or None
                             job['progress'] = pct
             tmp.replace(dest)
+        if dest.suffix.lower() == '.safetensors':
+            _complete_transformers_repo_files(repo_id, dest.parent, job_id=job_id)
         with _jobs_lock:
             job = _download_jobs.get(job_id)
             if job:

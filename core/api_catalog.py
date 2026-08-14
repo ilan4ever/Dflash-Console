@@ -308,7 +308,12 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1', 'language': 'en'}},
         {'method': 'POST', 'path': f'/api/servers/{sid}/v1/embeddings', 'summary': 'Embed text on an embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
         {'method': 'POST', 'path': f'/api/servers/{sid}/embed/batch', 'summary': 'Batch embed + export .jsonl.', 'body': {'input': ['one item per line', '…'], 'model': 'nomic-embed'}},
-        {'method': 'GET', 'path': '/api/gpu/contention', 'summary': 'Which Console runtimes / external apps hold VRAM right now.'},
+        {'method': 'GET', 'path': '/api/hf/search', 'summary': 'Hugging Face model search (same data as the Model catalog UI).'},
+        {'method': 'POST', 'path': '/api/hf/download', 'summary': 'Download a GGUF/safetensors file into a configured library.'},
+        {'method': 'POST', 'path': '/api/hf/install', 'summary': 'Search Hugging Face, download GGUF shard(s), and optionally load the model.', 'body': {'query': 'qwen dflash', 'load': True, 'server_id': 'optional-engine-id'}},
+        {'method': 'GET', 'path': '/api/status/loaded', 'summary': 'Currently loaded models across engines and non-llama runtimes.'},
+        {'method': 'GET', 'path': '/api/status/report', 'summary': 'Full machine report: CPU/RAM/VRAM, engines, runtimes, loaded models.'},
+        {'method': 'GET', 'path': '/api/system-stats', 'summary': 'Live CPU, RAM, and GPU utilization for the sysbar.'},
         {'method': 'GET', 'path': '/api/runtimes/{runtime_id}/logs', 'summary': 'Tail the per-runtime log file.'},
     ]
 

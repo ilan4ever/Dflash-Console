@@ -336,7 +336,7 @@ class ConfigTests(unittest.TestCase):
 
         from api.app import ModelLoadRequest, model_load
 
-        with patch('api.app.list_local_models', return_value={'models': [
+        with patch('core.catalog_load.list_local_models', return_value={'models': [
             {'path': r'C:\known\model.gguf', 'modality': 'llm', 'runtime_id': 'llama-server'},
         ]}):
             with self.assertRaises(HTTPException) as ctx:
@@ -350,7 +350,7 @@ class ConfigTests(unittest.TestCase):
 
         fake = SimpleNamespace(load=lambda model: {'success': True, 'loaded': True, 'port': 8910})
         stt_path = r'C:\models\whisper\model_q4_k.gguf'
-        with patch('api.app.list_local_models', return_value={'models': [
+        with patch('core.catalog_load.list_local_models', return_value={'models': [
             {'path': stt_path, 'modality': 'speech-to-text', 'runtime_id': 'stt'},
         ]}):
             with patch('core.runtimes.get_runtime_adapter', return_value=fake) as ga:
@@ -366,12 +366,12 @@ class ConfigTests(unittest.TestCase):
 
         llm_path = r'C:\models\gemma\model.gguf'
         server_entry = {'id': 'srv', 'port': 8090, 'host': '127.0.0.1', 'label': 'Srv'}
-        with patch('api.app.list_local_models', return_value={'models': [
+        with patch('core.catalog_load.list_local_models', return_value={'models': [
             {'path': llm_path, 'modality': 'llm', 'runtime_id': 'llama-server'},
         ]}):
-            with patch('api.app.list_servers', return_value=[server_entry]):
+            with patch('core.catalog_load.list_servers', return_value=[server_entry]):
                 with patch('core.memory_guardrails.assess_load', return_value={'level': 'ok'}):
-                    with patch('api.app.load_server_checkpoint', return_value={'success': True, 'loaded': True}) as load_fn:
+                    with patch('core.catalog_load.load_server_checkpoint', return_value={'success': True, 'loaded': True}) as load_fn:
                         result = model_load(ModelLoadRequest(path=llm_path))
         self.assertTrue(result['success'])
         self.assertEqual(result['runtime_id'], 'llama-server')

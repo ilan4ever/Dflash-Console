@@ -570,11 +570,36 @@ def load_server_checkpoint(
         path_obj = Path(custom_path)
         if not path_obj.is_file():
             return {'success': False, 'error': f'model file not found: {custom_path}'}
+        from core.ocr_setup import llama_server_supports_glmocr, ocr_load_hints
+
+        ocr_hints = ocr_load_hints(custom_path, cfg=cfg)
+        if not ocr_hints.get('success'):
+            return {'success': False, 'error': ocr_hints.get('error') or 'OCR setup failed', 'port': port}
+        preset_entry = dict(entry)
+        if ocr_hints.get('ocr'):
+            if not llama_server_supports_glmocr():
+                return {
+                    'success': False,
+                    'error': (
+                        'GLM-OCR needs a newer llama-server build (b10405+). '
+                        'Update llama.cpp under DFlash Console, then try again.'
+                    ),
+                    'port': port,
+                }
+            mmproj_path = str(ocr_hints.get('mmproj_path') or '').strip()
+            if mmproj_path:
+                preset_entry['mmproj_path'] = mmproj_path
+            if ocr_hints.get('context_size'):
+                preset_entry['context_size'] = int(ocr_hints['context_size'])
+            load_settings = dict(preset_entry.get('load_settings') or {})
+            load_settings['flash_attention'] = False
+            preset_entry['load_settings'] = load_settings
         load_id = str(model_id or model_id_from_path(path_obj)).strip()
-        load_profile = infer_profile_from_path(path_obj)
+        profile_source = str(model_id or path_obj)
+        load_profile = infer_profile_from_path(profile_source)
         try:
             write_server_preset(
-                entry,
+                preset_entry,
                 cfg=cfg,
                 target_path=custom_path,
                 model_id=load_id,

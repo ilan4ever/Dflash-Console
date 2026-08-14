@@ -82,6 +82,18 @@ def _is_seq2seq(config: Any) -> bool:
     }
 
 
+def _is_vision_model(config: Any) -> bool:
+    model_type = str(getattr(config, 'model_type', '') or '').lower()
+    architectures = [str(x).lower() for x in (getattr(config, 'architectures', None) or [])]
+    hay = ' '.join([model_type, *architectures])
+    return any(token in hay for token in ('glm_ocr', 'glmocr', 'image-text-to-text', 'vision'))
+
+
+def _needs_trust_remote_code(config: Any) -> bool:
+    model_type = str(getattr(config, 'model_type', '') or '').lower()
+    return model_type in {'glm_ocr', 'glmocr'} or _is_vision_model(config)
+
+
 def _load_model(
     model_dir: str,
     *,
@@ -99,10 +111,9 @@ def _load_model(
     eff_device = _resolve_device(device)
     dtype = _resolve_dtype(torch_dtype, eff_device)
     config = AutoConfig.from_pretrained(str(path), trust_remote_code=trust_remote_code)
-    arch = 'seq2seq' if _is_seq2seq(config) else 'causal'
-    tokenizer = AutoTokenizer.from_pretrained(str(path), trust_remote_code=trust_remote_code)
-    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if _needs_trust_remote_code(config):
+        trust_remote_code = True
+        config = AutoConfig.from_pretrained(str(path), trust_remote_code=True)
 
     load_kwargs: dict[str, Any] = {
         'config': config,
@@ -110,6 +121,21 @@ def _load_model(
         'trust_remote_code': trust_remote_code,
         'low_cpu_mem_usage': True,
     }
+
+    if _is_vision_model(config):
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=trust_remote_code)
+        model = AutoModelForImageTextToText.from_pretrained(str(path), **load_kwargs)
+        model.to(eff_device)
+        model.eval()
+        return model, processor, eff_device, str(dtype).replace('torch.', ''), 'vision'
+
+    arch = 'seq2seq' if _is_seq2seq(config) else 'causal'
+    tokenizer = AutoTokenizer.from_pretrained(str(path), trust_remote_code=trust_remote_code)
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     if arch == 'seq2seq':
         model = AutoModelForSeq2SeqLM.from_pretrained(str(path), **load_kwargs)
     else:

@@ -229,6 +229,13 @@
       addId(row?.model_id || row?.model_name);
     }
 
+    const tf = serversData?.transformers_runtime;
+    if (tf?.active_model) {
+      addPath(tf.active_model);
+      addId('glm-ocr');
+      addId('glmocr');
+    }
+
     return { serverIds, pathKeys, modelIds };
   }
 
@@ -238,7 +245,7 @@
     if (model.server_id && loadedServerIds.has(model.server_id)) return true;
     const pathKey = normalizeModelPath(model.path);
     if (pathKey && loadedPathKeys.has(pathKey)) return true;
-    const ids = [model.id, model.model_id, model.filename]
+    const ids = [model.id, model.model_id, model.filename, model.ollama_model]
       .map((value) => String(value || '').trim().toLowerCase())
       .filter(Boolean);
     return ids.some((id) => loadedModelIds.has(id));
@@ -310,15 +317,34 @@
     return modality + ext + status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
   }
 
+  function actionButton(action, label, title) {
+    return `<button class="lm-btn ghost tiny lm-action-btn" type="button" data-action="${action}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+  }
+
+  function canLoadInConsole(model) {
+    if (!model?.path || modelFileMissing(model)) return false;
+    if (isDflashAccelerator(model)) return false;
+    if (Number(model.split_count || 0) > 1) return false;
+    return true;
+  }
+
+  function needsDflashSetupActions(model) {
+    return !!(
+      model?.path
+      && model.draft_path
+      && model.stack_status === 'unregistered'
+      && !model.server_id
+      && !isDflashAccelerator(model)
+      && !modelFileMissing(model)
+    );
+  }
+
   function stackActionButton(model) {
     if (isStackBooting(model)) {
       return '<span class="lm-tag dim">loading…</span>';
     }
     if (isStackLoadedOnGpu(model)) {
-      return '<button class="lm-btn ghost tiny" type="button" data-action="unload-model" title="Remove model from GPU">Unload</button>';
-    }
-    if (model?.source === 'ollama') {
-      return '<span class="lm-tag blue" title="Installed in Ollama — runs through the Ollama API (port 11434)">Ollama</span>';
+      return actionButton('unload-model', 'Unload', 'Remove model from GPU');
     }
     if (isDflashAccelerator(model)) {
       return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
@@ -326,20 +352,19 @@
     if (modelFileMissing(model)) {
       return '<span class="lm-tag yellow" title="File not found on disk — refresh the catalog or check model folders">missing file</span>';
     }
-    if (model.loadable && model.stack_status !== 'unregistered') {
-      return '<button class="lm-btn ghost tiny" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
-    }
     if (model.stack_status === 'disabled' && model.server_id) {
-      return '<button class="lm-btn ghost tiny" type="button" data-action="enable-stack">Enable</button>';
+      return actionButton('enable-stack', 'Enable', 'Enable this engine profile');
     }
-    if ((model.stack_status === 'unregistered' || model.dflash_stack) && model.path && model.draft_path) {
-      return `<button class="lm-btn ghost tiny" type="button" data-action="load-model" title="Load target only as a standard LLM">Load LLM</button>`
-        + `<button class="lm-btn ghost tiny" type="button" data-action="setup-stack">DFlash stack</button>`;
+    if (needsDflashSetupActions(model)) {
+      return `<div class="lm-action-stack">${actionButton('load-llm', 'LLM', 'Load target only as a standard LLM')}${actionButton('setup-stack', 'Stack', 'Set up a DFlash stack')}</div>`;
     }
-    if (model.path && (model.plain_gguf || model.loadable || !model.server_id)) {
-      return '<button class="lm-btn ghost tiny" type="button" data-action="load-model" title="Load onto the active engine">Load</button>';
+    if (canLoadInConsole(model)) {
+      return actionButton('load-model', 'Load', 'Load model onto GPU');
     }
-    return '<span class="lm-tag dim" title="No local file">browse</span>';
+    if (model?.path) {
+      return actionButton('open-folder', 'Open', 'Show file in Explorer');
+    }
+    return '<span class="lm-tag dim" title="No local file">no file</span>';
   }
 
   const STACK_SORT = { ready: 0, disabled: 1, unregistered: 2 };
@@ -1169,6 +1194,8 @@
     body.querySelectorAll('.lm-model-row:not(.downloading-model)').forEach((row) => {
       row.addEventListener('click', (event) => {
         if (event.target.closest('[data-action="load-model"]')) return;
+        if (event.target.closest('[data-action="load-llm"]')) return;
+        if (event.target.closest('[data-action="open-folder"]')) return;
         if (event.target.closest('[data-action="browse-model"]')) return;
         if (event.target.closest('[data-action="enable-stack"]')) return;
         if (event.target.closest('[data-action="setup-stack"]')) return;
@@ -1191,6 +1218,22 @@
         const row = btn.closest('.lm-model-row');
         const model = models.find((entry) => modelKey(entry) === row?.dataset.modelKey);
         if (model) void loadModel(model);
+      });
+    });
+    body.querySelectorAll('[data-action="load-llm"]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const row = btn.closest('.lm-model-row');
+        const model = models.find((entry) => modelKey(entry) === row?.dataset.modelKey);
+        if (model) void loadModel(model, { llmOnly: true });
+      });
+    });
+    body.querySelectorAll('[data-action="open-folder"]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const row = btn.closest('.lm-model-row');
+        const model = models.find((entry) => modelKey(entry) === row?.dataset.modelKey);
+        if (model) void browseModel(model);
       });
     });
     body.querySelectorAll('[data-action="browse-model"]').forEach((btn) => {
@@ -1228,8 +1271,23 @@
   }
 
   async function unloadModel(model) {
+    const runtimeId = String(model?.runtime_id || '');
+    const runtimeUnloadIds = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice']);
+    if (runtimeUnloadIds.has(runtimeId) && !model?.server_id) {
+      try {
+        await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/unload`, { method: 'POST' });
+        toast(`${model.label || model.id} unloaded`);
+        await refresh({ rebindInspector: true });
+        if (window.DFlashServerLive?.refresh) {
+          await window.DFlashServerLive.refresh(true, { fresh: true });
+        }
+      } catch (err) {
+        toast(err.message, false);
+      }
+      return;
+    }
     if (!model?.server_id) {
-      toast('No engine profile for this stack', false);
+      toast('No engine profile for this model', false);
       return;
     }
     try {
@@ -1685,7 +1743,7 @@
     }
   }
 
-  async function loadModel(model) {
+  async function loadModel(model, { llmOnly = false } = {}) {
     if (isDflashAccelerator(model)) {
       toast('Choose the full target model; accelerators are stack-only.', false);
       return;
@@ -1694,8 +1752,48 @@
       toast('Model file not found on disk. Refresh the catalog or check Settings → model folders.', false);
       return;
     }
-    if (model.stack_status === 'unregistered') {
-      toast('Set up a DFlash stack first, or use Load LLM from the row menu.', false);
+    if (model.stack_status === 'unregistered' && !llmOnly) {
+      toast('Set up a DFlash stack first, or use LLM on the row.', false);
+      return;
+    }
+    const runtimeId = String(model.runtime_id || '');
+    const adapterRuntimes = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice']);
+    if (adapterRuntimes.has(runtimeId)) {
+      if (!model?.path) {
+        toast('This file is not available to load.', false);
+        return;
+      }
+      const isFw = runtimeId === 'faster-whisper';
+      const isTf = runtimeId === 'transformers';
+      window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
+        secondary: isTf
+          ? 'Loading Transformers model into GPU/CPU'
+          : (isFw ? 'Loading faster-whisper model into GPU' : 'Loading speech model'),
+        ttlMs: 300000,
+      });
+      try {
+        const data = await api('/api/models/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: model.path || model.ollama_model || model.label || '',
+            model_id: model.ollama_model || model.model_id || model.id || '',
+          }),
+        });
+        if (data?.loaded) {
+          toast(`${model.label || model.id} loaded`);
+          window.DFlashStatusFeed?.note(
+            `${model.label || model.id} ready`,
+            data.device ? `${data.device} · ${data.compute_type || ''}` : 'ready',
+          );
+        }
+      } catch (err) {
+        toast(err.message || `Could not load ${model.label || model.id}`, false);
+      }
+      await refresh({ rebindInspector: true });
+      if (window.DFlashServerLive?.refresh) {
+        await window.DFlashServerLive.refresh(true, { fresh: true });
+      }
       return;
     }
     if (!window.DFlashServerLive?.loadModelOnServer) {
@@ -1706,41 +1804,8 @@
       toast('This file is not available to load.', false);
       return;
     }
-    // STT / TTS models run on their own runtime adapters (whisper.cpp,
-    // faster-whisper, piper), not a llama-server engine. Use the unified
-    // loader which dispatches by the catalog row's runtime_id.
-    const runtimeId = String(model.runtime_id || '');
-    if (runtimeId === 'stt' || runtimeId === 'faster-whisper' || runtimeId === 'piper' || runtimeId === 'transformers' || runtimeId === 'vibevoice') {
-      const isFw = runtimeId === 'faster-whisper';
-      const isTf = runtimeId === 'transformers';
-      window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
-        secondary: isTf ? 'Loading Transformers model into GPU/CPU' : (isFw ? 'Loading faster-whisper model into GPU' : 'Loading speech model'),
-        ttlMs: 300000,
-      });
-      try {
-        const data = await api('/api/models/load', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: model.path, model_id: model.model_id || model.id || '' }),
-        });
-        if (data?.loaded) {
-          toast(`${model.label || model.id} loaded`);
-          window.DFlashStatusFeed?.note(
-            `${model.label || model.id} ready`,
-            data.device ? `${data.device} · ${data.compute_type || ''}` : 'STT ready',
-          );
-        }
-      } catch (err) {
-        toast(err.message || 'Could not load speech model', false);
-      }
-      await refresh({ rebindInspector: true });
-      if (window.DFlashServerLive?.refresh) {
-        await window.DFlashServerLive.refresh(true, { fresh: true });
-      }
-      return;
-    }
-    let serverId = model.server_id;
-    if (model.plain_gguf || !serverId) {
+    let serverId = llmOnly ? '' : model.server_id;
+    if (model.plain_gguf || llmOnly || !serverId) {
       const active = window.DFlashServerLive.activeServer?.();
       serverId = active?.id;
       if (!serverId) {
@@ -1761,10 +1826,24 @@
 
   async function fetchServersForLibrary() {
     try {
-      return await api('/api/servers?include_external=true', { timeoutMs: 20000 });
+      const [serversData, tfRuntime] = await Promise.all([
+        api('/api/servers?include_external=true', { timeoutMs: 20000 }),
+        api('/api/runtimes/transformers', { timeoutMs: 8000 }).catch(() => null),
+      ]);
+      if (tfRuntime?.active_model) {
+        serversData.transformers_runtime = tfRuntime;
+      }
+      return serversData;
     } catch (_err) {
       try {
-        return await api('/api/servers?include_external=false', { timeoutMs: 12000 });
+        const [serversData, tfRuntime] = await Promise.all([
+          api('/api/servers?include_external=false', { timeoutMs: 12000 }),
+          api('/api/runtimes/transformers', { timeoutMs: 8000 }).catch(() => null),
+        ]);
+        if (tfRuntime?.active_model) {
+          serversData.transformers_runtime = tfRuntime;
+        }
+        return serversData;
       } catch (_err2) {
         return { servers: [], external_gpu_loads: [] };
       }
