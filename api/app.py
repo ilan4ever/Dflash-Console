@@ -976,9 +976,10 @@ def models_catalog(
     else:
         payload = list_local_models(cfg=cfg, scan_disk=not quick)
     models = [row for row in (payload.get('models') or []) if isinstance(row, dict)]
-    if source.strip():
-        models = [row for row in models if model_matches_source(row, source)]
-        payload['source'] = source.strip().lower()
+    source_key = source.strip() if isinstance(source, str) else ''
+    if source_key:
+        models = [row for row in models if model_matches_source(row, source_key)]
+        payload['source'] = source_key.lower()
     for row in models:
         row['load_route'] = _model_load_route(row)
     payload['models'] = models

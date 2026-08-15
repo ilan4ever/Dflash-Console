@@ -8,8 +8,7 @@
 #   1. Explicit Hostinger settings from .env.admin / environment
 #      (HOSTINGER_SSH_HOST, HOSTINGER_SSH_USERNAME, HOSTINGER_SSH_PORT,
 #      HOSTINGER_SSH_PRIVATE_KEY_PATH)
-#   2. Otherwise the ssh config alias `neworldshop-hostinger`
-#      (~/.ssh/config, host 77.37.37.17, u840646150, port 65002).
+#   2. Otherwise the ssh config alias `neworldshop-hostinger`.
 #
 # Usage:
 #   .\scripts\deploy-docs.ps1              # docs/ only

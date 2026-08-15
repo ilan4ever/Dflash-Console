@@ -29,6 +29,7 @@ logs/
 # Secrets
 .env
 .env.*
+!.env.admin.example
 *.pem
 *.key
 *.p12

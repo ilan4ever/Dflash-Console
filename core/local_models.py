@@ -36,7 +36,7 @@ _CATALOG_REFRESHING = False
 _CATALOG_REFRESH_LOOP_STARTED = False
 
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
-_PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
+_PARAM_RE = re.compile(r'(?<![0-9A-Fa-f])(\d+(?:\.\d+)?)\s*[Bb](?![0-9A-Fa-f])')
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
 _PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
 _GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)

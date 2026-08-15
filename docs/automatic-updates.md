@@ -8,7 +8,7 @@ The feed and installer are protected by a token and stored outside the website's
 
 ## Release prerequisites
 
-Keep the RSA private key outside the repository. The committed public key is `electron/resources/update-manifest-public.pem`. For local publishing, provide Hostinger SSH settings in `.env.admin` and run:
+Keep the RSA private key outside the repository. The committed public key is `electron/resources/update-manifest-public.pem`. For local publishing, provide Hostinger SSH settings and `HOSTINGER_UPDATE_ROOT` in `.env.admin` and run:
 
 ```powershell
 .\scripts\bump-version.ps1
@@ -25,4 +25,4 @@ node tools/sign-update-manifest.js `
   -Token "<the feed token>"
 ```
 
-GitHub releases use `DFLASH_UPDATE_TOKEN`, `DFLASH_UPDATE_PRIVATE_KEY`, and the Hostinger SSH secrets. The detached helper waits for the running app and its child processes to quit, then opens the verified branded DFlash setup UI. The installer provides the per-user/per-machine choice, shows custom progress, and relaunches the app after installation.
+GitHub releases use `DFLASH_UPDATE_TOKEN`, `DFLASH_UPDATE_PRIVATE_KEY`, `HOSTINGER_UPDATE_ROOT`, and the Hostinger SSH secrets. Windows code-signing secrets `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` are required for the official GitHub Release. The detached helper waits for the running app and its child processes to quit, then opens the verified branded DFlash setup UI. The installer provides the per-user/per-machine choice, shows custom progress, and relaunches the app after installation.

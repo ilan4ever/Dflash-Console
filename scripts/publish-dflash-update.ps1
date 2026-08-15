@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Installer,
     [Parameter(Mandatory = $true)][string]$Manifest,
     [string]$Token = "",
-    [string]$RemoteRoot = "/home/u840646150/domains/onevoiceai.in/dflash-console-private"
+    [string]$RemoteRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +21,12 @@ function Read-EnvValue([string]$Name) {
 
 # The feed token can come from -Token, the DFLASH_UPDATE_TOKEN environment
 # variable, or DFLASH_UPDATE_TOKEN in .env.admin (kept out of git).
+if (-not $RemoteRoot) {
+    $RemoteRoot = Read-EnvValue "HOSTINGER_UPDATE_ROOT"
+}
+if (-not $RemoteRoot) {
+    throw "Missing HOSTINGER_UPDATE_ROOT (or -RemoteRoot). Set it in .env.admin."
+}
 if (-not $Token) {
     $Token = Read-EnvValue "DFLASH_UPDATE_TOKEN"
 }

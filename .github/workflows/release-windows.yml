@@ -96,9 +96,10 @@ jobs:
           HOSTINGER_SSH_USERNAME: ${{ secrets.HOSTINGER_SSH_USERNAME }}
           HOSTINGER_SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
           HOSTINGER_SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          HOSTINGER_UPDATE_ROOT: ${{ secrets.HOSTINGER_UPDATE_ROOT }}
         run: |
-          if (-not $env:HOSTINGER_SSH_HOST -or -not $env:HOSTINGER_SSH_USERNAME -or -not $env:HOSTINGER_SSH_PORT -or -not $env:HOSTINGER_SSH_PRIVATE_KEY) {
-            throw "Hostinger SSH repository secrets are required to publish the automatic-update feed."
+          if (-not $env:HOSTINGER_SSH_HOST -or -not $env:HOSTINGER_SSH_USERNAME -or -not $env:HOSTINGER_SSH_PORT -or -not $env:HOSTINGER_SSH_PRIVATE_KEY -or -not $env:HOSTINGER_UPDATE_ROOT) {
+            throw "Hostinger SSH repository secrets and HOSTINGER_UPDATE_ROOT are required to publish the automatic-update feed."
           }
 
       - name: Build portable package and branded installer
@@ -176,6 +177,7 @@ jobs:
           HOSTINGER_SSH_USERNAME: ${{ secrets.HOSTINGER_SSH_USERNAME }}
           HOSTINGER_SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
           HOSTINGER_SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          HOSTINGER_UPDATE_ROOT: ${{ secrets.HOSTINGER_UPDATE_ROOT }}
           DFLASH_UPDATE_TOKEN: ${{ secrets.DFLASH_UPDATE_TOKEN }}
         run: |
           $key = "$env:RUNNER_TEMP\hostinger-dflash.key"

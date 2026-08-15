@@ -26,6 +26,15 @@ def test_adapter_registered_in_registry():
 def test_health_reports_not_installed_when_venv_missing(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(fw_mod, 'FW_VENV_PY', tmp_path / 'missing' / 'python.exe')
     monkeypatch.setattr(fw_mod, 'FW_SERVER', tmp_path / 'missing-server.py')
+
+    def _no_faster_whisper(name, *args, **kwargs):
+        if name == 'faster_whisper':
+            raise ImportError('missing')
+        return orig_import(name, *args, **kwargs)
+
+    import builtins
+    orig_import = builtins.__import__
+    monkeypatch.setattr(builtins, '__import__', _no_faster_whisper)
     adapter = fw_mod.FasterWhisperRuntimeAdapter()
     health = adapter.health()
     assert health['runtime_id'] == RUNTIME_FASTER_WHISPER

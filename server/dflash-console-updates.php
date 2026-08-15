@@ -7,7 +7,18 @@
 
 if (!function_exists('dflash_console_update_root')) {
     function dflash_console_update_root(): string {
-        return '/home/u840646150/domains/onevoiceai.in/dflash-console-private';
+        $from_env = getenv('DFLASH_UPDATE_ROOT');
+        if (is_string($from_env) && $from_env !== '') {
+            return $from_env;
+        }
+        $local = __DIR__ . '/dflash-console-updates.local.php';
+        if (is_readable($local)) {
+            $value = include $local;
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+        return '';
     }
 }
 
