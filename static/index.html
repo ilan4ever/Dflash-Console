@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.20</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.28</span>
           </div>
         </div>
       </div>
@@ -58,7 +58,7 @@
       </div>
       <div class="df-sidenav-footer">
         <div class="df-downloads-tray" id="dfDownloadsTray">
-          <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" aria-controls="dfDownloadsPanel" title="Open downloading models in Model library">
+          <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" title="Open current and last downloads">
             <span class="df-downloads-toggle-icon" aria-hidden="true">↓</span>
             <span class="df-downloads-toggle-label">Downloads</span>
             <span class="df-downloads-badge hidden" id="dfDownloadsBadge">0</span>
@@ -339,7 +339,6 @@ try {
                 <button type="button" class="lm-filter-chip active" data-models-filter="all" data-tooltip="Shows every local model, including regular GGUF files and DFlash profiles.">All models</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash accelerator and ready to run.">DFlash stacks</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash or DSpark draft checkpoint files.">Accelerators</button>
-                <button type="button" class="lm-filter-chip" data-models-filter="downloading" data-tooltip="Shows models currently downloading from Hugging Face.">Downloading</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="loaded" data-tooltip="Shows only models currently loaded on the GPU.">Loaded</button>
               </div>
               <select class="lm-select lm-models-type-filter" id="modelsTypeFilter" aria-label="Filter model type" title="Filter the library by model type">
@@ -388,6 +387,32 @@ try {
             <span class="lm-models-path" id="modelsFooterPath">—</span>
             <span class="lm-models-hint" id="modelsFooterHint"></span>
           </footer>
+        </div>
+
+        <!-- Downloads -->
+        <div class="lm-view" data-view="downloads">
+          <div class="df-downloads-page">
+            <div class="df-downloads-page-toolbar">
+              <div class="lm-models-filter" role="group" aria-label="Download list">
+                <button type="button" class="lm-filter-chip active" data-downloads-pane="active" data-tooltip="Models downloading right now.">Downloading now</button>
+                <button type="button" class="lm-filter-chip" data-downloads-pane="history" data-tooltip="Models you already downloaded on this PC.">Last downloads</button>
+              </div>
+              <label class="df-downloads-range-label hidden" id="dfDownloadsRangeWrap">
+                <span>Show</span>
+                <select class="lm-select small" id="dfDownloadsRange" aria-label="Download history range">
+                  <option value="1">Last 24 hours</option>
+                  <option value="7">Last 7 days</option>
+                  <option value="30">Last 30 days</option>
+                  <option value="90">Last 90 days</option>
+                  <option value="365">Last 12 months</option>
+                  <option value="all" selected>All time</option>
+                </select>
+              </label>
+              <button type="button" class="lm-btn ghost small hidden" id="dfDownloadsClearAll" title="Remove every finished download from this list">Clear history</button>
+            </div>
+            <p class="df-downloads-page-hint" id="dfDownloadsPageHint">Models downloading from Hugging Face appear here with live progress.</p>
+            <div class="df-downloads-page-list" id="dfDownloadsPageList"></div>
+          </div>
         </div>
 
         <!-- Devices -->
@@ -440,7 +465,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.20</strong>
+                <strong id="dfAboutVersion">v0.3.28</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1441,6 +1466,7 @@ try {
   <script src="/static/js/ui-layout-prefs.js"></script>
   <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/download-queue.js"></script>
+  <script src="/static/js/downloads-live.js"></script>
   <script src="/static/js/server-reload-watch.js"></script>
   <script src="/static/js/library-type-options.js"></script>
   <script src="/static/js/library-scan-live.js"></script>

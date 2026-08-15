@@ -1074,6 +1074,24 @@ def _annotate_path_status(row: dict[str, Any]) -> None:
         row['loadable'] = False
 
 
+def model_matches_source(row: dict[str, Any], source: str) -> bool:
+    """True when a catalog row belongs to a library source filter."""
+    needle = str(source or '').strip().lower().replace('_', '-').replace(' ', '')
+    if not needle or needle == 'all':
+        return True
+    raw = str(row.get('source') or '').strip().lower()
+    row_id = str(row.get('id') or '')
+    if needle in {'ollama'}:
+        return raw == 'ollama' or row_id.startswith('ollama:')
+    if needle in {'lmstudio', 'lm-studio', 'lms'}:
+        return raw == 'lmstudio'
+    if needle in {'dflash', 'stack', 'stacks'}:
+        return bool(row.get('dflash_stack')) or raw in {'dflash', 'dflash-profile', 'dflash-stack'}
+    if needle in {'library', 'console', 'local'}:
+        return raw in {'library', 'dflash', 'dflash-profile', 'dflash-stack'}
+    return raw == needle or needle in raw.replace('_', '-')
+
+
 def _annotate_runtime_fields(row: dict[str, Any]) -> None:
     """Phase 0: add modality/runtime_id/kind/flags to a catalog row.
 

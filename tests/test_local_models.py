@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.local_models import _has_vision_support
+from core.local_models import _has_vision_support, model_matches_source
+
+
+def test_model_matches_source_filters_ollama_and_dflash():
+    ollama = {'id': 'ollama:llama3:latest', 'source': 'ollama'}
+    studio = {'id': 'gemma', 'source': 'lmstudio'}
+    stack = {'id': 'gemma-31b', 'source': 'dflash-stack', 'dflash_stack': True}
+    assert model_matches_source(ollama, 'ollama')
+    assert not model_matches_source(studio, 'ollama')
+    assert model_matches_source(studio, 'lmstudio')
+    assert model_matches_source(stack, 'dflash')
+    assert model_matches_source(ollama, 'all')
 
 
 def test_server_catalog_row_non_dflash_is_loadable_when_target_ready(tmp_path: Path):
@@ -344,6 +355,7 @@ def test_plain_gguf_catalog_entry_is_loadable(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(lm, 'disk_scan_roots', lambda _cfg: [(root, 'library')])
     monkeypatch.setattr(lm, '_profile_catalog', lambda _cfg: {})
     monkeypatch.setattr(lm, '_dflash_stack_supplement', lambda *args, **kwargs: [])
+    monkeypatch.setattr(lm, '_scan_ollama_models', lambda: [])
     lm.invalidate_model_catalog_cache()
     payload = lm.list_local_models(cfg=cfg, scan_disk=True, force_refresh=True)
     plain = [row for row in payload['models'] if row.get('plain_gguf')]

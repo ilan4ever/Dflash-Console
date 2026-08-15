@@ -29,6 +29,20 @@
     return `${size >= 100 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
   }
 
+  function formatSpeed(bps) {
+    const bytes = Number(bps);
+    if (!Number.isFinite(bytes) || bytes <= 0) return '';
+    return `${formatBytes(bytes)}/s`;
+  }
+
+  function formatEta(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value < 60) return `${Math.max(1, Math.round(value))}s left`;
+    if (value < 3600) return `${Math.max(1, Math.round(value / 60))}m left`;
+    return `${(value / 3600).toFixed(1)}h left`;
+  }
+
   function progressLabel(job) {
     const pct = job?.progress;
     if (pct != null && Number.isFinite(Number(pct))) return `${Math.round(Number(pct))}%`;
@@ -101,8 +115,9 @@
 
   function renderStatusFeed(active) {
     if (!active.length) return;
+    const speed = active.length === 1 ? formatSpeed(active[0].speed_bps) : '';
     const primary = active.length === 1
-      ? `Downloading ${labels.get(active[0].id) || active[0].filename || 'model'} · ${progressLabel(active[0])}`
+      ? `Downloading ${labels.get(active[0].id) || active[0].filename || 'model'} · ${progressLabel(active[0])}${speed ? ` · ${speed}` : ''}`
       : `Downloading ${active.length} models`;
     const secondary = active.length === 1
       ? active[0].repo_id || ''
@@ -134,11 +149,13 @@
       const indeterminate = job.status === 'downloading' && width == null;
       const fillStyle = width != null ? ` style="width:${width}%"` : '';
       const fillClass = indeterminate ? ' is-indeterminate' : '';
+      const speed = job.status === 'downloading' ? formatSpeed(job.speed_bps) : '';
+      const eta = job.status === 'downloading' ? formatEta(job.eta_seconds) : '';
       const statusText = job.status === 'downloading'
-        ? progressLabel(job)
+        ? [progressLabel(job), speed].filter(Boolean).join(' · ')
         : (job.status === 'done' ? 'Complete' : (job.error || 'Failed'));
       const detail = job.status === 'downloading'
-        ? `${escapeHtml(job.filename || '')}${job.bytes_total ? ` · ${formatBytes(job.bytes_read)} / ${formatBytes(job.bytes_total)}` : ''}`
+        ? `${escapeHtml(job.filename || '')}${job.bytes_total ? ` · ${formatBytes(job.bytes_read)} / ${formatBytes(job.bytes_total)}` : ''}${eta ? ` · ${escapeHtml(eta)}` : ''}`
         : escapeHtml(job.path || job.repo_id || '');
       const bar = job.status === 'downloading'
         ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill${fillClass}"${fillStyle}></div></div>`
@@ -170,13 +187,20 @@
     }
   }
 
-  async function refresh() {
+  async function refresh({ discover = false } = {}) {
     try {
-      const data = await api('/api/hf/downloads');
+      const data = await api(discover ? '/api/hf/downloads?discover=1' : '/api/hf/downloads');
       const incoming = data.jobs || [];
+      const seen = new Set();
       incoming.forEach((job) => {
         jobs.set(job.id, job);
+        seen.add(job.id);
       });
+      for (const id of [...jobs.keys()]) {
+        if (seen.has(id)) continue;
+        if (jobs.get(id)?.status === 'downloading') continue;
+        jobs.delete(id);
+      }
       emit();
       if (activeJobs().length) ensurePolling();
       else stopPollingIfIdle();
@@ -221,8 +245,8 @@
 
   function openDownloadsView() {
     closePanel();
-    window.DFlashShell?.setView?.('models');
-    window.DFlashModelsLive?.setTypeFilter?.('downloading');
+    window.DFlashDownloadsLive?.showPane?.('active');
+    window.DFlashShell?.setView?.('downloads');
   }
 
   function openPanel() {
@@ -273,5 +297,7 @@
     progressLabel,
     progressWidth,
     formatBytes,
+    formatSpeed,
+    formatEta,
   };
 })();

@@ -25,9 +25,12 @@ Browser or Electron shell
 ```
 
 - `api/` exposes health, configuration, model, download, runtime, and proxy
-  routes.
+  routes. `GET /api/models` is the full local library; `source=` filters
+  Ollama, LM Studio, DFlash, or library files.
 - `core/` contains configuration validation, model discovery, Hugging Face
   integration, engine lifecycle, GPU inspection, and inference statistics.
+- `dflash_cli/` is the PowerShell `dflash` command. `dflash list` reads the
+  same catalog as the Models tab.
 - `static/` contains the browser UI, in-app documentation, and About page.
 - `scripts/` contains Windows startup, restart, release, and engine helpers.
 - `electron/` contains the sandboxed desktop shell.

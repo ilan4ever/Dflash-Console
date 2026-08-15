@@ -18,11 +18,16 @@
 
 ## Filters
 
-- **All models** — every discovered local model.
+- **All models** — every discovered local model, including Ollama and LM Studio.
 - **DFlash stacks** — runnable target-plus-accelerator pairs.
 - **Accelerators** — draft checkpoint files.
-- **Downloading** — active Hugging Face transfers.
 - **Loaded** — models currently loaded on an engine.
+
+Active Hugging Face transfers and last downloads are on the **Downloads** page.
+
+The same library is available from PowerShell: `dflash list`,
+`dflash list --ollama`, `dflash list --lmstudio`, `dflash list --dflash`.
+See [CLI.md](../CLI.md).
 - Model type filters include LLM/chat, DFlash, OCR, translation,
   speech-to-text, text-to-speech, embeddings, vision, and other. Filters wire to
   the catalog's backend `modality` field (not filename heuristics).

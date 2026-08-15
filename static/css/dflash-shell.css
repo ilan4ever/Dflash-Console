@@ -449,6 +449,7 @@ body.lm-resizing-sidenav {
 }
 
 .df-shell .df-downloads-toggle.is-active,
+.df-shell .df-downloads-toggle.is-current,
 .df-shell .df-downloads-tray.has-active .df-downloads-toggle {
   border-color: rgba(13, 148, 136, 0.45);
   color: #b8ccc4;
@@ -579,6 +580,97 @@ body.lm-resizing-sidenav {
 @keyframes df-download-indeterminate {
   0% { transform: translateX(-120%); }
   100% { transform: translateX(320%); }
+}
+
+.df-shell .lm-view[data-view="downloads"] {
+  display: none;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 20px 24px;
+}
+
+.df-shell .lm-view[data-view="downloads"].active {
+  display: flex;
+}
+
+.df-shell .df-downloads-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.df-shell .df-downloads-page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.df-shell .df-downloads-page-toolbar .lm-models-filter {
+  flex: 1 1 auto;
+}
+
+.df-shell .df-downloads-range-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.df-shell .df-downloads-range-label .lm-select {
+  min-width: 12rem;
+}
+
+.df-shell .df-downloads-page-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.df-shell .df-downloads-page-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.df-shell .df-downloads-page-empty {
+  margin: 0;
+  padding: 28px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+.df-shell .df-downloads-page-item {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.df-shell .df-downloads-page-item.is-done {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.df-shell .df-downloads-page-item.is-error {
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.df-shell .df-downloads-page-item .df-downloads-item-title {
+  font-size: 13px;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-remove {
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 
 .df-shell .lm-models-toolbar {
@@ -1288,10 +1380,18 @@ body.lm-resizing-table-col {
   font-size: 12px;
   font-weight: 700;
   color: #6ec4b8;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-download-stats {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8ee0d4;
 }
 
 .df-shell .lm-model-download-meta {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--text-dim);
 }
 

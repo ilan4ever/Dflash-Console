@@ -16,6 +16,7 @@
     devices: 'LM Link',
     docs: 'Docs',
     catalog: 'Hugging Face',
+    downloads: 'Downloads',
     settings: 'Preferences',
     about: 'About',
   };
@@ -27,12 +28,13 @@
     devices: 'Remote nodes',
     docs: 'Documentation',
     catalog: 'Model catalog',
+    downloads: 'Downloads',
     settings: 'Settings',
     about: 'About DFlash Console',
   };
 
   const inspectorFor = new Set(['server', 'models']);
-  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'settings', 'about']);
+  const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'downloads', 'settings', 'about']);
 
   const ROUTE_TO_TAB = {
     engines: 'server',
@@ -46,6 +48,7 @@
     devices: 'devices',
     docs: 'docs',
     catalog: 'catalog',
+    downloads: 'downloads',
     settings: 'settings',
     about: 'about',
   };
@@ -57,6 +60,7 @@
     devices: '/nodes',
     docs: '/docs',
     catalog: '/catalog',
+    downloads: '/downloads',
     settings: '/settings',
     about: '/about',
   };
@@ -69,6 +73,7 @@
     }
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
+    if (tab === 'downloads') window.DFlashDownloadsLive?.onViewEnter?.();
     if (tab === 'chat') {
       void window.DFlashChatLive?.onViewEnter?.();
       void window.DFlashSpeakLive?.onViewEnter?.();
@@ -138,6 +143,7 @@
     if (pageActions) pageActions.style.display = inspectorFor.has(tab) ? '' : 'none';
     if (inspector) inspector.classList.toggle('hidden', !inspectorFor.has(tab));
     document.body.dataset.activeView = tab;
+    document.getElementById('dfDownloadsToggle')?.classList.toggle('is-current', tab === 'downloads');
     if (tab === 'settings') {
       const panel = settingsPanel
         || layoutPrefs()?.getString?.('settings_panel')

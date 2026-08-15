@@ -16,7 +16,10 @@ intended for one trusted user on one Windows machine.
 
 The browser and Electron window use the same sidebar and backend. The main areas
 are **Engines**, **Models**, **Playground**, **Nodes**, **Model catalog**,
-**Settings**, **Documentation**, and **About**.
+**Downloads**, **Settings**, **Documentation**, and **About**.
+
+You can also talk to the same server from PowerShell with `dflash`. See
+**Documentation → Terminal CLI** or `docs/CLI.md`.
 
 ### Browser and Electron
 
@@ -84,15 +87,26 @@ Scroll to **Developer logs** at the bottom. Logs stream from the active engine. 
 
 ## 3. Models tab
 
-Browse GGUF and other model files discovered in your configured libraries.
+The Models tab is the full local library for this PC: DFlash stacks, GGUF files,
+Ollama models, LM Studio folders, speech, OCR, and embeddings.
 
-- **DFlash stacks** is the default filter for runnable target-plus-accelerator pairs.
-- **All models** includes regular GGUF, OCR, embedding, speech, vision, and other files.
-- **Accelerators**, **Downloading**, and **Loaded** provide focused views.
+- **All models** shows every discovered local model.
+- **DFlash stacks** shows runnable target-plus-accelerator pairs.
+- **Accelerators** and **Loaded** provide focused views.
+- Current Hugging Face transfers live on the **Downloads** page, not in this table.
 - Click **Load** on a row to load that model on its matching engine.
 - Use the inspector on the right for file details and runtime settings before loading.
 - Use **Scan PC** or **Add folder** from Settings when a library is not discovered
   automatically. The folder browser supports other local drives.
+
+The same list is available in PowerShell:
+
+```powershell
+dflash list
+dflash list --ollama
+dflash list --lmstudio
+dflash list --dflash
+```
 
 ---
 
@@ -104,8 +118,8 @@ files into the selected default library.
 - Search by model name, author, or repository.
 - Filter results by lab and sort by relevance, downloads, or recent activity.
 - Open a result to inspect its README, tags, files, and install state.
-- Start downloads from the detail panel. Progress remains visible in the global
-  downloads tray and in the Models → **Downloading** filter.
+- Start downloads from the detail panel. Progress stays on the **Downloads**
+  page (Downloading now and Last downloads).
 - Private repositories use `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` from the
   process environment; never paste tokens into the Console configuration.
 

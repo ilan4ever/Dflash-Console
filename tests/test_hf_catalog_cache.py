@@ -56,7 +56,10 @@ def test_search_with_cache_returns_stale_payload(monkeypatch):
 
     stale_payload = {
         'success': True,
-        'models': [{'id': f'cached/repo-{index}'} for index in range(8)],
+        'models': [
+            {'id': f'cached/repo-{index}', 'size_gb': 1.0, 'size_label': '1 GB', 'has_gguf': True}
+            for index in range(8)
+        ],
         'query': '',
         'sort': 'downloads',
         'category': 'all-gguf',

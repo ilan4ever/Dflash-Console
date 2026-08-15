@@ -42,7 +42,7 @@ $key = [Environment]::ExpandEnvironmentVariables((Read-EnvValue "HOSTINGER_SSH_P
 
 if ($hostName -and $userName -and $port -and $key) {
     $remoteTarget = "$userName@$hostName"
-    $baseArgs = @("-i", $key, "-P", $port, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
+    $baseArgs = @("-i", $key, "-p", $port, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
     $scpArgs = @("-i", $key, "-P", $port, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
     Write-Host "Using explicit Hostinger SSH settings." -ForegroundColor Cyan
 } else {

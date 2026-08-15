@@ -13,7 +13,7 @@ from core.config import ROOT
 
 logger = logging.getLogger(__name__)
 
-_CACHE_VERSION = 8
+_CACHE_VERSION = 9
 _MIN_CACHED_MODELS = {
     'supported': 8,
     'dflash': 8,
@@ -332,6 +332,19 @@ def _try_composed_supported_search(
     }
 
 
+def _fill_missing_search_sizes(payload: dict[str, Any]) -> bool:
+    """Fetch Hub file sizes for catalog rows that still show Disk —."""
+    models = payload.get('models')
+    if not isinstance(models, list) or not models:
+        return False
+    from core.huggingface import _enrich_summaries_sizes, _row_needs_size_enrich
+
+    if not any(_row_needs_size_enrich(row) for row in models if isinstance(row, dict)):
+        return False
+    _enrich_summaries_sizes(models)
+    return True
+
+
 def _annotate_search_fit(payload: dict[str, Any], *, category: str) -> dict[str, Any]:
     """Recompute fits_machine on cached rows (VRAM budget + detail files may have changed)."""
     models = payload.get('models')
@@ -373,12 +386,28 @@ def search_with_cache(
     limit: int,
     fetcher: Callable[[], dict[str, Any]],
     force_refresh: bool = False,
+    enrich_sizes: bool = True,
 ) -> dict[str, Any]:
     """Return cached search results immediately when available; refresh in background when stale."""
     key = _cache_key(query=query, sort=sort, category=category, limit=limit)
     cached = None if force_refresh else get_cached_search(
         query=query, sort=sort, category=category, limit=limit,
     )
+
+    def _finish(payload: dict[str, Any], *, persist: bool = False) -> dict[str, Any]:
+        filled = _fill_missing_search_sizes(payload) if enrich_sizes else False
+        if persist or filled:
+            models = payload.get('models')
+            repo_query = '/' in str(query or '')
+            if not repo_query or (isinstance(models, list) and models):
+                put_cached_search(
+                    query=query,
+                    sort=sort,
+                    category=category,
+                    limit=limit,
+                    payload=payload,
+                )
+        return _annotate_search_fit(payload, category=category)
 
     if cached and cached.get('payload'):
         payload = dict(cached['payload'])
@@ -399,7 +428,7 @@ def search_with_cache(
             payload['cache_age_seconds'] = round(float(cached.get('age_seconds') or 0.0), 1)
             if payload['stale']:
                 _schedule_refresh(key, fetcher)
-            return _annotate_search_fit(payload, category=category)
+            return _finish(payload)
 
     if (
         not force_refresh
@@ -409,7 +438,7 @@ def search_with_cache(
         composed = _try_composed_supported_search(sort=sort, limit=limit)
         if composed:
             _schedule_refresh(key, fetcher)
-            return _annotate_search_fit(composed, category=category)
+            return _finish(composed)
 
     payload = fetcher()
     if payload.get('success'):
@@ -422,24 +451,14 @@ def search_with_cache(
             'cached': False,
             'stale': False,
         }
-        models = enriched.get('models')
-        repo_query = '/' in str(query or '')
-        if not repo_query or (isinstance(models, list) and models):
-            put_cached_search(
-                query=query,
-                sort=sort,
-                category=category,
-                limit=limit,
-                payload=enriched,
-            )
-        return _annotate_search_fit(enriched, category=category)
+        return _finish(enriched, persist=True)
     if cached and cached.get('payload'):
         payload = dict(cached['payload'])
         payload['cached'] = True
         payload['stale'] = True
         payload['refresh_failed'] = True
-        return _annotate_search_fit(payload, category=category)
-    return _annotate_search_fit(payload, category=category)
+        return _finish(payload)
+    return _finish(payload)
 
 
 def preload_hf_catalog_cache() -> None:

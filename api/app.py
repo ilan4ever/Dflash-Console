@@ -852,10 +852,32 @@ def hf_download_status(job_id: str) -> dict[str, Any]:
 
 
 @app.get('/api/hf/downloads')
-def hf_downloads(active: bool = Query(default=False)) -> dict[str, Any]:
+def hf_downloads(active: bool = Query(default=False), discover: bool = Query(default=False)) -> dict[str, Any]:
     from core.huggingface import list_download_jobs
 
-    return list_download_jobs(active_only=active)
+    return list_download_jobs(active_only=active, discover=discover)
+
+
+@app.delete('/api/hf/downloads/{job_id}')
+def hf_download_clear_one(job_id: str) -> dict[str, Any]:
+    from core.huggingface import clear_download_job
+
+    result = clear_download_job(job_id)
+    if not result.get('success'):
+        error = str(result.get('error') or 'unknown job')
+        status = 409 if 'active' in error else 404
+        raise HTTPException(status_code=status, detail=error)
+    return result
+
+
+@app.delete('/api/hf/downloads')
+def hf_download_clear_history() -> dict[str, Any]:
+    from core.huggingface import clear_download_history
+
+    result = clear_download_history()
+    if not result.get('success'):
+        raise HTTPException(status_code=500, detail=result.get('error') or 'clear failed')
+    return result
 
 
 @app.post('/api/hf/install')
@@ -936,8 +958,16 @@ def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get('/api/models')
-def models_catalog(quick: bool = Query(default=False), refresh: bool = Query(default=False)) -> dict[str, Any]:
-    from core.local_models import invalidate_model_catalog_cache
+def models_catalog(
+    quick: bool = Query(default=False, description='Engine profiles only; skip the full disk library.'),
+    refresh: bool = Query(default=False, description='Rescan model folders before listing.'),
+    source: str = Query(
+        default='',
+        max_length=40,
+        description='Filter by source: ollama, lmstudio, dflash, or library. Empty = full PC library.',
+    ),
+) -> dict[str, Any]:
+    from core.local_models import invalidate_model_catalog_cache, model_matches_source
 
     cfg = load_config()
     if refresh:
@@ -945,9 +975,14 @@ def models_catalog(quick: bool = Query(default=False), refresh: bool = Query(def
         payload = list_local_models(cfg=cfg, scan_disk=not quick, force_refresh=True)
     else:
         payload = list_local_models(cfg=cfg, scan_disk=not quick)
-    for row in payload.get('models') or []:
-        if isinstance(row, dict):
-            row['load_route'] = _model_load_route(row)
+    models = [row for row in (payload.get('models') or []) if isinstance(row, dict)]
+    if source.strip():
+        models = [row for row in models if model_matches_source(row, source)]
+        payload['source'] = source.strip().lower()
+    for row in models:
+        row['load_route'] = _model_load_route(row)
+    payload['models'] = models
+    payload['total_count'] = len(models)
     return payload
 
 

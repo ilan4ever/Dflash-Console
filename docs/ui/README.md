@@ -4,8 +4,8 @@ This directory records the user-facing UI contract and the settings that are
 implemented in the current Console. The browser and Electron shell serve the
 same `static/` application, so the views and documentation are shared.
 
-**End-user docs:** [USER-GUIDE.md](../USER-GUIDE.md) · in-app
-**Documentation → User guide** · in-app **About**
+**End-user docs:** [USER-GUIDE.md](../USER-GUIDE.md) · [CLI.md](../CLI.md) ·
+in-app **Documentation → User guide** and **Terminal CLI** · in-app **About**
 
 ## Views
 
@@ -14,6 +14,8 @@ same `static/` application, so the views and documentation are shared.
 | Playground | `static/index.html` + `static/js/chat-live.js` + `static/js/speak-live.js` | Chat · Speak · Transcribe · Embed (mode switcher) |
 | Engines | `static/index.html` + `static/js/server-live.js` | Router lifecycle, loading, stats, and logs |
 | Models | [models-view.md](./models-view.md) | Local library, DFlash stacks, filters, and loading |
+| Downloads | `static/js/downloads-live.js` | Downloading now and last downloads |
+| Terminal CLI | [CLI.md](../CLI.md) | `dflash list`, source filters, and other commands |
 | Nodes | [devices-view.md](./devices-view.md) | Planned remote-node surface; disabled in this build |
 | Model catalog | [model-search.md](./model-search.md) | Hugging Face search, detail, README, and downloads |
 | Settings | settings/*.md | Workspace, locations, hardware, gateway, presets, and MCP |

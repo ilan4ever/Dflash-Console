@@ -29,6 +29,11 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'markdown': _load_user_guide(),
             },
             {
+                'id': 'cli',
+                'title': 'Terminal CLI',
+                'markdown': _load_cli_guide(),
+            },
+            {
                 'id': 'engines',
                 'title': 'Engine control',
                 'endpoints': _engine_endpoints(),
@@ -64,16 +69,24 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
     }
 
 
-def _load_user_guide() -> str:
-    path = _DOCS_ROOT / 'USER-GUIDE.md'
+def _load_markdown_doc(name: str) -> str:
+    path = _DOCS_ROOT / name
     try:
         text = path.read_text(encoding='utf-8')
     except OSError:
-        return 'User guide file not found. See `docs/USER-GUIDE.md` in the repository.'
+        return f'Documentation file not found. See `docs/{name}` in the repository.'
     lines = text.splitlines()
     if lines and lines[0].startswith('# '):
         lines = lines[1:]
     return '\n'.join(lines).strip()
+
+
+def _load_user_guide() -> str:
+    return _load_markdown_doc('USER-GUIDE.md')
+
+
+def _load_cli_guide() -> str:
+    return _load_markdown_doc('CLI.md')
 
 
 def _overview_html(base: str) -> str:
@@ -135,7 +148,9 @@ def _overview_html(base: str) -> str:
   <ul class="df-docs-checklist">
     <li>About page with ILAN AVIV attribution, version, GNU AGPL v3-or-later license, and project links</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li>Model library filters for DFlash stacks, accelerators, Hugging Face accelerator availability, downloads, and loaded models</li>
+    <li><strong>Terminal CLI</strong> — <code>dflash list</code> shows the full local library; <code>dflash list --ollama</code> filters Ollama models. See Documentation → Terminal CLI.</li>
+    <li>Dedicated Downloads page for current transfers and last downloads</li>
+    <li>Model library filters for DFlash stacks, accelerators, and loaded models</li>
     <li>Hugging Face catalog with README details, install detection, and download progress</li>
     <li>Locations panel with config, preset, and model-library management</li>
     <li>Loopback validation and an external Console data root for the Electron shell</li>
@@ -246,7 +261,7 @@ def _other_endpoints() -> list[dict[str, Any]]:
         {'method': 'GET', 'path': '/api/endpoints', 'summary': 'Live list of every console HTTP route (for external apps).'},
         {'method': 'GET', 'path': '/api/installed', 'summary': 'Installed local models grouped by library/provider preset.'},
         {'method': 'GET', 'path': '/api/console/logs?tail=200', 'summary': 'Console, startup, engine, and API-call logs (optional errors_only=1).'},
-        {'method': 'GET', 'path': '/api/models', 'summary': 'Checkpoint catalog.'},
+        {'method': 'GET', 'path': '/api/models', 'summary': 'Full local model library (same list as the Models tab). Optional source=ollama|lmstudio|dflash|library, quick=1 for engine profiles only, refresh=1 to rescan.'},
         {'method': 'GET', 'path': '/api/hardware', 'summary': 'GPU/CPU and libraries.'},
         {'method': 'PATCH', 'path': '/api/hardware', 'summary': 'GPU strategy and enabled devices.'},
         {'method': 'GET', 'path': '/api/runtime-recommendations', 'summary': 'Hardware-aware runtime suggestions.'},
@@ -310,6 +325,9 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
         {'method': 'POST', 'path': f'/api/servers/{sid}/embed/batch', 'summary': 'Batch embed + export .jsonl.', 'body': {'input': ['one item per line', '…'], 'model': 'nomic-embed'}},
         {'method': 'GET', 'path': '/api/hf/search', 'summary': 'Hugging Face model search (same data as the Model catalog UI).'},
         {'method': 'POST', 'path': '/api/hf/download', 'summary': 'Download a GGUF/safetensors file into a configured library.'},
+        {'method': 'GET', 'path': '/api/hf/downloads', 'summary': 'List active Hugging Face downloads and finished download history.'},
+        {'method': 'DELETE', 'path': '/api/hf/downloads/{job_id}', 'summary': 'Remove one finished download from history. Active jobs are left alone.'},
+        {'method': 'DELETE', 'path': '/api/hf/downloads', 'summary': 'Clear finished download history. Active downloads are left alone.'},
         {'method': 'POST', 'path': '/api/hf/install', 'summary': 'Search Hugging Face, download GGUF shard(s), and optionally load the model.', 'body': {'query': 'qwen dflash', 'load': True, 'server_id': 'optional-engine-id'}},
         {'method': 'GET', 'path': '/api/status/loaded', 'summary': 'Currently loaded models across engines and non-llama runtimes.'},
         {'method': 'GET', 'path': '/api/status/report', 'summary': 'Full machine report: CPU/RAM/VRAM, engines, runtimes, loaded models.'},

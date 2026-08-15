@@ -19,8 +19,8 @@
   let listRefreshIndicator = null;
   let catalogContextModel = null;
   const CATALOG_REFRESH_MS = 10 * 60 * 1000;
-  const LIST_DETAIL_WARM_WORKERS = 1;
-  const LIST_DETAIL_WARM_LIMIT = 1;
+  const LIST_DETAIL_WARM_WORKERS = 4;
+  const LIST_DETAIL_WARM_LIMIT = 25;
   const listDetailPending = new Map();
 
   const DEFAULT_CATEGORY = 'supported';
@@ -934,14 +934,23 @@
     if (!warm.length) return;
 
     const run = ++listDetailWarmGen;
-    for (const model of warm) {
-      const detail = await prefetchDetail(model.id, category);
-      if (run !== listDetailWarmGen) return;
-      if (detail && mergeCatalogListDetail(model.id, detail)) {
-        persistCurrentListMetadata();
-        scheduleListWarmRender();
+    let cursor = 0;
+    async function worker() {
+      while (cursor < warm.length) {
+        const model = warm[cursor];
+        cursor += 1;
+        const detail = await prefetchDetail(model.id, category);
+        if (run !== listDetailWarmGen) return;
+        if (detail && mergeCatalogListDetail(model.id, detail)) {
+          persistCurrentListMetadata();
+          scheduleListWarmRender();
+        }
       }
     }
+    await Promise.all(Array.from(
+      { length: Math.min(LIST_DETAIL_WARM_WORKERS, warm.length) },
+      () => worker(),
+    ));
     if (run === listDetailWarmGen) {
       if (listWarmRenderTimer) {
         window.clearTimeout(listWarmRenderTimer);
@@ -1202,7 +1211,10 @@
     if (labelEl) {
       labelEl.textContent = `Downloading ${job.filename || modelTitle(model)}`;
     }
-    if (pctEl) pctEl.textContent = pctLabel;
+    if (pctEl) {
+      const speed = queue?.formatSpeed?.(job.speed_bps) || '';
+      pctEl.textContent = speed ? `${pctLabel} · ${speed}` : pctLabel;
+    }
     pctEl?.classList.remove('hidden');
     if (fillEl) {
       fillEl.classList.toggle('is-indeterminate', indeterminate);
@@ -1221,7 +1233,10 @@
       const bytes = job.bytes_total
         ? `${queue?.formatBytes?.(job.bytes_read) || ''} / ${queue?.formatBytes?.(job.bytes_total) || ''}`
         : '';
-      statusEl.textContent = bytes ? `Downloading to ${job.path || 'models folder'} · ${bytes}` : `Downloading to ${job.path || 'models folder'}`;
+      const speed = queue?.formatSpeed?.(job.speed_bps) || '';
+      const eta = queue?.formatEta?.(job.eta_seconds) || '';
+      const parts = [`Downloading to ${job.path || 'models folder'}`, bytes, speed, eta].filter(Boolean);
+      statusEl.textContent = parts.join(' · ');
       statusEl.classList.remove('hidden');
     }
 

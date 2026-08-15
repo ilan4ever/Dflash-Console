@@ -45,5 +45,6 @@ developer checkout to a trusted production deployment.
 ## 6. Docs
 
 - [ ] `README.md` capability matrix current
-- [ ] `docs/ARCHITECTURE.md`, `docs/USER-GUIDE.md`, `docs/ui/*` current
-- [ ] Docs deployed to the public site via `scripts/deploy-docs.ps1`
+- [ ] `docs/ARCHITECTURE.md`, `docs/USER-GUIDE.md`, `docs/CLI.md`, `docs/ui/*` current
+- [ ] In-app Documentation includes User guide and Terminal CLI
+- [ ] Docs deployed to the public site via `scripts/deploy-docs.ps1 -IncludeReadme`

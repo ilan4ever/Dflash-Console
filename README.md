@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.20
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.28
 
 ---
 
@@ -16,10 +16,11 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 |------|------------|
 | **Engines** | Start/stop llama-server routers, load & eject models in parallel, live boot progress, token stats on cards, developer logs with clear button |
 | **Runtimes** | Unified multi-modal layer: Piper TTS, whisper.cpp STT, embeddings — Console-proxied OpenAI routes, adapter registry, shared ports, process identity |
-| **Models** | Scan local GGUF, Piper, Whisper, OCR, and embedding folders across multiple library roots |
+| **Models** | Full PC library: DFlash, GGUF, Ollama, LM Studio, Piper, Whisper, OCR, and embeddings |
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
 | **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
-| **Documentation** | In-app API reference, runtime JSON shapes, user guide, and release notes |
+| **Documentation** | In-app API reference, user guide, terminal CLI, and release notes |
+| **Terminal CLI** | `dflash list` (full PC library), `--ollama` / `--lmstudio` / `--dflash` filters, load, chat, search |
 | **About** | Developer attribution, version, license, runtime boundary, and public project links |
 | **Discovery** | **Scan PC** finds model folders; **Add folder** opens a drive-aware browser (C:, D:, …) |
 
@@ -121,6 +122,36 @@ registry); CLI runtimes use `port: 0`.
 
 ## Recent improvements
 
+### v0.3.28 — Windows installer
+
+| Feature | Description |
+|---------|-------------|
+| **Desktop update** | Production installer with the terminal CLI, full local library list, source filters, and Downloads page. |
+
+### v0.3.27 — full library list and source filters
+
+| Feature | Description |
+|---------|-------------|
+| **dflash list** | Shows the same full local library as the Models tab. Filter with `--ollama`, `--lmstudio`, `--dflash`, or `--source`. |
+
+### v0.3.26 — dflash works in PowerShell
+
+| Feature | Description |
+|---------|-------------|
+| **dflash command** | Type `dflash list` in any PowerShell window. The installer registers the command so you do not need `.\dflash`. |
+
+### v0.3.25 — terminal CLI
+
+| Feature | Description |
+|---------|-------------|
+| **dflash command** | PowerShell can list models, check what is loaded, search, download, and chat with the running Console, the same way `ollama` talks to its server. |
+
+### v0.3.24 — last downloads from this PC
+
+| Feature | Description |
+|---------|-------------|
+| **Last downloads** | The Downloads page lists models already on this PC and lets you filter the last 24 hours, 7 days, 30 days, 90 days, or 12 months. |
+
 ### v0.3.6 — full mobile model names
 
 | Feature | Description |
@@ -215,6 +246,36 @@ on your machine. This prevents a fresh public checkout from trying to launch
 excluded model assets.
 
 Open **http://127.0.0.1:8900/** in your browser.
+
+### Command line (like `ollama`)
+
+The Console is the source of truth for models on this PC. `dflash list` shows
+the same full library as the Models tab, including Ollama and LM Studio.
+
+```powershell
+dflash help
+dflash list
+dflash list --ollama
+dflash list --lmstudio
+dflash list --dflash
+dflash list --source library
+dflash ps
+dflash search qwen
+```
+
+Install the command once:
+
+```powershell
+.\dflash.ps1 install
+```
+
+Other useful commands: `dflash engines`, `dflash chat "hello"`,
+`dflash pull org/model --file model.gguf`, `dflash downloads --range 7`,
+`dflash api GET /api/models?source=ollama`.
+
+Use `dflash <command> --help` for flags. `--json` prints raw server data. The
+Console must be running (`.\server.ps1` or `dflash serve`). Full command list:
+[docs/CLI.md](docs/CLI.md).
 
 `run.ps1` performs a full developer reset: it releases managed model VRAM,
 stops configured engines, and starts a clean Console instance.
@@ -378,7 +439,8 @@ Dflash-Console/
 | `GET` | `/api/runtimes/manifests` | Installed runtime plugin manifests + process tokens |
 | `POST` | `/api/runtimes/piper/v1/audio/speech` | Text → speech (Piper, OpenAI shape) |
 | `POST` | `/api/runtimes/stt/v1/audio/transcriptions` | Audio → text (whisper.cpp, OpenAI shape) |
-| `GET` | `/api/models` | Local catalog from enabled libraries |
+| `GET` | `/api/models` | Full local library (same as Models tab). `source=ollama\|lmstudio\|dflash\|library` |
+| `GET` | `/api/hf/downloads` | Current downloads and last-download history |
 | `POST` | `/api/models/load` | Unified loader — load ANY catalog model by path; dispatches by modality |
 | `GET` | `/api/gateway` | Console OpenAI gateway status (port, url, running, default server, routes) |
 | `GET` | `/api/docs/catalog` | In-app documentation JSON |

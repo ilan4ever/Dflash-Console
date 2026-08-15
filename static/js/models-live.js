@@ -871,27 +871,31 @@
     const bytes = job.bytes_total
       ? `${window.DFlashDownloadQueue?.formatBytes?.(job.bytes_read) || '0 B'} / ${window.DFlashDownloadQueue?.formatBytes?.(job.bytes_total) || '—'}`
       : (job.bytes_read ? window.DFlashDownloadQueue?.formatBytes?.(job.bytes_read) : '—');
+    const speed = window.DFlashDownloadQueue?.formatSpeed?.(job.speed_bps) || '';
+    const eta = window.DFlashDownloadQueue?.formatEta?.(job.eta_seconds) || '';
     const repo = job.repo_id || 'Hugging Face';
     const filename = job.filename || '—';
     const title = downloadJobTitle(job);
-    const titleLine = bytes && bytes !== '—' ? `${title} · ${bytes}` : title;
+    const stats = [bytes !== '—' ? bytes : '', speed, eta].filter(Boolean).join(' · ');
+    const sizeCell = bytes !== '—' ? bytes : (speed || '—');
     return `
       <tr class="lm-model-row downloading-model" data-download-job-id="${escapeHtml(job.id)}">
         <td class="lm-col-model">
           <div class="lm-model-title-line">
             <span class="lm-tag green">downloading</span>
-            <span class="lm-model-title-text">${escapeHtml(titleLine)}</span>
+            <span class="lm-model-title-text">${escapeHtml(title)}</span>
             <span class="lm-model-download-pct">${escapeHtml(pctLabel)}</span>
           </div>
           <div class="lm-model-download-bar" aria-hidden="true">
             <div class="lm-model-download-fill${fillClass}"${fillStyle}></div>
           </div>
+          <div class="lm-model-download-stats">${escapeHtml(stats || 'Starting…')}</div>
           <div class="lm-model-meta-line lm-model-download-meta">${escapeHtml(repo)} · ${escapeHtml(filename)}</div>
         </td>
         <td class="lm-col-meta">—</td>
         <td class="lm-col-meta">—</td>
         <td class="lm-col-meta">${escapeHtml(repo.split('/')[0] || 'HF')}</td>
-        <td class="lm-col-meta">${escapeHtml(bytes)}</td>
+        <td class="lm-col-meta">${escapeHtml(sizeCell)}</td>
         <td class="lm-col-meta">Now</td>
         <td class="lm-col-action"><span class="lm-tag dim">in progress</span></td>
       </tr>`;
@@ -1068,7 +1072,6 @@
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
-      if (typeFilter === 'downloading') return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
@@ -1134,7 +1137,6 @@
       if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
-      if (typeFilter === 'downloading') return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
       if (!needle) return true;
@@ -1166,13 +1168,6 @@
       const file = String(m?.filename || m?.label || '').trim().toLowerCase();
       if (!file) continue;
       visibleNameCounts.set(file, (visibleNameCounts.get(file) || 0) + 1);
-    }
-
-    if (typeFilter === 'downloading') {
-      body.innerHTML = activeDownloads.length
-        ? activeDownloads.map((job) => renderDownloadingRow(job)).join('')
-        : '<tr><td colspan="7" class="lm-models-empty">No models are downloading right now. Start a download from Model catalog or use Add vision support on a model row.</td></tr>';
-      return;
     }
 
     if (!visibleRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
@@ -1672,36 +1667,30 @@
     }
     if (stats) {
       const activeCount = getActiveDownloadJobs().length;
-      if (typeFilter === 'downloading') {
-        stats.textContent = `${activeCount} downloading now`;
-      } else {
-        const shown = typeFilter === 'dflash'
-          ? models.filter(isDflashStack).length
-          : typeFilter === 'accelerators'
-            ? models.filter(isDflashAccelerator).length
-            : typeFilter === 'loaded'
-              ? models.filter(isStackLoadedOnGpu).length
-              : models.length;
-        const readyStacks = models.filter((model) => isDflashStack(model) && model.loadable).length;
-        const filterNote = typeFilter === 'dflash'
-          ? ` · showing ${shown} DFlash stacks (${readyStacks} ready to load)`
-          : typeFilter === 'accelerators'
-            ? ` · showing ${shown} accelerators`
-            : typeFilter === 'loaded'
-              ? ` · showing ${shown} loaded on GPU`
-              : '';
-        const downloadNote = activeCount ? ` · ${activeCount} downloading` : '';
-        stats.textContent = `${meta.total_count || models.length} models (${meta.loadable_count || 0} engine profiles), ${meta.total_size_gb || 0} GB total${filterNote}${downloadNote}`;
-      }
+      const shown = typeFilter === 'dflash'
+        ? models.filter(isDflashStack).length
+        : typeFilter === 'accelerators'
+          ? models.filter(isDflashAccelerator).length
+          : typeFilter === 'loaded'
+            ? models.filter(isStackLoadedOnGpu).length
+            : models.length;
+      const readyStacks = models.filter((model) => isDflashStack(model) && model.loadable).length;
+      const filterNote = typeFilter === 'dflash'
+        ? ` · showing ${shown} DFlash stacks (${readyStacks} ready to load)`
+        : typeFilter === 'accelerators'
+          ? ` · showing ${shown} accelerators`
+          : typeFilter === 'loaded'
+            ? ` · showing ${shown} loaded on GPU`
+            : '';
+      const downloadNote = activeCount ? ` · ${activeCount} downloading` : '';
+      stats.textContent = `${meta.total_count || models.length} models (${meta.loadable_count || 0} engine profiles), ${meta.total_size_gb || 0} GB total${filterNote}${downloadNote}`;
     }
     if (path) path.textContent = meta.models_dir || '—';
     if (hint) {
       const cacheNote = meta.cached
         ? (meta.stale ? 'Showing the last saved list while the library refreshes in the background. ' : 'Showing the saved list while checking for library changes. ')
         : '';
-      hint.textContent = cacheNote + (typeFilter === 'downloading'
-        ? 'Active Hugging Face downloads from Model catalog appear here with live progress.'
-        : typeFilter === 'loaded'
+      hint.textContent = cacheNote + (typeFilter === 'loaded'
           ? 'Only models currently on the GPU (matched by engine profile or file path). Use Unload to free VRAM.'
           : typeFilter === 'accelerators'
           ? 'DFlash/DSpark draft files only (name contains DFlash or DSpark) — small checkpoints paired with a full target for speculative decoding. Full target GGUFs belong under All models.'
@@ -2062,17 +2051,13 @@
     }
   }
 
-  function normalizeTypeFilter(next, { allowEmptyDownloading = false } = {}) {
-    const filter = ['all', 'dflash', 'accelerators', 'downloading', 'loaded'].includes(next) ? next : 'all';
-    if (filter === 'downloading' && !allowEmptyDownloading && !getActiveDownloadJobs().length) {
-      return 'dflash';
-    }
-    return filter;
+  function normalizeTypeFilter(next) {
+    return ['all', 'dflash', 'accelerators', 'loaded'].includes(next) ? next : 'all';
   }
 
-  function setTypeFilter(next, { allowEmptyDownloading = false } = {}) {
+  function setTypeFilter(next) {
     const previous = typeFilter;
-    typeFilter = normalizeTypeFilter(next, { allowEmptyDownloading });
+    typeFilter = normalizeTypeFilter(next);
     if (typeFilter === 'accelerators' && modelTypeFilter !== 'all') {
       // HF accelerator availability applies to target models, never to draft files.
       modelTypeFilter = 'all';
@@ -2097,9 +2082,6 @@
     if (document.body.dataset.activeView !== 'models') return;
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     renderFooter(meta);
-    if (typeFilter === 'downloading' && !getActiveDownloadJobs().length) {
-      /* keep filter selected; empty state shown */
-    }
   }
 
   function bind() {
@@ -2125,7 +2107,7 @@
       });
     }
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
-      btn.addEventListener('click', () => setTypeFilter(btn.dataset.modelsFilter, { allowEmptyDownloading: true }));
+      btn.addEventListener('click', () => setTypeFilter(btn.dataset.modelsFilter));
     });
     setTypeFilter(typeFilter);
     void ensureHfAcceleratorCatalog();
@@ -2171,9 +2153,6 @@
     void refresh({ rebindInspector: true })
       .then(() => {
         void refreshCatalogQuiet();
-        if (typeFilter === 'downloading' && !getActiveDownloadJobs().length) {
-          setTypeFilter('dflash');
-        }
         startPolling();
       })
       .catch((err) => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from core.config import load_config
+from core.config import ROOT, load_config
 from core.model_paths import allowed_model_roots, get_download_dir, get_library_by_id
 
 HF_API = 'https://huggingface.co/api'
@@ -98,6 +99,14 @@ _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml'
 
 _download_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+_HISTORY_PATH = ROOT / 'logs' / 'hf-download-history.json'
+_MAX_HISTORY = 200
+_history_loaded = False
+_cleared_ids: set[str] = set()
+_discover_roots_override: list[Path] | None = None
+_disk_scan_at = 0.0
+_DISK_SCAN_TTL = 60.0
+_MIN_DISK_FILE_BYTES = 10_000
 _repo_lookup_lock = threading.Lock()
 _repo_lookup_inflight: dict[str, threading.Event] = {}
 _repo_lookup_results: dict[str, list[dict[str, Any]]] = {}
@@ -187,21 +196,42 @@ def _format_downloads(count: int | float | None) -> str:
     return str(value)
 
 
+def _entry_name(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ''
+    return str(entry.get('rfilename') or entry.get('path') or entry.get('filename') or '').strip()
+
+
+def _entry_size_bytes(entry: dict[str, Any] | None) -> int | None:
+    """Best available file size. Prefer LFS blob size over a tiny pointer."""
+    if not isinstance(entry, dict):
+        return None
+    candidates: list[int] = []
+    for key in ('size_bytes', 'size'):
+        value = entry.get(key)
+        if isinstance(value, int) and value > 0:
+            candidates.append(value)
+    lfs = entry.get('lfs')
+    if isinstance(lfs, dict):
+        value = lfs.get('size')
+        if isinstance(value, int) and value > 0:
+            candidates.append(value)
+    if not candidates:
+        return None
+    return max(candidates)
+
+
 def _model_files(siblings: list[Any] | None, *, gguf_only: bool = True) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     allowed = ('.gguf',) if gguf_only else _DOWNLOAD_EXTENSIONS
     for entry in siblings or []:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get('rfilename') or entry.get('path') or '')
+        name = _entry_name(entry)
         lower = name.lower()
-        if not any(lower.endswith(ext) for ext in allowed):
+        if not name or not any(lower.endswith(ext) for ext in allowed):
             continue
-        size = entry.get('size')
-        if not isinstance(size, int) or size <= 0:
-            lfs = entry.get('lfs')
-            if isinstance(lfs, dict) and isinstance(lfs.get('size'), int):
-                size = lfs['size']
+        size = _entry_size_bytes(entry)
         from core.hf_model_fit import bytes_to_size_gb
 
         size_gb = bytes_to_size_gb(size)
@@ -220,23 +250,73 @@ def _gguf_files(siblings: list[Any] | None) -> list[dict[str, Any]]:
     return _model_files(siblings, gguf_only=True)
 
 
-def _siblings_have_file_sizes(siblings: list[Any] | None, *, extensions: tuple[str, ...] = ('.gguf',)) -> bool:
+def _files_as_siblings(files: list[Any] | None) -> list[dict[str, Any]]:
+    siblings: list[dict[str, Any]] = []
+    for entry in files or []:
+        if not isinstance(entry, dict):
+            continue
+        name = _entry_name(entry)
+        if not name:
+            continue
+        row = {'rfilename': name, 'path': name}
+        size = _entry_size_bytes(entry)
+        if size:
+            row['size'] = size
+        siblings.append(row)
+    return siblings
+
+
+def _siblings_have_file_sizes(
+    siblings: list[Any] | None,
+    *,
+    extensions: tuple[str, ...] = _DOWNLOAD_EXTENSIONS,
+) -> bool:
     for entry in siblings or []:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get('rfilename') or entry.get('path') or '').strip().lower()
+        name = _entry_name(entry).lower()
         if not name or not any(name.endswith(ext) for ext in extensions):
             continue
-        size = entry.get('size')
+        size = _entry_size_bytes(entry)
         if isinstance(size, int) and size > 0:
             return True
     return False
 
 
-def _fetch_repo_tree(repo: str, *, recursive: bool = False) -> list[dict[str, Any]]:
+def _tree_entry_is_dir(row: dict[str, Any]) -> bool:
+    typ = str(row.get('type') or '').lower()
+    if typ == 'directory':
+        return True
+    if typ == 'file':
+        return False
+    path = str(row.get('path') or '').strip()
+    if not path or _entry_size_bytes(row):
+        return False
+    name = path.split('/')[-1]
+    return '.' not in name
+
+
+def _sibling_parent_dirs(siblings: list[Any] | None) -> list[str]:
+    dirs: list[str] = []
+    seen: set[str] = set()
+    for entry in siblings or []:
+        name = _entry_name(entry) if isinstance(entry, dict) else ''
+        if '/' not in name:
+            continue
+        parent = name.rsplit('/', 1)[0].strip('/')
+        if parent and parent not in seen:
+            seen.add(parent)
+            dirs.append(parent)
+    return dirs
+
+
+def _fetch_repo_tree(repo: str, *, recursive: bool = False, path: str = '') -> list[dict[str, Any]]:
     """Return HF tree entries (with sizes). Falls back to empty list on error."""
     encoded = urllib.parse.quote(repo, safe='/')
-    suffix = 'tree/main?recursive=1' if recursive else 'tree/main'
+    rel = str(path or '').strip().strip('/')
+    suffix = f'tree/main/{urllib.parse.quote(rel, safe="/")}' if rel else 'tree/main'
+    if recursive:
+        suffix += '?recursive=1'
     url = f'{HF_API}/models/{encoded}/{suffix}'
     timeout = 22.0 if recursive else 10.0
     try:
@@ -248,32 +328,84 @@ def _fetch_repo_tree(repo: str, *, recursive: bool = False) -> list[dict[str, An
     return [row for row in payload if isinstance(row, dict)]
 
 
+def _fetch_repo_siblings_with_blobs(repo: str) -> list[dict[str, Any]]:
+    """Hub model info with blob sizes — fallback when the tree listing is folders-only."""
+    encoded = urllib.parse.quote(repo, safe='/')
+    try:
+        payload = _request_json(f'{HF_API}/models/{encoded}?blobs=true', timeout=15.0)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    siblings = payload.get('siblings')
+    return [row for row in siblings if isinstance(row, dict)] if isinstance(siblings, list) else []
+
+
+def _preferred_size_folders(tree: list[dict[str, Any]], siblings: list[Any] | None) -> list[str]:
+    folders = list(_sibling_parent_dirs(siblings))
+    seen = set(folders)
+    for row in tree:
+        if not _tree_entry_is_dir(row):
+            continue
+        path = str(row.get('path') or '').strip().strip('/')
+        if path and path not in seen:
+            seen.add(path)
+            folders.append(path)
+    folders.sort(key=_quant_rank)
+    return folders
+
+
 def _resolve_repo_tree(repo: str, siblings: list[Any] | None) -> list[dict[str, Any]]:
     """Fetch the smallest Hub tree needed to fill missing file sizes."""
     if _siblings_have_file_sizes(siblings):
         return []
     tree = _fetch_repo_tree(repo, recursive=False)
-    merged = _siblings_with_sizes(siblings, tree)
-    if _siblings_have_file_sizes(merged):
+    if _siblings_have_file_sizes(_siblings_with_sizes(siblings, tree)):
         return tree
-    if len(tree) > 48:
-        return tree
-    recursive = _fetch_repo_tree(repo, recursive=True)
-    return recursive or tree
+
+    extra: list[dict[str, Any]] = []
+    for folder in _preferred_size_folders(tree, siblings)[:4]:
+        extra.extend(_fetch_repo_tree(repo, path=folder, recursive=False))
+        combined = tree + extra
+        if _siblings_have_file_sizes(_siblings_with_sizes(siblings, combined)):
+            return combined
+        extra.extend(_fetch_repo_tree(repo, path=folder, recursive=True))
+        combined = tree + extra
+        if _siblings_have_file_sizes(_siblings_with_sizes(siblings, combined)):
+            return combined
+
+    blobs = _fetch_repo_siblings_with_blobs(repo)
+    if blobs:
+        blob_tree = [
+            {
+                'path': _entry_name(row),
+                'rfilename': _entry_name(row),
+                'size': _entry_size_bytes(row),
+                'lfs': row.get('lfs'),
+                'type': 'file',
+            }
+            for row in blobs
+            if _entry_name(row)
+        ]
+        if _siblings_have_file_sizes(_siblings_with_sizes(siblings, blob_tree)):
+            return tree + extra + blob_tree
+
+    file_count = sum(1 for row in tree if not _tree_entry_is_dir(row))
+    if not extra and (len(tree) <= 64 or file_count == 0):
+        recursive = _fetch_repo_tree(repo, recursive=True)
+        if recursive:
+            return recursive
+    return tree + extra
 
 
 def _siblings_with_sizes(siblings: list[Any] | None, tree: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Merge model siblings with tree sizes when the Hub omits size on siblings."""
     size_by_name: dict[str, int] = {}
     for row in tree or []:
-        path = str(row.get('path') or '').strip()
+        path = _entry_name(row)
         if not path:
             continue
-        size = row.get('size')
-        if not isinstance(size, int) or size <= 0:
-            lfs = row.get('lfs')
-            if isinstance(lfs, dict) and isinstance(lfs.get('size'), int):
-                size = lfs['size']
+        size = _entry_size_bytes(row)
         if isinstance(size, int) and size > 0:
             size_by_name[path] = size
 
@@ -282,12 +414,12 @@ def _siblings_with_sizes(siblings: list[Any] | None, tree: list[dict[str, Any]] 
     for entry in siblings or []:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get('rfilename') or entry.get('path') or '').strip()
+        name = _entry_name(entry)
         if not name:
             continue
         row = dict(entry)
         row['rfilename'] = name
-        if name in size_by_name and not (isinstance(row.get('size'), int) and row['size'] > 0):
+        if name in size_by_name and not _entry_size_bytes(row):
             row['size'] = size_by_name[name]
         merged.append(row)
         seen.add(name)
@@ -362,12 +494,34 @@ def _size_from_preferred_file(preferred: dict[str, Any] | None) -> tuple[float |
     return float(size_gb), f'{float(size_gb):g} GB'
 
 
+def _size_from_preferred_quant(files: list[dict[str, Any]]) -> tuple[float | None, str]:
+    """Card disk size for the preferred quant, summing GGUF shards."""
+    preferred = _preferred_gguf_file(files)
+    if not preferred:
+        return None, '—'
+    from core.hf_model_fit import _shard_group_key, bytes_to_size_gb
+
+    key = _shard_group_key(str(preferred.get('filename') or ''))
+    total = 0
+    for row in files:
+        if _shard_group_key(str(row.get('filename') or '')) != key:
+            continue
+        try:
+            total += int(row.get('size_bytes') or 0)
+        except (TypeError, ValueError):
+            continue
+    size_gb = bytes_to_size_gb(total)
+    if size_gb:
+        return float(size_gb), f'{float(size_gb):g} GB'
+    return _size_from_preferred_file(preferred)
+
+
 def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
-    return _size_from_preferred_file(_preferred_gguf_file(_gguf_files(siblings)))
+    return _size_from_preferred_quant(_gguf_files(siblings))
 
 
 def _preferred_download_size(siblings: list[Any] | None) -> tuple[float | None, str]:
-    return _size_from_preferred_file(_preferred_gguf_file(_model_files(siblings, gguf_only=False)))
+    return _size_from_preferred_quant(_model_files(siblings, gguf_only=False))
 
 
 _ACCELERATOR_MAX_SIZE_GB = 8.0
@@ -792,23 +946,49 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _row_needs_size_enrich(row: dict[str, Any]) -> bool:
+    size_gb = row.get('size_gb')
+    has_gguf = bool(row.get('has_gguf') or row.get('accelerator_only'))
+    if isinstance(size_gb, (int, float)) and 0 < float(size_gb) < 0.05 and has_gguf:
+        return True
     label = str(row.get('size_label') or '').strip()
     if label and label not in ('—', '0 GB', '0.0 GB'):
         return False
-    size_gb = row.get('size_gb')
     if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
         return False
     return True
+
+
+_SIZE_MERGE_FIELDS = (
+    'size_gb',
+    'size_label',
+    'size_bytes',
+    'gguf_files',
+    'download_files',
+    'gguf_count',
+    'file_count',
+    'has_gguf',
+    'has_files',
+    'accelerator_only',
+)
+
+
+def _merge_size_fields(row: dict[str, Any], summary: dict[str, Any]) -> None:
+    for field in _SIZE_MERGE_FIELDS:
+        if field in summary:
+            row[field] = summary[field]
 
 
 def _enrich_summaries_sizes(
     rows: list[dict[str, Any]],
     raw_items: list[dict[str, Any]] | None = None,
     *,
-    max_fetches: int = 10,
+    max_fetches: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Fill missing list-card sizes from the Hub tree (bounded, parallel)."""
-    if not rows or max_fetches <= 0:
+    """Fill missing list-card sizes from the Hub tree (parallel)."""
+    if not rows:
+        return rows
+    fetch_limit = len(rows) if max_fetches is None else max(0, int(max_fetches))
+    if fetch_limit <= 0:
         return rows
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -822,16 +1002,29 @@ def _enrich_summaries_sizes(
             raw_by_id[repo_id] = item
 
     futures: dict[Any, tuple[int, dict[str, Any]]] = {}
-    with ThreadPoolExecutor(max_workers=min(8, max_fetches)) as pool:
+    with ThreadPoolExecutor(max_workers=min(8, fetch_limit)) as pool:
         for index, row in enumerate(rows):
             if not _row_needs_size_enrich(row):
                 continue
             repo_id = str(row.get('id') or '').strip()
             if not repo_id:
                 continue
-            if len(futures) >= max_fetches:
+            if len(futures) >= fetch_limit:
                 break
-            raw = raw_by_id.get(repo_id) or {'id': repo_id, 'siblings': row.get('gguf_files') or []}
+            raw = raw_by_id.get(repo_id)
+            if not raw:
+                siblings = _files_as_siblings(row.get('gguf_files') or row.get('download_files') or [])
+                raw = {
+                    'id': repo_id,
+                    'siblings': siblings,
+                    'tags': list(row.get('tags') or []),
+                    'pipeline_tag': row.get('pipeline_tag') or '',
+                    'author': row.get('author') or '',
+                    'downloads': row.get('downloads') or 0,
+                    'likes': row.get('likes') or 0,
+                    'lastModified': row.get('last_modified') or '',
+                    'cardData': {'description': row.get('description') or ''},
+                }
             futures[pool.submit(_resolve_repo_tree, repo_id, raw.get('siblings'))] = (index, raw)
 
         for future in as_completed(futures):
@@ -844,7 +1037,7 @@ def _enrich_summaries_sizes(
                 continue
             enriched = dict(raw)
             enriched['siblings'] = _siblings_with_sizes(raw.get('siblings'), tree)
-            rows[index] = _summary_from_model(enriched)
+            _merge_size_fields(rows[index], _summary_from_model(enriched))
     return rows
 
 
@@ -856,42 +1049,8 @@ def _summaries_from_models(
     """Build summaries and fill missing GGUF sizes from the Hub tree."""
     raw_items = [item for item in raw_models if isinstance(item, dict)]
     rows = [_summary_from_model(item) for item in raw_items]
-    if not enrich_sizes or not rows:
-        return rows
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    raw_by_index = dict(enumerate(raw_items))
-    futures = {}
-    tree_budget = min(8, len(rows))
-    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as pool:
-        for index, row in enumerate(rows):
-            repo_id = str(row.get('id') or '')
-            if not repo_id:
-                continue
-            if row.get('size_label') and str(row.get('size_label')) != '—':
-                continue
-            size_gb = row.get('size_gb')
-            if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
-                continue
-            if len(futures) >= tree_budget:
-                continue
-            raw = raw_by_index.get(index)
-            if not raw:
-                continue
-            futures[pool.submit(_resolve_repo_tree, repo_id, raw.get('siblings'))] = (index, raw)
-
-        for future in as_completed(futures):
-            index, raw = futures[future]
-            try:
-                tree = future.result()
-            except Exception:
-                continue
-            if not tree:
-                continue
-            enriched = dict(raw)
-            enriched['siblings'] = _siblings_with_sizes(raw.get('siblings'), tree)
-            rows[index] = _summary_from_model(enriched)
+    if enrich_sizes and rows:
+        return _enrich_summaries_sizes(rows, raw_items)
     return rows
 
 
@@ -1049,6 +1208,7 @@ def _search_supported_repo_query(
     ]
     matches.sort(key=_supported_sort_key)
     models = matches[:response_limit]
+    models = _enrich_summaries_sizes(models)
     from core.config import load_config
     from core.hf_model_fit import annotate_hf_models_fit
 
@@ -1140,11 +1300,13 @@ def _search_supported_models(
             sort=sort_key,
             category=category,
             limit=per_source,
+            enrich_sizes=False,
             fetcher=lambda cat=category: search_models(
                 needle,
                 limit=per_source,
                 sort=sort_key,
                 category=cat,
+                enrich_sizes=False,
             ),
         )
         return [row for row in (payload.get('models') or []) if isinstance(row, dict)]
@@ -1170,8 +1332,7 @@ def _search_supported_models(
     models = _prepend_repo_lookup(models, needle, category='supported', supported_only=True)
     models.sort(key=_supported_sort_key)
     models = models[:response_limit]
-    if not needle:
-        models = _enrich_summaries_sizes(models, max_fetches=3)
+    models = _enrich_summaries_sizes(models)
     from core.config import load_config
     from core.hf_model_fit import annotate_hf_models_fit
 
@@ -1186,6 +1347,7 @@ def search_models(
     sort: str = 'downloads',
     category: str = 'dflash',
     gguf_only: bool | None = None,
+    enrich_sizes: bool = True,
 ) -> dict[str, Any]:
     needle = str(query or '').strip()
     cat_key = str(category or 'dflash').strip().lower()
@@ -1224,9 +1386,7 @@ def search_models(
         return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
-    models = _summaries_from_models(payload, enrich_sizes=False)
-    if not needle:
-        models = _enrich_summaries_sizes(models, payload, max_fetches=3)
+    models = _summaries_from_models(payload, enrich_sizes=enrich_sizes)
     if use_gguf_only:
         models = [
             row for row in models
@@ -1253,10 +1413,8 @@ def search_models(
             if isinstance(fallback_payload, list):
                 models = _summaries_from_models(
                     fallback_payload,
-                    enrich_sizes=False,
+                    enrich_sizes=enrich_sizes,
                 )
-                if not needle:
-                    models = _enrich_summaries_sizes(models, fallback_payload, max_fetches=3)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             pass
     # Exact repo-id lookup: when the user types a full "org/repo" id (e.g.
@@ -1460,64 +1618,451 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
             job['progress'] = 100.0
 
 
-def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> None:
-    url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
-    headers = {'User-Agent': 'DFlash-Console/0.1'}
+_DOWNLOAD_CHUNK = 8 * 1024 * 1024
+_MIN_PARALLEL_BYTES = 32 * 1024 * 1024
+_MAX_DOWNLOAD_CONNECTIONS = 6
+
+
+def _hf_download_headers() -> dict[str, str]:
+    headers = {
+        'User-Agent': 'DFlash-Console/0.1',
+        'Accept-Encoding': 'identity',
+    }
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            total = int(resp.headers.get('Content-Length') or 0)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dest.with_suffix(dest.suffix + '.part')
-            read = 0
-            chunk_size = 1024 * 1024
-            with tmp.open('wb') as handle:
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
+    return headers
+
+
+def _split_byte_ranges(total: int, connections: int) -> list[tuple[int, int]]:
+    size = max(1, int(total))
+    parts = max(1, min(int(connections), size))
+    chunk = size // parts
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for index in range(parts):
+        end = size - 1 if index == parts - 1 else start + chunk - 1
+        ranges.append((start, end))
+        start = end + 1
+    return ranges
+
+
+def _connection_count(total: int, *, ranged: bool) -> int:
+    if not ranged or total < _MIN_PARALLEL_BYTES:
+        return 1
+    if total < 256 * 1024 * 1024:
+        return 4
+    return _MAX_DOWNLOAD_CONNECTIONS
+
+
+def _refresh_job_speed(job: dict[str, Any], *, now: float | None = None) -> None:
+    current = float(now if now is not None else time.time())
+    read = int(job.get('bytes_read') or 0)
+    last_at = float(job.get('_speed_at') or job.get('started_at') or current)
+    last_bytes = int(job.get('_speed_bytes') or 0)
+    elapsed = current - last_at
+    if elapsed < 0.35 and job.get('speed_bps'):
+        return
+    if elapsed < 0.2:
+        return
+    instant = max(0.0, (read - last_bytes) / elapsed)
+    previous = float(job.get('speed_bps') or 0)
+    job['speed_bps'] = round((instant * 0.55 + previous * 0.45) if previous else instant, 1)
+    job['_speed_at'] = current
+    job['_speed_bytes'] = read
+    remain = int(job.get('bytes_total') or 0) - read
+    speed = float(job.get('speed_bps') or 0)
+    job['eta_seconds'] = int(remain / speed) if speed > 1 and remain > 0 else None
+
+
+def _add_job_bytes(job_id: str, nbytes: int, total: int | None) -> None:
+    if nbytes <= 0 and not total:
+        return
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if not job:
+            return
+        job['bytes_read'] = int(job.get('bytes_read') or 0) + max(0, int(nbytes))
+        if total:
+            job['bytes_total'] = int(total)
+        read = int(job.get('bytes_read') or 0)
+        known = int(job.get('bytes_total') or 0)
+        job['progress'] = round(read / known * 100, 1) if known > 0 else None
+        _refresh_job_speed(job)
+
+
+def _public_download_job(job: dict[str, Any]) -> dict[str, Any]:
+    row = dict(job)
+    for key in ('_speed_at', '_speed_bytes', 'post_action'):
+        row.pop(key, None)
+    return row
+
+
+def _file_arrived_at(path: Path) -> float:
+    st = path.stat()
+    birth = getattr(st, 'st_birthtime', None)
+    if birth and float(birth) > 0:
+        return float(birth)
+    if os.name == 'nt':
+        return float(st.st_ctime)
+    return float(st.st_mtime)
+
+
+def _disk_job_id(path: Path) -> str:
+    key = str(path).replace('\\', '/').lower().encode('utf-8')
+    return 'disk-' + hashlib.sha1(key).hexdigest()[:16]
+
+
+def _infer_repo_id(path: Path) -> str:
+    parts = list(path.parts)
+    lower = [part.lower() for part in parts]
+    for marker in ('models', 'hub', 'huggingface'):
+        if marker not in lower:
+            continue
+        idx = lower.index(marker)
+        if idx + 2 >= len(parts):
+            continue
+        org = parts[idx + 1]
+        repo = parts[idx + 2]
+        if org.startswith('models--'):
+            return org[len('models--'):].replace('--', '/', 1)
+        if org and repo and '/' not in org and '/' not in repo:
+            return f'{org}/{repo}'
+    if len(path.parts) >= 3:
+        return f'{path.parent.parent.name}/{path.parent.name}'
+    return ''
+
+
+def _is_disk_history_file(path: Path) -> bool:
+    name = path.name.lower()
+    if name.startswith('.') or name.endswith(('.tmp', '.part', '.incomplete', '.json')):
+        return False
+    return any(name.endswith(ext) for ext in _DOWNLOAD_EXTENSIONS)
+
+
+def _discover_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
+    if _discover_roots_override is not None:
+        return [Path(root) for root in _discover_roots_override]
+    from core.model_paths import enabled_scan_roots, get_download_dir
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    candidates = [get_download_dir(cfg)]
+    candidates.extend(path for path, _source in enabled_scan_roots(cfg))
+    for raw in candidates:
+        try:
+            path = Path(raw).expanduser().resolve()
+        except OSError:
+            continue
+        key = str(path).lower()
+        if key in seen or not path.is_dir():
+            continue
+        seen.add(key)
+        roots.append(path)
+    return roots
+
+
+def _collect_disk_download_jobs(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    grouped: dict[Path, list[Path]] = {}
+    found = 0
+    for root in _discover_roots(cfg):
+        try:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    name for name in dirnames
+                    if not name.startswith('.') and name.lower() not in {'__pycache__', '.git', 'blobs'}
+                ]
+                current = Path(dirpath)
+                for name in filenames:
+                    path = current / name
+                    if not _is_disk_history_file(path):
+                        continue
+                    try:
+                        if path.stat().st_size < _MIN_DISK_FILE_BYTES:
+                            continue
+                    except OSError:
+                        continue
+                    grouped.setdefault(path.parent, []).append(path)
+                    found += 1
+                    if found >= 800:
                         break
-                    handle.write(chunk)
-                    read += len(chunk)
-                    pct = round(read / total * 100, 1) if total > 0 else None
-                    with _jobs_lock:
-                        job = _download_jobs.get(job_id)
-                        if job:
-                            job['bytes_read'] = read
-                            job['bytes_total'] = total or None
-                            job['progress'] = pct
-            tmp.replace(dest)
+                if found >= 800:
+                    break
+        except OSError:
+            continue
+        if found >= 800:
+            break
+
+    root_keys = {str(root).replace('\\', '/').lower() for root in _discover_roots(cfg)}
+    rows: list[dict[str, Any]] = []
+    for parent, files in grouped.items():
+        files.sort(key=lambda item: item.stat().st_size if item.exists() else 0, reverse=True)
+        at_root = str(parent).replace('\\', '/').lower() in root_keys
+        batches = [[item] for item in files] if at_root else [files]
+        for batch in batches:
+            primary = batch[0]
+            try:
+                arrived = max(_file_arrived_at(item) for item in batch)
+                size = sum(item.stat().st_size for item in batch if item.exists())
+            except OSError:
+                continue
+            repo_id = _infer_repo_id(primary)
+            filename = primary.name if len(batch) == 1 else f'{len(batch)} files'
+            path = primary if len(batch) == 1 else parent
+            rows.append({
+                'id': _disk_job_id(path),
+                'repo_id': repo_id,
+                'filename': filename,
+                'status': 'done',
+                'progress': 100.0,
+                'bytes_read': size,
+                'bytes_total': size,
+                'speed_bps': 0.0,
+                'eta_seconds': None,
+                'path': str(path),
+                'library_id': '',
+                'started_at': arrived,
+                'finished_at': arrived,
+                'kind': 'disk',
+                'origin': 'disk',
+            })
+    return rows
+
+
+def _known_history_paths() -> set[str]:
+    known: set[str] = set()
+    for job in _download_jobs.values():
+        raw = str(job.get('path') or '').strip()
+        if not raw:
+            continue
+        known.add(raw.replace('\\', '/').lower())
+        try:
+            known.add(str(Path(raw).resolve()).replace('\\', '/').lower())
+        except OSError:
+            pass
+    return known
+
+
+def _merge_disk_download_history(*, force: bool = False) -> int:
+    global _disk_scan_at
+    now = time.time()
+    if not force and _disk_scan_at and now - _disk_scan_at < _DISK_SCAN_TTL:
+        return 0
+    _disk_scan_at = now
+    discovered = _collect_disk_download_jobs()
+    added = 0
+    with _jobs_lock:
+        known_paths = _known_history_paths()
+        for row in discovered:
+            job_id = str(row.get('id') or '')
+            if not job_id or job_id in _download_jobs or job_id in _cleared_ids:
+                continue
+            path_key = str(row.get('path') or '').replace('\\', '/').lower()
+            if path_key and path_key in known_paths:
+                continue
+            _download_jobs[job_id] = row
+            added += 1
+    if added:
+        try:
+            _save_download_history()
+        except OSError:
+            pass
+    return added
+
+
+def _ensure_download_history_loaded() -> None:
+    global _history_loaded
+    if _history_loaded:
+        return
+    _history_loaded = True
+    if not _HISTORY_PATH.is_file():
+        return
+    try:
+        payload = json.loads(_HISTORY_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    cleared = payload.get('cleared_ids')
+    if isinstance(cleared, list):
+        _cleared_ids.update(str(item).strip() for item in cleared if str(item).strip())
+    rows = payload.get('jobs')
+    if not isinstance(rows, list):
+        return
+    with _jobs_lock:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            job_id = str(row.get('id') or '').strip()
+            if not job_id or job_id in _download_jobs or job_id in _cleared_ids:
+                continue
+            if str(row.get('status') or '') == 'downloading':
+                continue
+            _download_jobs[job_id] = dict(row)
+
+
+def _save_download_history() -> None:
+    with _jobs_lock:
+        finished = [
+            _public_download_job(job)
+            for job in _download_jobs.values()
+            if str(job.get('status') or '') != 'downloading'
+        ]
+        cleared = sorted(_cleared_ids)
+    finished.sort(key=lambda row: float(row.get('finished_at') or row.get('started_at') or 0), reverse=True)
+    _HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _HISTORY_PATH.write_text(
+        json.dumps({'version': 2, 'cleared_ids': cleared, 'jobs': finished[:_MAX_HISTORY]}, indent=2),
+        encoding='utf-8',
+    )
+
+
+def _mark_job_finished(job_id: str, status: str, **fields: Any) -> None:
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if not job:
+            return
+        job['status'] = status
+        job['finished_at'] = time.time()
+        if status == 'done':
+            job['progress'] = 100.0
+            job['speed_bps'] = 0.0
+            job['eta_seconds'] = None
+        job.update(fields)
+    try:
+        _save_download_history()
+    except OSError:
+        pass
+
+
+def _probe_hf_download(url: str, headers: dict[str, str]) -> tuple[str, int, bool]:
+    req = urllib.request.Request(url, headers=headers, method='HEAD')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            total = int(resp.headers.get('Content-Length') or 0)
+            accept = 'bytes' in str(resp.headers.get('Accept-Ranges') or '').lower()
+            return resp.geturl() or url, total, accept and total > 0
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+        return url, 0, False
+
+
+def _download_range(
+    job_id: str,
+    url: str,
+    headers: dict[str, str],
+    dest: Path,
+    start: int,
+    end: int,
+    total: int,
+) -> None:
+    req_headers = dict(headers)
+    req_headers['Range'] = f'bytes={start}-{end}'
+    req = urllib.request.Request(url, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        with dest.open('r+b') as handle:
+            handle.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = resp.read(min(_DOWNLOAD_CHUNK, remaining))
+                if not chunk:
+                    raise OSError(f'range {start}-{end} ended early')
+                handle.write(chunk)
+                remaining -= len(chunk)
+                _add_job_bytes(job_id, len(chunk), total)
+
+
+def _download_parallel(
+    job_id: str,
+    url: str,
+    headers: dict[str, str],
+    dest: Path,
+    total: int,
+    connections: int,
+) -> None:
+    ranges = _split_byte_ranges(total, connections)
+    with dest.open('wb') as handle:
+        handle.truncate(total)
+    errors: list[BaseException] = []
+
+    def worker(start: int, end: int) -> None:
+        try:
+            _download_range(job_id, url, headers, dest, start, end, total)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=item, daemon=True) for item in ranges]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise errors[0]
+    if dest.stat().st_size != total:
+        raise OSError('incomplete parallel download')
+
+
+def _download_single(
+    job_id: str,
+    url: str,
+    headers: dict[str, str],
+    dest: Path,
+    total: int | None = None,
+) -> None:
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        known = int(total or resp.headers.get('Content-Length') or 0)
+        with dest.open('wb') as handle:
+            while True:
+                chunk = resp.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                _add_job_bytes(job_id, len(chunk), known or None)
+
+
+def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> None:
+    url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
+    headers = _hf_download_headers()
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + '.part')
+        final_url, total, ranged = _probe_hf_download(url, headers)
+        connections = _connection_count(total, ranged=ranged)
+        if connections > 1:
+            try:
+                _download_parallel(job_id, final_url, headers, tmp, total, connections)
+            except Exception:
+                with _jobs_lock:
+                    job = _download_jobs.get(job_id)
+                    if job:
+                        job['bytes_read'] = 0
+                        job['progress'] = 0.0
+                        job['speed_bps'] = 0.0
+                        job['eta_seconds'] = None
+                        job['_speed_at'] = time.time()
+                        job['_speed_bytes'] = 0
+                _download_single(job_id, final_url, headers, tmp, total)
+        else:
+            _download_single(job_id, final_url or url, headers, tmp, total or None)
+        tmp.replace(dest)
         if dest.suffix.lower() == '.safetensors':
             _complete_transformers_repo_files(repo_id, dest.parent, job_id=job_id)
-        with _jobs_lock:
-            job = _download_jobs.get(job_id)
-            if job:
-                job['status'] = 'done'
-                job['path'] = str(dest)
-                job['progress'] = 100.0
         post_action = None
         with _jobs_lock:
             post_action = (_download_jobs.get(job_id) or {}).get('post_action')
+        extra: dict[str, Any] = {'path': str(dest)}
         if isinstance(post_action, dict) and post_action.get('type') == 'wire_vision':
             try:
                 from core.vision_setup import wire_vision_after_download
 
                 wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
             except Exception as exc:
-                with _jobs_lock:
-                    job = _download_jobs.get(job_id)
-                    if job:
-                        job['post_action_error'] = str(exc)
+                extra['post_action_error'] = str(exc)
+        _mark_job_finished(job_id, 'done', **extra)
         from core.local_models import invalidate_model_catalog_cache
         invalidate_model_catalog_cache()
     except Exception as exc:
-        with _jobs_lock:
-            job = _download_jobs.get(job_id)
-            if job:
-                job['status'] = 'error'
-                job['error'] = str(exc)
+        _mark_job_finished(job_id, 'error', error=str(exc))
 
 
 def start_download(
@@ -1600,9 +2145,12 @@ def start_download(
             'progress': 0.0,
             'bytes_read': 0,
             'bytes_total': None,
+            'speed_bps': 0.0,
+            'eta_seconds': None,
             'path': str(dest),
             'library_id': (library_id or '') if not dest_path else '',
             'started_at': time.time(),
+            'finished_at': None,
             'post_action': post_action,
             'kind': 'vision' if isinstance(post_action, dict) else '',
         }
@@ -1620,11 +2168,7 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
-        with _jobs_lock:
-            job = _download_jobs.get(job_id)
-            if job:
-                job['status'] = 'error'
-                job['error'] = f'huggingface_hub is not installed: {exc}'
+        _mark_job_finished(job_id, 'error', error=f'huggingface_hub is not installed: {exc}')
         return
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     try:
@@ -1639,20 +2183,11 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
             local_dir_use_symlinks=False,
             token=token.strip() if token else None,
         )
-        with _jobs_lock:
-            job = _download_jobs.get(job_id)
-            if job:
-                job['status'] = 'done'
-                job['path'] = str(local_dir)
-                job['progress'] = 100.0
+        _mark_job_finished(job_id, 'done', path=str(local_dir))
         from core.local_models import invalidate_model_catalog_cache
         invalidate_model_catalog_cache()
     except Exception as exc:
-        with _jobs_lock:
-            job = _download_jobs.get(job_id)
-            if job:
-                job['status'] = 'error'
-                job['error'] = str(exc)
+        _mark_job_finished(job_id, 'error', error=str(exc))
 
 
 def start_repo_download(
@@ -1698,9 +2233,12 @@ def start_repo_download(
             'progress': 0.0,
             'bytes_read': 0,
             'bytes_total': None,
+            'speed_bps': 0.0,
+            'eta_seconds': None,
             'path': str(dest),
             'library_id': (library_id or '') if not dest_path else '',
             'started_at': time.time(),
+            'finished_at': None,
             'post_action': None,
             'kind': 'repo',
         }
@@ -1716,19 +2254,25 @@ def start_repo_download(
 
 
 def get_download_job(job_id: str) -> dict[str, Any]:
+    _ensure_download_history_loaded()
     with _jobs_lock:
         job = _download_jobs.get(str(job_id or '').strip())
         if not job:
             return {'success': False, 'error': 'unknown job'}
-        return {'success': True, 'job': dict(job)}
+        return {'success': True, 'job': _public_download_job(job)}
 
 
-def list_download_jobs(*, active_only: bool = False) -> dict[str, Any]:
+def list_download_jobs(*, active_only: bool = False, discover: bool = False) -> dict[str, Any]:
+    _ensure_download_history_loaded()
+    _merge_disk_download_history(force=discover)
     with _jobs_lock:
-        jobs = [dict(job) for job in _download_jobs.values()]
+        jobs = [_public_download_job(job) for job in _download_jobs.values()]
     if active_only:
         jobs = [job for job in jobs if str(job.get('status') or '') == 'downloading']
-    jobs.sort(key=lambda row: float(row.get('started_at') or 0), reverse=True)
+    jobs.sort(
+        key=lambda row: float(row.get('finished_at') or row.get('started_at') or 0),
+        reverse=True,
+    )
     active_count = sum(1 for job in jobs if str(job.get('status') or '') == 'downloading')
     return {
         'success': True,
@@ -1736,3 +2280,43 @@ def list_download_jobs(*, active_only: bool = False) -> dict[str, Any]:
         'count': len(jobs),
         'active_count': active_count,
     }
+
+
+def clear_download_job(job_id: str) -> dict[str, Any]:
+    _ensure_download_history_loaded()
+    key = str(job_id or '').strip()
+    if not key:
+        return {'success': False, 'error': 'job_id is required'}
+    with _jobs_lock:
+        job = _download_jobs.get(key)
+        if not job:
+            return {'success': False, 'error': 'unknown job'}
+        if str(job.get('status') or '') == 'downloading':
+            return {'success': False, 'error': 'cannot clear an active download'}
+        _cleared_ids.add(key)
+        del _download_jobs[key]
+    try:
+        _save_download_history()
+    except OSError as exc:
+        return {'success': False, 'error': str(exc)}
+    return {'success': True, 'cleared': key}
+
+
+def clear_download_history() -> dict[str, Any]:
+    _ensure_download_history_loaded()
+    cleared = 0
+    with _jobs_lock:
+        stale = [
+            key
+            for key, job in _download_jobs.items()
+            if str(job.get('status') or '') != 'downloading'
+        ]
+        for key in stale:
+            _cleared_ids.add(key)
+            del _download_jobs[key]
+        cleared = len(stale)
+    try:
+        _save_download_history()
+    except OSError as exc:
+        return {'success': False, 'error': str(exc)}
+    return {'success': True, 'cleared': cleared}
