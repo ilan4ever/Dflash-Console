@@ -793,7 +793,10 @@ def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _resolve_stack_pair(server: dict[str, Any], *, cfg: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    stack = resolve_model_stack(server, cfg=cfg)
+    try:
+        stack = resolve_model_stack(server, cfg=cfg)
+    except ValueError:
+        stack = []
     target = next((row for row in stack if row.get('role') == 'target'), None)
     draft = next((row for row in stack if str(row.get('role') or '').startswith('draft')), None)
     return target, draft

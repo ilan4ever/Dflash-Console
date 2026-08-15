@@ -1146,17 +1146,21 @@ def get_status_payload(
             stale['servers'] = refreshed_servers
             if include_external:
                 try:
-                    stale['external_gpu_loads'] = get_external_gpu_loads(
+                    rows = get_external_gpu_loads(
                         servers=servers,
                         gpus=stale.get('gpus') if isinstance(stale.get('gpus'), list) else None,
                         cfg=cfg,
                         fast=True,
                     )
-                    with _STATUS_PAYLOAD_LOCK:
-                        _STATUS_EXTERNAL_CACHE.clear()
-                        _STATUS_EXTERNAL_CACHE.extend(
-                            dict(row) for row in stale['external_gpu_loads'] if isinstance(row, dict)
-                        )
+                    if rows:
+                        stale['external_gpu_loads'] = rows
+                        with _STATUS_PAYLOAD_LOCK:
+                            _STATUS_EXTERNAL_CACHE.clear()
+                            _STATUS_EXTERNAL_CACHE.extend(
+                                dict(row) for row in rows if isinstance(row, dict)
+                            )
+                    else:
+                        stale['external_gpu_loads'] = _cached_external_gpu_loads()
                 except Exception:
                     stale['external_gpu_loads'] = _cached_external_gpu_loads()
             return stale

@@ -29,6 +29,7 @@ def test_server_catalog_row_non_dflash_is_loadable_when_target_ready(tmp_path: P
         'port': 8093,
         'enabled': True,
         'engine_mode': 'embedding',
+        'target_path': str(target),
         'model_stack': [
             {'role': 'target', 'path': str(target), 'label': target.name},
         ],
