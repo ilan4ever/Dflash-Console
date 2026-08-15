@@ -98,6 +98,9 @@ _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml'
 
 _download_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
+_repo_lookup_lock = threading.Lock()
+_repo_lookup_inflight: dict[str, threading.Event] = {}
+_repo_lookup_results: dict[str, list[dict[str, Any]]] = {}
 
 
 def _is_under_allowed_model_root(path: Path, cfg: dict[str, Any]) -> bool:
@@ -217,17 +220,46 @@ def _gguf_files(siblings: list[Any] | None) -> list[dict[str, Any]]:
     return _model_files(siblings, gguf_only=True)
 
 
-def _fetch_repo_tree(repo: str) -> list[dict[str, Any]]:
+def _siblings_have_file_sizes(siblings: list[Any] | None, *, extensions: tuple[str, ...] = ('.gguf',)) -> bool:
+    for entry in siblings or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get('rfilename') or entry.get('path') or '').strip().lower()
+        if not name or not any(name.endswith(ext) for ext in extensions):
+            continue
+        size = entry.get('size')
+        if isinstance(size, int) and size > 0:
+            return True
+    return False
+
+
+def _fetch_repo_tree(repo: str, *, recursive: bool = False) -> list[dict[str, Any]]:
     """Return HF tree entries (with sizes). Falls back to empty list on error."""
     encoded = urllib.parse.quote(repo, safe='/')
-    url = f'{HF_API}/models/{encoded}/tree/main?recursive=1'
+    suffix = 'tree/main?recursive=1' if recursive else 'tree/main'
+    url = f'{HF_API}/models/{encoded}/{suffix}'
+    timeout = 22.0 if recursive else 10.0
     try:
-        payload = _request_json(url, timeout=30)
+        payload = _request_json(url, timeout=timeout)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return []
     if not isinstance(payload, list):
         return []
     return [row for row in payload if isinstance(row, dict)]
+
+
+def _resolve_repo_tree(repo: str, siblings: list[Any] | None) -> list[dict[str, Any]]:
+    """Fetch the smallest Hub tree needed to fill missing file sizes."""
+    if _siblings_have_file_sizes(siblings):
+        return []
+    tree = _fetch_repo_tree(repo, recursive=False)
+    merged = _siblings_with_sizes(siblings, tree)
+    if _siblings_have_file_sizes(merged):
+        return tree
+    if len(tree) > 48:
+        return tree
+    recursive = _fetch_repo_tree(repo, recursive=True)
+    return recursive or tree
 
 
 def _siblings_with_sizes(siblings: list[Any] | None, tree: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -800,7 +832,7 @@ def _enrich_summaries_sizes(
             if len(futures) >= max_fetches:
                 break
             raw = raw_by_id.get(repo_id) or {'id': repo_id, 'siblings': row.get('gguf_files') or []}
-            futures[pool.submit(_fetch_repo_tree, repo_id)] = (index, raw)
+            futures[pool.submit(_resolve_repo_tree, repo_id, raw.get('siblings'))] = (index, raw)
 
         for future in as_completed(futures):
             index, raw = futures[future]
@@ -847,7 +879,7 @@ def _summaries_from_models(
             raw = raw_by_index.get(index)
             if not raw:
                 continue
-            futures[pool.submit(_fetch_repo_tree, repo_id)] = (index, raw)
+            futures[pool.submit(_resolve_repo_tree, repo_id, raw.get('siblings'))] = (index, raw)
 
         for future in as_completed(futures):
             index, raw = futures[future]
@@ -867,12 +899,60 @@ def _normalize_repo_slug(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', str(value or '').strip().lower()).strip('-')
 
 
+def _is_repo_id_query(query: str) -> bool:
+    needle = str(query or '').strip().strip('/')
+    if '/' not in needle:
+        return False
+    parts = [part for part in needle.split('/') if part]
+    return len(parts) >= 2
+
+
+def _cached_model_detail(repo_id: str, *, category: str) -> dict[str, Any]:
+    from core.hf_catalog_cache import get_or_fetch_detail
+
+    return get_or_fetch_detail(
+        repo_id=repo_id,
+        category=category,
+        fetcher=lambda rid=repo_id, cat=category: get_model_detail(rid, category=cat),
+    )
+
+
 def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[str, Any]]:
     """Resolve a full repo id or slug (e.g. deepseek/deepseek-v4-flash) to Hub models."""
     query = str(needle or '').strip().strip('/')
     if not query:
         return []
 
+    cache_key = f'{str(category or "all").strip().lower()}|{query.lower()}'
+    with _repo_lookup_lock:
+        if cache_key in _repo_lookup_results:
+            return [dict(row) for row in _repo_lookup_results[cache_key]]
+        inflight = _repo_lookup_inflight.get(cache_key)
+        if inflight is None:
+            inflight = threading.Event()
+            _repo_lookup_inflight[cache_key] = inflight
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        inflight.wait(timeout=120.0)
+        with _repo_lookup_lock:
+            cached = _repo_lookup_results.get(cache_key)
+        return [dict(row) for row in cached] if cached else []
+
+    models: list[dict[str, Any]] = []
+    try:
+        models = _lookup_hf_repo_models_uncached(query, category=category)
+    finally:
+        with _repo_lookup_lock:
+            _repo_lookup_results[cache_key] = models
+            done = _repo_lookup_inflight.pop(cache_key, None)
+        if done:
+            done.set()
+    return [dict(row) for row in models]
+
+
+def _lookup_hf_repo_models_uncached(query: str, *, category: str = 'all') -> list[dict[str, Any]]:
     normalized = query.lower()
     slug = _normalize_repo_slug(query.split('/')[-1] if '/' in query else query)
     found: dict[str, dict[str, Any]] = {}
@@ -884,7 +964,7 @@ def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[s
         if repo_id and repo_id not in found:
             found[repo_id] = model
 
-    detail = get_model_detail(query, category=category)
+    detail = _cached_model_detail(query, category=category)
     if detail.get('success') and isinstance(detail.get('model'), dict):
         add_model(detail['model'])
 
@@ -932,7 +1012,7 @@ def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[s
     )
     best_id = str(models[0].get('id') or '').strip() if models else ''
     if best_id and not models[0].get('download_files') and not models[0].get('gguf_files'):
-        detail = get_model_detail(best_id, category=category)
+        detail = _cached_model_detail(best_id, category=category)
         if detail.get('success') and isinstance(detail.get('model'), dict):
             found[best_id] = detail['model']
             models = list(found.values())
@@ -944,6 +1024,42 @@ def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[s
                 ),
             )
     return models
+
+
+def _supported_sort_key(row: dict[str, Any]) -> tuple[int, int, int]:
+    return (
+        0 if 'dflash' in str(row.get('id') or '').lower() else 1,
+        0 if bool(row.get('has_gguf')) or int(row.get('gguf_count') or 0) > 0 else 1,
+        -int(row.get('downloads') or 0),
+    )
+
+
+def _search_supported_repo_query(
+    query: str,
+    *,
+    limit: int,
+    sort: str,
+) -> dict[str, Any]:
+    """Fast path for org/repo searches — one lookup instead of six modality fan-out."""
+    needle = str(query or '').strip()
+    response_limit = max(1, min(int(limit), 50))
+    matches = [
+        row for row in _lookup_hf_repo_models(needle, category='supported')
+        if _is_console_supported_model(row)
+    ]
+    matches.sort(key=_supported_sort_key)
+    models = matches[:response_limit]
+    from core.config import load_config
+    from core.hf_model_fit import annotate_hf_models_fit
+
+    annotate_hf_models_fit(models, cfg=load_config(), category='supported')
+    return {
+        'success': True,
+        'models': models,
+        'query': needle,
+        'category': 'supported',
+        'sort': sort,
+    }
 
 
 def _prepend_repo_lookup(
@@ -1003,6 +1119,8 @@ def _search_supported_models(
 ) -> dict[str, Any]:
     """Merge supported Console modalities (GGUF, STT, TTS, OCR, embeddings)."""
     needle = str(query or '').strip()
+    if _is_repo_id_query(needle):
+        return _search_supported_repo_query(needle, limit=limit, sort=sort)
     response_limit = max(1, min(int(limit), 50))
     sort_key = sort if sort in ('downloads', 'likes', 'lastModified', 'createdAt') else 'downloads'
     per_source = response_limit if needle else max(
@@ -1050,13 +1168,7 @@ def _search_supported_models(
 
     models = list(merged.values())
     models = _prepend_repo_lookup(models, needle, category='supported', supported_only=True)
-    models.sort(
-        key=lambda row: (
-            0 if 'dflash' in str(row.get('id') or '').lower() else 1,
-            0 if bool(row.get('has_gguf')) or int(row.get('gguf_count') or 0) > 0 else 1,
-            -int(row.get('downloads') or 0),
-        ),
-    )
+    models.sort(key=_supported_sort_key)
     models = models[:response_limit]
     if not needle:
         models = _enrich_summaries_sizes(models, max_fetches=3)
@@ -1237,7 +1349,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
 
     card = raw.get('cardData') if isinstance(raw.get('cardData'), dict) else {}
     tags = [str(t) for t in (raw.get('tags') or []) if t]
-    tree = _fetch_repo_tree(repo)
+    tree = _resolve_repo_tree(repo, raw.get('siblings'))
     siblings = _siblings_with_sizes(raw.get('siblings'), tree)
     gguf_files = _gguf_files(siblings)
     downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)

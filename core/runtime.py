@@ -1112,8 +1112,10 @@ def get_status_payload(
     gpus: list[dict[str, Any]] | None = None,
     include_external: bool = True,
     allow_stale: bool = True,
-    max_stale_seconds: float = 2.0,
+    max_stale_seconds: float = 0.75,
 ) -> dict[str, Any]:
+    from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
+
     enabled = [s for s in servers if s.get('enabled', True)]
     primary_id = enabled[0]['id'] if enabled else (servers[0]['id'] if servers else '')
 
@@ -1143,7 +1145,20 @@ def get_status_payload(
                 refreshed_servers.append(row)
             stale['servers'] = refreshed_servers
             if include_external:
-                stale['external_gpu_loads'] = _cached_external_gpu_loads()
+                try:
+                    stale['external_gpu_loads'] = get_external_gpu_loads(
+                        servers=servers,
+                        gpus=stale.get('gpus') if isinstance(stale.get('gpus'), list) else None,
+                        cfg=cfg,
+                        fast=True,
+                    )
+                    with _STATUS_PAYLOAD_LOCK:
+                        _STATUS_EXTERNAL_CACHE.clear()
+                        _STATUS_EXTERNAL_CACHE.extend(
+                            dict(row) for row in stale['external_gpu_loads'] if isinstance(row, dict)
+                        )
+                except Exception:
+                    stale['external_gpu_loads'] = _cached_external_gpu_loads()
             return stale
 
     with _STATUS_PAYLOAD_LOCK:
@@ -1162,7 +1177,6 @@ def get_status_payload(
         return out
 
     resolved_gpus = gpus if gpus is not None else query_gpu_devices()
-    from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
 
     # Skip expensive VRAM process scans while any engine is generating.
     if _any_proxy_generating(servers):
@@ -1195,9 +1209,14 @@ def get_status_payload(
         'updated_at': time.time(),
         'stale': False,
     }
-    if include_external and not _any_proxy_generating(servers):
-        payload['external_gpu_loads'] = get_external_gpu_loads(servers=servers, gpus=resolved_gpus, cfg=cfg)
+    if include_external:
+        payload['external_gpu_loads'] = get_external_gpu_loads(
+            servers=servers,
+            gpus=resolved_gpus,
+            cfg=cfg,
+            fast=_any_proxy_generating(servers),
+        )
     else:
-        payload['external_gpu_loads'] = _cached_external_gpu_loads() if include_external else []
+        payload['external_gpu_loads'] = []
     _store_status_payload(payload, include_external=include_external)
     return payload

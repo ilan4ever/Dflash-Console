@@ -63,7 +63,10 @@
 
   function onViewEnter(tab) {
     if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
-    if (tab === 'server') void window.DFlashServerLive?.refresh?.(true);
+    if (tab === 'server') {
+      window.DFlashServerLive?.reschedulePoll?.();
+      void window.DFlashServerLive?.refresh?.(true, { includeExternal: true, fresh: true });
+    }
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
     if (tab === 'chat') {
@@ -419,7 +422,7 @@
     });
   }
 
-  function setSidenavCollapsed(collapsed) {
+  function setSidenavCollapsed(collapsed, { persist = true } = {}) {
     document.body.classList.toggle('df-sidenav-collapsed', collapsed);
     document.getElementById('sidenavRestoreBtn')?.classList.toggle('hidden', !collapsed);
     if (collapsed) {
@@ -432,23 +435,25 @@
         document.body.style.removeProperty('--sidenav-width');
       }
     }
-    layoutPrefs()?.setBool?.('sidenav_hidden', collapsed);
+    if (persist) layoutPrefs()?.setBool?.('sidenav_hidden', collapsed);
   }
 
-  function setupSidenavCollapse() {
+  function applyStoredSidenav() {
+    if (layoutPrefs()?.getBool?.('sidenav_hidden')) {
+      setSidenavCollapsed(true, { persist: false });
+    } else {
+      setSidenavCollapsed(false, { persist: false });
+    }
+  }
+
+  function setupSidenavCollapse({ skipApplyStored = false } = {}) {
     const collapseBtn = document.getElementById('sidenavCollapseBtn');
     const restoreBtn = document.getElementById('sidenavRestoreBtn');
     if (!collapseBtn || !restoreBtn) return;
 
-    const applyStored = () => {
-      if (layoutPrefs()?.getBool?.('sidenav_hidden')) {
-        setSidenavCollapsed(true);
-      }
-    };
-
     collapseBtn.addEventListener('click', () => setSidenavCollapsed(true));
     restoreBtn.addEventListener('click', () => setSidenavCollapsed(false));
-    applyStored();
+    if (!skipApplyStored) applyStoredSidenav();
   }
 
   function setSidenavWidth(px) {
@@ -539,6 +544,12 @@
     setInspectorCollapsed(inspectorCollapsedPreference(), { persist: false });
   }
 
+  function restoreStoredView() {
+    const tab = layoutPrefs()?.getString?.('active_view') || 'server';
+    setView(validTabs.has(tab) ? tab : 'server', { persist: false });
+    syncHash();
+  }
+
   function restoreInitialView() {
     const fromHash = parseHashRoute();
     let tab = fromHash?.tab;
@@ -554,24 +565,42 @@
     if (!fromHash) syncHash();
   }
 
-  function bootLayoutControls() {
-    const ready = layoutPrefs()?.whenReady?.() ?? Promise.resolve();
-    ready.then(() => {
-      setupLogsPanelLayout();
-      setupInspectorResize();
-      setupSidenavResize();
-      setupSidenavCollapse();
-      applyInspectorFromConfig();
-      const inspectorTab = layoutPrefs()?.getString?.('inspector_tab');
-      if (inspectorTab === 'info' || inspectorTab === 'load') {
-        window.DFlashServerLive?.focusInspectorTab?.(inspectorTab);
+  async function bootLayoutControls() {
+    let postInstallWelcome = false;
+    if (window.DFlashDesktop?.getAppSettings) {
+      try {
+        const settings = await window.DFlashDesktop.getAppSettings();
+        postInstallWelcome = Boolean(settings?.postInstallWelcome);
+      } catch {
+        postInstallWelcome = false;
       }
-      fitLayout();
+    }
+
+    const ready = layoutPrefs()?.whenReady?.() ?? Promise.resolve();
+    await ready;
+    setupLogsPanelLayout();
+    setupInspectorResize();
+    setupSidenavResize();
+    setupSidenavCollapse({ skipApplyStored: postInstallWelcome });
+    applyInspectorFromConfig();
+    const inspectorTab = layoutPrefs()?.getString?.('inspector_tab');
+    if (inspectorTab === 'info' || inspectorTab === 'load') {
+      window.DFlashServerLive?.focusInspectorTab?.(inspectorTab);
+    }
+    fitLayout();
+    if (postInstallWelcome) {
+      setSidenavCollapsed(false, { persist: false });
+      setView('models', { persist: false });
+      window.DFlashDesktop?.onPostInstallWelcomeCleared?.(() => {
+        applyStoredSidenav();
+        restoreStoredView();
+      });
+    } else {
       restoreInitialView();
-      bootComplete = true;
-      syncHash();
-    });
+    }
+    bootComplete = true;
+    syncHash();
   }
 
-  bootLayoutControls();
+  void bootLayoutControls();
 })();

@@ -12,6 +12,11 @@
   let loadedPathKeys = new Set();
   let loadedModelIds = new Set();
   let bootingServers = {};
+  const pendingModelLoads = new Map();
+  const pendingServerLoads = new Set();
+  const pendingModelUnloads = new Map();
+  const pendingServerUnloads = new Set();
+  let runtimePollTimer = null;
   let contextModel = null;
   let stackPreflight = { key: '', status: 'idle', result: null };
   let hfAcceleratorCatalog = [];
@@ -267,20 +272,40 @@
     return isModelReadyToLoad(model) && isDflashStack(model);
   }
 
-  function isStackBooting(model) {
-    return !!(model.server_id && bootingServers[model.server_id]);
+  function isModelPendingLoad(model) {
+    const key = modelKey(model);
+    if (pendingModelLoads.has(key)) return true;
+    const serverId = model?.server_id || pendingModelLoads.get(key)?.serverId;
+    if (serverId && pendingServerLoads.has(serverId)) return true;
+    return false;
   }
 
-  function loadedRibbon(model) {
-    if (!isStackLoadedOnGpu(model)) return '';
-    return '<div class="lm-model-loaded-ribbon" title="Model weights are on GPU">loaded</div>';
+  function isModelPendingUnload(model) {
+    const key = modelKey(model);
+    if (pendingModelUnloads.has(key)) return true;
+    const serverId = model?.server_id || pendingModelUnloads.get(key)?.serverId;
+    if (serverId && pendingServerUnloads.has(serverId)) return true;
+    return false;
+  }
+
+  function isStackBooting(model) {
+    return isModelPendingLoad(model) || !!(model.server_id && bootingServers[model.server_id]);
+  }
+
+  function isStackUnloading(model) {
+    return isModelPendingUnload(model);
+  }
+
+  function loadedRibbon(_model) {
+    return '';
   }
 
   function modelRowClassName(model, { selected = false, pinned = false } = {}) {
     const parts = ['lm-model-row'];
     if (selected) parts.push('selected');
     if (pinned) parts.push('pinned');
-    if (isStackBooting(model)) parts.push('loading-on-server');
+    if (isStackUnloading(model)) parts.push('unloading-on-server');
+    else if (isStackBooting(model)) parts.push('loading-on-server');
     else if (isStackLoadedOnGpu(model)) parts.push('loaded-on-gpu');
     else if (isModelReadyToLoad(model)) parts.push('ready-to-load');
     return parts.join(' ');
@@ -317,8 +342,9 @@
     return modality + ext + status + compatibility + accelerator + hfAccelerator + split + dup + weak + caps;
   }
 
-  function actionButton(action, label, title) {
-    return `<button class="lm-btn ghost tiny lm-action-btn" type="button" data-action="${action}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+  function actionButton(action, label, title, extraClass = '') {
+    const cls = ['lm-btn', 'ghost', 'tiny', 'lm-action-btn', extraClass].filter(Boolean).join(' ');
+    return `<button class="${cls}" type="button" data-action="${action}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
   }
 
   function canLoadInConsole(model) {
@@ -340,11 +366,18 @@
   }
 
   function stackActionButton(model) {
+    if (isStackUnloading(model)) {
+      return '<span class="lm-tag orange lm-model-load-pill" title="Unloading model from GPU">Unloading…</span>';
+    }
     if (isStackBooting(model)) {
-      return '<span class="lm-tag dim">loading…</span>';
+      const progress = bootingServers[model.server_id]?.progress;
+      const pct = progress != null && Number.isFinite(Number(progress))
+        ? ` ${Math.round(Number(progress))}%`
+        : '';
+      return `<span class="lm-tag blue lm-model-load-pill" title="Loading model onto GPU">Loading${pct}…</span>`;
     }
     if (isStackLoadedOnGpu(model)) {
-      return actionButton('unload-model', 'Unload', 'Remove model from GPU');
+      return actionButton('unload-model', 'Unload', 'Remove model from GPU', 'lm-btn-unload-active');
     }
     if (isDflashAccelerator(model)) {
       return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
@@ -382,6 +415,9 @@
   }
 
   function stackStatusTag(model) {
+    if (isStackUnloading(model)) {
+      return '<span class="lm-tag orange">unloading</span>';
+    }
     if (isStackBooting(model)) {
       return '<span class="lm-tag blue">loading</span>';
     }
@@ -1273,32 +1309,38 @@
   async function unloadModel(model) {
     const runtimeId = String(model?.runtime_id || '');
     const runtimeUnloadIds = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice']);
-    if (runtimeUnloadIds.has(runtimeId) && !model?.server_id) {
-      try {
-        await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/unload`, { method: 'POST' });
-        toast(`${model.label || model.id} unloaded`);
-        await refresh({ rebindInspector: true });
-        if (window.DFlashServerLive?.refresh) {
-          await window.DFlashServerLive.refresh(true, { fresh: true });
-        }
-      } catch (err) {
-        toast(err.message, false);
-      }
-      return;
-    }
-    if (!model?.server_id) {
-      toast('No engine profile for this model', false);
-      return;
-    }
+    const serverId = model?.server_id || '';
+    markModelUnloadPending(model, serverId);
+    window.DFlashStatusFeed?.setTransient(`Unloading ${model.label || model.id || serverId}…`, {
+      secondary: 'Releasing GPU memory',
+      ttlMs: 120000,
+    });
     try {
-      await api(`/api/servers/${encodeURIComponent(model.server_id)}/unload`, { method: 'POST' });
+      if (runtimeUnloadIds.has(runtimeId) && !model?.server_id) {
+        await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/unload`, { method: 'POST', timeoutMs: 0 });
+        toast(`${model.label || model.id} unloaded`);
+        await refreshRuntimeState({ silent: true });
+        void refreshCatalogQuiet();
+        if (window.DFlashServerLive?.refresh) {
+          void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
+        }
+        return;
+      }
+      if (!model?.server_id) {
+        toast('No engine profile for this model', false);
+        return;
+      }
+      await api(`/api/servers/${encodeURIComponent(model.server_id)}/unload`, { method: 'POST', timeoutMs: 0 });
       toast(`${model.label || model.server_id} unloaded`);
-      await refresh({ rebindInspector: true });
+      await refreshRuntimeState({ silent: true });
+      void refreshCatalogQuiet();
       if (window.DFlashServerLive?.refresh) {
-        await window.DFlashServerLive.refresh(true, { fresh: true });
+        void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
       }
     } catch (err) {
       toast(err.message, false);
+    } finally {
+      clearModelUnloadPending(model, serverId);
     }
   }
 
@@ -1436,7 +1478,7 @@
     const pinned = loadPinnedSet();
     const isPinned = pinned.has(key);
     const hfUrl = huggingFaceUrl(model);
-    const canDelete = !!model.path && !model.loadable;
+    const canDelete = !!model.path || !!model.server_id;
 
     const targetIssue = stackTargetIssue(model);
     const targetKey = modelKey(model);
@@ -1573,28 +1615,36 @@
       return;
     }
     if (cmd === 'delete') {
-      if (!model.path || model.loadable) {
-        toast('Only browse-only models can be deleted here', false);
+      if (!model.path && !model.server_id) {
+        toast('Nothing to delete for this model', false);
         return;
       }
       const isOllama = model.source === 'ollama';
+      const isRegisteredStack = isDflashStack(model) && model.loadable && model.server_id;
       const name = model.filename || model.label || model.id || 'this model';
       const confirmed = await openConfirmDialog({
-        title: isOllama ? `Delete ${name}?` : `Delete ${name}?`,
+        title: `Delete ${name}?`,
         message: isOllama
           ? `Are you sure you want to delete ${name} from Ollama? Its manifest and model files will be removed. This action cannot be undone.`
-          : `Are you sure you want to delete ${name}? This action cannot be undone.`,
-        sub: isOllama ? model.ollama_model || '' : '',
+          : isRegisteredStack
+            ? `This removes the "${name}" engine profile from Console and deletes its target and draft GGUF files from disk. This cannot be undone.`
+            : `Are you sure you want to delete ${name}? This action cannot be undone.`,
+        sub: isOllama ? model.ollama_model || '' : (model.draft_filename ? `draft: ${model.draft_filename}` : ''),
         confirmLabel: 'Delete',
       });
       if (!confirmed) return;
       try {
-        const params = new URLSearchParams({ path: model.path });
+        if (isStackLoadedOnGpu(model) || isStackBooting(model)) {
+          await unloadModel(model);
+        }
+        const params = new URLSearchParams();
+        if (model.path) params.set('path', model.path);
+        if (model.server_id) params.set('server_id', model.server_id);
         if (isOllama) {
           params.set('source', 'ollama');
           params.set('model_id', model.ollama_model || model.label || '');
         }
-        const data = await api(`/api/models/file?${params.toString()}`, { method: 'DELETE' });
+        const data = await api(`/api/models/file?${params.toString()}`, { method: 'DELETE', timeoutMs: 0 });
         const removedProfiles = Array.isArray(data?.removed_profiles) ? data.removed_profiles : [];
         toast(data?.model
           ? `Deleted ${data.model}`
@@ -1765,6 +1815,7 @@
       }
       const isFw = runtimeId === 'faster-whisper';
       const isTf = runtimeId === 'transformers';
+      markModelLoadPending(model, '');
       window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
         secondary: isTf
           ? 'Loading Transformers model into GPU/CPU'
@@ -1779,6 +1830,7 @@
             path: model.path || model.ollama_model || model.label || '',
             model_id: model.ollama_model || model.model_id || model.id || '',
           }),
+          timeoutMs: 0,
         });
         if (data?.loaded) {
           toast(`${model.label || model.id} loaded`);
@@ -1789,10 +1841,13 @@
         }
       } catch (err) {
         toast(err.message || `Could not load ${model.label || model.id}`, false);
+      } finally {
+        clearModelLoadPending(model, '');
       }
-      await refresh({ rebindInspector: true });
+      await refreshRuntimeState({ silent: true });
+      void refreshCatalogQuiet();
       if (window.DFlashServerLive?.refresh) {
-        await window.DFlashServerLive.refresh(true, { fresh: true });
+        void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
       }
       return;
     }
@@ -1813,14 +1868,23 @@
         return;
       }
     }
+    markModelLoadPending(model, serverId);
     window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
       secondary: model.server_id ? 'Reading weights into GPU' : 'Loading onto active engine',
       ttlMs: 120000,
     });
-    await window.DFlashServerLive.loadModelOnServer(serverId, model);
-    await refresh({ rebindInspector: true });
-    if (window.DFlashServerLive?.refresh) {
-      await window.DFlashServerLive.refresh(true, { fresh: true });
+    try {
+      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model);
+      if (loaded === false) return;
+      await refreshRuntimeState({ silent: true });
+      void refreshCatalogQuiet();
+      if (window.DFlashServerLive?.refresh) {
+        void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
+      }
+    } catch (err) {
+      toast(err.message || `Could not load ${model.label || model.id}`, false);
+    } finally {
+      clearModelLoadPending(model, serverId);
     }
   }
 
@@ -1850,7 +1914,97 @@
     }
   }
 
-  async function refresh({ rebindInspector = false, forceCatalogRefresh = false } = {}) {
+  async function refreshRuntimeState({ silent = true } = {}) {
+    const filter = document.getElementById('modelsFilterInput')?.value || '';
+    try {
+      const serversData = await fetchServersForLibrary();
+      models = mergeModelsWithState(models, serversData, loadBrowsePrefs());
+      renderFooter(meta);
+      renderTable(filter, { force: true });
+    } catch (err) {
+      if (!silent) throw err;
+    }
+  }
+
+  function stopRuntimePoll() {
+    if (!runtimePollTimer) return;
+    window.clearInterval(runtimePollTimer);
+    runtimePollTimer = null;
+  }
+
+  function startRuntimePoll() {
+    stopRuntimePoll();
+    runtimePollTimer = window.setInterval(() => {
+      if (document.body.dataset.activeView !== 'models') return;
+      if (!pendingModelLoads.size && !pendingServerLoads.size
+        && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+        stopRuntimePoll();
+        return;
+      }
+      void refreshRuntimeState({ silent: true });
+    }, 400);
+  }
+
+  function markModelLoadPending(model, serverId) {
+    const key = modelKey(model);
+    pendingModelLoads.set(key, {
+      serverId: serverId || model.server_id || '',
+      label: model.label || model.id || key,
+    });
+    if (serverId) pendingServerLoads.add(serverId);
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    startRuntimePoll();
+  }
+
+  function clearModelLoadPending(model, serverId) {
+    pendingModelLoads.delete(modelKey(model));
+    if (serverId) pendingServerLoads.delete(serverId);
+    if (!pendingModelLoads.size && !pendingServerLoads.size
+      && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+      stopRuntimePoll();
+    }
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+  }
+
+  function markModelUnloadPending(model, serverId) {
+    const key = modelKey(model);
+    pendingModelUnloads.set(key, {
+      serverId: serverId || model.server_id || '',
+      label: model.label || model.id || key,
+    });
+    if (serverId) pendingServerUnloads.add(serverId);
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    startRuntimePoll();
+  }
+
+  function clearModelUnloadPending(model, serverId) {
+    pendingModelUnloads.delete(modelKey(model));
+    if (serverId) pendingServerUnloads.delete(serverId);
+    if (!pendingModelLoads.size && !pendingServerLoads.size
+      && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+      stopRuntimePoll();
+    }
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+  }
+
+  async function refreshCatalogQuiet() {
+    try {
+      const [data, serversData] = await Promise.all([
+        api('/api/models', { timeoutMs: 0 }),
+        fetchServersForLibrary(),
+      ]);
+      models = mergeModelsWithState(data.models || [], serversData, loadBrowsePrefs());
+      saveCachedModelCatalog(data);
+      meta = data;
+      catalogLoading = false;
+      renderFooter(data);
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    } catch {
+      /* keep the last saved list */
+    }
+  }
+
+  async function refresh({ rebindInspector = false, forceCatalogRefresh = false, silent = false } = {}) {
     const filter = document.getElementById('modelsFilterInput')?.value || '';
     // Only the first load needs the loading state; polling refreshes keep the
     // current rows on screen (no flicker).
@@ -1860,24 +2014,42 @@
       renderTable(filter, { force: true });
       renderFooter();
     }
-    const modelsPath = forceCatalogRefresh ? '/api/models?refresh=1' : '/api/models';
+    const modelsPath = forceCatalogRefresh ? '/api/models?refresh=1' : '/api/models?quick=1';
+    const catalogTimeout = forceCatalogRefresh ? 0 : 12000;
     let data;
     let serversData;
+    let catalogError = null;
     try {
       [data, serversData] = await Promise.all([
-        api(modelsPath, { timeoutMs: 45000 }),
+        api(modelsPath, { timeoutMs: catalogTimeout }),
         fetchServersForLibrary(),
       ]);
     } catch (err) {
-      if (firstLoad) {
-        catalogLoading = false;
-        renderTable(filter, { force: true });
-        renderFooter();
+      catalogError = err;
+      try {
+        serversData = await fetchServersForLibrary();
+      } catch (_serverErr) {
+        if (firstLoad) {
+          catalogLoading = false;
+          renderTable(filter, { force: true });
+          renderFooter();
+        }
+        if (!silent) throw catalogError;
+        return;
       }
-      throw err;
+      if (!models.length) {
+        if (firstLoad) {
+          catalogLoading = false;
+          renderTable(filter, { force: true });
+          renderFooter();
+        }
+        if (!silent) throw catalogError;
+        return;
+      }
+      data = { models };
     }
-    models = mergeModelsWithState(data.models || [], serversData, loadBrowsePrefs());
-    saveCachedModelCatalog(data);
+    models = mergeModelsWithState((data?.models || models), serversData, loadBrowsePrefs());
+    if (data?.models) saveCachedModelCatalog(data);
     catalogLoading = false;
     renderFooter(data);
     renderTable(filter, { force: true });
@@ -1971,7 +2143,12 @@
     pollTimer = window.setInterval(() => {
       if (pollPaused) return;
       if (document.body.dataset.activeView === 'models') {
-        void refresh().catch(() => {});
+        if (pendingModelLoads.size || pendingServerLoads.size
+          || pendingModelUnloads.size || pendingServerUnloads.size) {
+          void refreshRuntimeState({ silent: true });
+          return;
+        }
+        void refresh({ silent: true }).catch(() => {});
       }
     }, MODEL_LIST_REFRESH_MS);
   }
@@ -1993,12 +2170,16 @@
     tableWrap?.addEventListener('mouseleave', () => { pollPaused = false; });
     void refresh({ rebindInspector: true })
       .then(() => {
+        void refreshCatalogQuiet();
         if (typeFilter === 'downloading' && !getActiveDownloadJobs().length) {
           setTypeFilter('dflash');
         }
         startPolling();
       })
-      .catch((err) => toast(err.message, false));
+      .catch((err) => {
+        if (!cached) toast(err.message, false);
+        startPolling();
+      });
   });
 
   // From an engine card: jump to the same model in the Model library and select

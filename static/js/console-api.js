@@ -2,6 +2,21 @@
 window.ConsoleApi = (function () {
   const inflightGets = new Map();
   const DEFAULT_GET_TIMEOUT_MS = 8000;
+  const SLOW_GET_TIMEOUT_MS = 60000;
+
+  function defaultGetTimeoutMs(path) {
+    const normalized = String(path || '').split('?')[0];
+    if (normalized === '/api/servers' || normalized.startsWith('/api/servers/')) {
+      return SLOW_GET_TIMEOUT_MS;
+    }
+    if (normalized === '/api/models' || normalized.startsWith('/api/models/')) {
+      return 15000;
+    }
+    if (normalized.startsWith('/api/hf/')) {
+      return 0;
+    }
+    return DEFAULT_GET_TIMEOUT_MS;
+  }
 
   function formatApiError(detail) {
     if (detail == null) return 'Request failed';
@@ -24,25 +39,42 @@ window.ConsoleApi = (function () {
     }
   }
 
-  async function api(path, options = {}) {
-    const method = String(options.method || 'GET').toUpperCase();
-    const dedupeKey = method === 'GET' ? path : '';
-    const timeoutMs = Number.isFinite(options.timeoutMs)
-      ? Math.max(500, Number(options.timeoutMs))
-      : (method === 'GET' ? DEFAULT_GET_TIMEOUT_MS : 0);
+  function createInflightGet(dedupeKey, timeoutMs, options) {
+    let controller = timeoutMs > 0 ? new AbortController() : null;
+    let timer = null;
 
-    if (dedupeKey && inflightGets.has(dedupeKey)) {
-      return inflightGets.get(dedupeKey);
-    }
+    const clearTimer = () => {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
 
-    const request = (async () => {
-      const controller = timeoutMs > 0 ? new AbortController() : null;
-      const timer = controller
-        ? window.setTimeout(() => controller.abort(), timeoutMs)
-        : null;
+    const scheduleAbort = (ms) => {
+      clearTimer();
+      if (ms <= 0) return;
+      timer = window.setTimeout(() => controller?.abort(), ms);
+    };
+
+    const extendTimeout = (nextTimeoutMs) => {
+      if (nextTimeoutMs <= 0) {
+        clearTimer();
+        controller = null;
+        return;
+      }
+      if (!controller) {
+        controller = new AbortController();
+      }
+      scheduleAbort(nextTimeoutMs);
+    };
+
+    extendTimeout(timeoutMs);
+
+    const promise = (async () => {
+      const method = String(options.method || 'GET').toUpperCase();
       const { timeoutMs: _ignoredTimeout, signal: callerSignal, ...fetchOptions } = options;
       try {
-        const resp = await fetch(path, {
+        const resp = await fetch(dedupeKey, {
           cache: method === 'GET' ? 'no-store' : 'default',
           headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
           ...fetchOptions,
@@ -61,22 +93,76 @@ window.ConsoleApi = (function () {
         return data;
       } catch (err) {
         if (err?.name === 'AbortError') {
-          throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
+          const entry = inflightGets.get(dedupeKey);
+          const activeMs = entry?.timeoutMs || timeoutMs;
+          throw new Error(`Request timed out after ${activeMs}ms: ${dedupeKey}`);
         }
         throw err;
       } finally {
-        if (timer) window.clearTimeout(timer);
+        clearTimer();
       }
     })();
 
-    if (dedupeKey) {
-      inflightGets.set(dedupeKey, request);
-      request.finally(() => {
-        if (inflightGets.get(dedupeKey) === request) inflightGets.delete(dedupeKey);
-      });
+    const entry = { promise, extendTimeout, timeoutMs };
+    inflightGets.set(dedupeKey, entry);
+    promise.finally(() => {
+      if (inflightGets.get(dedupeKey) === entry) inflightGets.delete(dedupeKey);
+    });
+    return entry;
+  }
+
+  async function api(path, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase();
+    const dedupeKey = method === 'GET' ? path : '';
+    let timeoutMs;
+    if (options.timeoutMs != null && Number.isFinite(options.timeoutMs)) {
+      timeoutMs = options.timeoutMs <= 0 ? 0 : Math.max(500, Number(options.timeoutMs));
+    } else {
+      timeoutMs = method === 'GET' ? defaultGetTimeoutMs(path) : 0;
     }
 
-    return request;
+    if (dedupeKey && inflightGets.has(dedupeKey)) {
+      const entry = inflightGets.get(dedupeKey);
+      entry.timeoutMs = Math.max(entry.timeoutMs || 0, timeoutMs);
+      entry.extendTimeout(entry.timeoutMs);
+      return entry.promise;
+    }
+
+    if (dedupeKey) {
+      return createInflightGet(dedupeKey, timeoutMs, options).promise;
+    }
+
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    const timer = controller
+      ? window.setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+    const { timeoutMs: _ignoredTimeout, signal: callerSignal, ...fetchOptions } = options;
+    try {
+      const resp = await fetch(path, {
+        cache: method === 'GET' ? 'no-store' : 'default',
+        headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
+        ...fetchOptions,
+        signal: callerSignal || controller?.signal,
+      });
+      let data = null;
+      try {
+        data = await resp.json();
+      } catch (_) {
+        data = null;
+      }
+      if (!resp.ok) {
+        const detail = data?.detail || data?.error || `HTTP ${resp.status}`;
+        throw new Error(formatApiError(detail));
+      }
+      return data;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
+      }
+      throw err;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
   }
 
   function setSelectLoading(selectEl, loading, message) {

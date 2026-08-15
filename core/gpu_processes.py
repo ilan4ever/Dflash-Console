@@ -880,12 +880,12 @@ def _resolve_external_model_name(
     model_name = hinted_name
 
     if not model_name and app_source in {'onevoice', 'whisper'} and 'speak_stt' in command_line.lower():
-        log_model = _read_speak_stt_active_model()
+        log_model = _read_speak_stt_active_model(max_age_seconds=3.0)
         if log_model:
             model_name = log_model
 
     if not model_name and 'speak_stt.py' in command_line.lower():
-        return '', model_path
+        return 'Loading…', model_path
 
     if 'speak_stt.py' in command_line.lower() and not model_path:
         model_path = _resolve_stt_model_path(model_name, command_line)
@@ -933,8 +933,23 @@ def _probe_loaded_model(host: str, port: int) -> dict[str, Any]:
     # OpenAI endpoint, so don't wait on a second timeout.
     api_url = f'http://{host}:{int(port)}/v1'
     entries, timed_out = _probe_models_fast(api_url)
+    if timed_out:
+        return {
+            'api_url': api_base_url(api_url),
+            'model_id': '',
+            'unload_via_api': False,
+            'loading': True,
+        }
     if not entries and not timed_out:
-        entries, _ = _probe_models_fast(f'http://{host}:{int(port)}')
+        entries, timed_out = _probe_models_fast(f'http://{host}:{int(port)}')
+        if timed_out:
+            bare_url = f'http://{host}:{int(port)}'
+            return {
+                'api_url': api_base_url(bare_url),
+                'model_id': '',
+                'unload_via_api': False,
+                'loading': True,
+            }
         if entries:
             api_url = f'http://{host}:{int(port)}'
     if not entries:
@@ -1004,6 +1019,7 @@ def _build_external_card(
     unload_via_api = False
     listen_port: int | None = None
     model_path = ''
+    loading = False
 
     listen_ports = _listening_ports_for_pid(pid)
     if any(port in configured_ports for port in listen_ports):
@@ -1013,6 +1029,11 @@ def _build_external_card(
         if port in configured_ports:
             continue
         probe = _probe_loaded_model('127.0.0.1', port)
+        if probe.get('loading'):
+            api_url = str(probe.get('api_url') or f'http://127.0.0.1:{int(port)}/v1')
+            listen_port = port
+            loading = True
+            break
         if probe.get('api_url'):
             api_url = str(probe.get('api_url') or '')
             model_id = str(probe.get('model_id') or '')
@@ -1028,8 +1049,32 @@ def _build_external_card(
         api_model_id=model_id,
     )
     if not str(model_name or '').strip():
-        return None
-    if model_name == app_label and str(process_name or '').lower().endswith(('python.exe', 'pythonw.exe')):
+        if loading or (vram_mib is not None and float(vram_mib) >= _MIN_VRAM_MIB):
+            model_name = 'Loading…'
+            loading = True
+        else:
+            return None
+    elif str(model_name).strip().lower().startswith('loading'):
+        loading = True
+    if (
+        not loading
+        and not api_url
+        and vram_mib is not None
+        and float(vram_mib) >= _MIN_VRAM_MIB
+        and _should_track_process(
+            process_name=process_name,
+            command_line=command_line,
+            parent_name=parent_name,
+            vram_mib=float(vram_mib),
+            app_source=app_source,
+        )
+    ):
+        loading = True
+    if (
+        not loading
+        and model_name == app_label
+        and str(process_name or '').lower().endswith(('python.exe', 'pythonw.exe'))
+    ):
         return None
     if not _is_gpu_model_load(
         process_name=process_name,
@@ -1085,8 +1130,8 @@ def _build_external_card(
         'model_id': model_id,
         'listen_port': listen_port,
         'unload_method': 'api' if unload_via_api and model_id else ('api_stop' if unload_via_api else 'kill'),
-        'card_state': 'ready',
-        'ejectable': True,
+        'card_state': 'loading' if loading else 'ready',
+        'ejectable': not loading,
         'title': model_name,
         'subtitle': card_detail,
         'card_detail': card_detail,
@@ -1110,7 +1155,11 @@ def _make_api_external_card(
     display_name: str = '',
     publisher: str = '',
     quantization: str = '',
+    card_state: str = 'ready',
+    lm_state: str = '',
 ) -> dict[str, Any]:
+    if str(lm_state or '').lower() == 'loading':
+        card_state = 'loading'
     gpu = next((g for g in gpus if int(g.get('index', -1)) == gpu_index), None)
     gpu_display = str(gpu.get('display_name') or format_gpu_display_name(str(gpu.get('name') or ''), gpu_index))
     unload_via_api = bool(api_url and model_id)
@@ -1150,8 +1199,8 @@ def _make_api_external_card(
         'quantization': quantization,
         'listen_port': listen_port,
         'unload_method': 'api' if unload_via_api else 'kill',
-        'card_state': 'ready',
-        'ejectable': True,
+        'card_state': card_state,
+        'ejectable': card_state != 'loading',
         'title': model_name,
         'subtitle': card_detail,
         'card_detail': card_detail,
@@ -1197,6 +1246,7 @@ def _cards_from_known_apps(
                 display_name=str(model.get('display_name') or ''),
                 publisher=str(model.get('publisher') or ''),
                 quantization=str(model.get('quantization') or ''),
+                lm_state=str(model.get('state') or ''),
             ))
     ollama_pid = _pid_listening_on_port(11434)
     if ollama_pid:
@@ -1338,6 +1388,7 @@ def get_external_gpu_loads(
     servers: list[dict[str, Any]] | None = None,
     gpus: list[dict[str, Any]] | None = None,
     cfg: dict[str, Any] | None = None,
+    fast: bool = False,
 ) -> list[dict[str, Any]]:
     servers = servers or []
     if gpus is None:
@@ -1403,6 +1454,8 @@ def get_external_gpu_loads(
     # misleading. Applies to every external card.
     cards = [card for card in cards if not _external_card_path_missing(card)]
     cards.sort(key=lambda item: (-float(item.get('vram_mb') or 0), str(item.get('title') or '')))
+    if fast:
+        return cards
     return [_attach_external_inference_stats(card) for card in cards]
 
 

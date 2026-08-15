@@ -160,7 +160,7 @@
     if (pollInFlight) return;
     pollInFlight = true;
     try {
-      const data = await api('/api/servers?include_external=1', { timeoutMs: 12000 });
+      const data = await api('/api/servers?include_external=1');
       const revision = Number(data?.snapshot_revision || 0);
       if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) return;
       if (revision > 0) latestSnapshotRevision = revision;
@@ -178,7 +178,7 @@
 
   function startPolling() {
     void poll();
-    window.setInterval(poll, 5000);
+    window.setInterval(poll, 2500);
   }
 
   document.addEventListener('DOMContentLoaded', startPolling);

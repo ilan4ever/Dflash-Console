@@ -2545,9 +2545,55 @@ def _remove_servers_from_config(cfg: dict[str, Any], servers: list[dict[str, Any
     return removed_ids
 
 
+def _collect_model_delete_targets(
+    cfg: dict[str, Any],
+    *,
+    path: str = '',
+    server_id: str = '',
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    """Resolve server profiles and GGUF files to remove for a catalog delete."""
+    from core.local_models import _normalize_path_key, _resolve_stack_pair
+
+    matching_servers: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    files: dict[str, Path] = {}
+
+    if path:
+        target = Path(path).expanduser().resolve()
+        if target.suffix.lower() == '.gguf':
+            files[_normalize_path_key(str(target))] = target
+            for server in _servers_referencing_model(target, cfg):
+                sid = str(server.get('id') or '')
+                if sid and sid not in seen_ids:
+                    seen_ids.add(sid)
+                    matching_servers.append(server)
+
+    sid = str(server_id or '').strip()
+    if sid and sid not in seen_ids:
+        server = get_server(cfg, sid)
+        if server:
+            seen_ids.add(sid)
+            matching_servers.append(server)
+
+    for server in list(matching_servers):
+        for row in _resolve_stack_pair(server, cfg=cfg):
+            if not row:
+                continue
+            model_path = str(row.get('path') or '').strip()
+            if not model_path:
+                continue
+            candidate = Path(model_path).expanduser().resolve()
+            if candidate.suffix.lower() != '.gguf':
+                continue
+            files[_normalize_path_key(str(candidate))] = candidate
+
+    return matching_servers, list(files.values())
+
+
 @app.delete('/api/models/file')
 def delete_model_file(
-    path: str = Query(..., min_length=1),
+    path: str = Query(default=''),
+    server_id: str = Query(default=''),
     source: str = Query(default=''),
     model_id: str = Query(default=''),
 ) -> dict[str, Any]:
@@ -2555,6 +2601,8 @@ def delete_model_file(
     # Ollama models are blobs, not .gguf files, and live outside the Console's
     # model roots — delete them through Ollama (daemon or manifest + blobs).
     if str(source or '').strip().lower() == 'ollama':
+        if not path:
+            raise HTTPException(status_code=400, detail='path required')
         from core.local_models import _delete_ollama_model
 
         result = _delete_ollama_model(path, model_id=model_id)
@@ -2562,20 +2610,40 @@ def delete_model_file(
             raise HTTPException(status_code=400, detail=result.get('error') or 'delete failed')
         invalidate_model_catalog_cache()
         return result
-    target = Path(path).expanduser().resolve()
-    if target.suffix.lower() != '.gguf' or not target.is_file():
-        raise HTTPException(status_code=400, detail='not a GGUF file')
+
+    matching, file_paths = _collect_model_delete_targets(cfg, path=path, server_id=server_id)
+    if not file_paths and not matching:
+        raise HTTPException(status_code=400, detail='nothing to delete')
+
     allowed = _allowed_model_roots(cfg)
-    if not allowed or not any(target.is_relative_to(root) for root in allowed):
+    if file_paths and (not allowed or not all(
+        any(candidate.is_relative_to(root) for root in allowed)
+        for candidate in file_paths
+    )):
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
-    # Find profiles referencing this model BEFORE deleting the file — path
-    # resolution needs the file present. Removes the model card entirely instead
-    # of leaving a lingering "missing file" entry.
-    matching = _servers_referencing_model(target, cfg)
-    target.unlink()
-    invalidate_model_catalog_cache()
+
+    for server in matching:
+        sid = str(server.get('id') or '')
+        if not sid:
+            continue
+        try:
+            server_unload(sid)
+        except HTTPException:
+            pass
+
+    deleted_files: list[str] = []
+    for candidate in file_paths:
+        if not candidate.is_file():
+            continue
+        candidate.unlink()
+        deleted_files.append(str(candidate))
+
     removed = _remove_servers_from_config(cfg, matching)
-    result: dict[str, Any] = {'success': True, 'path': str(target)}
+    invalidate_model_catalog_cache()
+    result: dict[str, Any] = {'success': True}
+    if deleted_files:
+        result['path'] = deleted_files[0]
+        result['deleted_files'] = deleted_files
     if removed:
         result['removed_profiles'] = removed
     return result

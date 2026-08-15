@@ -1,11 +1,14 @@
 from core.gpu_processes import (
     _attach_external_inference_stats,
+    _build_external_card,
     _classify_app,
     _external_card_detail,
     _external_card_path_missing,
     _is_gpu_model_load,
     _model_hint_from_cmdline,
+    _probe_loaded_model,
     _probe_lmstudio_loaded_models,
+    _resolve_external_model_name,
     _resolve_stt_model_path,
     _size_gb_from_path,
 )
@@ -125,6 +128,50 @@ def test_is_gpu_model_load_accepts_stt():
         model_name='small.en',
         model_path='',
     )
+
+
+def test_resolve_external_model_name_speak_stt_loading(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
+    name, path = _resolve_external_model_name(
+        app_source='onevoice',
+        app_label='OneVoice',
+        process_name='python.exe',
+        command_line=r'python.exe -u C:\tools\stt\speak_stt.py',
+    )
+    assert name == 'Loading…'
+    assert path == ''
+
+
+def test_probe_loaded_model_marks_busy_port_as_loading(monkeypatch):
+    monkeypatch.setattr(gpu_processes, 'tcp_port_open', lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(gpu_processes, '_probe_models_fast', lambda *_args, **_kwargs: ([], True))
+    probe = _probe_loaded_model('127.0.0.1', 32491)
+    assert probe.get('loading') is True
+    assert probe.get('api_url')
+
+
+def test_build_external_card_shows_loading_for_gpu_vram(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
+    monkeypatch.setattr(
+        gpu_processes,
+        '_listening_ports_for_pid',
+        lambda _pid: [],
+    )
+    card = _build_external_card(
+        {'pid': 4242, 'gpu_index': 0, 'vram_mb': 512.0, 'vram_gb': 0.5, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': r'python.exe -u C:\tools\stt\speak_stt.py',
+            'parent_process_name': 'OneVoiceSpeak.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'loading'
+    assert card['title'] == 'Loading…'
 
 
 def test_external_card_detail_stt():

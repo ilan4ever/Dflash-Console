@@ -52,6 +52,21 @@
   let externalInitialFetchDone = false;
   let externalMissingPolls = 0;
   let externalPollCounter = 0;
+
+  function enginesViewActive() {
+    return document.body.dataset.activeView === 'server';
+  }
+
+  function anyExternalLoading() {
+    return externalGpuLoads.some((row) => row?.card_state === 'loading');
+  }
+
+  function enginesNeedFastRefresh() {
+    return anyServerLoading()
+      || hasPendingEngineActions()
+      || anyServerGenerating()
+      || anyExternalLoading();
+  }
   // Console OpenAI gateway — one stable OpenAI-compatible base URL shown on the
   // toolbar API badge / copy button instead of the raw per-engine port.
   let gatewayUrl = '';
@@ -263,6 +278,11 @@
     if (action) serverActions.set(serverId, action);
     else serverActions.delete(serverId);
     updateEnginePageNotice();
+    reschedulePoll();
+  }
+
+  function hasPendingEngineActions() {
+    return serverActions.size > 0 || pendingLoads.size > 0;
   }
 
   function isServerBusy(serverId) {
@@ -368,9 +388,14 @@
   }
 
   function pollIntervalMs() {
-    if (anyServerGenerating()) return 500;
-    if (serverActions.size > 0 || anyServerLoading() || loadedServerCount() > 0) return 1000;
-    return 2500;
+    const onEngines = enginesViewActive();
+    if (anyServerGenerating()) return onEngines ? 300 : 500;
+    const ejecting = [...serverActions.values()].some((value) => value === 'ejecting');
+    if (ejecting) return onEngines ? 250 : 400;
+    if (enginesNeedFastRefresh() || loadedServerCount() > 0) {
+      return onEngines ? 400 : 800;
+    }
+    return onEngines ? 1000 : 2500;
   }
 
   function reschedulePoll() {
@@ -463,28 +488,37 @@
       return;
     }
     if (!externalGpuLoads.length) return;
+    const hadLoading = externalGpuLoads.some((row) => row?.card_state === 'loading');
     externalMissingPolls += 1;
-    if (externalMissingPolls > 2) {
+    if (externalMissingPolls > (hadLoading ? 4 : 2)) {
       externalGpuLoads = [];
       externalMissingPolls = 0;
     }
   }
 
+  let externalFetchPromise = null;
+
   async function refreshExternalGpuLoads(shouldRender = true) {
-    if (externalFetchPending) return;
+    if (externalFetchPromise) return externalFetchPromise;
     externalFetchPending = true;
     updateEnginePageNotice();
-    try {
-      const data = await api('/api/servers?include_external=1');
-      mergeExternalGpuLoads(data.external_gpu_loads);
-      if (shouldRender) renderCards();
-    } catch {
-      /* keep previous external cards */
-    } finally {
-      externalFetchPending = false;
-      externalInitialFetchDone = true;
-      updateEnginePageNotice();
-    }
+    externalFetchPromise = (async () => {
+      try {
+        const data = await api('/api/servers?include_external=1');
+        mergeExternalGpuLoads(data.external_gpu_loads);
+        if (shouldRender) renderCards();
+        return data;
+      } catch {
+        /* keep previous external cards */
+        return null;
+      } finally {
+        externalFetchPending = false;
+        externalInitialFetchDone = true;
+        externalFetchPromise = null;
+        updateEnginePageNotice();
+      }
+    })();
+    return externalFetchPromise;
   }
 
   async function captureConsoleBoot() {
@@ -2587,7 +2621,7 @@
     try {
       const [data, modelsData] = await Promise.all([
         api(serversStatusUrl(false), { timeoutMs: 15000 }),
-        api('/api/models', { timeoutMs: 30000 }).catch(() => ({ models: [] })),
+        api('/api/models?quick=1', { timeoutMs: 12000 }).catch(() => ({ models: [] })),
       ]);
       if (gen !== catalogRefreshGen) return;
       if (!applyServersPayload(data, { mergeExternal: false })) return;
@@ -2628,11 +2662,16 @@
 
   async function refreshStatus(
     shouldRender = true,
-    { includeExternal = false, fresh = false } = {},
+    { includeExternal, fresh = false } = {},
   ) {
+    const onEngines = enginesViewActive();
+    const includeExt = includeExternal ?? onEngines;
+    const wantFresh = fresh || (onEngines && enginesNeedFastRefresh());
     try {
-      const data = await api(serversStatusUrl(includeExternal, fresh), { timeoutMs: fresh ? 30000 : 15000 });
-      if (!applyServersPayload(data, { mergeExternal: includeExternal })) return;
+      const data = await api(serversStatusUrl(includeExt, wantFresh), {
+        timeoutMs: wantFresh ? 0 : (includeExt ? 20000 : undefined),
+      });
+      if (!applyServersPayload(data, { mergeExternal: includeExt })) return;
       initialStatusSettled = true;
       syncActiveIdFromLiveState();
       if (shouldRender) {
@@ -2645,13 +2684,38 @@
     }
   }
 
-  async function refresh(shouldRender = true, { fresh = false } = {}) {
+  async function refresh(shouldRender = true, options = {}) {
     void ensureTotalVram();
+    const onEngines = enginesViewActive();
+    const merged = {
+      includeExternal: options.includeExternal ?? onEngines,
+      fresh: options.fresh ?? (onEngines && enginesNeedFastRefresh()),
+      ...options,
+    };
     if (!catalogLoaded) {
       await refreshCatalog({ shouldRender });
     } else {
-      await refreshStatus(shouldRender, { fresh });
+      await refreshStatus(shouldRender, merged);
     }
+    reschedulePoll();
+  }
+
+  async function waitUntilExternalUnloaded(pid, { maxAttempts = 50 } = {}) {
+    const numericPid = Number(pid);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await refreshExternalGpuLoads(true);
+      if (!externalGpuLoads.some((entry) => Number(entry.pid) === numericPid)) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    return false;
+  }
+
+  async function refreshAfterUnload() {
+    await refreshExternalGpuLoads(true);
+    void refreshStatus(true, { includeExternal: true, fresh: false });
+    void refreshStatus(true, { includeExternal: true, fresh: true }).catch(() => {});
     reschedulePoll();
   }
 
@@ -2669,24 +2733,19 @@
     }
   }
 
-  async function refreshAfterUnload() {
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
-    await refreshStatus(true, { includeExternal: true, fresh: true });
-    reschedulePoll();
-  }
-
   async function pollTick() {
     if (pollInFlight) return;
     pollInFlight = true;
     const view = document.body.dataset.activeView;
+    const onEngines = view === 'server';
     externalPollCounter += 1;
     try {
-      await refresh(view === 'server');
+      await refresh(onEngines, {
+        includeExternal: onEngines,
+        fresh: onEngines && enginesNeedFastRefresh(),
+      });
     } finally {
       pollInFlight = false;
-    }
-    if (view === 'server' && (externalPollCounter === 1 || externalPollCounter % 3 === 0)) {
-      void refreshExternalGpuLoads(true);
     }
     if (view === 'models' && window.DFlashModelsLive) {
       try {
@@ -2714,7 +2773,7 @@
       ) {
         return server;
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
     }
     return servers.find((s) => s.id === serverId) || null;
   }
@@ -2823,7 +2882,10 @@
       setServerAction(serverId, null);
       resetEngineModelPicker();
       renderAll();
-      await refresh(true, { fresh: true });
+      void refreshExternalGpuLoads(true);
+      await refreshStatus(true, { includeExternal: true, fresh: false });
+      void refreshStatus(true, { includeExternal: true, fresh: true }).catch(() => {});
+      reschedulePoll();
     }
     return completed;
   }
@@ -2855,7 +2917,7 @@
     setServerAction(key, 'ejecting');
     window.DFlashStatusFeed?.setTransient(`Stopping ${label}…`, {
       secondary: row?.app_label ? `External · ${row.app_label}` : 'External GPU process',
-      ttlMs: 30000,
+      ttlMs: 120000,
     });
     renderAll();
     try {
@@ -2865,16 +2927,21 @@
       await api(`/api/gpu/processes/${encodeURIComponent(pid)}/unload`, {
         method: 'POST',
         body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+        timeoutMs: 0,
       });
-      toast('External model unloaded');
-      setServerAction(key, null);
-      renderAll();
-      await refreshAfterUnload();
+      const removed = await waitUntilExternalUnloaded(pid);
+      if (removed) {
+        if (selectedLoadedKey === key) clearLoadedCardSelection();
+        toast('External model unloaded');
+      } else {
+        toast('Unload sent — still releasing GPU memory', true);
+      }
     } catch (err) {
       toast(err.message, false);
     } finally {
       setServerAction(key, null);
       renderAll();
+      void refreshAfterUnload();
     }
   }
 
@@ -2886,7 +2953,7 @@
     renderAll();
     let unloaded = false;
     try {
-      await api(`/api/servers/${encodeURIComponent(serverId)}/unload`, { method: 'POST' });
+      await api(`/api/servers/${encodeURIComponent(serverId)}/unload`, { method: 'POST', timeoutMs: 0 });
       unloaded = true;
       toast('Model unloaded');
       await waitUntilServerIdle(serverId);
@@ -2962,6 +3029,11 @@
 
   function startPolling() {
     reschedulePoll();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!enginesViewActive()) return;
+      void refresh(true, { includeExternal: true, fresh: true });
+    });
   }
 
   function bind() {
@@ -3068,6 +3140,7 @@
 
   window.DFlashServerLive = {
     refresh,
+    reschedulePoll,
     startActive,
     ejectActive,
     stopActive,

@@ -50,8 +50,8 @@ def test_search_summary_uses_hf_tree_size_for_self_accelerating_repo(monkeypatch
         'tags': ['gguf', 'dflash'],
     }
     monkeypatch.setattr(
-        'core.huggingface._fetch_repo_tree',
-        lambda repo: [{'path': filename, 'size': int(18.0 * 1024 ** 3)}],
+        'core.huggingface._resolve_repo_tree',
+        lambda repo, siblings=None: [{'path': filename, 'size': int(18.0 * 1024 ** 3)}],
     )
 
     row = _summaries_from_models([raw], enrich_sizes=True)[0]

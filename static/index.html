@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.18</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.20</span>
           </div>
         </div>
       </div>
@@ -440,7 +440,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.18</strong>
+                <strong id="dfAboutVersion">v0.3.20</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -632,20 +632,20 @@ try {
                     <p class="lm-setting-desc">What happens when you close the window or restart your PC.</p>
                   </div>
                   <div class="lm-setting-row">
+                    <div><strong>Start with Windows</strong><p class="lm-setting-desc">Open DFlash Console when you sign in.</p></div>
+                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsStartWithWindows"><span class="lm-toggle-track"></span></label>
+                  </div>
+                  <div class="lm-setting-row">
                     <div><strong>Minimize to system tray</strong><p class="lm-setting-desc">Minimizing or closing the window hides it in the tray instead of the taskbar.</p></div>
                     <label class="lm-toggle small"><input type="checkbox" id="appSettingsMinimizeTray" checked><span class="lm-toggle-track"></span></label>
                   </div>
                   <div class="lm-setting-row">
-                    <div><strong>Start minimized to tray</strong><p class="lm-setting-desc">Launch in the background; open the window from the tray icon.</p></div>
+                    <div><strong>Start minimized to tray</strong><p class="lm-setting-desc">When Windows starts DFlash at sign-in, keep the window hidden until you open it from the tray. Opening the desktop shortcut always shows the window.</p></div>
                     <label class="lm-toggle small"><input type="checkbox" id="appSettingsStartMinimized"><span class="lm-toggle-track"></span></label>
                   </div>
                   <div class="lm-setting-row">
                     <div><strong>Show splash on startup</strong><p class="lm-setting-desc">Brief loading window while the local engine starts.</p></div>
                     <label class="lm-toggle small"><input type="checkbox" id="appSettingsShowSplash" checked><span class="lm-toggle-track"></span></label>
-                  </div>
-                  <div class="lm-setting-row">
-                    <div><strong>Start with Windows</strong><p class="lm-setting-desc">Open DFlash Console when you sign in.</p></div>
-                    <label class="lm-toggle small"><input type="checkbox" id="appSettingsStartWithWindows"><span class="lm-toggle-track"></span></label>
                   </div>
                   <div class="lm-setting-row">
                     <div><strong>Check for updates automatically</strong><p class="lm-setting-desc">Allow DFlash Console to check periodically. You can always check manually below.</p></div>
@@ -866,7 +866,7 @@ try {
                   <input type="number" class="lm-num" id="serverSettingsContextMax" value="131072" min="2048" step="1024">
                 </div>
                 <div class="lm-setting-row">
-                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before an idle model unloads · 0 = never</p></div>
+                  <div><strong>Idle unload</strong><p class="lm-setting-desc">Minutes before this Console engine unloads its model when idle · 0 = never · does not affect LM Studio, Ollama, or other external apps</p></div>
                   <input type="number" class="lm-num" id="serverSettingsIdle" value="60">
                 </div>
               </section>

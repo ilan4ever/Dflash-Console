@@ -11,6 +11,7 @@ const {
   syncStartupRegistration,
 } = require('./app-settings');
 const { UpdateService } = require('./update-service');
+const { registerContextMenus } = require('./context-menu');
 
 const DEFAULT_PORT = 8900;
 const UI_HOST = '127.0.0.1';
@@ -31,6 +32,43 @@ let lastAutomaticUpdateCheckAt = 0;
 let updatePopupWindow = null;
 let updatePromptDeferred = false;
 let updatePopupShownFor = '';
+let postInstallWelcomeActive = false;
+
+const POST_INSTALL_LAUNCH_ARGS = new Set(['--dflash-post-update', '--dflash-post-install']);
+const STARTUP_LAUNCH_ARG = '--dflash-startup';
+
+function hasPostInstallLaunchArg() {
+  return process.argv.some((arg) => POST_INSTALL_LAUNCH_ARGS.has(arg));
+}
+
+function syncPostInstallWelcomeFlag() {
+  if (hasPostInstallLaunchArg()) {
+    saveAppSettings({ postInstallWelcome: true });
+  }
+  postInstallWelcomeActive = Boolean(loadAppSettings().postInstallWelcome);
+}
+
+function dismissPostInstallWelcome() {
+  if (!postInstallWelcomeActive) return;
+  postInstallWelcomeActive = false;
+  saveAppSettings({ postInstallWelcome: false });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('post-install-welcome:cleared');
+  }
+}
+
+function isStartupLaunch() {
+  return process.argv.includes(STARTUP_LAUNCH_ARG);
+}
+
+function shouldShowMainWindowOnReady() {
+  if (postInstallWelcomeActive) return true;
+  // "Start minimized to tray" applies only when Windows launches the app at
+  // sign-in (--dflash-startup). Opening from a desktop shortcut or tray always
+  // shows the window, even when minimize-to-tray is enabled.
+  if (isStartupLaunch() && loadAppSettings().startMinimized) return false;
+  return true;
+}
 
 const {
   isConsoleRoot,
@@ -413,11 +451,20 @@ function trayIcon() {
   return image.resize({ width: 16, height: 16 });
 }
 
-function showMainWindow() {
+function showMainWindow({ bringToFront = false } = {}) {
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+  if (bringToFront) {
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.moveTop();
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setAlwaysOnTop(false);
+      }
+    }, 300);
+  }
 }
 
 function quitApp() {
@@ -444,6 +491,7 @@ function applyTrayFromSettings() {
 function registerAppSettingsIpc() {
   ipcMain.handle('app-settings:get', () => ({
     ...loadAppSettings(),
+    postInstallWelcome: postInstallWelcomeActive,
     isElectron: true,
     appVersion: app.getVersion(),
     electronVersion: process.versions.electron,
@@ -536,13 +584,13 @@ function ensureTray() {
     if (icon.isEmpty()) return;
     tray = new Tray(icon);
     tray.setToolTip('DFlash Console');
-    tray.on('double-click', () => showMainWindow());
-    tray.on('click', () => showMainWindow());
+    tray.on('double-click', () => showMainWindow({ bringToFront: true }));
+    tray.on('click', () => showMainWindow({ bringToFront: true }));
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
           label: 'Open DFlash Console',
-          click: () => showMainWindow(),
+          click: () => showMainWindow({ bringToFront: true }),
         },
         { type: 'separator' },
         {
@@ -935,6 +983,20 @@ function buildMenu() {
       ],
     },
     {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { type: 'separator' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
       label: 'View',
       submenu: [
         { role: 'togglefullscreen' },
@@ -992,14 +1054,17 @@ async function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     closeSplashWindow();
-    if (!loadAppSettings().startMinimized) {
-      showMainWindow();
+    if (shouldShowMainWindowOnReady()) {
+      showMainWindow({ bringToFront: !isStartupLaunch() });
     }
     flushPendingUpdatePrompt();
   });
 
   mainWindow.on('close', (event) => {
     if (isQuitting) return;
+    if (postInstallWelcomeActive) {
+      dismissPostInstallWelcome();
+    }
     if (!loadAppSettings().minimizeToTray) {
       isQuitting = true;
       if (tray) {
@@ -1013,6 +1078,9 @@ async function createWindow() {
   });
 
   mainWindow.on('minimize', (event) => {
+    if (postInstallWelcomeActive) {
+      dismissPostInstallWelcome();
+    }
     // "Minimize to system tray": hide into the tray instead of the taskbar.
     // The setting previously only handled the close (X) button, so clicking
     // the minimize button still landed in the taskbar.
@@ -1058,9 +1126,9 @@ async function boot() {
   }
   if (!mainWindow) {
     await createWindow();
-  } else if (!loadAppSettings().startMinimized) {
+  } else if (shouldShowMainWindowOnReady()) {
     closeSplashWindow();
-    showMainWindow();
+    showMainWindow({ bringToFront: !isStartupLaunch() });
   } else {
     closeSplashWindow();
   }
@@ -1086,13 +1154,15 @@ if (!gotLock) {
 
   app.on('second-instance', () => {
     if (mainWindow) {
-      showMainWindow();
+      showMainWindow({ bringToFront: true });
       return;
     }
     void boot();
   });
 
   app.whenReady().then(() => {
+    registerContextMenus(app);
+    syncPostInstallWelcomeFlag();
     updateService = createUpdateService();
     registerAppSettingsIpc();
     registerUpdatePopupIpc();
@@ -1120,7 +1190,7 @@ if (!gotLock) {
 
   app.on('activate', () => {
     if (mainWindow) {
-      showMainWindow();
+      showMainWindow({ bringToFront: true });
       return;
     }
     if (BrowserWindow.getAllWindows().length === 0) {

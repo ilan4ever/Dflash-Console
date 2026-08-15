@@ -19,7 +19,8 @@
   let listRefreshIndicator = null;
   let catalogContextModel = null;
   const CATALOG_REFRESH_MS = 10 * 60 * 1000;
-  const LIST_DETAIL_WARM_WORKERS = 4;
+  const LIST_DETAIL_WARM_WORKERS = 1;
+  const LIST_DETAIL_WARM_LIMIT = 1;
   const listDetailPending = new Map();
 
   const DEFAULT_CATEGORY = 'supported';
@@ -764,7 +765,21 @@
     persistSearchCache(key, cached);
   }
 
-  function loadingCopy(category) {
+  function isRepoIdQuery(query) {
+    const needle = String(query || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!needle.includes('/')) return false;
+    return needle.split('/').filter(Boolean).length >= 2;
+  }
+
+  function loadingCopy(category, query = '') {
+    if (isRepoIdQuery(query)) {
+      return {
+        listTitle: 'Looking up model',
+        listSub: `Resolving ${query} on Hugging Face…`,
+        detailTitle: 'Loading model details',
+        detailSub: 'README, GGUF files, and install status will appear here shortly.',
+      };
+    }
     return {
       listTitle: 'Loading model catalog',
       listSub: `Fetching ${categoryLabel(category)} from Hugging Face. This usually takes a few seconds.`,
@@ -839,7 +854,6 @@
     let request;
     request = api(
       `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
-      { timeoutMs: 60000 },
     ).then((data) => {
       if (!data?.model) throw new Error('Model details unavailable');
       detailCache.set(key, data.model);
@@ -907,29 +921,28 @@
   }
 
   async function warmListDetails(rows, category) {
-    const candidates = (rows || []).filter((model) => listSizeLabel(model) === '—' || listDiskLabel(model) === 'Disk —');
-    if (!candidates.length) return;
+    const selected = (rows || []).find((model) => model.id === selectedId);
+    const candidates = (rows || [])
+      .filter((model) => listSizeLabel(model) === '—' || listDiskLabel(model) === 'Disk —')
+      .filter((model, index, list) => list.findIndex((row) => row.id === model.id) === index);
+    const warm = [];
+    if (selected && candidates.some((model) => model.id === selected.id)) warm.push(selected);
+    for (const model of candidates) {
+      if (warm.length >= LIST_DETAIL_WARM_LIMIT) break;
+      if (!warm.some((row) => row.id === model.id)) warm.push(model);
+    }
+    if (!warm.length) return;
 
     const run = ++listDetailWarmGen;
-    let cursor = 0;
-    let changed = false;
-    const worker = async () => {
-      while (cursor < candidates.length) {
-        const model = candidates[cursor];
-        cursor += 1;
-        const detail = await prefetchDetail(model.id, category);
-        if (run !== listDetailWarmGen) return;
-        if (detail && mergeCatalogListDetail(model.id, detail)) {
-          changed = true;
-          persistCurrentListMetadata();
-          scheduleListWarmRender();
-        }
+    for (const model of warm) {
+      const detail = await prefetchDetail(model.id, category);
+      if (run !== listDetailWarmGen) return;
+      if (detail && mergeCatalogListDetail(model.id, detail)) {
+        persistCurrentListMetadata();
+        scheduleListWarmRender();
       }
-    };
-    await Promise.all(
-      Array.from({ length: LIST_DETAIL_WARM_WORKERS }, () => worker()),
-    );
-    if (changed && run === listDetailWarmGen) {
+    }
+    if (run === listDetailWarmGen) {
       if (listWarmRenderTimer) {
         window.clearTimeout(listWarmRenderTimer);
         listWarmRenderTimer = null;
@@ -945,8 +958,15 @@
       const category = DEFAULT_CATEGORY;
       const sort = 'downloads';
       const query = '';
-      if (getCachedSearch(query, sort, category)) {
+      const cached = getCachedSearch(query, sort, category);
+      if (cached?.models?.length) {
+        models = cached.models;
         catalogPrimed = true;
+        if (document.body.dataset.activeView === 'catalog' && !searchInput()?.value?.trim()) {
+          populateCreatorFilter();
+          renderList();
+          restoreVisibleSelection({ preferCache: true });
+        }
         void searchCatalog(query, sort, category)
           .then((data) => {
             const rows = data.models || [];
@@ -977,8 +997,8 @@
 
   async function searchCatalog(query, sort, category) {
     const path = `/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`;
-    const slowCategory = category === 'supported' || category === 'all-gguf';
-    const timeoutMs = slowCategory ? 120000 : 30000;
+    const slowCategory = category === 'supported' || category === 'all-gguf' || isRepoIdQuery(query);
+    const timeoutMs = slowCategory ? 0 : 30000;
     try {
       return await api(path, { timeoutMs });
     } catch (firstError) {
@@ -989,12 +1009,13 @@
 
   function renderListLoading(message) {
     const category = currentCategory();
+    const query = searchInput()?.value?.trim() || '';
     if (message) {
       const list = searchList();
       if (list) list.innerHTML = `<div class="lm-search-empty df-catalog-loading-message">${escapeHtml(message)}</div>`;
       return;
     }
-    renderCatalogLoading('list', loadingCopy(category));
+    renderCatalogLoading('list', loadingCopy(category, query));
   }
 
   function renderList() {
@@ -1405,7 +1426,7 @@
     const query = searchInput()?.value?.trim() || '';
     const sort = currentSort();
     const category = currentCategory();
-    const copy = loadingCopy(category);
+    const copy = loadingCopy(category, query);
     const cached = getCachedSearch(query, sort, category);
     const canShowCached = !!(cached?.models?.length);
 
@@ -1418,6 +1439,9 @@
       background = true;
     } else if (!background) {
       renderCatalogLoading('both', copy);
+      if (isRepoIdQuery(query)) {
+        void requestDetail(query, category).catch(() => {});
+      }
     }
 
     if (background) setListRefreshIndicator(true);
@@ -1438,9 +1462,9 @@
       void warmListDetails(visibleModels(), category);
       const visible = visibleModels();
       if (!selectedId && visible[0]) {
-        await selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
+        void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
       } else if (selectedId && !visible.some((model) => model.id === selectedId)) {
-        if (visible[0]) await selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
+        if (visible[0]) void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
         else renderDetailPlaceholder();
       }
     } catch (err) {
@@ -1465,6 +1489,12 @@
     }, 350);
   }
 
+  function listRowHasDetail(model) {
+    if (!model) return false;
+    const files = model.download_files || model.gguf_files || [];
+    return Array.isArray(files) && files.length > 0;
+  }
+
   async function selectModel(repoId, { preferCache = false, backgroundDetail = false } = {}) {
     if (!repoId) return;
     selectedId = repoId;
@@ -1472,17 +1502,24 @@
     const category = currentCategory();
     const cacheKey = detailCacheKey(repoId, category);
     const cachedDetail = detailCache.get(cacheKey);
+    const listRow = models.find((model) => model.id === repoId);
     if (preferCache && cachedDetail) {
       selectedDetail = cachedDetail;
       renderDetail(selectedDetail);
-      if (backgroundDetail) void refreshDetail(repoId, category);
+      if (backgroundDetail) void refreshDetail(repoId, category, { silent: true });
+      return;
+    }
+    if (listRow && listRowHasDetail(listRow)) {
+      selectedDetail = listRow;
+      renderDetail(listRow);
+      void refreshDetail(repoId, category, { silent: true });
       return;
     }
     renderDetailLoading();
-    await refreshDetail(repoId, category);
+    await refreshDetail(repoId, category, { silent: backgroundDetail });
   }
 
-  async function refreshDetail(repoId, category) {
+  async function refreshDetail(repoId, category, { silent = false } = {}) {
     try {
       const model = await requestDetail(repoId, category);
       if (mergeCatalogListDetail(repoId, model)) {
@@ -1494,9 +1531,13 @@
         renderDetail(selectedDetail);
       }
     } catch (err) {
-      if (selectedId === repoId) {
+      if (selectedId !== repoId) return;
+      if (selectedDetail && listRowHasDetail(selectedDetail)) return;
+      if (!silent) {
         renderDetailPlaceholder(err.message);
         toast(err.message, false);
+      } else {
+        renderDetailPlaceholder('Still loading model details from Hugging Face…');
       }
     }
   }
@@ -1676,7 +1717,12 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     bind();
-    window.setTimeout(() => void warmCatalogCache(), 300);
+    const cached = getCachedSearch('', 'downloads', DEFAULT_CATEGORY);
+    if (cached?.models?.length) {
+      models = cached.models;
+      catalogPrimed = true;
+    }
+    void warmCatalogCache();
     window.setInterval(() => {
       catalogPrimed = false;
       void warmCatalogCache();

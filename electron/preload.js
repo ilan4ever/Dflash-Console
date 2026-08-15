@@ -22,4 +22,10 @@ contextBridge.exposeInMainWorld('DFlashDesktop', {
     ipcRenderer.on('update:status', listener);
     return () => ipcRenderer.removeListener('update:status', listener);
   },
+  onPostInstallWelcomeCleared: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = () => callback();
+    ipcRenderer.on('post-install-welcome:cleared', listener);
+    return () => ipcRenderer.removeListener('post-install-welcome:cleared', listener);
+  },
 });

@@ -1363,6 +1363,14 @@ def list_local_models(
             # immediately; the disk scan happens off the request thread.
             _schedule_catalog_refresh(config, include_dflash_stacks=include_dflash_stacks)
             return persisted
+        # Never block API workers on a full disk scan — return profile rows
+        # immediately and finish the library scan in the background.
+        if not _CATALOG_REFRESHING:
+            _schedule_catalog_refresh(config, include_dflash_stacks=include_dflash_stacks)
+        partial = _build_models_payload(config, catalog, [], partial=True)
+        partial['stale'] = True
+        partial['cache_age_seconds'] = 0
+        return partial
 
     scanned: list[dict[str, Any]] = []
     for root, source in disk_scan_roots(config):

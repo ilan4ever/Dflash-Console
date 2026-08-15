@@ -12,6 +12,7 @@ const DEFAULTS = {
   showSplashOnStartup: true,
   notifyOnEngineReady: false,
   allowAutomaticUpdates: true,
+  postInstallWelcome: false,
 };
 
 let cached = null;
@@ -78,9 +79,10 @@ function applyWindowsStartup(enabled) {
     if (enabled) {
       const exe = resolveStartupExe();
       if (!exe || !fs.existsSync(exe)) return; // nothing stable to register
+      const launchCommand = `"${exe}" --dflash-startup`;
       execFileSync(
         'reg',
-        ['add', regKey, '/v', 'DFlash Console', '/t', 'REG_SZ', '/d', exe, '/f'],
+        ['add', regKey, '/v', 'DFlash Console', '/t', 'REG_SZ', '/d', launchCommand, '/f'],
         regQuiet,
       );
       return;

@@ -1,5 +1,17 @@
 /* DFlash Console — distinct shell (left nav, workbench theme) */
 
+/* Inputs, logs, and code should stay selectable for copy/paste. */
+.df-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+.df-shell textarea,
+.df-shell select,
+.df-shell [contenteditable="true"],
+.df-shell .lm-logs-body,
+.df-shell pre,
+.df-shell code {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .df-shell {
   --bg: #050508;
   --bg-elevated: #0c0c10;
@@ -1085,18 +1097,12 @@ body.lm-resizing-table-col {
     inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover);
 }
 
+.lm-model-loaded-ribbon {
+  display: none;
+}
+
 .df-shell .lm-view[data-view="models"] .lm-model-loaded-ribbon {
-  display: inline-block;
-  margin-bottom: 6px;
-  padding: 3px 12px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #1a1400;
-  background: linear-gradient(180deg, #f0d060 0%, #d4af37 100%);
-  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.45), 0 2px 10px rgba(212, 175, 55, 0.28);
+  display: none;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td {
@@ -1126,7 +1132,7 @@ body.lm-resizing-table-col {
    Engines page (swapped palette — green now means external, deep reddish means
    Console). Drawn on the cells (td-level) so it is actually visible — a
    tr-level box-shadow is hidden behind the cell backgrounds. Loaded state is
-   shown by the gold LOADED ribbon. */
+   shown by the deep-gold Unload button. */
 .df-shell .lm-view[data-view="models"] .lm-model-row.external-model td {
   background-color: var(--external-card-bg);
   border-top-color: var(--external-card-border);
@@ -1195,6 +1201,29 @@ body.lm-resizing-table-col {
   color: #fff;
 }
 
+/* Loaded GPU rows: deep-gold Unload button replaces the old LOADED ribbon. */
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="unload-model"].lm-btn-unload-active,
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td.lm-col-action .lm-btn[data-action="unload-model"] {
+  color: #1a1400;
+  background: linear-gradient(180deg, #d4af37 0%, #a67c00 100%);
+  border-color: rgba(166, 124, 0, 0.85);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 179, 0.35), 0 1px 3px rgba(0, 0, 0, 0.32);
+  font-weight: 600;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-action .lm-btn[data-action="unload-model"].lm-btn-unload-active:hover,
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td.lm-col-action .lm-btn[data-action="unload-model"]:hover {
+  color: #1a1400;
+  background: linear-gradient(180deg, #e0bc42 0%, #b8860b 100%);
+  border-color: rgba(184, 134, 11, 0.95);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected td.lm-col-action .lm-btn[data-action="unload-model"] {
+  color: #1a1400;
+  background: linear-gradient(180deg, #f0d060 0%, #c9a227 100%);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
 .df-shell .lm-view[data-view="models"] .lm-action-stack {
   display: flex;
   flex-direction: column;
@@ -1213,6 +1242,14 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.loading-on-server td:first-child {
   box-shadow: inset 3px 0 0 rgba(96, 165, 250, 0.65);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.unloading-on-server td {
+  background: rgba(234, 88, 12, 0.12);
+}
+
+.df-shell .lm-view[data-view="models"] .lm-model-row.unloading-on-server td:first-child {
+  box-shadow: inset 3px 0 0 rgba(251, 146, 60, 0.7);
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.downloading-model td {

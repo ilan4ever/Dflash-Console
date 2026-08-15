@@ -263,6 +263,8 @@ def _launch_signature(
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     idle_minutes = int(server.get('idle_unload_minutes') or 0)
+    # Idle unload applies only to this Console-owned llama-server listener — never
+    # external apps (LM Studio, Ollama, etc.).
     idle_seconds = 0 if idle_minutes <= 0 else idle_minutes * 60
     load = normalize_load_settings(server.get('load_settings'))
     hardware = normalize_hardware_settings((cfg or {}).get('hardware_settings'))

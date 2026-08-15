@@ -2011,17 +2011,7 @@ body.lm-resizing-logs {
 }
 
 .lm-model-loaded-ribbon {
-  display: inline-block;
-  margin-bottom: 6px;
-  padding: 3px 12px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #1a1400;
-  background: linear-gradient(180deg, #f0d060 0%, #d4af37 100%);
-  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.45), 0 2px 10px rgba(212, 175, 55, 0.28);
+  display: none;
 }
 
 .lm-model-row.loading-on-server {
@@ -2030,6 +2020,16 @@ body.lm-resizing-logs {
 }
 
 .lm-model-row.loading-on-server td {
+  position: relative;
+  z-index: 1;
+}
+
+.lm-model-row.unloading-on-server {
+  background: rgba(234, 88, 12, 0.14);
+  box-shadow: inset 3px 0 0 rgba(251, 146, 60, 0.7);
+}
+
+.lm-model-row.unloading-on-server td {
   position: relative;
   z-index: 1;
 }
