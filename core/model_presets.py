@@ -11,6 +11,7 @@ from core.config import (
     normalize_load_settings,
     SPECULATIVE_PROFILES,
 )
+from core.dflash_generation import infer_dflash_generation, spec_draft_n_max
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.model_stack import resolve_model_stack
 
@@ -44,6 +45,20 @@ def model_id_from_path(path: str | Path) -> str:
     return stem.replace('_', '-').lower()[:80]
 
 
+def sanitize_preset_model_id(model_id: str, path: str | Path | None = None) -> str:
+    """Strip catalog aliases so llama.ini sections stay valid load ids."""
+    token = str(model_id or '').strip()
+    if token.lower().startswith('library-file:'):
+        token = token.split(':', 1)[1].strip()
+        if path and (len(token) < 4 or token.lower() in {'it', 'id'}):
+            return model_id_from_path(path)
+    if token and ':' not in token and '/' not in token and '\\' not in token:
+        return token
+    if path:
+        return model_id_from_path(path)
+    return model_id_from_path(token) if token else ''
+
+
 def preset_path_for(server_id: str) -> Path:
     return PRESET_DIR / f'{server_id}.ini'
 
@@ -58,17 +73,29 @@ def write_server_preset(
     use_draft: bool | None = None,
 ) -> Path:
     server_id = str(server.get('id') or '').strip()
-    preset_model_id = str(model_id or server.get('model_id') or '').strip()
+    preset_model_id = sanitize_preset_model_id(
+        model_id or server.get('model_id'),
+        target_path or server.get('target_path') or server.get('adhoc_model_path'),
+    )
     preset_profile = str(profile or server.get('profile') or 'gemma-chat').strip()
     if not server_id or not preset_model_id:
         raise ValueError('server id and model_id required')
 
     load = normalize_load_settings(server.get('load_settings'))
+    required_gb = None
+    if cfg:
+        try:
+            from core.memory_guardrails import _estimate_load_gb
+
+            required_gb = _estimate_load_gb(server, cfg)
+        except Exception:
+            required_gb = None
     launch = resolve_role_gpu_launch_params(
         server.get('gpu_device'),
         model_id=preset_model_id,
         hardware=(cfg or {}).get('hardware_settings'),
         context_size=server.get('context_size'),
+        required_gb=required_gb,
     )
     cache_k, cache_v = PROFILE_CACHE_TYPES.get(preset_profile, ('q4_0', 'q4_0'))
     hardware = normalize_hardware_settings((cfg or {}).get('hardware_settings'))
@@ -113,6 +140,11 @@ def write_server_preset(
         'mlock = true',
         f"main-gpu = {int(launch.get('main_gpu') or 0)}",
         f"split-mode = {launch.get('split_mode') or 'none'}",
+        *(
+            [f"tensor-split = {launch['tensor_split']}"]
+            if launch.get('split_mode') != 'none' and launch.get('tensor_split')
+            else []
+        ),
         f"kv-offload = {'true' if hardware.get('offload_kv_cache_to_gpu') is not False else 'false'}",
         f"cache-type-k = {cache_k}",
         f"cache-type-v = {cache_v}",
@@ -126,7 +158,8 @@ def write_server_preset(
     if draft and draft.get('path'):
         lines.append(f"model-draft = {draft['path']}")
         if preset_profile in ('gemma-chat', 'qwen-dflash', 'gemma-12-dflash'):
-            lines.extend(['spec-type = draft-dflash', 'spec-draft-n-max = 8'])
+            draft_n_max = spec_draft_n_max(draft_path=draft['path'], profile=preset_profile)
+            lines.extend(['spec-type = draft-dflash', f'spec-draft-n-max = {draft_n_max}'])
         elif preset_profile == 'bonsai-spec':
             lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = 999'])
 

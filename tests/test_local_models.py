@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.local_models import _has_vision_support, model_matches_source
+from core.local_models import _catalog_cache_key, _has_vision_support, model_matches_source
 
 
 def test_model_matches_source_filters_ollama_and_dflash():
@@ -14,6 +14,247 @@ def test_model_matches_source_filters_ollama_and_dflash():
     assert model_matches_source(studio, 'lmstudio')
     assert model_matches_source(stack, 'dflash')
     assert model_matches_source(ollama, 'all')
+    hf = {'id': 'qwen', 'source': 'library', 'runtime_id': 'vllm', 'engines': ['vllm', 'transformers']}
+    assert model_matches_source(hf, 'vllm')
+    assert model_matches_source(hf, 'transformers')
+
+
+def test_scan_hf_llm_finds_safetensors_dir(tmp_path: Path):
+    import json
+
+    from core.local_models import _scan_hf_llm
+
+    model_dir = tmp_path / 'opt-125m'
+    model_dir.mkdir()
+    (model_dir / 'config.json').write_text(json.dumps({'model_type': 'opt'}), encoding='utf-8')
+    (model_dir / 'model.safetensors').write_text('x', encoding='utf-8')
+    rows = _scan_hf_llm(tmp_path, source='library')
+    assert len(rows) == 1
+    assert rows[0]['kind'] == 'dir'
+    assert 'vllm' in rows[0]['engines']
+    assert rows[0]['runtime_id'] in {'vllm', 'transformers'}
+
+
+def test_scan_hf_llm_uses_hub_repo_name_not_snapshot_hash(tmp_path: Path):
+    import json
+
+    from core.local_models import _scan_hf_llm
+
+    snapshot = tmp_path / 'hub' / 'models--Qwen--Qwen3-0.6B' / 'snapshots' / '10e65a9951a1e922cd109a95e8aba9357b62144b'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen3'}), encoding='utf-8')
+    (snapshot / 'model.safetensors').write_text('x', encoding='utf-8')
+    rows = _scan_hf_llm(tmp_path, source='library')
+    assert len(rows) == 1
+    assert rows[0]['label'] == 'Qwen3-0.6B'
+    assert rows[0]['publisher'] == 'Qwen'
+
+
+def test_scan_hf_llm_reports_total_size_for_sharded_model(tmp_path: Path):
+    import json
+
+    model_dir = tmp_path / 'sharded'
+    model_dir.mkdir()
+    (model_dir / 'config.json').write_text(json.dumps({'model_type': 'opt'}), encoding='utf-8')
+    (model_dir / 'model-00001-of-00002.safetensors').write_bytes(b'a' * 1024)
+    (model_dir / 'model-00002-of-00002.safetensors').write_bytes(b'b' * 2048)
+    rows = __import__('core.local_models', fromlist=['_scan_hf_llm'])._scan_hf_llm(tmp_path, source='library')
+    assert rows[0]['size_gb'] is not None
+
+
+def test_hf_size_uses_blobs_when_snapshot_is_tiny(tmp_path: Path):
+    import json
+
+    from core.local_models import _model_dir_size_gb, _scan_hf_llm
+
+    repo = tmp_path / 'hub' / 'models--Qwen--Qwen2.5-32B-Instruct'
+    blobs = repo / 'blobs'
+    snapshot = repo / 'snapshots' / 'deadbeef'
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen2'}), encoding='utf-8')
+    (snapshot / 'model.safetensors.index.json').write_text(
+        json.dumps({'metadata': {'total_size': 1024}, 'weight_map': {}}),
+        encoding='utf-8',
+    )
+    (snapshot / 'model-00001-of-00002.safetensors').write_bytes(b'stub')
+    (blobs / 'sha256-big').write_bytes(b'x' * (80 * 1024 * 1024))
+    assert _model_dir_size_gb(snapshot) >= 0.07
+    rows = _scan_hf_llm(tmp_path / 'hub', source='library')
+    assert len(rows) == 1
+    assert rows[0]['size_gb'] >= 0.07
+    assert rows[0]['hf_repo'] == 'Qwen/Qwen2.5-32B-Instruct'
+
+
+def test_resolve_model_delete_dir_uses_hub_repo(tmp_path: Path):
+    from core.local_models import resolve_model_delete_dir
+
+    repo = tmp_path / 'hub' / 'models--Qwen--Qwen2.5-72B-Instruct'
+    snapshot = repo / 'snapshots' / 'deadbeef'
+    snapshot.mkdir(parents=True)
+    assert resolve_model_delete_dir(snapshot) == repo.resolve()
+
+
+def test_hf_size_estimates_when_only_tokenizer_is_cached(tmp_path: Path):
+    import json
+
+    from core.local_models import _model_dir_size_gb
+
+    snapshot = tmp_path / 'hub' / 'models--Qwen--Qwen2.5-32B-Instruct' / 'snapshots' / 'abc123'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen2'}), encoding='utf-8')
+    (snapshot / 'tokenizer.json').write_bytes(b'tiny')
+    assert _model_dir_size_gb(snapshot) >= 50
+
+
+def test_hf_size_falls_back_to_safetensors_index(tmp_path: Path):
+    import json
+
+    from core.local_models import _model_dir_size_gb
+
+    repo = tmp_path / 'hub' / 'models--Qwen--Qwen2.5-72B-Instruct'
+    snapshot = repo / 'snapshots' / 'abc123'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen2'}), encoding='utf-8')
+    (snapshot / 'model.safetensors.index.json').write_text(
+        json.dumps({'metadata': {'total_size': 64 * (1024 ** 3)}}),
+        encoding='utf-8',
+    )
+    (snapshot / 'tokenizer.json').write_bytes(b'tiny')
+    assert _model_dir_size_gb(snapshot) == 64.0
+
+
+def test_size_gb_sums_gguf_split_shards(tmp_path: Path):
+    from core.local_models import _size_gb
+
+    shard1 = tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf'
+    shard2 = tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00002-of-00003.gguf'
+    shard3 = tmp_path / 'Laguna-S-2.1-UD-Q4_K_M-00003-of-00003.gguf'
+    shard1.write_bytes(b'a' * (3 * 1024 * 1024))
+    shard2.write_bytes(b'b' * (3 * 1024 * 1024))
+    shard3.write_bytes(b'c' * (3 * 1024 * 1024))
+    size = _size_gb(shard1)
+    assert size is not None
+    assert size >= 0.01
+
+
+def test_hf_size_estimates_lmstudio_plain_folder(tmp_path: Path):
+    import json
+
+    from core.local_models import _model_dir_size_gb, _scan_hf_llm
+
+    model_dir = tmp_path / '.lmstudio' / 'models' / 'Qwen' / 'Qwen2.5-32B-Instruct'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'config.json').write_text(json.dumps({'model_type': 'qwen2'}), encoding='utf-8')
+    (model_dir / 'tokenizer.json').write_bytes(b'tiny')
+    assert _model_dir_size_gb(model_dir) >= 50
+    rows = _scan_hf_llm(tmp_path / '.lmstudio' / 'models', source='lmstudio')
+    assert len(rows) == 1
+    assert rows[0]['size_gb'] >= 50
+
+
+def test_catalog_repo_size_reads_nested_cache(monkeypatch):
+    from core.local_models import _catalog_repo_size_gb
+
+    monkeypatch.setattr(
+        'core.hf_catalog_cache.get_cached_detail',
+        lambda **_kwargs: {'payload': {'model': {'size_gb': 641.3}}},
+    )
+    assert _catalog_repo_size_gb('deepseek-ai/DeepSeek-V3') == 641.3
+
+
+def test_lookup_hf_repo_size_fetches_when_cache_miss(monkeypatch):
+    from core import local_models
+
+    local_models._HF_REPO_SIZE_CACHE.clear()
+    monkeypatch.setattr(local_models, '_catalog_repo_size_gb', lambda _repo: None)
+    monkeypatch.setattr(
+        'core.huggingface._fetch_repo_siblings_with_blobs',
+        lambda _repo: [{'rfilename': 'model.safetensors', 'size': 70 * (1024 ** 3)}],
+    )
+    assert local_models._lookup_hf_repo_size_gb('deepseek-ai/DeepSeek-V3') == 70.0
+
+
+def test_model_dir_size_uses_hf_lookup_for_metadata_only_snapshot(tmp_path: Path, monkeypatch):
+    import json
+
+    from core import local_models
+
+    local_models._HF_REPO_SIZE_CACHE.clear()
+    snapshot = tmp_path / 'hub' / 'models--deepseek-ai--DeepSeek-V3' / 'snapshots' / 'abc123'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'deepseek'}), encoding='utf-8')
+    (snapshot / 'tokenizer.json').write_bytes(b'tiny')
+    monkeypatch.setattr(local_models, '_catalog_repo_size_gb', lambda _repo: None)
+    monkeypatch.setattr(local_models, '_lookup_hf_repo_size_gb', lambda _repo, **kwargs: 641.3)
+    assert local_models._model_dir_size_gb(snapshot) == 641.3
+
+
+def test_directory_size_gb_follows_symlinks(tmp_path: Path):
+    import json
+
+    from core.local_models import _directory_size_gb, _scan_hf_llm
+
+    blob = tmp_path / 'blobs' / 'sha256-abc'
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b'x' * (16 * 1024 * 1024))
+    snapshot = tmp_path / 'hub' / 'models--Qwen--Qwen3-0.6B' / 'snapshots' / 'deadbeef'
+    snapshot.mkdir(parents=True)
+    (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen3'}), encoding='utf-8')
+    try:
+        (snapshot / 'model.safetensors').symlink_to(blob)
+    except OSError:
+        pytest = __import__('pytest')
+        pytest.skip('symlinks unavailable on this platform')
+    assert _directory_size_gb(snapshot) >= 0.01
+    rows = _scan_hf_llm(tmp_path / 'hub', source='library')
+    assert len(rows) == 1
+    assert rows[0]['size_gb'] >= 0.01
+
+
+def test_scan_hf_llm_prefers_refs_main_snapshot(tmp_path: Path):
+    import json
+
+    from core.local_models import _scan_hf_llm
+
+    repo = tmp_path / 'hub' / 'models--Qwen--Qwen3-0.6B'
+    active = repo / 'snapshots' / 'active123'
+    stale = repo / 'snapshots' / 'stale456'
+    active.mkdir(parents=True)
+    stale.mkdir(parents=True)
+    for snapshot in (active, stale):
+        (snapshot / 'config.json').write_text(json.dumps({'model_type': 'qwen3'}), encoding='utf-8')
+        (snapshot / 'model.safetensors').write_text('active' if snapshot is active else 'stale', encoding='utf-8')
+    (repo / 'refs').mkdir(parents=True)
+    (repo / 'refs' / 'main').write_text('snapshots/active123', encoding='utf-8')
+    rows = _scan_hf_llm(tmp_path / 'hub', source='library')
+    assert len(rows) == 1
+    assert rows[0]['path'].endswith('active123')
+
+
+def test_collapse_hf_hub_repos_keeps_largest_snapshot(tmp_path: Path):
+    from core.local_models import _collapse_hf_hub_repos
+
+    rows = [
+        {
+            'path': str(tmp_path / 'hub' / 'models--Qwen--Qwen3-0.6B' / 'snapshots' / 'small'),
+            'filename': 'Qwen3-0.6B',
+            'label': 'Qwen3-0.6B',
+            'kind': 'dir',
+            'size_gb': 0.01,
+        },
+        {
+            'path': str(tmp_path / 'hub' / 'models--Qwen--Qwen3-0.6B' / 'snapshots' / 'large'),
+            'filename': 'Qwen3-0.6B',
+            'label': 'Qwen3-0.6B',
+            'kind': 'dir',
+            'size_gb': 12.5,
+        },
+    ]
+    collapsed = _collapse_hf_hub_repos(rows)
+    assert len(collapsed) == 1
+    assert collapsed[0]['size_gb'] == 12.5
+    assert collapsed[0]['duplicate_count'] == 2
 
 
 def test_server_catalog_row_non_dflash_is_loadable_when_target_ready(tmp_path: Path):
@@ -45,6 +286,180 @@ def test_vision_detects_mmproj_sibling(tmp_path: Path):
     target.write_bytes(b'gguf')
     projector.write_bytes(b'gguf')
     assert _has_vision_support(target) is True
+
+
+def test_projector_rows_are_marked_non_loadable(tmp_path: Path):
+    from core.local_models import _annotate_projector_row, _scan_gguf
+
+    projector = tmp_path / 'translategemma-12b-it.mmproj-f16.gguf'
+    target = tmp_path / 'translategemma-12b-it.Q4_K_S.gguf'
+    projector.write_bytes(b'gguf')
+    target.write_bytes(b'gguf')
+    rows = _scan_gguf(tmp_path, source='lmstudio')
+    by_name = {row['filename']: row for row in rows}
+    proj = by_name[projector.name]
+    main = by_name[target.name]
+    assert proj['is_projector'] is True
+    assert proj['loadable'] is False
+    assert 'projector' in proj['capabilities']
+    assert 'reasoning' not in proj['capabilities']
+    assert proj['modality'] == 'projector'
+    assert main['is_projector'] is False
+    assert main.get('loadable') is not False or 'llm' in main.get('capabilities', [])
+    _annotate_projector_row(main)
+    assert main.get('is_projector') is False
+
+
+def test_stack_supplement_uses_scanned_extras(tmp_path: Path, monkeypatch):
+    from core.local_models import _dflash_stack_supplement
+
+    target = tmp_path / 'Qwen3.5-27B-Q4_K_M.gguf'
+    draft = tmp_path / 'Qwen3.5-27B-DFlash-F16.gguf'
+    target.write_bytes(b'x' * 32)
+    draft.write_bytes(b'y' * 16)
+    extras = [
+        {
+            'path': str(target),
+            'filename': target.name,
+            'label': target.name,
+            'size_gb': 15.59,
+            'source': 'library',
+        },
+        {
+            'path': str(draft),
+            'filename': draft.name,
+            'label': draft.name,
+            'size_gb': 3.98,
+            'source': 'library',
+        },
+    ]
+    monkeypatch.setattr(
+        'core.stack_match.list_local_models',
+        lambda **_kwargs: {'models': [], 'partial': True},
+    )
+    rows = _dflash_stack_supplement({'servers': []}, {}, extras, cfg={'servers': []})
+    assert len(rows) == 1
+    assert rows[0]['filename'] == target.name
+    assert rows[0]['label'] == 'Qwen 3.5 27B D-Flash'
+    assert rows[0]['stack_status'] == 'unregistered'
+    assert rows[0]['draft_filename'] == draft.name
+
+
+def test_stack_supplement_keeps_one_row_for_duplicate_target_copies(tmp_path: Path, monkeypatch):
+    from core.local_models import _dflash_stack_supplement
+
+    console_dir = tmp_path / 'Dflash-Console' / 'models'
+    studio_dir = tmp_path / '.lmstudio' / 'models'
+    console_dir.mkdir(parents=True)
+    studio_dir.mkdir(parents=True)
+    draft = tmp_path / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+    console_target = console_dir / 'gemma-4-31B_q4_0-it.gguf'
+    studio_target = studio_dir / 'gemma-4-31B_q4_0-it.gguf'
+    draft.write_bytes(b'y' * 16)
+    console_target.write_bytes(b'x' * 32)
+    studio_target.write_bytes(b'x' * 32)
+    extras = [
+        {
+            'path': str(studio_target),
+            'filename': studio_target.name,
+            'label': studio_target.name,
+            'size_gb': 16.44,
+            'source': 'lmstudio',
+        },
+        {
+            'path': str(console_target),
+            'filename': console_target.name,
+            'label': console_target.name,
+            'size_gb': 16.44,
+            'source': 'dflash',
+        },
+        {
+            'path': str(draft),
+            'filename': draft.name,
+            'label': draft.name,
+            'size_gb': 0.85,
+            'source': 'dflash',
+        },
+    ]
+    monkeypatch.setattr(
+        'core.stack_match.list_local_models',
+        lambda **_kwargs: {'models': [], 'partial': True},
+    )
+    rows = _dflash_stack_supplement({'servers': []}, {}, extras, cfg={'servers': []})
+    assert len(rows) == 1
+    assert rows[0]['path'] == str(console_target)
+    assert rows[0]['filename'] == console_target.name
+
+
+def test_large_dflash_gguf_is_accelerator_only():
+    from core.local_models import _is_accelerator_only_row
+
+    assert _is_accelerator_only_row({
+        'filename': 'Qwen3.5-27B-DFlash-F16.gguf',
+        'path': r'C:\models\Qwen3.5-27B-DFlash-F16.gguf',
+        'size_gb': 3.98,
+        'dflash_stack': False,
+    }) is True
+    assert _is_accelerator_only_row({
+        'filename': 'Qwen3.5-27B-Q4_K_M.gguf',
+        'path': r'C:\models\Qwen3.5-27B-Q4_K_M.gguf',
+        'size_gb': 15.59,
+        'dflash_stack': True,
+        'draft_path': r'C:\models\Qwen3.5-27B-DFlash-F16.gguf',
+    }) is False
+    assert _is_accelerator_only_row({
+        'label': 'qwen-draft-hf',
+        'filename': 'qwen-draft-hf',
+        'path': r'C:\models\qwen-draft-hf',
+        'kind': 'dir',
+    }) is True
+    assert _is_accelerator_only_row({
+        'label': 'Gemma 4 31B q4 0 it dflash Q4',
+        'id': 'Gemma-4-31B-q4-0-it-dflash-Q4',
+        'filename': '',
+        'path': '',
+        'size_gb': 16.44,
+        'dflash_stack': False,
+    }) is False
+    assert _is_accelerator_only_row({
+        'filename': 'Ornith-1.0-35B-ROCmFP4-STRIX_LEAN-DFLASH-Q4_K_M.gguf',
+        'path': r'C:\models\Ornith-1.0-35B-ROCmFP4-STRIX_LEAN-DFLASH-Q4_K_M.gguf',
+        'size_gb': 18.0,
+        'dflash_stack': False,
+    }) is False
+
+
+def test_catalog_cache_key_ignores_layout_preferences(tmp_path: Path):
+    models_root = tmp_path / 'models'
+    models_root.mkdir()
+    base = {
+        'models_root': str(models_root),
+        'model_libraries': [{
+            'id': 'local',
+            'label': 'Local',
+            'path': str(models_root),
+            'preset': 'custom',
+            'enabled': True,
+        }],
+        'servers': [],
+        'ui_layout': {'inspector_collapsed': False},
+    }
+    collapsed = {
+        **base,
+        'ui_layout': {'inspector_collapsed': True},
+    }
+    assert _catalog_cache_key(base) == _catalog_cache_key(collapsed)
+
+
+def test_regular_model_path_does_not_make_it_an_accelerator():
+    from core.local_models import _is_accelerator_only_row
+
+    assert _is_accelerator_only_row({
+        'filename': 'Qwen3.8-27B-Q6_K_L.gguf',
+        'label': 'Qwen3.8-27B-Q6_K_L.gguf',
+        'path': r'C:\dev\Dflash-Console\models\bartowski\Qwen3.8-27B-GGUF\Qwen3.8-27B-Q6_K_L.gguf',
+        'dflash_stack': False,
+    }) is False
 
 
 def test_guess_arch_known_families():
@@ -473,6 +888,86 @@ def test_annotate_runtime_fields_whisper_cpp_for_gguf(tmp_path: Path):
     _annotate_runtime_fields(row)
     assert row['modality'] == 'speech-to-text'
     assert row['runtime_id'] == 'stt'
+
+
+def test_annotate_runtime_fields_vision_capable_chat_is_llm(tmp_path: Path):
+    from core.local_models import _annotate_runtime_fields
+
+    gguf = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    gguf.write_bytes(b'0' * 128)
+    row = {
+        'path': str(gguf),
+        'label': 'Gemma 4 31B D-Flash',
+        'filename': gguf.name,
+        'capabilities': ['instruct', 'dflash', 'vision', 'reasoning'],
+        'loadable': True,
+    }
+    _annotate_runtime_fields(row)
+    assert row['modality'] == 'llm'
+
+
+def test_library_file_alias_inherits_profile_port():
+    from core.local_models import _library_file_alias_row
+
+    alias = _library_file_alias_row(
+        {
+            'filename': 'ATH-MaaS_OvisOCR2-Q8_0.gguf',
+            'path': r'C:\models\ATH-MaaS_OvisOCR2-Q8_0.gguf',
+            'capabilities': ['instruct', 'ocr'],
+        },
+        {
+            'label': 'ATH-MaaS OvisOCR2-Q8 0',
+            'server_id': 'ath-maas-ovisocr2-q8-0',
+            'port': 8091,
+        },
+    )
+    assert alias is not None
+    assert alias['port'] == 8091
+    assert alias['bound_profile_id'] == 'ath-maas-ovisocr2-q8-0'
+    assert alias['id'] == 'library-file:ath-maas-ovisocr2-q8-0'
+
+
+def test_library_file_alias_id_is_unique_per_profile():
+    from core.local_models import _library_file_alias_row
+
+    alias_a = _library_file_alias_row(
+        {'filename': 'ATH-MaaS_OvisOCR2-Q8_0.gguf', 'path': r'C:\models\ATH-MaaS_OvisOCR2-Q8_0\file.gguf', 'capabilities': []},
+        {'label': 'Profile A', 'server_id': 'profile-a', 'port': 8091},
+    )
+    alias_b = _library_file_alias_row(
+        {'filename': 'ATH-MaaS_OvisOCR2-Q8_0.gguf', 'path': r'C:\models\ATH-MaaS_OvisOCR2-Q8_0-2\file.gguf', 'capabilities': []},
+        {'label': 'Profile B', 'server_id': 'profile-b', 'port': 8090},
+    )
+    assert alias_a['id'] != alias_b['id']
+    assert alias_a['id'] == 'library-file:profile-a'
+    assert alias_b['id'] == 'library-file:profile-b'
+
+
+def test_drop_redundant_library_file_aliases():
+    from core.local_models import _drop_redundant_library_file_aliases
+
+    rows = [
+        {'source': 'dflash-profile', 'server_id': 'profile-a', 'path': r'C:\models\a\file.gguf', 'label': 'Nice name'},
+        {'library_file': True, 'path': r'C:\models\a\file.gguf', 'label': 'file.gguf', 'id': 'library-file:profile-a'},
+        {'library_file': True, 'path': r'C:\models\b\file.gguf', 'label': 'file.gguf', 'id': 'library-file:profile-b'},
+    ]
+    kept = _drop_redundant_library_file_aliases(rows)
+    assert len(kept) == 2
+    assert kept[0]['server_id'] == 'profile-a'
+    assert kept[1]['path'] == r'C:\models\b\file.gguf'
+
+
+def test_mark_duplicate_files_counts_unique_paths():
+    from core.local_models import _mark_duplicate_files
+
+    rows = [
+        {'path': r'C:\a\model.gguf', 'filename': 'model.gguf'},
+        {'path': r'C:\a\model.gguf', 'filename': 'model.gguf'},
+        {'path': r'C:\b\model.gguf', 'filename': 'model.gguf'},
+    ]
+    _mark_duplicate_files(rows)
+    assert rows[0]['duplicate_count'] == 2
+    assert rows[0]['duplicate_paths'] == [r'C:\a\model.gguf', r'C:\b\model.gguf']
 
 
 def test_annotate_path_status_accepts_faster_whisper_dirs(tmp_path: Path):

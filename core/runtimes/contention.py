@@ -50,7 +50,7 @@ def gpu_contention_report(
         loaded: list[str] = []
         if running and api_url:
             try:
-                loaded_ids, _loading, _router = probe_runtime_state(api_url)
+                loaded_ids, _loading, _router, _progress = probe_runtime_state(api_url)
                 loaded = list(loaded_ids)
             except Exception:
                 loaded = []
@@ -61,6 +61,26 @@ def gpu_contention_report(
             'port': port,
             'running': running,
             'loaded_models': loaded,
+            'vram_estimate_mb': None,
+        })
+
+    from core.runtimes import get_runtime_adapter
+
+    for runtime_id, label in (('vllm', 'vLLM'), ('transformers', 'Transformers')):
+        adapter = get_runtime_adapter(runtime_id)
+        if adapter is None or not callable(getattr(adapter, 'health', None)):
+            continue
+        health = adapter.health()
+        if health.get('running') is not True:
+            continue
+        model = str(health.get('active_model') or '')
+        console_running.append({
+            'id': runtime_id,
+            'runtime_id': runtime_id,
+            'label': label,
+            'port': int(health.get('port') or 0),
+            'running': True,
+            'loaded_models': [model] if model else [],
             'vram_estimate_mb': None,
         })
 

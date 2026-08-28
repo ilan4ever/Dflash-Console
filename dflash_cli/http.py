@@ -62,13 +62,20 @@ class ConsoleClient:
             raise ConsoleError(f'Request timed out: {method} {path}') from exc
 
     def get(self, path: str, **query: Any) -> Any:
-        return self.request('GET', path, query=query or None)
+        timeout = query.pop('timeout', None)
+        return self.request('GET', path, query=query or None, timeout=timeout)
 
     def post(self, path: str, body: Any | None = None, **query: Any) -> Any:
-        return self.request('POST', path, query=query or None, body=body if body is not None else {})
+        timeout = query.pop('timeout', None)
+        return self.request('POST', path, query=query or None, body=body if body is not None else {}, timeout=timeout)
 
     def delete(self, path: str, **query: Any) -> Any:
-        return self.request('DELETE', path, query=query or None)
+        timeout = query.pop('timeout', None)
+        return self.request('DELETE', path, query=query or None, timeout=timeout)
+
+    def patch(self, path: str, body: Any | None = None, **query: Any) -> Any:
+        timeout = query.pop('timeout', None)
+        return self.request('PATCH', path, query=query or None, body=body if body is not None else {}, timeout=timeout)
 
 
 def resolve_base_url(url: str | None = None, port: int | None = None) -> str:

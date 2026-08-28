@@ -146,3 +146,55 @@ def test_catalog_ready_rejects_qwen36_when_stack_is_qwen35(tmp_path, monkeypatch
         tags=['dflash'],
         cfg=cfg,
     ) is False
+
+
+def test_catalog_ready_rejects_dflash2_repo_when_stack_has_dflash1_draft(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    root.mkdir(parents=True)
+    target = root / 'Qwen3.8-27B-Q6_K_L.gguf'
+    target.write_bytes(b'gguf')
+    draft = root / 'Qwen3.5-27B-DFlash-F16.gguf'
+    draft.write_bytes(b'draft')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [{
+            'id': 'qwen38',
+            'model_id': 'qwen38',
+            'label': 'Qwen 3.8 27B D-Flash',
+            'enabled': True,
+            'profile': 'qwen-dflash',
+            'target_path': str(target),
+            'draft_path': str(draft),
+            'port': 8096,
+        }],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: cfg['servers'])
+    monkeypatch.setattr('core.local_models._CATALOG_CACHE', None)
+    monkeypatch.setattr('core.local_models._CATALOG_CACHE_AT', 0.0)
+    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library')])
+
+    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
+
+    assert find_repo_local_installs('incoai/Qwen3.8-27B-DFlash2-GGUF', cfg=cfg) == []
+    assert is_catalog_ready_to_load(
+        'incoai/Qwen3.8-27B-DFlash2-GGUF',
+        title='Qwen3.8-27B-DFlash2-GGUF',
+        tags=['dflash'],
+        cfg=cfg,
+    ) is False
+    assert is_catalog_ready_to_load(
+        'mrchuy/Qwen3.8-27B-DFlash-drafter-bootstrap-GGUF',
+        title='Qwen3.8-27B-DFlash-drafter-bootstrap-GGUF',
+        tags=['dflash'],
+        cfg=cfg,
+    ) is True

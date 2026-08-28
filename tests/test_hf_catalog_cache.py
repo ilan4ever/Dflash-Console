@@ -178,3 +178,5 @@ def test_capable_stack_row_is_not_loadable(tmp_path: Path):
     })
     assert row['loadable'] is False
     assert row['stack_status'] == 'unregistered'
+    assert not str(row['model_id']).startswith('stack-capable:')
+    assert row['model_id'] == row['label']

@@ -17,6 +17,8 @@ from core.stack_match import (
     is_target_candidate,
     is_viable_stack_pair,
     preflight_stack_target,
+    replace_stack_draft,
+    resolve_recommended_generation,
     score_accelerator_pair,
     suggest_server_id,
 )
@@ -135,6 +137,47 @@ class StackMatchTests(unittest.TestCase):
         self.assertEqual(result['reason_code'], 'no-accelerator')
         self.assertIn('Download', result['reason'])
 
+    def test_preflight_translategemma_is_not_labeled_accelerator(self):
+        with tempfile.NamedTemporaryFile(suffix='translategemma-12b-it.Q4_K_S.gguf', delete=False) as tmp:
+            target = Path(tmp.name)
+        try:
+            result = preflight_stack_target(target)
+            self.assertFalse(result['eligible'])
+            self.assertEqual(result['reason_code'], 'not-stack-target')
+            self.assertNotIn('accelerator', result['reason'].lower())
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_engine_profile_without_draft_can_be_a_capable_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / 'Qwen3.5-27B-Q4_K_M.gguf'
+            draft = root / 'Qwen3.5-27B-DFlash-F16.gguf'
+            target.write_bytes(b'x')
+            draft.write_bytes(b'x')
+            catalog = {
+                'models': [
+                    {
+                        'path': str(target),
+                        'filename': target.name,
+                        'label': 'Qwen3.5-27B-Q4 K M',
+                        'loadable': True,
+                        'server_id': 'qwen3-5-27b-q4-k-m',
+                        'source': 'dflash-profile',
+                    },
+                    {
+                        'path': str(draft),
+                        'filename': draft.name,
+                        'label': draft.name,
+                        'loadable': False,
+                    },
+                ],
+            }
+            with patch('core.stack_match.list_local_models', return_value=catalog):
+                result = list_capable_targets(cfg={'servers': []})
+        self.assertEqual(result['total_count'], 1)
+        self.assertEqual(result['targets'][0]['path'], str(target.resolve()))
+
     def test_plain_loadable_gguf_can_be_a_capable_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -164,6 +207,201 @@ class StackMatchTests(unittest.TestCase):
                 result = list_capable_targets(cfg={'servers': []})
         self.assertEqual(result['total_count'], 1)
         self.assertEqual(result['targets'][0]['path'], str(target.resolve()))
+
+
+    def test_replace_stack_draft_updates_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / 'Qwen3.8-27B-Q6_K_L.gguf'
+            old_draft = root / 'Qwen3.5-27B-DFlash-F16.gguf'
+            new_draft = root / 'Qwen3.8-27B-DFlash-F16.gguf'
+            target.write_bytes(b'x')
+            old_draft.write_bytes(b'x')
+            new_draft.write_bytes(b'x')
+            cfg = {
+                'servers': [{
+                    'id': 'qwen-stack',
+                    'label': 'Qwen stack',
+                    'profile': 'qwen-dflash',
+                    'port': 8096,
+                    'model_id': 'qwen3-8-27b-q6-k-l',
+                    'target_path': str(target),
+                    'draft_path': str(old_draft),
+                }],
+            }
+            from core.stack_match import replace_stack_draft
+
+            with patch('core.config.save_config'), patch('core.model_presets.write_server_preset'):
+                result = replace_stack_draft('qwen-stack', new_draft, cfg=cfg)
+            self.assertTrue(result['success'])
+            self.assertEqual(result['server']['draft_path'], str(new_draft.resolve()))
+            self.assertEqual(cfg['servers'][0]['draft_path'], str(new_draft.resolve()))
+
+    def test_match_marks_better_local_accelerator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / 'Qwen3.8-27B-Q6_K_L.gguf'
+            current = root / 'Qwen3.5-27B-DFlash-F16.gguf'
+            better = root / 'Qwen3.8-27B-DFlash-F16.gguf'
+            target.write_bytes(b'x')
+            current.write_bytes(b'x')
+            better.write_bytes(b'x')
+            catalog = {
+                'models': [
+                    {'path': str(current), 'filename': current.name, 'label': current.name, 'size_gb': 4.0},
+                    {'path': str(better), 'filename': better.name, 'label': better.name, 'size_gb': 4.0},
+                ],
+            }
+            with patch('core.stack_match.list_local_models', return_value=catalog):
+                result = match_stack_for_target(
+                    target,
+                    cfg={'servers': []},
+                    current_draft_path=current,
+                    dflash_generation='dflash1',
+                )
+
+        rows = {Path(row['path']).name: row for row in result['local_accelerators']}
+        self.assertTrue(rows['Qwen3.8-27B-DFlash-F16.gguf']['better_than_current'])
+        self.assertTrue(result['has_better_local'])
+
+    def test_hf_suggestions_rank_and_recommend_dflash2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Qwen3.8-27B-Q6_K_L.gguf'
+            target.write_bytes(b'x')
+            search_rows = {
+                'success': True,
+                'models': [
+                    {
+                        'id': 'Akicou/Qwen3.8-27B-DFlash2-GGUF',
+                        'title': 'Qwen3.8-27B-DFlash2-GGUF',
+                        'author': 'Akicou',
+                        'size_label': '1.06 GB',
+                        'downloads': 9,
+                        'downloads_label': '9',
+                        'updated_ago': '2 days ago',
+                        'updated_days': 2,
+                        'accelerator_only': True,
+                        'dflash_generation': 'dflash2',
+                    },
+                    {
+                        'id': 'incoai/Qwen3.8-27B-DFlash2-GGUF',
+                        'title': 'Qwen3.8-27B-DFlash2-GGUF',
+                        'author': 'incoai',
+                        'size_label': '1.06 GB',
+                        'downloads': 1400,
+                        'downloads_label': '1.4k',
+                        'updated_ago': '1 day ago',
+                        'updated_days': 1,
+                        'accelerator_only': True,
+                        'dflash_generation': 'dflash2',
+                        'local_loadable': True,
+                    },
+                    {
+                        'id': 'z-lab/Qwen3.8-27B-DFlash2-GGUF',
+                        'title': 'Qwen3.8-27B-DFlash2-GGUF',
+                        'author': 'z-lab',
+                        'size_label': '1.06 GB',
+                        'downloads': 1700,
+                        'downloads_label': '1.7k',
+                        'updated_ago': '14h ago',
+                        'updated_days': 0,
+                        'accelerator_only': True,
+                        'dflash_generation': 'dflash2',
+                    },
+                ],
+            }
+            with patch('core.stack_match.find_local_accelerators', return_value=[]), patch(
+                'core.huggingface.search_models',
+                return_value=search_rows,
+            ):
+                result = match_stack_for_target(
+                    target,
+                    cfg={'servers': []},
+                    current_draft_path='Qwen3.5-27B-DFlash-F16.gguf',
+                    dflash_generation='dflash2',
+                )
+
+        self.assertTrue(result['recommended_hf']['is_recommended'])
+        self.assertEqual(result['recommended_hf']['id'], 'incoai/Qwen3.8-27B-DFlash2-GGUF')
+        self.assertEqual(result['hf_suggestions'][0]['id'], 'incoai/Qwen3.8-27B-DFlash2-GGUF')
+        self.assertIn('official DFlash 2 publisher', result['recommended_hf']['recommendation_reasons'])
+        self.assertTrue(all(row.get('match_score') for row in result['hf_suggestions']))
+
+    def test_resolve_recommended_generation_prefers_dflash2_for_qwen38(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Qwen3.8-27B-Q6_K_L.gguf'
+            target.write_bytes(b'x')
+
+            def fake_fetch(target_path, generation, **kwargs):
+                if generation == 'dflash2':
+                    return [{
+                        'id': 'incoai/Qwen3.8-27B-DFlash2-GGUF',
+                        'title': 'Qwen3.8-27B-DFlash2-GGUF',
+                        'author': 'incoai',
+                        'downloads': 1400,
+                        'downloads_label': '1.4k',
+                        'accelerator_only': True,
+                        'dflash_generation': 'dflash2',
+                    }]
+                return [{
+                    'id': 'mrchuy/Qwen3.8-27B-DFlash-drafter-bootstrap-GGUF',
+                    'title': 'Qwen3.8-27B-DFlash-drafter-bootstrap-GGUF',
+                    'author': 'mrchuy',
+                    'downloads': 900,
+                    'downloads_label': '900',
+                    'accelerator_only': True,
+                    'dflash_generation': 'dflash1',
+                }]
+
+            with patch('core.stack_match.find_local_accelerators', return_value=[]), patch(
+                'core.stack_match._fetch_hf_suggestion_rows',
+                side_effect=fake_fetch,
+            ):
+                picked = resolve_recommended_generation(target, cfg={'servers': []})
+
+        self.assertEqual(picked['recommended_generation'], 'dflash2')
+        self.assertGreater(
+            picked['generation_scores']['dflash2'],
+            picked['generation_scores']['dflash1'],
+        )
+
+    def test_match_auto_uses_recommended_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Qwen3.8-27B-Q6_K_L.gguf'
+            target.write_bytes(b'x')
+            search_rows = {
+                'success': True,
+                'models': [{
+                    'id': 'incoai/Qwen3.8-27B-DFlash2-GGUF',
+                    'title': 'Qwen3.8-27B-DFlash2-GGUF',
+                    'author': 'incoai',
+                    'size_label': '1.06 GB',
+                    'downloads': 1400,
+                    'downloads_label': '1.4k',
+                    'accelerator_only': True,
+                    'dflash_generation': 'dflash2',
+                }],
+            }
+
+            def fake_fetch(target_path, generation, **kwargs):
+                if generation != 'dflash2':
+                    return []
+                return list(search_rows['models'])
+
+            with patch('core.stack_match.find_local_accelerators', return_value=[]), patch(
+                'core.stack_match._fetch_hf_suggestion_rows',
+                side_effect=fake_fetch,
+            ):
+                result = match_stack_for_target(
+                    target,
+                    cfg={'servers': []},
+                    dflash_generation='auto',
+                )
+
+        self.assertEqual(result['recommended_generation'], 'dflash2')
+        self.assertEqual(result['dflash_generation'], 'dflash2')
+        self.assertEqual(result['requested_generation'], 'auto')
+        self.assertEqual(result['hf_suggestions'][0]['id'], 'incoai/Qwen3.8-27B-DFlash2-GGUF')
 
 
 if __name__ == '__main__':

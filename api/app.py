@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -18,17 +19,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core.config import get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
+from core.config import PACKAGE_ROOT, ROOT, get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_download_settings, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_remote_nodes, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
 from core.model_paths import allowed_model_roots, disk_scan_roots, validate_model_path
 from core.gpu_devices import get_gpu_devices_payload
-from core.local_models import invalidate_model_catalog_cache, list_local_models, warm_model_catalog
+from core.local_models import (
+    friendly_model_dir_label,
+    invalidate_model_catalog_cache,
+    list_local_models,
+    resolve_model_delete_dir,
+    warm_model_catalog,
+)
 from core.runtime import get_status_payload, stop_server, tcp_port_open, unload_model
 from core.server_boot import load_server_checkpoint, note_boot_cycle_end, reload_server, start_router_listener, start_server
 
-ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = ROOT / 'static'
-ASSETS_DIR = ROOT / 'assets'
+STATIC_DIR = PACKAGE_ROOT / 'static' if (PACKAGE_ROOT / 'static').is_dir() else ROOT / 'static'
+ASSETS_DIR = PACKAGE_ROOT / 'assets' if (PACKAGE_ROOT / 'assets').is_dir() else ROOT / 'assets'
 
 _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
@@ -44,16 +50,116 @@ _GATEWAY_THREAD: threading.Thread | None = None
 _GATEWAY_ERROR = ''
 
 
+def _parent_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return True
+    if os.name == 'nt':
+        # os.kill(pid, 0) is not signal-free on every Windows Python build (it
+        # can deliver a deferred CTRL_C_EVENT to this console), so probe the
+        # process handle directly instead.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _start_parent_watchdog() -> None:
+    """Stop this API when the owning shell process dies (orphan guard).
+
+    The Electron shell passes DFLASH_CONSOLE_PARENT_PID when it spawns the
+    server. If the shell is force-killed (update helper, taskkill, crash), the
+    graceful quit path never runs — without this guard the old server keeps
+    listening and the next app start would reuse a stale backend.
+    """
+    try:
+        parent_pid = int(str(os.environ.get('DFLASH_CONSOLE_PARENT_PID') or '0').strip())
+    except (TypeError, ValueError):
+        parent_pid = 0
+    if parent_pid <= 0:
+        return
+
+    def watch() -> None:
+        import logging
+
+        logger = logging.getLogger('uvicorn.error')
+        time.sleep(10.0)  # grace period while the shell finishes starting
+        while True:
+            time.sleep(2.0)
+            if _parent_process_alive(parent_pid):
+                continue
+            logger.warning(
+                'Console API parent process %s is gone — shutting down orphaned server',
+                parent_pid,
+            )
+            try:
+                _stop_gateway_server()
+                _release_gpu_on_shutdown()
+            except Exception:
+                pass
+            os._exit(0)
+
+    threading.Thread(target=watch, daemon=True, name='console-parent-watchdog').start()
+
+
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    _write_runtime_process_manifest()
+    def write_manifests() -> None:
+        try:
+            _write_runtime_process_manifest()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=write_manifests,
+        daemon=True,
+        name='runtime-manifest',
+    ).start()
     _start_background_tasks()
     _start_gateway_server()
+    _start_parent_watchdog()
     try:
         yield
     finally:
+        try:
+            from core.huggingface import save_pending_downloads
+
+            save_pending_downloads()
+        except Exception:
+            pass
+        _stop_hf_engine_workers()
         _stop_gateway_server()
         _release_gpu_on_shutdown()
+
+
+def _stop_hf_engine_workers() -> None:
+    """Stop HF engine workers spawned by this API process (e.g. transformers)."""
+    try:
+        from core.runtimes import get_runtime_adapter
+
+        for runtime_id in ('transformers',):
+            adapter = get_runtime_adapter(runtime_id)
+            stop_fn = getattr(adapter, 'stop', None) if adapter is not None else None
+            if callable(stop_fn):
+                stop_fn()
+    except Exception:
+        pass
 
 
 def _start_gateway_server() -> None:
@@ -124,6 +230,16 @@ def _write_runtime_process_manifest() -> None:
         ensure_runtime_entry(
             'vibevoice',
             label='VibeVoice TTS',
+            cfg=load_config(),
+        )
+        ensure_runtime_entry(
+            'transformers',
+            label='Transformers (PyTorch)',
+            cfg=load_config(),
+        )
+        ensure_runtime_entry(
+            'vllm',
+            label='vLLM',
             cfg=load_config(),
         )
         write_process_tokens_manifest()
@@ -212,6 +328,41 @@ def _start_background_tasks() -> None:
 
     threading.Thread(target=run, daemon=True, name='engine-restore').start()
 
+    def autostart_hf_engines() -> None:
+        """Bring up installed HF engine workers that have an idle server mode.
+
+        After a fresh install the Engines tab must show Transformers on and
+        ready — models still load into GPU memory only on explicit demand.
+        """
+        time.sleep(3.0)  # let restore_engines adopt/stop ports first
+        try:
+            from core.runtimes import get_runtime_adapter
+
+            cfg = load_config()
+            profiles = {str(r.get('runtime_id') or ''): r for r in list_runtimes(cfg)}
+            for runtime_id in ('transformers',):
+                profile = profiles.get(runtime_id) or {}
+                if profile and profile.get('enabled', True) is False:
+                    continue
+                adapter = get_runtime_adapter(runtime_id)
+                if adapter is None:
+                    continue
+                is_installed = getattr(adapter, 'is_installed', None)
+                if not callable(is_installed) or not is_installed():
+                    continue
+                health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
+                if isinstance(health, dict) and health.get('running') is True:
+                    continue
+                start_fn = getattr(adapter, 'start', None)
+                if not callable(start_fn):
+                    continue
+                result = start_fn(profile)
+                logger.info('hf engine autostart %s: success=%s', runtime_id, result.get('success'))
+        except Exception as exc:
+            logger.exception('hf engine autostart failed: %s', exc)
+
+    threading.Thread(target=autostart_hf_engines, daemon=True, name='hf-engine-autostart').start()
+
     def warm_catalog() -> None:
         try:
             from core.local_models import start_model_catalog_refresh_loop
@@ -251,6 +402,19 @@ def _start_background_tasks() -> None:
             logger.exception('hf catalog warm failed: %s', exc)
 
     threading.Thread(target=warm_hf_catalog, daemon=True, name='hf-catalog-warm').start()
+
+    def resume_downloads() -> None:
+        time.sleep(1.5)
+        try:
+            from core.huggingface import resume_interrupted_downloads
+
+            result = resume_interrupted_downloads(cfg=load_config())
+            if result.get('count'):
+                logger.info('resumed %s interrupted download(s): %s', result['count'], result.get('resumed'))
+        except Exception as exc:
+            logger.exception('download resume failed: %s', exc)
+
+    threading.Thread(target=resume_downloads, daemon=True, name='hf-download-resume').start()
 
 
 def _release_gpu_on_shutdown() -> None:
@@ -303,6 +467,7 @@ class ServerPatch(BaseModel):
     enabled: bool | None = None
     load_settings: dict[str, Any] | None = None
     inference_settings: dict[str, Any] | None = None
+    mmproj_path: str | None = None
 
 
 class ConfigPatch(BaseModel):
@@ -319,6 +484,44 @@ class ConfigPatch(BaseModel):
     ui_layout: dict[str, Any] | None = None
     context_auto_grow: bool | None = None
     context_max: int | None = Field(default=None, ge=2048, le=1048576)
+    download_settings: dict[str, Any] | None = None
+    remote_nodes: list[dict[str, Any]] | None = None
+
+
+class DownloadSettingsPatch(BaseModel):
+    parallel_connections: int | None = Field(default=None, ge=1, le=8)
+
+
+class DownloadBenchmarkRequest(BaseModel):
+    connections: list[int] | None = None
+    test_mib: int = Field(default=32, ge=8, le=128)
+
+
+class RemoteNodeCreate(BaseModel):
+    label: str = Field(..., min_length=1, max_length=120)
+    base_url: str = Field(..., min_length=8, max_length=512)
+    api_token: str | None = Field(default=None, max_length=512)
+    enabled: bool | None = True
+
+
+class RemoteNodePatch(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=8, max_length=512)
+    api_token: str | None = Field(default=None, max_length=512)
+    enabled: bool | None = None
+
+
+class NodeConnectTest(BaseModel):
+    base_url: str = Field(..., min_length=8, max_length=512)
+    api_token: str | None = Field(default=None, max_length=512)
+
+
+class NodeConnectSshCommand(BaseModel):
+    scenario: str = Field(..., min_length=4, max_length=32)
+    ssh_user: str = Field(default='user', min_length=1, max_length=120)
+    ssh_host: str = Field(..., min_length=1, max_length=255)
+    local_bind_port: int | None = Field(default=None, ge=1024, le=65535)
+    remote_console_port: int | None = Field(default=None, ge=1, le=65535)
 
 
 class HardwarePatch(BaseModel):
@@ -363,6 +566,7 @@ class ModelLoadRequest(BaseModel):
     path: str = Field(..., min_length=1)
     server_id: str | None = None
     model_id: str | None = None
+    runtime_id: str | None = None
     context_size: int | None = Field(default=None, ge=2048, le=1048576)
     load_settings: dict[str, Any] | None = None
     inference_settings: dict[str, Any] | None = None
@@ -372,6 +576,7 @@ class LibraryImportRequest(BaseModel):
     path: str = Field(..., min_length=1)
     preset: str = Field(default='custom')
     mode: str = Field(default='link', pattern='^(link|copy|move)$')
+    overwrite: bool = Field(default=False)
 
 
 class PresetsImportBody(BaseModel):
@@ -388,11 +593,16 @@ class ServerLoadRequest(BaseModel):
     inference_settings: dict[str, Any] | None = None
     model_path: str | None = None
     model_id: str | None = None
+    skip_draft: bool | None = None
 
 
 class GpuProcessUnload(BaseModel):
     api_url: str | None = None
     model_id: str | None = None
+
+
+class StackReplaceDraftRequest(BaseModel):
+    draft_path: str = Field(..., min_length=1)
 
 
 class ServerCreateRequest(BaseModel):
@@ -406,6 +616,7 @@ class ServerCreateRequest(BaseModel):
     context_size: int | None = Field(default=None, ge=2048, le=262144)
     copy_to_console: bool = False
     copy_mode: str | None = Field(default=None, pattern='^(copy|move|none)$')
+    overwrite: bool = Field(default=False)
 
 
 class AudioSpeechRequest(BaseModel):
@@ -420,6 +631,13 @@ class AudioSpeechRequest(BaseModel):
 class RuntimeLoadRequest(BaseModel):
     voice: str = Field(default='', max_length=120)
     path: str = Field(default='', max_length=1024)
+    preset: str = Field(default='', max_length=40)
+    load_settings: dict[str, Any] | None = None
+
+
+class RuntimeInstallRequest(BaseModel):
+    torch_variant: str = Field(default='auto', max_length=20)
+    backend: str = Field(default='auto', max_length=20)
 
 
 class RuntimeUnloadRequest(BaseModel):
@@ -452,6 +670,23 @@ def _require_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any]:
     return normalize_server(server)
 
 
+def _hf_engine_adapter(server_id: str) -> Any:
+    """Runtime adapter behind a synthetic Engines row (vllm / transformers)."""
+    sid = str(server_id or '').strip().lower()
+    if sid not in ('vllm', 'transformers'):
+        return None
+    from core.runtimes import get_runtime_adapter
+
+    return get_runtime_adapter(sid)
+
+
+def _hf_engine_profile(cfg: dict[str, Any], runtime_id: str) -> dict[str, Any]:
+    for entry in list_runtimes(cfg):
+        if str(entry.get('runtime_id') or '') == runtime_id:
+            return entry
+    return {}
+
+
 def _invalidate_status_cache() -> None:
     from core.runtime import invalidate_status_payload_cache
 
@@ -479,7 +714,10 @@ async def health() -> dict[str, Any]:
         'success': True,
         'app': 'DFlash Console',
         'version': APP_VERSION,
+        'process_root': console_root,
         'console_root': configured_root,
+        'config_path': str((ROOT / 'config.json').resolve()),
+        'ui_url': f'http://127.0.0.1:{int(cfg.get("ui_port") or 8900)}/',
         'shell_version': os.environ.get('DFLASH_CONSOLE_SHELL_VERSION', ''),
         # Developer server = served from a git checkout AND started from a
         # terminal (the installed app's Electron shell always sets
@@ -583,6 +821,15 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
             **data['hardware_settings'],
         })
         data.pop('hardware_settings')
+    if 'download_settings' in data and isinstance(data['download_settings'], dict):
+        cfg['download_settings'] = normalize_download_settings({
+            **cfg.get('download_settings', {}),
+            **data['download_settings'],
+        })
+        data.pop('download_settings')
+    if 'remote_nodes' in data and isinstance(data['remote_nodes'], list):
+        cfg['remote_nodes'] = normalize_remote_nodes(data['remote_nodes'])
+        data.pop('remote_nodes')
     if 'model_libraries' in data and isinstance(data['model_libraries'], list):
         cfg['model_libraries'] = normalize_model_libraries(data['model_libraries'], cfg=cfg)
         data.pop('model_libraries')
@@ -715,7 +962,13 @@ def model_library_import(body: LibraryImportRequest) -> dict[str, Any]:
     from core.library_import import import_library_folder
 
     try:
-        return import_library_folder(body.path, preset=body.preset, mode=body.mode, cfg=load_config())
+        return import_library_folder(
+            body.path,
+            preset=body.preset,
+            mode=body.mode,
+            overwrite=body.overwrite,
+            cfg=load_config(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
@@ -731,14 +984,231 @@ def hardware_info() -> dict[str, Any]:
 
 @app.patch('/api/hardware')
 def patch_hardware(body: HardwarePatch) -> dict[str, Any]:
+    from core.hardware_apply import hardware_reload_plan
+
     cfg = load_config()
+    previous = normalize_hardware_settings(cfg.get('hardware_settings'))
     merged = normalize_hardware_settings({
-        **cfg.get('hardware_settings', {}),
+        **previous,
         **body.model_dump(exclude_none=True),
     })
+    settings_changed = merged != previous
     cfg['hardware_settings'] = merged
     _save_config_checked(cfg)
-    return {'success': True, 'hardware_settings': merged}
+    # A running engine may have been adopted after a Console restart, or a
+    # concurrent status poll may have recorded the new desired signature before
+    # this plan runs. When hardware settings actually change, reload every
+    # loaded engine instead of trusting that in-memory signature.
+    plan = hardware_reload_plan(cfg, force_reload=settings_changed)
+    return {'success': True, 'hardware_settings': merged, **plan}
+
+
+@app.get('/api/download-settings')
+def get_download_settings() -> dict[str, Any]:
+    cfg = load_config()
+    settings = normalize_download_settings(cfg.get('download_settings'))
+    return {'success': True, 'download_settings': settings}
+
+
+@app.patch('/api/download-settings')
+def patch_download_settings(body: DownloadSettingsPatch) -> dict[str, Any]:
+    cfg = load_config()
+    merged = normalize_download_settings({
+        **cfg.get('download_settings', {}),
+        **body.model_dump(exclude_none=True),
+    })
+    cfg['download_settings'] = merged
+    _save_config_checked(cfg)
+    return {'success': True, 'download_settings': merged}
+
+
+@app.post('/api/download-settings/benchmark')
+def benchmark_download_settings(body: DownloadBenchmarkRequest) -> dict[str, Any]:
+    from core.huggingface import benchmark_download_connections
+
+    result = benchmark_download_connections(body.connections, test_mib=body.test_mib)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'benchmark failed')
+    return result
+
+
+@app.get('/api/nodes')
+def list_remote_nodes(fresh: bool = Query(default=False)) -> dict[str, Any]:
+    from core.remote_nodes import list_nodes_with_health
+
+    nodes = list_nodes_with_health(fresh=fresh)
+    return {'success': True, 'nodes': nodes, 'count': len(nodes)}
+
+
+@app.get('/api/nodes/connect/wizard')
+def node_connect_wizard() -> dict[str, Any]:
+    from core.node_connect import build_connect_wizard
+
+    return build_connect_wizard(cfg=load_config())
+
+
+@app.post('/api/nodes/connect/test')
+def node_connect_test(body: NodeConnectTest) -> dict[str, Any]:
+    from core.node_connect import probe_console_url
+
+    return probe_console_url(body.base_url, api_token=body.api_token or '')
+
+
+@app.post('/api/nodes/connect/ssh-command')
+def node_connect_ssh_command(body: NodeConnectSshCommand) -> dict[str, Any]:
+    from core.node_connect import build_ssh_tunnel_commands
+
+    scenario = str(body.scenario or '').strip().lower()
+    if scenario not in {'reach_remote', 'share_local'}:
+        raise HTTPException(status_code=400, detail='scenario must be reach_remote or share_local')
+    cfg = load_config()
+    ui_port = int(cfg.get('ui_port') or 8900)
+    return {
+        'success': True,
+        **build_ssh_tunnel_commands(
+            scenario=scenario,
+            ui_port=ui_port,
+            ssh_user=body.ssh_user,
+            ssh_host=body.ssh_host,
+            local_bind_port=body.local_bind_port,
+            remote_console_port=body.remote_console_port,
+        ),
+    }
+
+
+@app.post('/api/nodes')
+def create_remote_node(body: RemoteNodeCreate) -> dict[str, Any]:
+    from core.remote_nodes import add_remote_node, check_remote_node_health
+
+    try:
+        node = add_remote_node(body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    health = check_remote_node_health(node)
+    return {
+        'success': True,
+        'node': {
+            'id': node.get('id'),
+            'label': node.get('label'),
+            'base_url': node.get('base_url'),
+            'enabled': node.get('enabled') is not False,
+            'has_token': bool(str(node.get('api_token') or '').strip()),
+            **health,
+        },
+    }
+
+
+@app.patch('/api/nodes/{node_id}')
+def patch_remote_node(node_id: str, body: RemoteNodePatch) -> dict[str, Any]:
+    from core.remote_nodes import check_remote_node_health, get_remote_node, update_remote_node
+
+    updated = update_remote_node(node_id, body.model_dump(exclude_none=True))
+    if not updated:
+        raise HTTPException(status_code=404, detail='node not found')
+    health = check_remote_node_health(updated)
+    return {
+        'success': True,
+        'node': {
+            'id': updated.get('id'),
+            'label': updated.get('label'),
+            'base_url': updated.get('base_url'),
+            'enabled': updated.get('enabled') is not False,
+            'has_token': bool(str(updated.get('api_token') or '').strip()),
+            **health,
+        },
+    }
+
+
+@app.delete('/api/nodes/{node_id}')
+def delete_remote_node(node_id: str) -> dict[str, Any]:
+    from core.remote_nodes import remove_remote_node
+
+    if not remove_remote_node(node_id):
+        raise HTTPException(status_code=404, detail='node not found')
+    return {'success': True, 'id': node_id}
+
+
+@app.post('/api/nodes/{node_id}/health')
+def remote_node_health(node_id: str) -> dict[str, Any]:
+    from core.remote_nodes import check_remote_node_health, get_remote_node
+
+    node = get_remote_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail='node not found')
+    health = check_remote_node_health(node)
+    return {'success': True, 'node_id': node_id, **health}
+
+
+@app.post('/api/nodes/{node_id}/v1/chat/completions')
+async def proxy_remote_node_chat(node_id: str, request: Request):
+    import json
+    import urllib.error
+
+    from core.chat_proxy import open_upstream_chat_stream, upstream_chat_completion, wants_stream
+    from core.remote_nodes import _node_headers, get_remote_node, node_chat_url
+
+    node = get_remote_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail='node not found')
+    if node.get('enabled') is False:
+        raise HTTPException(status_code=400, detail='node is disabled')
+
+    raw = await request.body()
+    content_type = request.headers.get('content-type') or 'application/json'
+    url = node_chat_url(node)
+    headers = _node_headers(node)
+
+    if wants_stream(raw):
+        try:
+            media_type, chunks, close_upstream = await open_upstream_chat_stream(
+                url,
+                raw,
+                content_type=content_type,
+                server_id=f'node:{node_id}',
+                extra_headers=headers,
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode('utf-8', errors='replace')
+            raise HTTPException(status_code=exc.code, detail=detail) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        async def stream_body():
+            try:
+                async for chunk in chunks:
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            finally:
+                if close_upstream:
+                    try:
+                        close_upstream()
+                    except Exception:
+                        pass
+
+        return StreamingResponse(
+            stream_body(),
+            media_type=media_type,
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+            },
+        )
+
+    try:
+        status, payload = upstream_chat_completion(
+            url,
+            raw,
+            content_type=content_type,
+            extra_headers=headers,
+            server_id=f'node:{node_id}',
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=payload)
+    return JSONResponse(content=payload, status_code=status)
 
 
 @app.get('/api/hardware/fit-budget')
@@ -852,10 +1322,14 @@ def hf_download_status(job_id: str) -> dict[str, Any]:
 
 
 @app.get('/api/hf/downloads')
-def hf_downloads(active: bool = Query(default=False), discover: bool = Query(default=False)) -> dict[str, Any]:
+def hf_downloads(
+    active: bool = Query(default=False),
+    discover: bool = Query(default=False),
+    console_only: bool = Query(default=True),
+) -> dict[str, Any]:
     from core.huggingface import list_download_jobs
 
-    return list_download_jobs(active_only=active, discover=discover)
+    return list_download_jobs(active_only=active, discover=discover, console_only=console_only)
 
 
 @app.delete('/api/hf/downloads/{job_id}')
@@ -953,6 +1427,11 @@ def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
             'speech-to-text': f'then POST /api/runtimes/{stt_route}/v1/audio/transcriptions (multipart file=audio)',
             'text-to-speech': f'then POST /api/runtimes/{tts_route}/v1/audio/speech {{"input": "...", "voice": "..."}}',
             'embedding': 'then POST /api/servers/{server_id}/v1/embeddings {"input": [...]}',
+            'llm': (
+                f'then POST /api/servers/{runtime_id}/v1/chat/completions'
+                if runtime_id in {'vllm', 'transformers'}
+                else 'then POST /api/servers/{server_id}/v1/chat/completions'
+            ),
         }.get(modality, ''),
     }
 
@@ -1007,6 +1486,7 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
         context_size=body.context_size,
         load_settings=body.load_settings,
         inference_settings=body.inference_settings,
+        requested_runtime_id=body.runtime_id,
         loaded_by='api:/api/models/load',
         cfg=load_config(),
     )
@@ -1033,6 +1513,15 @@ def models_vision_setup(body: VisionSetupRequest) -> dict[str, Any]:
     if not plan.get('success'):
         raise HTTPException(status_code=400, detail=plan.get('error') or 'vision plan failed')
     if plan.get('ready'):
+        mmproj = str(plan.get('mmproj_path') or '').strip()
+        if body.server_id and mmproj:
+            wired = wire_vision(
+                model_path=body.model_path,
+                mmproj_path=mmproj,
+                server_id=body.server_id,
+            )
+            if wired.get('success'):
+                return {**plan, **wired, 'wired': True}
         return plan
     if not plan.get('needs_download'):
         wired = wire_vision(
@@ -1060,6 +1549,40 @@ def models_vision_setup(body: VisionSetupRequest) -> dict[str, Any]:
     if not downloaded.get('success') and not downloaded.get('wired'):
         raise HTTPException(status_code=400, detail=downloaded.get('error') or 'vision download failed')
     return {**plan, **downloaded}
+
+
+def _adapter_engine_rows() -> list[dict[str, Any]]:
+    """Synthetic Engines/Playground rows for vLLM and Transformers."""
+    from pathlib import Path as _Path
+
+    from core.runtimes import get_runtime_adapter
+
+    rows: list[dict[str, Any]] = []
+    for runtime_id, label in (('vllm', 'vLLM'), ('transformers', 'Transformers')):
+        adapter = get_runtime_adapter(runtime_id)
+        if adapter is None or not callable(getattr(adapter, 'health', None)):
+            continue
+        health = adapter.health()
+        model = str(health.get('active_model') or '')
+        name = _Path(model).name if model else ''
+        running = health.get('running') is True
+        rows.append({
+            'id': runtime_id,
+            'label': label,
+            'status': 'loaded' if running and name else ('running' if running else 'stopped'),
+            'runtime_id': runtime_id,
+            'enabled': True,
+            'engine_on': True,
+            'running': running,
+            'port': int(health.get('port') or 0),
+            'host': str(health.get('host') or '127.0.0.1'),
+            'api_url': str(health.get('api_url') or ''),
+            'loaded_models': [name] if name else [],
+            'active_model_id': name,
+            'model_id': name,
+            'loaded': bool(running and name),
+        })
+    return rows
 
 
 @app.get('/api/servers/profiles')
@@ -1109,6 +1632,12 @@ async def servers_status(
         payload['gpus'] = gpus
         payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
         payload['external_scan_skipped'] = not include_external
+        adapter_rows = _adapter_engine_rows()
+        if adapter_rows:
+            existing = {str(row.get('id') or '') for row in (payload.get('servers') or []) if isinstance(row, dict)}
+            extra = [row for row in adapter_rows if str(row.get('id') or '') not in existing]
+            payload['servers'] = list(payload.get('servers') or []) + extra
+            payload['all_servers'] = list(payload.get('all_servers') or []) + extra
         return payload
 
     # Several UI surfaces consume the same status snapshot. Only one expensive
@@ -1215,6 +1744,61 @@ def _require_runtime_adapter(runtime_id: str):
     return adapter
 
 
+@app.get('/api/components')
+def components_hub() -> dict[str, Any]:
+    """Engines and runtimes users can install or update (vLLM, Transformers, speech bundles)."""
+    from core.components_hub import list_components_payload
+
+    return list_components_payload()
+
+
+@app.get('/api/runtimes/{runtime_id}/install')
+def runtime_install_status(runtime_id: str) -> dict[str, Any]:
+    rid = str(runtime_id or '').strip().lower()
+    if rid == 'transformers':
+        from core.transformers_runtime_install import install_status
+
+        return {'success': True, 'runtime_id': rid, **install_status()}
+    if rid == 'vllm':
+        from core.vllm_runtime_install import install_status
+
+        return {'success': True, 'runtime_id': rid, **install_status()}
+    raise HTTPException(status_code=404, detail=f'no on-demand installer for runtime: {runtime_id}')
+
+
+@app.post('/api/runtimes/{runtime_id}/install')
+def runtime_install_start(runtime_id: str, body: RuntimeInstallRequest | None = None) -> dict[str, Any]:
+    rid = str(runtime_id or '').strip().lower()
+    payload = body or RuntimeInstallRequest()
+    if rid == 'transformers':
+        from core.transformers_runtime_install import start_install
+
+        result = start_install(torch_variant=payload.torch_variant or 'auto')
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    if rid == 'vllm':
+        from core.vllm_runtime_install import start_install
+
+        result = start_install(backend=payload.backend or 'auto')
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    raise HTTPException(status_code=404, detail=f'no on-demand installer for runtime: {runtime_id}')
+
+
+@app.post('/api/runtimes/{runtime_id}/uninstall')
+def runtime_uninstall(runtime_id: str) -> dict[str, Any]:
+    rid = str(runtime_id or '').strip().lower()
+    if rid == 'transformers':
+        from core.transformers_runtime_install import uninstall
+
+        result = uninstall()
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    if rid == 'vllm':
+        from core.vllm_runtime_install import uninstall
+
+        result = uninstall()
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    raise HTTPException(status_code=404, detail=f'runtime cannot be removed on demand: {runtime_id}')
+
+
 @app.get('/api/runtimes/manifests')
 def runtime_manifests() -> dict[str, Any]:
     """Aggregate installed runtime plugin manifests + the process-token manifest.
@@ -1270,7 +1854,12 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
     load_fn = getattr(adapter, 'load', None)
     if not callable(load_fn):
         raise HTTPException(status_code=400, detail='adapter does not support load')
-    result = load_fn({'id': body.voice, 'path': body.path})
+    payload: dict[str, Any] = {'id': body.voice, 'path': body.path}
+    if body.preset:
+        payload['preset'] = body.preset
+    if body.load_settings:
+        payload['load_settings'] = dict(body.load_settings)
+    result = load_fn(payload)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     return {'success': True, 'runtime_id': runtime_id, **result}
@@ -1494,7 +2083,22 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     from core.engine_state import note_engine_idle
 
     cfg = load_config()
-    server = _require_server(cfg, server_id)
+    server = get_server(cfg, server_id)
+    if not server:
+        # Synthetic Engines rows (vllm / transformers) are not config servers —
+        # start the runtime adapter worker instead of 404ing.
+        adapter = _hf_engine_adapter(server_id)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail=f'unknown server: {server_id}')
+        start_fn = getattr(adapter, 'start', None)
+        if not callable(start_fn):
+            raise HTTPException(status_code=400, detail='engine cannot be started')
+        result = start_fn(_hf_engine_profile(cfg, str(server_id).strip().lower()))
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
+        _invalidate_status_cache()
+        return result
+    server = normalize_server(server)
     embedding = is_embedding_server(server)
     result = start_embedding_server(server, cfg=cfg) if embedding else start_router_listener(server, cfg=cfg)
     if not result.get('success'):
@@ -1589,7 +2193,7 @@ def _grow_context_for_chat(
         {'context_size': total, 'load_settings': {'parallel_slots': parallel}},
     )
     updated = _require_server(cfg, server_id)
-    result = reload_server(updated)
+    result = reload_server(updated, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(
             status_code=503,
@@ -1758,6 +2362,7 @@ def server_load_plan(
     model_id: str = Query(default=''),
 ) -> dict[str, Any]:
     from core.memory_guardrails import assess_load
+    from core.server_boot import checkpoint_already_loaded, find_target_loaded_elsewhere
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
@@ -1766,6 +2371,45 @@ def server_load_plan(
         candidate['adhoc_model_path'] = model_path.strip()
     if model_id.strip():
         candidate['model_id'] = model_id.strip()
+    already = checkpoint_already_loaded(
+        candidate,
+        cfg=cfg,
+        model_path=model_path.strip() or None,
+        model_id=model_id.strip() or None,
+    )
+    if already:
+        model_name = str(already.get('model') or candidate.get('label') or 'Model')
+        return {
+            'success': True,
+            'server_id': server_id,
+            'level': 'already_loaded',
+            'already_loaded': True,
+            'message': f'{model_name} is already loaded on this engine.',
+            'model': already.get('model'),
+            'port': already.get('port'),
+        }
+    elsewhere = find_target_loaded_elsewhere(
+        candidate,
+        cfg=cfg,
+        model_path=model_path.strip() or None,
+        exclude_server_id=server_id,
+    )
+    if elsewhere:
+        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
+        port = int(elsewhere.get('port') or 0)
+        port_text = f' (port {port})' if port else ''
+        return {
+            'success': True,
+            'server_id': server_id,
+            'level': 'already_loaded',
+            'already_loaded': True,
+            'already_loaded_elsewhere': True,
+            'message': (
+                f'This model is already loaded on {host_label}{port_text}. '
+                'Unload it before loading a second copy.'
+            ),
+            **elsewhere,
+        }
     return {
         'success': True,
         'server_id': server_id,
@@ -1777,25 +2421,60 @@ def server_load_plan(
 def server_load(server_id: str, request: Request, body: ServerLoadRequest | None = None) -> dict[str, Any]:
     from core.engine_state import note_engine_loaded
     from core.memory_guardrails import assess_load
+    from core.server_boot import checkpoint_already_loaded, find_target_loaded_elsewhere
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
     model_path = None
     model_id = None
+    skip_draft = False
     if body:
         patch = body.model_dump(exclude_none=True)
         model_path = patch.pop('model_path', None)
         model_id = patch.pop('model_id', None)
+        skip_draft = bool(patch.pop('skip_draft', False))
         if patch:
             server = _persist_server_merge(cfg, server_id, patch)
     if model_path:
         server = {**server, 'adhoc_model_path': model_path}
+    already = checkpoint_already_loaded(server, cfg=cfg, model_path=model_path, model_id=model_id)
+    if already:
+        note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+        _invalidate_status_cache()
+        return already
+    elsewhere = find_target_loaded_elsewhere(
+        server,
+        cfg=cfg,
+        model_path=model_path,
+        exclude_server_id=server_id,
+    )
+    if elsewhere:
+        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
+        port = int(elsewhere.get('port') or 0)
+        port_text = f' (port {port})' if port else ''
+        raise HTTPException(
+            status_code=409,
+            detail={
+                'error': 'model_already_loaded_elsewhere',
+                'message': (
+                    f'This model is already loaded on {host_label}{port_text}. '
+                    'Unload it before loading a second copy.'
+                ),
+                **elsewhere,
+            },
+        )
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
-    result = load_server_checkpoint(server, cfg=cfg, model_path=model_path, model_id=model_id)
+    result = load_server_checkpoint(
+        server,
+        cfg=cfg,
+        model_path=model_path,
+        model_id=model_id,
+        skip_draft=skip_draft,
+    )
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     note_engine_loaded(server_id, loaded_by=_request_client_label(request))
@@ -1833,22 +2512,62 @@ def server_inference_stats(server_id: str) -> dict[str, Any]:
     }
 
 
+async def _abort_upstream_when_client_disconnects(
+    request: Request,
+    *,
+    server_id: str,
+    api_url: str,
+    model_id: str,
+) -> None:
+    """While a blocking proxy waits on llama, cancel upstream if the client goes away."""
+    from core.chat_proxy import cancel_active_upstream_streams
+    from core.inference_stats import abort_llama_processing_slots
+
+    sid = str(server_id or '').strip()
+    while True:
+        if await request.is_disconnected():
+            if sid:
+                cancel_active_upstream_streams(sid)
+                abort_llama_processing_slots(api_url, model_id=model_id)
+            return
+        await asyncio.sleep(0.05)
+
+
 @app.post('/api/servers/{server_id}/cancel-inference')
 def cancel_server_inference(server_id: str) -> dict[str, Any]:
     """Immediately abort all Console→llama chat streams for this engine."""
     from core.chat_proxy import cancel_active_upstream_streams
-    from core.inference_stats import mark_inference_end
+    from core.inference_stats import abort_llama_processing_slots, fetch_inference_stats, is_proxy_generating, mark_inference_end
 
-    _require_server(load_config(), server_id)
+    cfg = load_config()
+    server = _require_server(cfg, server_id)
     closed = cancel_active_upstream_streams(server_id)
-    # Clear generating badge even if some streams already ended.
-    from core.inference_stats import is_proxy_generating
+    from core.runtime import _SERVER_STATUS_CACHE
 
+    cached = _SERVER_STATUS_CACHE.get(server_id) or {}
+    model_id = str(
+        cached.get('active_model_id')
+        or server.get('model_id')
+        or '',
+    ).strip()
+    api_url = str(server.get('api_url') or '')
+    stats = fetch_inference_stats(api_url, server_id=server_id, model_id=model_id)
+    still_generating = bool(stats.get('generating')) or any(
+        row.get('generating') for row in (stats.get('slots') or []) if isinstance(row, dict)
+    )
+    erased_slots = 0
+    if still_generating or closed <= 0:
+        erased_slots = abort_llama_processing_slots(api_url, model_id=model_id)
     for _ in range(32):
         if not is_proxy_generating(server_id):
             break
         mark_inference_end(server_id)
-    return {'success': True, 'server_id': server_id, 'closed_streams': closed}
+    return {
+        'success': True,
+        'server_id': server_id,
+        'closed_streams': closed,
+        'erased_slots': erased_slots,
+    }
 
 
 @app.post('/api/servers/{server_id}/v1/chat/completions')
@@ -1857,28 +2576,76 @@ async def proxy_chat_completions(server_id: str, request: Request):
     import json
     import urllib.error
 
-    from core.chat_proxy import apply_reasoning_policy, estimate_request_context, extract_stream_completion_stats, is_reasoning_only_chunk, open_upstream_chat_stream, upstream_chat_completion, wants_stream
+    from core.chat_proxy import (
+        apply_reasoning_policy,
+        chat_upstream_read_timeout,
+        empty_completion_guard,
+        estimate_request_context,
+        extract_stream_completion_stats,
+        is_reasoning_only_chunk,
+        open_upstream_chat_stream,
+        sse_had_content_delta,
+        sse_stream_complete,
+        sse_stream_error_chunk,
+        SSE_KEEPALIVE_COMMENT,
+        upstream_chat_completion,
+        wants_stream,
+    )
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
     from core.local_models import model_has_reasoning
     from core.runtime import api_base_url, build_server_status
 
     cfg = load_config()
-    server = _require_server(cfg, server_id)
-    raw = await request.body()
-    try:
-        body_json = json.loads(raw.decode('utf-8', errors='replace'))
-    except Exception:
-        body_json = None
-    required_context = (
-        estimate_request_context(body_json) if isinstance(body_json, dict) else 0
-    )
-    live = _ensure_server_ready_for_chat(
-        server_id,
-        server,
-        cfg,
-        client_label=_request_client_label(request),
-        required_context=required_context or None,
-    )
+    adapter_id = str(server_id or '').strip().lower()
+    if adapter_id in {'vllm', 'transformers'}:
+        adapter = _require_runtime_adapter(adapter_id)
+        health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
+        if not health.get('running') or not health.get('api_url'):
+            raise HTTPException(
+                status_code=400,
+                detail=f'{adapter_id} is not running. Load a model on the Models tab first.',
+            )
+        from pathlib import Path as _Path
+
+        model_path = str(health.get('active_model') or '')
+        model_name = _Path(model_path).name if model_path else ''
+        served_id = model_path or model_name
+        server = {
+            'id': adapter_id,
+            'api_url': str(health.get('api_url') or ''),
+            'host': str(health.get('host') or '127.0.0.1'),
+            'port': int(health.get('port') or 0),
+            'model_id': served_id,
+            'engine_on': True,
+        }
+        live = {
+            'status': 'loaded',
+            'active_model_id': served_id,
+            'loaded_models': [served_id] if served_id else [],
+        }
+        raw = await request.body()
+        try:
+            body_json = json.loads(raw.decode('utf-8', errors='replace'))
+        except Exception:
+            body_json = None
+        required_context = 0
+    else:
+        server = _require_server(cfg, server_id)
+        raw = await request.body()
+        try:
+            body_json = json.loads(raw.decode('utf-8', errors='replace'))
+        except Exception:
+            body_json = None
+        required_context = (
+            estimate_request_context(body_json) if isinstance(body_json, dict) else 0
+        )
+        live = _ensure_server_ready_for_chat(
+            server_id,
+            server,
+            cfg,
+            client_label=_request_client_label(request),
+            required_context=required_context or None,
+        )
 
     api_url = str(server.get('api_url') or '')
     base = api_base_url(api_url)
@@ -1920,12 +2687,14 @@ async def proxy_chat_completions(server_id: str, request: Request):
             model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
         )
         close_upstream = None
+        read_timeout = chat_upstream_read_timeout(cfg)
         try:
             media_type, chunks, close_upstream = await open_upstream_chat_stream(
                 url,
                 raw,
                 content_type=content_type,
                 server_id=server_id,
+                read_timeout=read_timeout,
             )
         except urllib.error.HTTPError as exc:
             mark_inference_end(server_id)
@@ -1936,18 +2705,43 @@ async def proxy_chat_completions(server_id: str, request: Request):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
+        keepalive_interval = 15.0
 
         async def stream_body():
+            import time
+
             buffer = bytearray()
+            sent_to_client = bytearray()
+            last_yield_at = time.monotonic()
+            client_got_content = False
             try:
                 async for chunk in chunks:
                     # Client gone → stop reading; finally closes llama-server.
                     if await request.is_disconnected():
                         break
                     if disable_reasoning and is_reasoning_only_chunk(chunk):
+                        now = time.monotonic()
+                        if now - last_yield_at >= keepalive_interval:
+                            yield SSE_KEEPALIVE_COMMENT
+                            last_yield_at = now
                         continue
                     buffer.extend(chunk)
+                    sent_to_client.extend(chunk)
+                    if not client_got_content and sse_had_content_delta(chunk):
+                        client_got_content = True
                     yield chunk
+                    last_yield_at = time.monotonic()
+                if (
+                    disable_reasoning
+                    and sent_to_client
+                    and not client_got_content
+                ):
+                    if not sse_stream_complete(bytes(buffer)):
+                        yield sse_stream_error_chunk('Upstream chat stream closed before completion')
+                    else:
+                        yield sse_stream_error_chunk(
+                            'Model produced no assistant content; increase max_tokens or send X-Disable-Reasoning: 0'
+                        )
             finally:
                 if close_upstream:
                     try:
@@ -1979,25 +2773,42 @@ async def proxy_chat_completions(server_id: str, request: Request):
         api_url=api_url,
         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
     )
+    active_model = str(live.get('active_model_id') or server.get('model_id') or '')
+    disconnect_task = asyncio.create_task(
+        _abort_upstream_when_client_disconnects(
+            request,
+            server_id=server_id,
+            api_url=api_url,
+            model_id=active_model,
+        )
+    )
     try:
         status_code, payload = await asyncio.to_thread(
             upstream_chat_completion,
             url,
             raw,
             content_type=content_type,
+            server_id=server_id,
         )
         if status_code >= 400:
             return JSONResponse(content=payload, status_code=status_code)
+        guard = empty_completion_guard(payload)
+        if guard:
+            return JSONResponse(
+                status_code=422,
+                content={'error': {'message': guard, 'type': 'empty_completion'}},
+            )
         note_completion_stats(
             server_id,
             payload,
             api_url=api_url,
-            model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
+            model_id=active_model,
         )
         return JSONResponse(content=payload, status_code=status_code)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
+        disconnect_task.cancel()
         mark_inference_end(server_id)
 
 
@@ -2168,7 +2979,18 @@ def server_stop(server_id: str) -> dict[str, Any]:
     from core.load_progress import append_log, stop_log_line
 
     cfg = load_config()
-    server = _require_server(cfg, server_id)
+    server = get_server(cfg, server_id)
+    if not server:
+        adapter = _hf_engine_adapter(server_id)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail=f'unknown server: {server_id}')
+        stop_fn = getattr(adapter, 'stop', None)
+        result = stop_fn() if callable(stop_fn) else {'success': True}
+        if not result.get('success'):
+            raise HTTPException(status_code=400, detail=result.get('error') or 'stop failed')
+        _invalidate_status_cache()
+        return result
+    server = normalize_server(server)
     append_log(server_id, stop_log_line())
     result = stop_server(port=int(server['port']), host=str(server['host']), api_url=server.get('api_url'))
     if not result.get('success'):
@@ -2188,6 +3010,7 @@ def gpu_process_unload(pid: int, body: GpuProcessUnload | None = None) -> dict[s
         api_url=str(payload.get('api_url') or ''),
         model_id=str(payload.get('model_id') or ''),
     )
+    _invalidate_status_cache()
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'unload failed')
     return result
@@ -2207,10 +3030,15 @@ def server_unload(server_id: str) -> dict[str, Any]:
     port = int(server.get('port') or 0)
     api_url = str(server.get('api_url') or '')
     if port <= 0 or not tcp_port_open(host, port):
-        from core.engine_state import note_user_stopped
-
-        note_user_stopped(server_id)
-        return {'success': True, 'unloaded': False, 'engine_stopped': True, 'message': 'engine already stopped'}
+        # A dead listener after Console restart does not mean the user stopped
+        # the engine — preserve saved engine_on so boot can restore it.
+        return {
+            'success': True,
+            'unloaded': False,
+            'engine_stopped': True,
+            'listener_ready': False,
+            'message': 'Engine listener is not running; nothing to unload.',
+        }
     if is_embedding_server(server):
         raise HTTPException(
             status_code=409,
@@ -2287,7 +3115,7 @@ def server_reload(server_id: str) -> dict[str, Any]:
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
-    result = reload_server(server)
+    result = reload_server(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'reload failed')
     note_engine_loaded(server_id)
@@ -2332,6 +3160,38 @@ def clear_server_logs(server_id: str) -> dict[str, Any]:
 
 def _allowed_model_roots(cfg: dict[str, Any]) -> list[Path]:
     return allowed_model_roots(cfg)
+
+
+def _delete_allowed_roots(cfg: dict[str, Any]) -> list[Path]:
+    """Library roots plus scanned folders that the Models tab can delete from."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+    candidates = [*_allowed_model_roots(cfg), *(path for path, _source in disk_scan_roots(cfg))]
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
+_PROTECTED_DELETE_NAMES = frozenset({
+    'hub', 'huggingface', 'models', 'snapshots', 'blobs', 'refs',
+})
+
+
+def _assert_deletable_dir(folder: Path, allowed: list[Path]) -> None:
+    if not any(folder == root or folder.is_relative_to(root) for root in allowed):
+        raise HTTPException(status_code=403, detail='path not under allowed model directories')
+    if any(folder == root for root in allowed) and not folder.name.startswith('models--'):
+        raise HTTPException(status_code=403, detail='refusing to delete a library root')
+    if folder.name.lower() in _PROTECTED_DELETE_NAMES:
+        raise HTTPException(status_code=403, detail='refusing to delete a cache root')
 
 
 def _stack_model_roots(cfg: dict[str, Any]) -> list[Path]:
@@ -2393,12 +3253,39 @@ def stacks_preflight(target_path: str = Query(..., min_length=1)) -> dict[str, A
 
 
 @app.get('/api/stacks/match')
-def stacks_match(target_path: str = Query(..., min_length=1)) -> dict[str, Any]:
+def stacks_match(
+    target_path: str = Query(..., min_length=1),
+    current_draft: str = Query(default=''),
+    dflash_generation: str = Query(default='auto'),
+) -> dict[str, Any]:
     from core.stack_match import match_stack_for_target
 
     cfg = load_config()
     _validate_gguf_under_allowed_roots(target_path, cfg, roots=_stack_model_roots(cfg))
-    return match_stack_for_target(target_path, cfg=cfg)
+    current = str(current_draft or '').strip() or None
+    if current:
+        _validate_gguf_under_allowed_roots(current, cfg, roots=_stack_model_roots(cfg))
+    return match_stack_for_target(
+        target_path,
+        cfg=cfg,
+        current_draft_path=current,
+        dflash_generation=dflash_generation,
+    )
+
+
+@app.post('/api/stacks/{server_id}/replace-draft')
+def stacks_replace_draft(server_id: str, body: StackReplaceDraftRequest) -> dict[str, Any]:
+    from core.stack_match import replace_stack_draft
+
+    cfg = load_config()
+    _validate_gguf_under_allowed_roots(body.draft_path, cfg, roots=_stack_model_roots(cfg))
+    result = replace_stack_draft(server_id, body.draft_path, cfg=cfg)
+    if not result.get('success'):
+        error = str(result.get('error') or 'replace failed')
+        status = 404 if 'unknown server' in error else 400
+        raise HTTPException(status_code=status, detail=error)
+    _invalidate_status_cache()
+    return result
 
 
 @app.get('/api/stacks/suggest-port')
@@ -2467,10 +3354,13 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
                 str(draft),
                 label=body.label.strip() or server_id,
                 mode=copy_mode,
+                overwrite=body.overwrite,
                 cfg=cfg,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if copied.get('exists'):
+            return copied
         target = Path(str(copied['target_path'])).expanduser().resolve()
         draft = Path(str(copied['draft_path'])).expanduser().resolve()
 
@@ -2529,34 +3419,24 @@ def fs_reveal(path: str = Query(..., min_length=1)) -> dict[str, Any]:
 
 
 def _servers_referencing_model(path: Path, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Configured server profiles whose model file is ``path``.
-
-    Must run while the file still exists: resolving a server's model_id to a
-    path depends on the file being present. As a fallback, a server whose
-    ``model_id``/``id`` equals the file's derived id (stem with ``_``->``-``,
-    lowercased — the same rule the catalog uses) is also treated as a match.
-    """
+    """Configured server profiles whose stack target/draft path equals ``path``."""
     try:
         from core.local_models import _normalize_path_key, _resolve_stack_pair
     except Exception:
         return []
     tkey = _normalize_path_key(str(path))
-    derived_id = str(path.stem).replace('_', '-').lower()
     servers = list(cfg.get('servers') or [])
     matching: list[dict[str, Any]] = []
     for server in servers:
         pair = _resolve_stack_pair(server, cfg=cfg)
         matched = False
         for row in (pair or []):
-            model_path = str((row or {}).get('path') or '')
+            if not row:
+                continue
+            model_path = str(row.get('path') or '')
             if model_path and _normalize_path_key(model_path) == tkey:
                 matched = True
                 break
-        if not matched and derived_id:
-            server_model = str(server.get('model_id') or '').lower()
-            server_id = str(server.get('id') or '').lower()
-            if server_model == derived_id or server_id == derived_id:
-                matched = True
         if matched:
             matching.append(server)
     return matching
@@ -2586,13 +3466,14 @@ def _collect_model_delete_targets(
     *,
     path: str = '',
     server_id: str = '',
-) -> tuple[list[dict[str, Any]], list[Path]]:
-    """Resolve server profiles and GGUF files to remove for a catalog delete."""
+) -> tuple[list[dict[str, Any]], list[Path], list[Path]]:
+    """Resolve server profiles, GGUF files, and model folders to remove."""
     from core.local_models import _normalize_path_key, _resolve_stack_pair
 
     matching_servers: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     files: dict[str, Path] = {}
+    folders: dict[str, Path] = {}
 
     if path:
         target = Path(path).expanduser().resolve()
@@ -2603,6 +3484,10 @@ def _collect_model_delete_targets(
                 if sid and sid not in seen_ids:
                     seen_ids.add(sid)
                     matching_servers.append(server)
+        else:
+            folder = resolve_model_delete_dir(target)
+            if folder is not None:
+                folders[_normalize_path_key(str(folder))] = folder
 
     sid = str(server_id or '').strip()
     if sid and sid not in seen_ids:
@@ -2623,7 +3508,7 @@ def _collect_model_delete_targets(
                 continue
             files[_normalize_path_key(str(candidate))] = candidate
 
-    return matching_servers, list(files.values())
+    return matching_servers, list(files.values()), list(folders.values())
 
 
 @app.delete('/api/models/file')
@@ -2647,16 +3532,18 @@ def delete_model_file(
         invalidate_model_catalog_cache()
         return result
 
-    matching, file_paths = _collect_model_delete_targets(cfg, path=path, server_id=server_id)
-    if not file_paths and not matching:
+    matching, file_paths, dir_paths = _collect_model_delete_targets(cfg, path=path, server_id=server_id)
+    if not file_paths and not matching and not dir_paths:
         raise HTTPException(status_code=400, detail='nothing to delete')
 
-    allowed = _allowed_model_roots(cfg)
+    allowed = _delete_allowed_roots(cfg)
     if file_paths and (not allowed or not all(
         any(candidate.is_relative_to(root) for root in allowed)
         for candidate in file_paths
     )):
         raise HTTPException(status_code=403, detail='path not under allowed model directories')
+    for folder in dir_paths:
+        _assert_deletable_dir(folder, allowed)
 
     for server in matching:
         sid = str(server.get('id') or '')
@@ -2674,12 +3561,29 @@ def delete_model_file(
         candidate.unlink()
         deleted_files.append(str(candidate))
 
+    deleted_dirs: list[str] = []
+    for folder in dir_paths:
+        if not folder.is_dir():
+            continue
+        try:
+            shutil.rmtree(folder)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f'could not delete folder: {exc}') from exc
+        deleted_dirs.append(str(folder))
+
+    if not deleted_files and not deleted_dirs and not matching:
+        raise HTTPException(status_code=400, detail='nothing to delete')
+
     removed = _remove_servers_from_config(cfg, matching)
     invalidate_model_catalog_cache()
     result: dict[str, Any] = {'success': True}
     if deleted_files:
         result['path'] = deleted_files[0]
         result['deleted_files'] = deleted_files
+    if deleted_dirs:
+        result['path'] = result.get('path') or deleted_dirs[0]
+        result['deleted_dirs'] = deleted_dirs
+        result['model'] = friendly_model_dir_label(deleted_dirs[0])
     if removed:
         result['removed_profiles'] = removed
     return result
@@ -2689,6 +3593,17 @@ class ModelImportIntoConsoleRequest(BaseModel):
     path: str = Field(..., min_length=1)
     mode: str = Field(default='copy', pattern='^(copy|move)$')
     overwrite: bool = Field(default=False)
+    progress_id: str | None = Field(default=None, max_length=64)
+
+
+@app.get('/api/models/import-progress/{progress_id}')
+def model_import_progress(progress_id: str) -> dict[str, Any]:
+    from core.library_import import get_import_progress
+
+    row = get_import_progress(progress_id)
+    if not row:
+        return {'success': False, 'status': 'unknown'}
+    return {'success': True, **row}
 
 
 @app.post('/api/models/auto-register')
@@ -2723,7 +3638,7 @@ def model_import_into_console(body: ModelImportIntoConsoleRequest) -> dict[str, 
     overwrite or abort instead of silently creating a duplicate.
     """
     from core.config import ensure_runtime_entry
-    from core.library_import import import_single_model_file, is_faster_whisper_dir
+    from core.library_import import clear_import_progress, import_single_model_file, is_faster_whisper_dir
 
     cfg = load_config()
     source = Path(body.path).expanduser().resolve()
@@ -2735,15 +3650,22 @@ def model_import_into_console(body: ModelImportIntoConsoleRequest) -> dict[str, 
             str(source),
             mode=body.mode,
             overwrite=body.overwrite,
+            progress_id=body.progress_id,
             cfg=cfg,
         )
     except ValueError as exc:
+        if body.progress_id:
+            clear_import_progress(body.progress_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result.get('exists'):
+        if body.progress_id:
+            clear_import_progress(body.progress_id)
         return result
     if result.get('runtime_id') == 'faster-whisper':
         ensure_runtime_entry('faster-whisper', label='Faster-Whisper STT', cfg=cfg)
     invalidate_model_catalog_cache()
+    if body.progress_id:
+        clear_import_progress(body.progress_id)
     return result
 
 

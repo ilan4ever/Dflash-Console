@@ -1,7 +1,10 @@
 from core.load_progress import (
     boot_failure_message,
+    clear_vram_progress_baseline,
+    estimate_vram_load_progress,
     is_active_boot,
     is_active_model_load,
+    merge_load_progress,
     model_load_failure_message,
     parse_load_progress,
     stop_log_line,
@@ -88,6 +91,44 @@ def test_model_load_failure_reports_cuda_oom():
     assert 'GPU 0' in message
 
 
+def test_model_load_failure_reports_incompatible_draft():
+    lines = [
+        '=== boot 2026-01-01 12:00:00 profile=x router=1 ===',
+        'load: spawning server instance with name=qwen3.8-27b-q6-k-l',
+        'load_model: loading model qwen3.8-27b-q6-k-l',
+        'llama_model_load: error loading model: done_getting_tensors: wrong number of tensors; expected 81, got 58',
+        "srv    load_model: failed to load draft model, 'C:\\models\\Qwen3.8-27B-DFlash2-Q4_K_M.gguf'",
+        'llama-server: exiting due to model loading error',
+    ]
+    message = model_load_failure_message(lines)
+    assert message is not None
+    assert 'draft' in message.lower()
+    assert 'compatible' in message.lower()
+
+
 def test_stop_log_line_format():
     line = stop_log_line()
     assert line.startswith('=== stop ')
+
+
+def test_merge_load_progress_prefers_highest_value():
+    assert merge_load_progress(None, 12.5, 40.0) == 40.0
+    assert merge_load_progress(55.0, 40.0) == 55.0
+
+
+def test_vram_progress_tracks_vram_growth():
+    clear_vram_progress_baseline('demo')
+    assert estimate_vram_load_progress('demo', 10.0, 20.0, active=True) is None
+    assert estimate_vram_load_progress('demo', 15.0, 20.0, active=True) == 25.0
+    assert estimate_vram_load_progress('demo', 29.0, 20.0, active=True) == 95.0
+    clear_vram_progress_baseline('demo')
+
+
+def test_parse_load_progress_uses_latest_loading_state():
+    lines = [
+        'load: spawning server instance with name=model',
+        'cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.2}}',
+        'tensor offload noise',
+        'cmd_child_to_router:state:{"state":"loading","payload":{"stages":["text_model","spec_model"],"current":"text_model","value":0.5}}',
+    ]
+    assert parse_load_progress(lines) == 25.0

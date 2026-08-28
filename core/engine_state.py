@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from core.config import (
@@ -13,6 +14,43 @@ from core.config import (
     update_server_runtime,
 )
 from core.runtime import probe_models, tcp_port_open, unload_model
+
+logger = logging.getLogger(__name__)
+
+
+def _restore_target_path(server: dict[str, Any], cfg: dict[str, Any]) -> str:
+    """Normalized target path used to detect duplicate engines on one GGUF."""
+    try:
+        from core.server_boot import resolve_load_target_path
+
+        return resolve_load_target_path(server, cfg=cfg)
+    except Exception:
+        return ''
+
+
+def _restore_duplicate_groups(servers: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Group enabled engines that point at the same target file."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for server in servers:
+        if not server.get('enabled', True):
+            continue
+        target = _restore_target_path(server, cfg)
+        if not target:
+            continue
+        groups.setdefault(target, []).append(server)
+    return {target: rows for target, rows in groups.items() if len(rows) > 1}
+
+
+def _restore_duplicate_winner(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Prefer the DFlash stack when two profiles share one GGUF."""
+    def rank(row: dict[str, Any]) -> tuple[int, str]:
+        profile = str(row.get('profile') or '').lower()
+        server_id = str(row.get('id') or '').lower()
+        if 'dflash' in profile or 'dflash' in server_id:
+            return (0, server_id)
+        return (1, server_id)
+
+    return sorted(rows, key=rank)[0]
 
 
 def get_engine_state(server_id: str, *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -119,11 +157,27 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
     """On Console boot: restore saved engines and their configured checkpoints."""
     from core.server_boot import adopt_running_engine, start_router_listener
     from core.embedding_server import probe_embedding_models, start_embedding_server
+    from core.memory_guardrails import assess_load
 
     config = cfg or load_config()
     results: list[dict[str, Any]] = []
+    servers = list_servers(config)
+    duplicates = _restore_duplicate_groups(servers, config)
+    duplicate_skip: set[str] = set()
+    for target, rows in duplicates.items():
+        winner = _restore_duplicate_winner(rows)
+        for row in rows:
+            if str(row.get('id') or '') != str(winner.get('id') or ''):
+                duplicate_skip.add(str(row.get('id') or ''))
+                logger.warning(
+                    'restore_engines: duplicate target %s shared by %s and %s — skipping %s',
+                    target,
+                    winner.get('id'),
+                    row.get('id'),
+                    row.get('id'),
+                )
 
-    for server in list_servers(config):
+    for server in servers:
         if not server.get('enabled', True):
             continue
         server_id = str(server['id'])
@@ -135,6 +189,18 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
 
         runtime = get_engine_state(server_id, cfg=config)
         port_open = tcp_port_open(host, port)
+
+        if server_id in duplicate_skip:
+            if port_open:
+                from core.runtime import stop_server
+
+                stop_server(port=port, host=host, api_url=api_url or None)
+            results.append({
+                'server_id': server_id,
+                'action': 'skipped_duplicate_target',
+                'target_path': _restore_target_path(server, config),
+            })
+            continue
 
         if not runtime.get('engine_on'):
             if port_open:
@@ -170,11 +236,23 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
             })
             continue
 
-        started = (
-            start_embedding_server(server, cfg=config)
-            if is_embedding_server(server)
-            else start_router_listener(server, cfg=config)
-        )
+        if is_embedding_server(server):
+            plan = assess_load(server, config)
+            if plan.get('level') == 'block':
+                logger.warning(
+                    'restore_engines: skipping embedding %s — %s',
+                    server_id,
+                    plan.get('message') or 'insufficient VRAM',
+                )
+                results.append({
+                    'server_id': server_id,
+                    'action': 'skipped_vram',
+                    'message': plan.get('message') or 'insufficient VRAM',
+                })
+                continue
+            started = start_embedding_server(server, cfg=config)
+        else:
+            started = start_router_listener(server, cfg=config)
         if started.get('success'):
             # Start the router only; never repopulate GPU memory during a
             # Console restart.

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dflash_cli.cli import build_parser, main
-from dflash_cli.commands import _cmd_shim_text, _profile_function_text
+from dflash_cli.commands import (
+    _cmd_shim_text,
+    _parse_setting_pair,
+    _profile_function_text,
+    _settings_patch_body,
+)
 from dflash_cli.http import resolve_base_url
 from dflash_cli.render import format_table
-from dflash_cli.resolve import pick_model, score_name
+from dflash_cli.resolve import pick_model, pick_node, score_name
 
 
 def test_resolve_base_url_prefers_flag(monkeypatch):
@@ -51,3 +56,45 @@ def test_install_helpers_point_at_repo():
     assert 'python -m dflash_cli' in _cmd_shim_text()
     assert 'function dflash' in _profile_function_text()
     assert 'BEGIN DFLASH CLI' in _profile_function_text()
+
+
+def test_parser_accepts_new_commands():
+    parser = build_parser()
+    embed = parser.parse_args(['embed', 'hello world', '--engine', 'nomic'])
+    assert embed.command == 'embed'
+    assert embed.text == ['hello world']
+    assert embed.engine == 'nomic'
+    delete = parser.parse_args(['delete', 'qwen', '--yes'])
+    assert delete.command == 'delete'
+    assert delete.yes is True
+    nodes = parser.parse_args(['nodes', 'add', 'http://127.0.0.1:8901', '--label', 'Lab'])
+    assert nodes.action == 'add'
+    assert nodes.target == 'http://127.0.0.1:8901'
+    settings = parser.parse_args(['settings', '--set', 'ui_port=8900'])
+    assert settings.set_pair == 'ui_port=8900'
+
+
+def test_help_lists_new_commands(capsys):
+    assert main(['help']) == 0
+    out = capsys.readouterr().out
+    assert 'dflash embed' in out
+    assert 'dflash delete' in out
+    assert 'dflash nodes' in out
+    assert 'dflash settings' in out
+
+
+def test_settings_helpers():
+    key, value = _parse_setting_pair('ui_port=8901')
+    assert key == 'ui_port'
+    assert value == 8901
+    assert _settings_patch_body('download_settings.parallel_connections', 4) == {
+        'download_settings': {'parallel_connections': 4}
+    }
+
+
+def test_pick_node():
+    rows = [
+        {'id': 'lab', 'label': 'Lab PC', 'base_url': 'http://10.0.0.5:8900'},
+        {'id': 'office', 'label': 'Office', 'base_url': 'http://10.0.0.8:8900'},
+    ]
+    assert pick_node('lab', rows)['id'] == 'lab'

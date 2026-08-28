@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from core.display_names import build_model_catalog
+from core.display_names import build_model_catalog, friendly_stack_label
+
+
+def test_friendly_stack_label_keeps_model_name():
+    assert friendly_stack_label('Qwen_Qwen3.6-27B-Q4_K_S.gguf') == 'Qwen 3.6 27B D-Flash'
+    assert friendly_stack_label('Qwen3.5-27B-Q4_K_M.gguf') == 'Qwen 3.5 27B D-Flash'
+    assert friendly_stack_label('gemma-4-31B_q4_0-it.gguf') == 'Gemma 4 31B D-Flash'
+    assert friendly_stack_label('Qwen_Qwen3.6-35B-A3B-Q4_K_S.gguf') == 'Qwen 3.6 35B A3B D-Flash'
 
 
 def test_build_model_catalog_gemma_12b_q4():
@@ -55,5 +62,30 @@ def test_build_model_catalog_qwen_27b():
     catalog = build_model_catalog(server, stack)
     assert catalog['display_name'] == 'Qwen 3.5 27B dflash'
     assert catalog['display_name_full'] == 'Qwen 3.5 27B dflash Q4'
-    assert catalog['source_suffix'] == 'dflash'
+    assert catalog['source_suffix'] == ''
     assert catalog['lab'] == 'Qwen'
+
+
+def test_build_model_catalog_uses_qwen38_target_name_over_api_alias():
+    server = {
+        'id': 'qwen3-8-27b-q6-k-l-dflash',
+        'label': 'qwen3 8 27b q6 k l dflash',
+        'profile': 'qwen3-8-27b-q6-k-l-dflash',
+        'model_id': 'qwen3-8-27b-q6-k-l-dflash',
+    }
+    stack = [
+        {'role': 'alias', 'id': server['model_id'], 'source': 'api'},
+        {
+            'role': 'target',
+            'id': 'qwen3.8-27b-q6-k-l',
+            'path': r'C:\dev\Dflash\models\bartowski\Qwen3.8-27B-GGUF\Qwen3.8-27B-Q6_K_L.gguf',
+            'source': 'custom',
+        },
+    ]
+
+    catalog = build_model_catalog(server, stack)
+
+    assert catalog['display_name'] == 'Qwen 3.8 27B dflash'
+    assert catalog['display_name_full'] == 'Qwen 3.8 27B dflash Q6'
+    assert catalog['target_filename'] == 'Qwen3.8-27B-Q6_K_L.gguf'
+    assert catalog['source_suffix'] == ''

@@ -107,6 +107,65 @@ def test_fetch_inference_stats_uses_model_slots(monkeypatch):
     assert stats['generating_tokens_per_second'] is None
 
 
+def test_fetch_inference_stats_ignores_stale_tokens_during_prefill(monkeypatch):
+    clock = {'t': 1000.0}
+    state = {'processed': 800, 'n_decoded': 419}
+
+    def fake_fetch(url: str, *, timeout: float = 2.5):
+        if '/slots?' in url:
+            return [{
+                'id': 0,
+                'is_processing': True,
+                'n_prompt_tokens': 4557,
+                'n_prompt_tokens_processed': state['processed'],
+                'next_token': [{'has_next_token': True, 'n_decoded': state['n_decoded']}],
+            }]
+        return {}
+
+    monkeypatch.setattr('core.inference_stats._fetch_json', fake_fetch)
+    monkeypatch.setattr('core.inference_stats.time.time', lambda: clock['t'])
+
+    first = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stale-prefill',
+        model_id='demo-model',
+    )
+    assert first['generating'] is True
+    assert first['generating_tokens'] == 0
+    assert first.get('generating_tokens_per_second') is None
+
+    clock['t'] += 40.0
+    state['processed'] = 4000
+    second = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stale-prefill',
+        model_id='demo-model',
+    )
+    assert second['generating_tokens'] == 0
+    assert second.get('generating_tokens_per_second') is None
+
+    clock['t'] += 0.25
+    state['processed'] = 4557
+    state['n_decoded'] = 439
+    third = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stale-prefill',
+        model_id='demo-model',
+    )
+    assert third['generating_tokens'] == 439
+    assert third.get('generating_tokens_per_second') is None
+
+    clock['t'] += 0.25
+    state['n_decoded'] = 456
+    fourth = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stale-prefill',
+        model_id='demo-model',
+    )
+    assert fourth['generating_tokens_per_second'] is not None
+    assert fourth['generating_tokens_per_second'] > 40
+
+
 def test_fetch_inference_stats_tracks_live_tps(monkeypatch):
     state = {'n_decoded': 10}
 
@@ -415,6 +474,42 @@ def test_decode_tokens_per_second_ignores_prefill():
     assert tps >= 45.0
 
 
+def test_fetch_inference_stats_counts_cached_prompt_as_prefill_done(monkeypatch):
+    clock = {'t': 2000.0}
+
+    def fake_fetch(url: str, *, timeout: float = 0.9):
+        if '/slots?' in url:
+            return [{
+                'is_processing': True,
+                'n_prompt_tokens': 622,
+                'n_prompt_tokens_processed': 513,
+                'n_prompt_tokens_cache': 109,
+                'next_token': [{'has_next_token': False, 'n_decoded': 216}],
+            }]
+        return {}
+
+    monkeypatch.setattr('core.inference_stats._fetch_json', fake_fetch)
+    monkeypatch.setattr('core.inference_stats.time.time', lambda: clock['t'])
+
+    first = fetch_inference_stats(
+        'http://127.0.0.1:8095/v1',
+        server_id='gemma-cached-prefill',
+        model_id='gemma-4-31b-q4-0-it',
+    )
+    assert first['generating'] is True
+    assert first['generating_tokens'] == 216
+    assert first.get('generating_tokens_per_second') is None
+
+    clock['t'] += 0.4
+    second = fetch_inference_stats(
+        'http://127.0.0.1:8095/v1',
+        server_id='gemma-cached-prefill',
+        model_id='gemma-4-31b-q4-0-it',
+    )
+    # Same snapshot — speed stays unset until decoded tokens increase.
+    assert second['generating_tokens'] == 216
+
+
 def test_fetch_inference_stats_shows_zero_out_during_prefill(monkeypatch):
     def fake_fetch(url: str, *, timeout: float = 0.9):
         if '/slots?' in url:
@@ -437,6 +532,56 @@ def test_fetch_inference_stats_shows_zero_out_during_prefill(monkeypatch):
     assert stats['generating_tokens'] == 0
     assert stats.get('prefill_tokens') == 12000
     assert stats.get('generating_tokens_per_second') is None
+
+
+def test_fetch_inference_stats_shows_live_decode_during_open_prefill(monkeypatch):
+    """Reasoning/streaming prompts can grow n_prompt_tokens while n_decoded advances."""
+    clock = {'t': 3000.0}
+    state = {'n_decoded': 2242, 'n_prompt_tokens': 5521}
+
+    def fake_fetch(url: str, *, timeout: float = 0.9):
+        if '/slots?' in url:
+            return [{
+                'id': 0,
+                'is_processing': True,
+                'n_prompt_tokens': state['n_prompt_tokens'],
+                'n_prompt_tokens_processed': 3010,
+                'n_prompt_tokens_cache': 270,
+                'next_token': [{'has_next_token': True, 'n_decoded': state['n_decoded']}],
+            }]
+        return {}
+
+    monkeypatch.setattr('core.inference_stats._fetch_json', fake_fetch)
+    monkeypatch.setattr('core.inference_stats.time.time', lambda: clock['t'])
+
+    first = fetch_inference_stats(
+        'http://127.0.0.1:8095/v1',
+        server_id='gemma-live-decode',
+        model_id='gemma-4-31b-q4-0-it',
+    )
+    assert first['generating'] is True
+    assert first['generating_tokens'] == 0
+
+    clock['t'] += 0.35
+    state['n_decoded'] = 2254
+    state['n_prompt_tokens'] = 5533
+    second = fetch_inference_stats(
+        'http://127.0.0.1:8095/v1',
+        server_id='gemma-live-decode',
+        model_id='gemma-4-31b-q4-0-it',
+    )
+    assert second['generating_tokens'] == 2254
+
+    clock['t'] += 0.35
+    state['n_decoded'] = 2267
+    third = fetch_inference_stats(
+        'http://127.0.0.1:8095/v1',
+        server_id='gemma-live-decode',
+        model_id='gemma-4-31b-q4-0-it',
+    )
+    assert third['generating_tokens'] == 2267
+    assert third.get('generating_tokens_per_second') is not None
+    assert third['generating_tokens_per_second'] > 0
 
 
 def test_slot_completion_prefers_api_timings(monkeypatch):
@@ -467,3 +612,42 @@ def test_slot_completion_prefers_api_timings(monkeypatch):
     )
     assert stats['generation_tokens'] == 200
     assert stats['tokens_per_second'] == 52.3
+
+
+def test_fetch_inference_stats_retains_live_decode_rate_on_unchanged_sample(monkeypatch):
+    clock = {'t': 4000.0}
+    state = {'n_decoded': 10}
+
+    def fake_fetch(url: str, *, timeout: float = 0.9):
+        if '/slots?' in url:
+            return [{
+                'id': 0,
+                'is_processing': True,
+                'next_token': [{'has_next_token': True, 'n_decoded': state['n_decoded']}],
+            }]
+        return {}
+
+    monkeypatch.setattr('core.inference_stats._fetch_json', fake_fetch)
+    monkeypatch.setattr('core.inference_stats.time.time', lambda: clock['t'])
+
+    fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stable-live-rate',
+        model_id='demo-model',
+    )
+    clock['t'] += 0.25
+    state['n_decoded'] = 18
+    moving = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stable-live-rate',
+        model_id='demo-model',
+    )
+    clock['t'] += 0.25
+    steady = fetch_inference_stats(
+        'http://127.0.0.1:8090/v1',
+        server_id='stable-live-rate',
+        model_id='demo-model',
+    )
+
+    assert moving['generating_tokens_per_second'] == 32.0
+    assert steady['generating_tokens_per_second'] == 32.0

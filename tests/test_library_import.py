@@ -122,3 +122,83 @@ def test_import_duplicate_gguf_returns_exists(tmp_path):
     assert dup['exists'] is True
     assert not (Path(first['library_path']).parent.parent / 'demo-2').exists()
 
+
+def test_find_existing_in_console_library(tmp_path):
+    from core.library_import import find_existing_in_console_library, import_single_model_file
+
+    source = tmp_path / 'demo.gguf'
+    source.write_bytes(b'0' * 128)
+    cfg = {'dflash_root': str(tmp_path / 'dflash'), 'models_root': str(tmp_path / 'models')}
+    first = import_single_model_file(str(source), mode='copy', cfg=cfg)
+    matches = find_existing_in_console_library('demo.gguf', cfg=cfg)
+    assert len(matches) == 1
+    assert matches[0]['path'] == first['library_path']
+
+
+def test_import_stack_pair_blocks_duplicate_target(tmp_path):
+    from core.library_import import import_single_model_file, import_stack_pair
+
+    target = tmp_path / 'target.gguf'
+    draft = tmp_path / 'draft-dflash.gguf'
+    target.write_bytes(b't' * 128)
+    draft.write_bytes(b'd' * 64)
+    cfg = {'dflash_root': str(tmp_path / 'dflash'), 'models_root': str(tmp_path / 'models')}
+    import_single_model_file(str(target), mode='copy', cfg=cfg)
+    dup = import_stack_pair(str(target), str(draft), label='My Stack', mode='copy', cfg=cfg)
+    assert dup['success'] is False
+    assert dup['exists'] is True
+    assert not (Path(cfg['models_root']) / 'My-Stack-2').exists()
+
+
+def test_import_library_folder_blocks_duplicate_gguf(tmp_path):
+    from core.library_import import import_library_folder, import_single_model_file
+
+    existing = tmp_path / 'demo.gguf'
+    existing.write_bytes(b'0' * 128)
+    cfg = {'dflash_root': str(tmp_path / 'dflash'), 'models_root': str(tmp_path / 'models')}
+    import_single_model_file(str(existing), mode='copy', cfg=cfg)
+
+    external = tmp_path / 'external-pack'
+    external.mkdir()
+    (external / 'demo.gguf').write_bytes(b'1' * 128)
+    dup = import_library_folder(str(external), preset='dflash', mode='copy', cfg=cfg)
+    assert dup['success'] is False
+    assert dup['exists'] is True
+    assert not (Path(cfg['models_root']) / 'external-pack-2').exists()
+
+
+def test_import_single_model_file_reports_progress(tmp_path):
+    from core.library_import import get_import_progress, import_single_model_file
+
+    source = tmp_path / 'demo.gguf'
+    payload = b'x' * (256 * 1024)
+    source.write_bytes(payload)
+    cfg = {'dflash_root': str(tmp_path / 'dflash'), 'models_root': str(tmp_path / 'models')}
+    progress_id = 'test-import-progress'
+    result = import_single_model_file(str(source), mode='copy', progress_id=progress_id, cfg=cfg)
+    assert result['success'] is True
+    row = get_import_progress(progress_id)
+    assert row.get('progress') == 100.0
+    assert row.get('phase') == 'done'
+
+
+def test_import_split_shards_into_existing_console_folder(tmp_path):
+    from core.library_import import import_single_model_file, split_shard_group
+
+    root = tmp_path / 'models'
+    lmstudio = tmp_path / 'lmstudio'
+    lmstudio.mkdir(parents=True)
+    console = root / 'Laguna-S-2.1-UD-Q4_K_M'
+    console.mkdir(parents=True)
+    (console / 'Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf').write_bytes(b'a' * 128)
+    ext = lmstudio / 'Laguna-S-2.1-UD-Q4_K_M-00002-of-00003.gguf'
+    ext.write_bytes(b'b' * 128)
+    (lmstudio / 'Laguna-S-2.1-UD-Q4_K_M-00003-of-00003.gguf').write_bytes(b'c' * 128)
+    cfg = {'dflash_root': str(tmp_path / 'dflash'), 'models_root': str(root)}
+
+    assert len(split_shard_group(ext)) == 2
+    result = import_single_model_file(str(ext), mode='copy', cfg=cfg)
+    assert result['success'] is True
+    assert (console / 'Laguna-S-2.1-UD-Q4_K_M-00002-of-00003.gguf').is_file()
+    assert (console / 'Laguna-S-2.1-UD-Q4_K_M-00003-of-00003.gguf').is_file()
+    assert result['library_path'].endswith('Laguna-S-2.1-UD-Q4_K_M-00001-of-00003.gguf')

@@ -2,11 +2,17 @@
 
 Panel route: **Settings → Speech & runtimes** (`#/settings/rt-runtimes`)
 
-This panel manages the non-llama runtimes — Piper TTS and Whisper STT —
-installed as native bundles under `runtimes/`. It is separate from the
+This panel manages the non-llama runtimes — Piper TTS, Whisper STT, **vLLM**,
+and Transformers — installed as on-demand bundles under `runtimes/`. Heavy
+engines are not in the Windows installer. It is separate from the
 llama-engine runtime panel (see [settings-runtime.md](./settings-runtime.md)),
 which controls llama-server behavior. Device rules here are **per-runtime**;
 llama stacks use the global hardware settings.
+
+Use **Install vLLM** for fast NVIDIA Hugging Face loads. On Windows this may
+install through WSL. Use **Install Transformers** as the CPU-friendly fallback.
+On the Models tab, SafeTensors LLMs show an engine picker so you can choose
+vLLM or Transformers before Load.
 
 ## What it shows
 

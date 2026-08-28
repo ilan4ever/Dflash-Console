@@ -184,9 +184,71 @@ def test_restore_starts_embedding_server_for_embedding_profile(config_file: Path
         'core.server_boot.start_router_listener',
         lambda *args, **kwargs: router_calls.append('router') or {'success': True},
     )
+    monkeypatch.setattr(
+        'core.memory_guardrails.assess_load',
+        lambda *args, **kwargs: {'level': 'ok', 'message': ''},
+    )
 
     results = engine_state.restore_engines()
 
     assert results[0]['action'] == 'restarted_listener'
     assert embedding_calls == ['embedding']
     assert router_calls == []
+
+
+def test_restore_skips_duplicate_target_paths(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+    saved = json.loads(config_file.read_text(encoding='utf-8'))
+    saved['servers'].append({
+        'id': 'gemma-31b-dflash-copy',
+        'enabled': True,
+        'host': '127.0.0.1',
+        'port': 8091,
+        'api_url': 'http://127.0.0.1:8091/v1',
+        'model_id': 'demo',
+        'engine_on': True,
+        'target_path': r'C:\models\demo.gguf',
+    })
+    saved['servers'][0]['target_path'] = r'C:\models\demo.gguf'
+    config_file.write_text(json.dumps(saved), encoding='utf-8')
+
+    starts: list[str] = []
+    monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: False)
+    monkeypatch.setattr(
+        'core.server_boot.start_router_listener',
+        lambda server, **kwargs: starts.append(str(server.get('id'))) or {'success': True},
+    )
+    monkeypatch.setattr(
+        'core.server_boot.resolve_load_target_path',
+        lambda server, **kwargs: str(server.get('target_path') or ''),
+    )
+
+    results = engine_state.restore_engines()
+    actions = {row['server_id']: row['action'] for row in results}
+    assert actions['gemma-31b-dflash'] == 'restarted_listener'
+    assert actions['gemma-31b-dflash-copy'] == 'skipped_duplicate_target'
+    assert starts == ['gemma-31b-dflash']
+
+
+def test_restore_skips_embedding_when_vram_blocked(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+    saved = json.loads(config_file.read_text(encoding='utf-8'))
+    saved['servers'][0].update({
+        'profile': 'nomic-embed',
+        'engine_mode': 'embedding',
+        'model_id': 'nomic-embed-text',
+    })
+    config_file.write_text(json.dumps(saved), encoding='utf-8')
+
+    monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: False)
+    monkeypatch.setattr(
+        'core.memory_guardrails.assess_load',
+        lambda *args, **kwargs: {'level': 'block', 'message': 'Not enough VRAM'},
+    )
+    embedding_calls: list[str] = []
+    monkeypatch.setattr(
+        'core.embedding_server.start_embedding_server',
+        lambda *args, **kwargs: embedding_calls.append('embedding') or {'success': True},
+    )
+
+    results = engine_state.restore_engines()
+    assert results[0]['action'] == 'skipped_vram'
+    assert embedding_calls == []

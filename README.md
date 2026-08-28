@@ -4,7 +4,18 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.28
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.103
+
+## Download (Windows)
+
+| Package | Link |
+|---------|------|
+| **Setup installer** (recommended) | [Latest GitHub Release](https://github.com/ilan4ever/Dflash-Console/releases/latest) — `DFlash-Console-Setup-*-x64.exe` |
+| **Portable** | Same Releases page — `DFlash-Console-Portable-*-x64.exe` when published |
+| **CLI only** | `pip install dflash-console` |
+
+Installed desktop apps check for updates through a separate signed feed (not GitHub).
+New installs: use the GitHub Release installer above.
 
 ---
 
@@ -20,7 +31,7 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
 | **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
 | **Documentation** | In-app API reference, user guide, terminal CLI, and release notes |
-| **Terminal CLI** | `dflash list` (full PC library), `--ollama` / `--lmstudio` / `--dflash` filters, load, chat, search |
+| **Terminal CLI** | `dflash` command: list, load, chat, embed, delete, nodes, settings, search, pull. Install with `pip install dflash-console` |
 | **About** | Developer attribution, version, license, runtime boundary, and public project links |
 | **Discovery** | **Scan PC** finds model folders; **Add folder** opens a drive-aware browser (C:, D:, …) |
 
@@ -38,6 +49,7 @@ load, monitor, and proxy OpenAI-shaped APIs for many model families, while
 | Modality | Runtime | Engine | Mode |
 |----------|---------|--------|------|
 | LLM chat / instruct | `llama-server` | GGUF (existing) | server |
+| LLM chat (SafeTensors) | **vLLM** or **Transformers** | Hugging Face folders (`runtimes/vllm/`, `runtimes/transformers/`) | server |
 | Embeddings | `llama-server` embedding profile | GGUF (existing) | server |
 | Text-to-speech | **Piper** | ONNX voices (`runtimes/piper/`) | CLI |
 | Speech-to-text | **whisper.cpp `whisper-server`** | GGUF-whisper (`runtimes/stt/`) | server |
@@ -58,8 +70,9 @@ runtimes/
 ```
 
 Each adapter writes a `manifest.json` at boot, exposed read-only at
-`GET /api/runtimes/manifests`. There is **no `pip install` from the UI** — only
-verified native bundles.
+`GET /api/runtimes/manifests`. Piper and Whisper ship as native bundles.
+**vLLM** and **Transformers** download on demand from Settings or the first-run
+wizard so the Windows installer stays small.
 
 ### Playground modes
 
@@ -67,7 +80,7 @@ The Playground has four modes:
 
 | Mode | What it does |
 |------|--------------|
-| **Chat** | Existing chat completions against llama-server / DFlash |
+| **Chat** | Chat completions against llama-server / DFlash, or vLLM / Transformers when that engine is loaded |
 | **Speak** | Text → Piper WAV (voice picker, speed, download) |
 | **Transcribe** | Pick a Whisper model → upload audio → transcript |
 | **Embed** | One item per line → vectors; **Export .jsonl** |
@@ -121,6 +134,25 @@ registry); CLI runtimes use `port: 0`.
 ---
 
 ## Recent improvements
+
+### v0.3.98 — pip install and extra terminal commands
+
+| Feature | Description |
+|---------|-------------|
+| **pip package** | `pip install dflash-console` then `dflash serve`. The command is `dflash`. |
+| **Terminal** | `dflash embed`, `dflash delete`, `dflash nodes`, and `dflash settings`. |
+
+### v0.3.30 — choose vLLM in the toolbar
+
+| Feature | Description |
+|---------|-------------|
+| **Engine menu** | Pick vLLM, Transformers, or DFlash on Engines, Playground, and Models before you load. |
+
+### v0.3.29 — vLLM engine
+
+| Feature | Description |
+|---------|-------------|
+| **vLLM** | Choose vLLM to load Hugging Face models. The engine downloads after install. The first-run wizard can install it on a new PC. |
 
 ### v0.3.28 — Windows installer
 
@@ -229,6 +261,19 @@ registry); CLI runtimes use `port: 0`.
 
 ## Quick start
 
+### Install with pip
+
+```powershell
+pip install dflash-console
+dflash serve
+```
+
+Open **http://127.0.0.1:8900/**. The PyPI package is `dflash-console`; the terminal
+command is `dflash`. Model weights and `llama-server` stay on this PC
+(`DFLASH_ROOT` or Settings). `pip install dflash` is a different project.
+
+### From source
+
 ```powershell
 git clone https://github.com/ilan4ever/Dflash-Console.git
 cd Dflash-Console
@@ -253,6 +298,8 @@ The Console is the source of truth for models on this PC. `dflash list` shows
 the same full library as the Models tab, including Ollama and LM Studio.
 
 ```powershell
+pip install dflash-console
+dflash serve
 dflash help
 dflash list
 dflash list --ollama
@@ -260,22 +307,35 @@ dflash list --lmstudio
 dflash list --dflash
 dflash list --source library
 dflash ps
+dflash load qwen
+dflash chat "hello"
+dflash embed "index this"
+dflash delete old-model
+dflash nodes
+dflash settings
 dflash search qwen
 ```
 
-Install the command once:
+From a checkout you can also run `.\dflash.ps1 install`.
 
-```powershell
-.\dflash.ps1 install
-```
-
-Other useful commands: `dflash engines`, `dflash chat "hello"`,
-`dflash pull org/model --file model.gguf`, `dflash downloads --range 7`,
-`dflash api GET /api/models?source=ollama`.
+| Command | What it does |
+|---------|----------------|
+| `dflash serve` / `open` | Start the UI / open the browser |
+| `dflash list` / `ps` / `show` | Library, loaded models, one model |
+| `dflash load` / `unload` / `start` / `stop` | Engines |
+| `dflash chat` / `embed` | Prompt or vectors |
+| `dflash delete` | Remove a local model from disk |
+| `dflash nodes` | Other Consoles on your network |
+| `dflash settings` | Show or change ports and paths |
+| `dflash search` / `pull` / `downloads` | Hugging Face catalog |
+| `dflash hardware` / `stats` / `report` / `logs` | This PC |
+| `dflash api GET /api/health` | Any Console HTTP route |
 
 Use `dflash <command> --help` for flags. `--json` prints raw server data. The
-Console must be running (`.\server.ps1` or `dflash serve`). Full command list:
-[docs/CLI.md](docs/CLI.md).
+Console must be running (`dflash serve` or `.\server.ps1`) except for help,
+version, serve, and install. Full command list: [docs/CLI.md](docs/CLI.md)
+and the public site
+[onevoiceai.in/dflash-console/docs](https://onevoiceai.in/dflash-console/docs/CLI.md).
 
 `run.ps1` performs a full developer reset: it releases managed model VRAM,
 stops configured engines, and starts a clean Console instance.
@@ -404,8 +464,11 @@ Dflash-Console/
 ├── electron/               # Desktop shell (Electron)
 ├── scripts/                # Server start / restart / Electron helpers
 ├── tests/                  # pytest suite
+├── dflash_cli/             # `dflash` terminal command
+├── pyproject.toml          # pip package `dflash-console`
 ├── docs/
 │   ├── USER-GUIDE.md       # End-user walkthrough
+│   ├── CLI.md              # Full terminal command list
 │   ├── ARCHITECTURE.md     # Public architecture overview
 │   ├── LICENSING.md        # AGPL and redistribution guide
 │   ├── RELEASING.md        # GitHub and Windows release process
@@ -440,6 +503,9 @@ Dflash-Console/
 | `POST` | `/api/runtimes/piper/v1/audio/speech` | Text → speech (Piper, OpenAI shape) |
 | `POST` | `/api/runtimes/stt/v1/audio/transcriptions` | Audio → text (whisper.cpp, OpenAI shape) |
 | `GET` | `/api/models` | Full local library (same as Models tab). `source=ollama\|lmstudio\|dflash\|library` |
+| `DELETE` | `/api/models/file` | Delete a local model file or Hugging Face folder |
+| `GET` / `POST` / `DELETE` | `/api/nodes` | Remote Console nodes |
+| `GET` / `PUT` | `/api/config` | Settings (`dflash settings`) |
 | `GET` | `/api/hf/downloads` | Current downloads and last-download history |
 | `POST` | `/api/models/load` | Unified loader — load ANY catalog model by path; dispatches by modality |
 | `GET` | `/api/gateway` | Console OpenAI gateway status (port, url, running, default server, routes) |
@@ -460,10 +526,10 @@ Full route list: `api/app.py` or **Documentation** tab in the UI.
 ## Development
 
 ```powershell
-pip install -r requirements.txt
+pip install -e .[dev]
 pip install -r requirements-dev.txt
 pytest
-.\run.ps1 -Foreground
+dflash serve
 ```
 
 Cursor agents: see `.cursor/rules/dev-server-restart.mdc` — restart the API after Python backend changes.

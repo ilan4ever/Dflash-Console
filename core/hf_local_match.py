@@ -173,12 +173,26 @@ def _repo_blob(repo_id: str, title: str = '', tags: list[str] | None = None) -> 
 
 
 def _flat_stack_matches_repo(stack: dict[str, Any], blob: str) -> bool:
+    from core.dflash_generation import infer_dflash_generation, repo_dflash_generation
+
     stack_text = _flat_stack_text(stack)
     stack_paths = [
         Path(str(stack.get(key) or ''))
         for key in ('draft_path', 'path')
         if str(stack.get(key) or '').strip()
     ]
+    draft_paths = [
+        path for path in stack_paths
+        if 'dflash' in path.name.lower() or 'dspark' in path.name.lower()
+    ]
+    repo_generation = repo_dflash_generation(blob)
+    if draft_paths:
+        draft_generations = {infer_dflash_generation(path) for path in draft_paths}
+        if repo_generation == 'dflash2' and 'dflash2' not in draft_generations:
+            return False
+        if repo_generation == 'dflash1' and draft_generations == {'dflash2'}:
+            return False
+
     stack_param = next((_param_token(path.name) for path in stack_paths if path.name), None)
     if stack_param:
         param_flat = stack_param.replace('.', '').replace('b', '')

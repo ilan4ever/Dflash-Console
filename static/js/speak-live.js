@@ -208,6 +208,12 @@
           const name = String(m.filename || m.label || m.path || '').toLowerCase();
           return String(m.modality || '') === 'speech-to-text' || /whisper|faster-whisper/.test(name);
         });
+        if (window.DFlashModelGroups?.dedupePickerModels) {
+          const visible = window.DFlashModelGroups.isPickerVisibleModel
+            ? sttModels.filter((model) => window.DFlashModelGroups.isPickerVisibleModel(model, sttModels))
+            : sttModels;
+          sttModels = window.DFlashModelGroups.dedupePickerModels(visible);
+        }
       } catch (_err) {
         sttModels = [];
       }

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import normalize_hardware_settings, normalize_load_settings
-from core.gpu_devices import get_gpu_devices_payload, resolve_role_gpu_launch_params
+from core.gpu_devices import VRAM_HEADROOM_GB, get_gpu_devices_payload, resolve_role_gpu_launch_params
 from core.model_stack import resolve_model_stack
 from core.system_stats import get_system_stats_payload
 
@@ -15,7 +15,6 @@ _MODEL_SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)(?:[-_])\d{5}-of-\d{5}(?P<suffix>\.[^.]+)$',
     re.IGNORECASE,
 )
-_VRAM_HEADROOM_GB = 1.0
 
 
 def _enabled_gpu_indices(cfg: dict[str, Any]) -> list[int]:
@@ -189,6 +188,7 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
         gpus=devices,
         hardware=hardware,
         context_size=context,
+        required_gb=gpu_weights_gb + gpu_kv_gb,
     )
     selected = {
         int(item['index']): item
@@ -230,7 +230,7 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
             2,
         )
     fits = bool(allocations) and all(
-        float(item.get('required_gb') or 0.0) + _VRAM_HEADROOM_GB
+        float(item.get('required_gb') or 0.0) + VRAM_HEADROOM_GB
         <= float(item.get('vram_free_gb') or 0.0)
         for item in allocations
     )
@@ -279,6 +279,7 @@ def _memory_message(plan: dict[str, Any], *, level: str) -> str:
     gpu_kv = float(plan.get('gpu_kv_gb') or 0.0)
     kv_location = 'GPU VRAM' if plan.get('kv_on_gpu') else 'system RAM'
     requirement = float(plan.get('gpu_required_gb') or 0.0)
+    total_required = round(sum(float(item.get('required_gb') or 0.0) for item in allocations), 2)
     if len(allocations) == 1:
         device = allocations[0]
         gpu_label = device.get('display_name') or f"GPU {device.get('index')}"
@@ -286,11 +287,15 @@ def _memory_message(plan: dict[str, Any], *, level: str) -> str:
             f'GPU {device.get("index")} ({gpu_label}) has '
             f'{float(device.get("vram_free_gb") or 0.0):.1f} GB free'
         )
+        requirement_text = f'{requirement:.1f} GB of GPU memory is required'
     else:
         detail = '; '.join(
             f'GPU {item.get("index")} needs {float(item.get("required_gb") or 0.0):.1f} GB '
-            f'but has {float(item.get("vram_free_gb") or 0.0):.1f} GB free'
+            f'and has {float(item.get("vram_free_gb") or 0.0):.1f} GB free'
             for item in allocations
+        )
+        requirement_text = (
+            f'{total_required:.1f} GB of GPU memory is required across {len(allocations)} GPUs'
         )
 
     prefix = 'Cannot load' if level == 'block' else 'VRAM warning for'
@@ -298,24 +303,39 @@ def _memory_message(plan: dict[str, Any], *, level: str) -> str:
     if gpu_weights + 0.05 < weights:
         weight_detail += f' ({weights:.1f} GB total; remaining layers use system RAM)'
     message = (
-        f'{prefix} {model_name}: about {requirement:.1f} GB of GPU memory is required '
+        f'{prefix} {model_name}: about {requirement_text} '
         f'({weight_detail} + {gpu_kv:.1f} GB KV cache on {kv_location}), {detail}.'
     )
     if level == 'block':
         if str(plan.get('split_mode') or 'none') == 'none':
             message += ' The current launch uses one GPU only.'
-            if float(plan.get('free_gb') or 0.0) + _VRAM_HEADROOM_GB < requirement:
+            if float(plan.get('free_gb') or 0.0) + VRAM_HEADROOM_GB < requirement:
                 message += (
                     f' All enabled GPUs currently have only {float(plan.get("free_gb") or 0.0):.1f} GB '
                     'free in total, so splitting also requires unloading other GPU models.'
                 )
-        message += (
-            ' Unload another GPU model, lower GPU layers or context, '
-            'disable GPU KV offload to use system RAM, or enable multi-GPU splitting.'
-        )
+            message += (
+                ' Unload another GPU model, lower GPU layers or context, '
+                'disable GPU KV offload to use system RAM, or enable multi-GPU splitting.'
+            )
+        else:
+            message += (
+                ' Unload another GPU model, lower GPU layers or context, '
+                'or disable GPU KV offload to use system RAM.'
+            )
     else:
         message += ' Close other GPU apps before loading if possible.'
     return message
+
+
+def _exceeds_max_vram(plan: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    """True when projected GPU usage exceeds the global max_vram_usage_gb cap."""
+    hardware = normalize_hardware_settings(cfg.get('hardware_settings'))
+    max_gb = float(hardware.get('max_vram_usage_gb') or 0.0)
+    if max_gb <= 0:
+        return False
+    required = float(plan.get('gpu_required_gb') or 0.0)
+    return required > max_gb
 
 
 def assess_load(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
@@ -338,6 +358,15 @@ def assess_load(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
         plan.update({
             'level': 'block',
             'message': _memory_message(plan, level='block'),
+        })
+    elif _exceeds_max_vram(plan, cfg):
+        plan.update({
+            'level': 'block',
+            'message': (
+                f"Loading this model would use about {plan.get('gpu_required_gb', 0.0):.1f} GB VRAM, "
+                f"which exceeds the configured max_vram_usage_gb limit of "
+                f"{normalize_hardware_settings(cfg.get('hardware_settings')).get('max_vram_usage_gb', 0.0):.1f} GB."
+            ),
         })
     elif float(plan.get('usage_ratio') or 0.0) >= 0.85:
         plan.update({

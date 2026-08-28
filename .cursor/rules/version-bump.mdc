@@ -12,6 +12,7 @@ Whenever you finish a batch of user-facing or packaging-related changes, or when
    - `package.json` → `version`
    - `package-lock.json` → top-level `version` and `packages[""].version`
    - `core/version.py` → `APP_VERSION`
+   - `pyproject.toml` → `version` (PyPI package `dflash-console`)
    - `static/index.html` → `#dfAppVersion` text (`vX.Y.Z`)
    - `README.md` version badges / “Recent improvements” heading when present
 3. Prefer the helper script from repo root:

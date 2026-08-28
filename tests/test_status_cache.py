@@ -117,7 +117,7 @@ def test_external_rows_survive_non_external_poll_during_generation():
         with patch('core.runtime._any_proxy_generating', return_value=True), patch(
             'core.runtime._live_stats_during_generation',
             return_value={'generating': True, 'generating_tokens': 12},
-        ):
+        ), patch('core.gpu_processes.get_external_gpu_loads', return_value=[]):
             payload = get_status_payload(servers, include_external=True, allow_stale=True)
     finally:
         runtime_mod._STATUS_EXTERNAL_CACHE.clear()

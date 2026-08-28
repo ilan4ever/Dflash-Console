@@ -113,3 +113,19 @@ After the workflow succeeds:
 
 Never upload credentials, model files, private logs, or configuration files as
 release assets.
+
+## 5. Publish the pip package
+
+The PyPI name is `dflash-console`. Users install it with `pip install dflash-console`
+and then run `dflash serve` / `dflash list`. Do not upload as `dflash`; that name
+is a different project.
+
+After the version bump:
+
+```powershell
+$env:PYPI_TOKEN = '<pypi-api-token>'
+.\scripts\publish-pypi.ps1
+```
+
+Use `.\scripts\publish-pypi.ps1 -Test` for TestPyPI. Wheels land in `dist-pypi/`.
+The token needs permission to upload `dflash-console`.

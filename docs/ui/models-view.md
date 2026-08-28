@@ -26,8 +26,8 @@
 Active Hugging Face transfers and last downloads are on the **Downloads** page.
 
 The same library is available from PowerShell: `dflash list`,
-`dflash list --ollama`, `dflash list --lmstudio`, `dflash list --dflash`.
-See [CLI.md](../CLI.md).
+`dflash list --ollama`, `dflash list --lmstudio`, `dflash list --dflash`,
+`dflash delete <name>`. See [CLI.md](../CLI.md).
 - Model type filters include LLM/chat, DFlash, OCR, translation,
   speech-to-text, text-to-speech, embeddings, vision, and other. Filters wire to
   the catalog's backend `modality` field (not filename heuristics).

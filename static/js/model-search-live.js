@@ -23,7 +23,7 @@
   const LIST_DETAIL_WARM_LIMIT = 25;
   const listDetailPending = new Map();
 
-  const DEFAULT_CATEGORY = 'supported';
+  const DEFAULT_CATEGORY = 'all';
   const CATEGORY_LABELS = {
     supported: 'Supported in Console',
     all: 'All models',
@@ -53,6 +53,39 @@
     'Anthropic',
     'BAAI',
     'Alibaba',
+  ];
+
+  /** Well-known Hugging Face orgs and GGUF quantizers (repo author before the slash). */
+  const COMMON_UPLOADERS = [
+    'Qwen',
+    'google',
+    'meta-llama',
+    'microsoft',
+    'mistralai',
+    'deepseek-ai',
+    'nvidia',
+    'bartowski',
+    'unsloth',
+    'lmstudio-community',
+    'TheBloke',
+    'mradermacher',
+    'QuantFactory',
+    'RichardErkhov',
+    'DevQuasar',
+    'ggml-org',
+    'MaziyarPanahi',
+    'TomGrc',
+    'DavidAU',
+    'tensorblock',
+    'NeuralBeaver',
+    'SanjiWatsuki',
+    'hugging-quants',
+    'cognitivecomputations',
+    'prithivMLmods',
+    'NousResearch',
+    'mlx-community',
+    'z-lab',
+    'huggingface',
   ];
 
   function escapeHtml(value) {
@@ -256,6 +289,10 @@
     return document.getElementById('hfSearchCreator')?.value || '';
   }
 
+  function currentUploader() {
+    return document.getElementById('hfSearchUploader')?.value || '';
+  }
+
   function installedOnly() {
     return document.getElementById('hfSearchSort')?.value === 'installed';
   }
@@ -280,6 +317,13 @@
     return model.lab || model.author || '—';
   }
 
+  function modelUploader(model) {
+    const author = String(model?.author || '').trim();
+    if (author) return author;
+    const repoId = String(model?.id || '').trim();
+    return repoId.includes('/') ? repoId.split('/')[0] : '';
+  }
+
   function visibleModels() {
     let rows = models;
     if (installedOnly()) {
@@ -292,9 +336,16 @@
       rows = rows.filter((model) => model?.fits_machine === true);
     }
     const lab = currentCreator();
-    if (!lab) return rows;
-    const needle = String(lab).trim().toLowerCase();
-    return rows.filter((model) => String(modelLab(model)).trim().toLowerCase() === needle);
+    if (lab) {
+      const needle = String(lab).trim().toLowerCase();
+      rows = rows.filter((model) => String(modelLab(model)).trim().toLowerCase() === needle);
+    }
+    const uploader = currentUploader();
+    if (uploader) {
+      const needle = String(uploader).trim().toLowerCase();
+      rows = rows.filter((model) => String(modelUploader(model)).trim().toLowerCase() === needle);
+    }
+    return rows;
   }
 
   function populateCreatorFilter() {
@@ -316,7 +367,37 @@
       ...labs.map((lab) => `<option value="${escapeHtml(lab)}">${escapeHtml(lab)}</option>`),
     ].join('');
     select.value = previous && labs.some((lab) => lab.toLowerCase() === previous.toLowerCase()) ? previous : '';
+    window.DFlashSelectTheme?.syncSelect?.(select);
     window.DFlashSelectTheme?.enhanceAll?.(select.closest('.df-catalog-toolbar'));
+  }
+
+  function populateUploaderFilter() {
+    const select = document.getElementById('hfSearchUploader');
+    if (!select) return;
+    const previous = select.value;
+    const uploaderSet = new Map();
+    const addUploader = (name) => {
+      const clean = String(name || '').trim();
+      const key = clean.toLowerCase();
+      if (key && key !== '—' && !uploaderSet.has(key)) uploaderSet.set(key, clean);
+    };
+    COMMON_UPLOADERS.forEach(addUploader);
+    (models || []).forEach((model) => addUploader(modelUploader(model)));
+    const uploaders = [...uploaderSet.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    select.innerHTML = [
+      '<option value="">All providers</option>',
+      ...uploaders.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`),
+    ].join('');
+    select.value = previous && uploaders.some((name) => name.toLowerCase() === previous.toLowerCase())
+      ? previous
+      : '';
+    window.DFlashSelectTheme?.syncSelect?.(select);
+    window.DFlashSelectTheme?.enhanceAll?.(select.closest('.df-catalog-toolbar'));
+  }
+
+  function populateCatalogFilters() {
+    populateCreatorFilter();
+    populateUploaderFilter();
   }
 
   function listSizeLabel(model) {
@@ -399,7 +480,7 @@
   }
 
   function catalogInstalled(model) {
-    if (model?.local_ready || model?.catalog_ready_to_load) return true;
+    if (model?.local_ready) return true;
     const map = model?.local_installs || {};
     return Object.values(map).some((rows) => Array.isArray(rows) && rows.length > 0);
   }
@@ -509,11 +590,14 @@
   }
 
   function catalogListBadges(model) {
+    const shared = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false }) || '';
+    const accelerator = window.DFlashModelCard?.isAccelerator?.(model) === true;
     const kind = catalogListKindBadge(model);
-    const compatible = catalogDflashCompatible(model) && !kind
+    const kindBadge = accelerator ? '' : kind;
+    const compatible = catalogDflashCompatible(model) && !kindBadge && !accelerator
       ? catalogDflashCompatibleBadge()
       : '';
-    return `${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kind}${compatible}`;
+    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kindBadge}${compatible}`;
   }
 
   function catalogListShowsNotRunnableNote(model) {
@@ -637,6 +721,8 @@
 
   function catalogDetailBadges(model) {
     const badges = [];
+    const shared = window.DFlashModelCard?.classificationTags?.(model) || '';
+    const accelerator = window.DFlashModelCard?.isAccelerator?.(model) === true;
     const haystack = catalogHaystack(model);
     const hfTags = Array.isArray(model?.tags)
       ? model.tags
@@ -646,11 +732,16 @@
     const hasTag = (pattern) => hfTags.some((tag) => pattern.test(tag));
     const hasText = (pattern) => pattern.test(haystack);
 
-    if (catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
+    if (shared) badges.push(shared);
+    if (!accelerator && catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
     // The logo is reserved for a DFlash stack that is already registered and
     // loadable in this Console. Text in a README or a compatible tag is not
     // proof that this repository is installed locally.
-    if (catalogReadyToLoad(model) && catalogDflashCompatible(model)) {
+    if (
+      !window.DFlashModelCard?.isStack?.(model)
+      && catalogReadyToLoad(model)
+      && catalogDflashCompatible(model)
+    ) {
       badges.push(catalogDflashLabel());
     }
     if (catalogReadyToLoad(model)) badges.push(catalogBadge('ready to load', 'gold'));
@@ -665,7 +756,7 @@
     if (hasTag(/tool|function-calling|agentic/) || hasText(/\btools?\b|function calling|agentic/)) {
       badges.push(catalogBadge('tools', 'green'));
     }
-    if (hasTag(/reason|think|chain-of-thought|cot/) || hasText(/reasoning|\bthink\b|chain-of-thought/)) {
+    if (!accelerator && (hasTag(/reason|think|chain-of-thought|cot/) || hasText(/reasoning|\bthink\b|chain-of-thought/))) {
       badges.push(catalogBadge('reasoning', 'yellow'));
     }
     if (hasTag(/conversational|instruct|chat/) || hasText(/\binstruct\b|\bchat\b/)) {
@@ -854,6 +945,7 @@
     let request;
     request = api(
       `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
+      { timeoutMs: 60000 },
     ).then((data) => {
       if (!data?.model) throw new Error('Model details unavailable');
       detailCache.set(key, data.model);
@@ -972,7 +1064,7 @@
         models = cached.models;
         catalogPrimed = true;
         if (document.body.dataset.activeView === 'catalog' && !searchInput()?.value?.trim()) {
-          populateCreatorFilter();
+          populateCatalogFilters();
           renderList();
           restoreVisibleSelection({ preferCache: true });
         }
@@ -986,7 +1078,7 @@
               && currentCategory() === category
             ) {
               models = rows;
-              populateCreatorFilter();
+              populateCatalogFilters();
               renderList();
               restoreVisibleSelection({ preferCache: true });
             }
@@ -1007,7 +1099,7 @@
   async function searchCatalog(query, sort, category) {
     const path = `/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`;
     const slowCategory = category === 'supported' || category === 'all-gguf' || isRepoIdQuery(query);
-    const timeoutMs = slowCategory ? 0 : 30000;
+    const timeoutMs = slowCategory ? 60000 : 30000;
     try {
       return await api(path, { timeoutMs });
     } catch (firstError) {
@@ -1032,13 +1124,18 @@
     const category = currentCategory();
     const visible = visibleModels();
     if (!visible.length) {
-      const creator = currentCreator();
+      const lab = currentCreator();
+      const uploader = currentUploader();
       const hint = installedOnly()
         ? 'No installed models in this search. Try another query or pick a different filter.'
         : fitsMachineOnly()
         ? 'No models in this search fit your GPU VRAM. Try another query or clear the filter.'
-        : creator
-        ? `No ${creator} models in this search. Try another lab or clear the filter.`
+        : lab && uploader
+        ? `No ${lab} models from ${uploader} in this search. Try another filter or clear Lab / Provider.`
+        : lab
+        ? `No ${lab} models in this search. Try another lab or clear the filter.`
+        : uploader
+        ? `No models from ${uploader} in this search. Try another provider or clear the filter.`
         : `No models found for ${escapeHtml(categoryLabel(category))}. Try another search or category.`;
       list.innerHTML = `<div class="lm-search-empty">${escapeHtml(hint)}</div>`;
       return;
@@ -1150,7 +1247,8 @@
     }
     const install = filename ? await resolveLocalInstall(model, filename) : null;
     const repoInstall = install || (model.local_ready ? await resolveAnyLocalInstall(model) : null);
-    const installed = Boolean(repoInstall || catalogInstalled(model));
+    const installed = Boolean(repoInstall);
+    const stackReady = catalogReadyToLoad(model);
     const btn = document.getElementById('hfDownloadBtn');
     const saveNote = document.getElementById('hfSaveNote');
     const installedNote = document.getElementById('hfInstalledNote');
@@ -1169,7 +1267,17 @@
           <span class="df-catalog-installed-label">Already installed</span>
           <code class="df-catalog-installed-path">${escapeHtml(repoInstall?.path || 'Installed locally; path unavailable')}</code>`;
       }
-      card?.classList.toggle('ready-to-load', catalogReadyToLoad(model));
+      card?.classList.toggle('ready-to-load', stackReady);
+    } else if (stackReady) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Download';
+        btn.dataset.action = 'download';
+      }
+      saveNote?.classList.remove('hidden');
+      installedNote?.classList.add('hidden');
+      if (installedNote) installedNote.innerHTML = '';
+      card?.classList.add('ready-to-load');
     } else {
       if (btn) {
         btn.disabled = false;
@@ -1190,6 +1298,14 @@
     document.getElementById('hfDownloadProgress')?.classList.add('hidden');
   }
 
+  function downloadPctDisplay(job) {
+    const queue = window.DFlashDownloadQueue;
+    const width = queue?.progressWidth?.(job);
+    if (width != null) return `${Math.round(width)}%`;
+    if (job?.retrying) return '…';
+    return '…';
+  }
+
   function updateCardDownloadUI(model, job) {
     if (!model || !job) return;
     const queue = window.DFlashDownloadQueue;
@@ -1203,7 +1319,6 @@
     const saveNote = document.getElementById('hfSaveNote');
     const installedNote = document.getElementById('hfInstalledNote');
 
-    const pctLabel = queue?.progressLabel?.(job) || 'Downloading…';
     const width = queue?.progressWidth?.(job);
     const indeterminate = job.status === 'downloading' && width == null;
 
@@ -1212,10 +1327,8 @@
       labelEl.textContent = `Downloading ${job.filename || modelTitle(model)}`;
     }
     if (pctEl) {
-      const speed = queue?.formatSpeed?.(job.speed_bps) || '';
-      pctEl.textContent = speed ? `${pctLabel} · ${speed}` : pctLabel;
+      pctEl.textContent = downloadPctDisplay(job);
     }
-    pctEl?.classList.remove('hidden');
     if (fillEl) {
       fillEl.classList.toggle('is-indeterminate', indeterminate);
       fillEl.style.width = width != null ? `${width}%` : '';
@@ -1242,7 +1355,6 @@
 
     if (job.status === 'done') {
       hideCardDownloadProgress();
-      pctEl?.classList.add('hidden');
       if (btn) buttonTools?.appendChild(btn);
       if (statusEl) {
         statusEl.textContent = `Saved to ${job.path || 'models folder'}`;
@@ -1252,7 +1364,6 @@
       void refreshInstallUI(model);
     } else if (job.status === 'error') {
       hideCardDownloadProgress();
-      pctEl?.classList.add('hidden');
       if (btn) buttonTools?.appendChild(btn);
       if (statusEl) {
         statusEl.textContent = job.error || 'Download failed';
@@ -1364,11 +1475,11 @@
                 ${fileSizeEl}
                 <div class="df-catalog-quant-download-actions">
                   ${downloadBtn}
-                  <span class="df-catalog-download-progress-pct hidden" id="hfDownloadProgressPct">0%</span>
                 </div>
                 <div class="df-catalog-download-progress hidden" id="hfDownloadProgress">
                   <div class="df-catalog-download-progress-head">
                     <span id="hfDownloadProgressLabel">Downloading…</span>
+                    <span class="df-catalog-download-progress-pct" id="hfDownloadProgressPct">0%</span>
                   </div>
                   <div class="df-catalog-download-progress-bar">
                     <div class="df-catalog-download-progress-fill" id="hfDownloadProgressFill"></div>
@@ -1447,7 +1558,7 @@
 
     if (canShowCached && !background) {
       models = cached.models;
-      populateCreatorFilter();
+      populateCatalogFilters();
       renderList();
       void warmListDetails(visibleModels(), category);
       restoreVisibleSelection({ preferCache: true });
@@ -1467,7 +1578,7 @@
       if (gen !== searchRefreshGen) return;
       models = data.models || [];
       putCachedSearch(query, sort, category, models);
-      populateCreatorFilter();
+      populateCatalogFilters();
       if (!models.some((m) => m.id === selectedId)) {
         selectedId = '';
         selectedDetail = null;
@@ -1605,6 +1716,22 @@
         filename,
         label: model ? modelTitle(model) : filename,
         path: data.path,
+        meta: model ? {
+          lab: modelLab(model),
+          author: modelUploader(model),
+          quant: String(model.quant || '').trim(),
+          size_label: String(model.size_label || '').trim() || (model.size_gb ? `${model.size_gb} GB` : ''),
+          pipeline_tag: model.pipeline_tag || '',
+          modality: String(model.modality || '').trim(),
+          accelerator_only: model.accelerator_only === true,
+          reasoning: model.reasoning === true,
+          capabilities: Array.isArray(model.capabilities) ? model.capabilities : [],
+          dflash_generation_label: String(model.dflash_generation_label || '').trim(),
+          format: filename.toLowerCase().endsWith('.gguf') ? 'GGUF' : '',
+        } : {
+          author: repoId.includes('/') ? repoId.split('/')[0] : repoId,
+          format: filename.toLowerCase().endsWith('.gguf') ? 'GGUF' : '',
+        },
       });
       toast('Download started — see progress above');
       if (model) {
@@ -1677,6 +1804,7 @@
   async function onViewEnter() {
     await loadLibraries();
     applyCatalogDefaults();
+    populateCatalogFilters();
     const input = searchInput();
     input?.focus();
 
@@ -1686,7 +1814,7 @@
     const cached = getCachedSearch(query, sort, category);
     if (cached?.models?.length) {
       models = cached.models;
-      populateCreatorFilter();
+      populateCatalogFilters();
       renderList();
       restoreVisibleSelection({ preferCache: true });
       void runSearch({ background: true });
@@ -1711,6 +1839,10 @@
     onListFilterChange();
   }
 
+  function onUploaderFilterChange() {
+    onListFilterChange();
+  }
+
   function bind() {
     searchInput()?.addEventListener('input', scheduleSearch);
     document.getElementById('hfSearchSort')?.addEventListener('change', () => {
@@ -1719,6 +1851,7 @@
     });
     document.getElementById('hfSearchCategory')?.addEventListener('change', () => void runSearch());
     document.getElementById('hfSearchCreator')?.addEventListener('change', onCreatorFilterChange);
+    document.getElementById('hfSearchUploader')?.addEventListener('change', onUploaderFilterChange);
     document.addEventListener('click', hideCatalogContextMenu);
     document.addEventListener('scroll', hideCatalogContextMenu, true);
     document.addEventListener('keydown', (event) => {
@@ -1732,10 +1865,12 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     bind();
+    populateCatalogFilters();
     const cached = getCachedSearch('', 'downloads', DEFAULT_CATEGORY);
     if (cached?.models?.length) {
       models = cached.models;
       catalogPrimed = true;
+      populateCatalogFilters();
     }
     void warmCatalogCache();
     window.setInterval(() => {
@@ -1744,5 +1879,5 @@
     }, CATALOG_REFRESH_MS);
   });
 
-  window.DFlashModelSearchLive = { onViewEnter, runSearch, warmCatalogCache };
+  window.DFlashModelSearchLive = { onViewEnter, runSearch, warmCatalogCache, revealRepo: selectModel };
 })();

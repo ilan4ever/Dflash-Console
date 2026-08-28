@@ -38,7 +38,8 @@ function Stop-DflashApps {
 }
 
 # Stop whatever Console server is listening on the port: graceful /api/shutdown
-# first, then force-kill the listener as a fallback.
+# first, then force-kill the listener quickly. The graceful endpoint may be
+# releasing a busy engine, but a full restart also clears engine listeners below.
 function Stop-ConsoleServer {
     param([int]$Port)
     Write-Host "Stopping the Console server on port $Port..." -ForegroundColor Cyan
@@ -47,7 +48,7 @@ function Stop-ConsoleServer {
     } catch {
         # not running or already gone
     }
-    $deadline = (Get-Date).AddSeconds(20)
+    $deadline = (Get-Date).AddSeconds(3)
     while ((Get-Date) -lt $deadline) {
         if (-not (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { return }
         Start-Sleep -Milliseconds 300

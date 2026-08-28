@@ -9,9 +9,20 @@ intended for one trusted user on one Windows machine.
 
 ## 1. First launch
 
-1. Copy `config.example.json` to `config.json` and set your **DFlash root** path and engine profiles.
-2. Run `.\run.ps1` from PowerShell, or `.\scripts\run-electron.ps1` for the desktop window.
-3. Open **http://127.0.0.1:8900/** in your browser if you started the API without Electron.
+Pick one install path:
+
+| Path | What to run |
+|------|-------------|
+| **pip** | `pip install dflash-console` then `dflash serve` |
+| **Windows installer** | Install the desktop app, then open it (it starts the same server) |
+| **Git checkout** | Copy `config.example.json` to `config.json`, set **DFlash root** and engine profiles, then `.\run.ps1` or `dflash serve` |
+
+The PyPI name is **`dflash-console`**. The terminal command is **`dflash`**.
+`pip install dflash` is a different project.
+
+1. Start the server (`dflash serve`, `.\run.ps1`, or the desktop app).
+2. Open **http://127.0.0.1:8900/** if you started the API without Electron.
+3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM** or **Transformers** there, or later in **Settings → Speech & runtimes**. Those engines download after install so the Windows setup stays small.
 4. Open **About** to confirm the release, developer, license, and repository links.
 
 The browser and Electron window use the same sidebar and backend. The main areas
@@ -19,7 +30,8 @@ are **Engines**, **Models**, **Playground**, **Nodes**, **Model catalog**,
 **Downloads**, **Settings**, **Documentation**, and **About**.
 
 You can also talk to the same server from PowerShell with `dflash`. See
-**Documentation → Terminal CLI** or `docs/CLI.md`.
+**Documentation → Terminal CLI**, `docs/CLI.md`, or the public copy at
+[onevoiceai.in/dflash-console/docs](https://onevoiceai.in/dflash-console/docs/CLI.md).
 
 ### Browser and Electron
 
@@ -106,6 +118,39 @@ dflash list
 dflash list --ollama
 dflash list --lmstudio
 dflash list --dflash
+dflash delete <name>
+```
+
+Right-click a row to delete a local file or Hugging Face folder. The terminal
+command `dflash delete <name>` does the same thing and asks before removing
+files unless you pass `--yes`.
+
+---
+
+## 3a. Downloads
+
+Open **Downloads** for Hugging Face transfers that are in progress and a
+history of recent finishes. Filter by the last day, week, month, or longer.
+
+```powershell
+dflash downloads
+dflash downloads --active
+dflash downloads --range 7
+```
+
+---
+
+## 3b. Nodes
+
+**Nodes** registers other DFlash Console PCs on your network. Add a label and
+the remote UI URL (same port as that Console). Check health or send a test chat
+from the page.
+
+```powershell
+dflash nodes
+dflash nodes add http://192.168.1.10:8900 --label Lab
+dflash nodes health Lab
+dflash nodes remove Lab
 ```
 
 ---
@@ -212,6 +257,13 @@ No Piper voices? Add `.onnx` + `.onnx.json` voice files under
 3. Enter **one item per line**.
 4. Press **Embed** — you get the vector count and dimensions.
 5. Press **Export .jsonl** to download `{"text", "embedding"}` rows.
+
+The same Embed flow works from the terminal:
+
+```powershell
+dflash embed "a document to index"
+dflash embed --file notes.txt
+```
 
 The underlying Console-proxied routes are OpenAI-shaped, so they also work from
 `curl` and API clients (see the README API table).
@@ -328,6 +380,27 @@ checkpoint id, or any alias (even `gpt-4o`) — the gateway resolves it to the
 configured chat engine and rewrites the request for you. Chat auto-loads the
 model on first use (JIT) and streams with SSE when `"stream": true`.
 
+Long-running agent clients (Hermes, Cursor, etc.) should keep `"stream": true`.
+The gateway now forwards streaming incrementally (it no longer buffers the full
+completion when the request body was already read). During long reasoning
+phases the Console emits SSE keep-alive comments every ~15s when reasoning is
+being filtered. Reasoning-capable models (Qwen, etc.) keep `reasoning_content`
+visible by default; send `X-Disable-Reasoning: 1` when you want content-only
+deltas (Copilot-style).
+
+Optional config:
+
+```json
+{
+  "gateway_port": 8001,
+  "chat_upstream_read_timeout_seconds": 3600
+}
+```
+
+`chat_upstream_read_timeout_seconds` is the per-read socket timeout for upstream
+SSE from llama-server (default **3600**). No nginx/Cloudflare layer ships with
+DFlash Console; both gateway (:8001) and UI/API (:8900) bind to loopback only.
+
 ```bash
 # list engines as models
 curl http://127.0.0.1:8001/v1/models
@@ -368,6 +441,7 @@ Open **Documentation** in the sidebar for:
 
 - **Overview** — product summary and quick links
 - **User guide** — this document
+- **Terminal CLI** — every `dflash` command (`list`, `embed`, `delete`, `nodes`, `settings`, …)
 - **Engine control** — REST endpoints for load/unload/stop
 - **Runtime JSON shapes** — load and inference settings fields
 - **Multi-modal runtimes (TTS · STT · Embed)** — Piper / Whisper / embeddings API + the unified `/api/models/load`
@@ -399,6 +473,31 @@ change configuration or contact external services.
 
 ---
 
+## 10a. Terminal CLI
+
+`dflash` talks to the same local server as the browser. Install with
+`pip install dflash-console` or `.\dflash.ps1 install`, then:
+
+```powershell
+dflash help
+dflash serve
+dflash list
+dflash ps
+dflash load qwen
+dflash chat "hello"
+dflash embed "index this"
+dflash delete old-model
+dflash nodes
+dflash settings
+dflash search qwen
+dflash pull org/repo --file name.gguf
+```
+
+Use `--json` for scripts. Names can be short when they are unique. Full flag
+list: **Documentation → Terminal CLI** or [CLI.md](./CLI.md).
+
+---
+
 ## 11. Troubleshooting
 
 | Problem | What to try |
@@ -408,6 +507,9 @@ change configuration or contact external services.
 | Stats stuck on dashes | Run at least one completion through the engine or console proxy |
 | CPU looks wrong | Wait for the next monitor poll or restart the Console server |
 | Backend changes not visible | Run `.\scripts\restart-console-server.ps1` |
+| `dflash` not found | `pip install dflash-console` or `.\dflash.ps1 install`, then open a new terminal |
+| `Cannot reach DFlash Console` | Start it with `dflash serve` or `.\server.ps1` |
+| `pip install dflash` installs the wrong app | Use `pip install dflash-console` |
 
 ---
 

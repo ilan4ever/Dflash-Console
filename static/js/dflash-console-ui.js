@@ -69,11 +69,15 @@
     if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
     if (tab === 'server') {
       window.DFlashServerLive?.reschedulePoll?.();
-      void window.DFlashServerLive?.refresh?.(true, { includeExternal: true, fresh: true });
+      // Do not block the first Engines render behind the expensive external
+      // GPU scan. The server status and live inference poll handle local
+      // engines immediately; external cards refresh on their own cadence.
+      void window.DFlashServerLive?.refresh?.(true, { includeExternal: false, fresh: false });
     }
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
     if (tab === 'downloads') window.DFlashDownloadsLive?.onViewEnter?.();
+    if (tab === 'devices') void window.DFlashNodesLive?.onViewEnter?.();
     if (tab === 'chat') {
       void window.DFlashChatLive?.onViewEnter?.();
       void window.DFlashSpeakLive?.onViewEnter?.();
@@ -83,6 +87,7 @@
 
   function onViewLeave(tab) {
     if (tab === 'settings') window.DFlashSettingsLive?.onViewLeave?.();
+    if (tab === 'devices') window.DFlashNodesLive?.onViewLeave?.();
   }
 
   let activeTab = 'server';
@@ -190,7 +195,10 @@
 
   document.querySelectorAll('.lm-modal-backdrop').forEach((bd) => {
     bd.addEventListener('click', (e) => {
-      if (e.target === bd) closeModal(bd.closest('.lm-modal'));
+      if (e.target !== bd) return;
+      const modal = bd.closest('.lm-modal');
+      if (modal?.hasAttribute('data-no-dismiss')) return;
+      closeModal(modal);
     });
   });
 
@@ -247,7 +255,9 @@
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      document.querySelectorAll('.lm-modal.open').forEach((modal) => closeModal(modal));
+      document.querySelectorAll('.lm-modal.open').forEach((modal) => {
+        if (!modal.hasAttribute('data-no-dismiss')) closeModal(modal);
+      });
       document.getElementById('modelMetadataModal')?.classList.remove('open');
       document.querySelectorAll('.lm-dropdown-menu.open').forEach((m) => m.classList.remove('open'));
     }
@@ -267,12 +277,72 @@
     return layoutPrefs()?.getBool?.('inspector_collapsed', false) === true;
   }
 
+  let mobileSidenavOpen = false;
+  let mobileEngineDropdownsOpen = false;
+
+  function isNarrowLayout() {
+    return window.innerWidth < 900;
+  }
+
+  function setMobileEngineDropdownsOpen(open) {
+    mobileEngineDropdownsOpen = !!open;
+    const group = document.getElementById('serverEngineLoadGroup');
+    const toggle = document.getElementById('serverEngineDropdownsToggle');
+    group?.classList.toggle('lm-engine-load-dropdowns-open', mobileEngineDropdownsOpen);
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', mobileEngineDropdownsOpen ? 'true' : 'false');
+      toggle.textContent = mobileEngineDropdownsOpen ? 'Hide pickers' : 'Pickers';
+      toggle.title = mobileEngineDropdownsOpen
+        ? 'Hide engine and model pickers'
+        : 'Show engine and model pickers';
+    }
+  }
+
+  function setupMobileEngineDropdowns() {
+    const toggle = document.getElementById('serverEngineDropdownsToggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', () => {
+      setMobileEngineDropdownsOpen(!mobileEngineDropdownsOpen);
+    });
+  }
+
   function fitLayout() {
     if (!bodyEl) return;
-    const narrow = window.innerWidth < 960;
+    const narrow = isNarrowLayout();
+    document.documentElement.classList.toggle('df-narrow', narrow);
+
     if (narrow) {
+      if (!mobileSidenavOpen) {
+        setSidenavCollapsed(true, { persist: false });
+      } else {
+        setSidenavCollapsed(false, { persist: false });
+      }
+      setMobileEngineDropdownsOpen(mobileEngineDropdownsOpen);
+    } else {
+      mobileSidenavOpen = false;
+      applyStoredSidenav();
+      setMobileEngineDropdownsOpen(false);
+    }
+
+    const serverView = document.querySelector('.lm-view[data-view="server"]');
+    if (serverView) {
+      if (narrow) {
+        serverView.classList.add('logs-collapsed');
+      } else if (!layoutPrefs()?.getBool?.('logs_hidden')) {
+        serverView.classList.remove('logs-collapsed');
+      }
+    }
+
+    if (narrow) {
+      bodyEl.style.setProperty('--inspector-width', '0px');
       setInspectorCollapsed(true, { persist: false });
       return;
+    }
+    const storedInspectorWidth = layoutPrefs()?.getNumber?.('inspector_width');
+    if (Number.isFinite(storedInspectorWidth) && storedInspectorWidth >= 220) {
+      bodyEl.style.setProperty('--inspector-width', `${storedInspectorWidth}px`);
+    } else {
+      bodyEl.style.removeProperty('--inspector-width');
     }
     const hasPref = (() => {
       try {
@@ -281,8 +351,9 @@
         return false;
       }
     })() || layoutPrefs()?.has?.('inspector_collapsed');
-    if (hasPref) {
-      bodyEl.dataset.userToggledInspector = '1';
+    const userToggled = bodyEl.dataset.userToggledInspector === '1';
+    if (hasPref || userToggled) {
+      if (hasPref) bodyEl.dataset.userToggledInspector = '1';
       setInspectorCollapsed(inspectorCollapsedPreference(), { persist: false });
     }
   }
@@ -457,8 +528,14 @@
     const restoreBtn = document.getElementById('sidenavRestoreBtn');
     if (!collapseBtn || !restoreBtn) return;
 
-    collapseBtn.addEventListener('click', () => setSidenavCollapsed(true));
-    restoreBtn.addEventListener('click', () => setSidenavCollapsed(false));
+    collapseBtn.addEventListener('click', () => {
+      if (isNarrowLayout()) mobileSidenavOpen = false;
+      setSidenavCollapsed(true, { persist: !isNarrowLayout() });
+    });
+    restoreBtn.addEventListener('click', () => {
+      if (isNarrowLayout()) mobileSidenavOpen = true;
+      setSidenavCollapsed(false, { persist: !isNarrowLayout() });
+    });
     if (!skipApplyStored) applyStoredSidenav();
   }
 
@@ -573,12 +650,15 @@
 
   async function bootLayoutControls() {
     let postInstallWelcome = false;
+    let postInstallSetup = false;
     if (window.DFlashDesktop?.getAppSettings) {
       try {
         const settings = await window.DFlashDesktop.getAppSettings();
         postInstallWelcome = Boolean(settings?.postInstallWelcome);
+        postInstallSetup = Boolean(settings?.postInstallSetup);
       } catch {
         postInstallWelcome = false;
+        postInstallSetup = false;
       }
     }
 
@@ -587,14 +667,22 @@
     setupLogsPanelLayout();
     setupInspectorResize();
     setupSidenavResize();
-    setupSidenavCollapse({ skipApplyStored: postInstallWelcome });
+    setupSidenavCollapse({ skipApplyStored: postInstallWelcome || postInstallSetup });
+    setupMobileEngineDropdowns();
     applyInspectorFromConfig();
     const inspectorTab = layoutPrefs()?.getString?.('inspector_tab');
     if (inspectorTab === 'info' || inspectorTab === 'load') {
       window.DFlashServerLive?.focusInspectorTab?.(inspectorTab);
     }
     fitLayout();
-    if (postInstallWelcome) {
+    if (postInstallSetup) {
+      setSidenavCollapsed(false, { persist: false });
+      window.DFlashSetupWizard?.open?.();
+      window.DFlashDesktop?.onPostInstallWelcomeCleared?.(() => {
+        applyStoredSidenav();
+        restoreStoredView();
+      });
+    } else if (postInstallWelcome) {
       setSidenavCollapsed(false, { persist: false });
       setView('models', { persist: false });
       window.DFlashDesktop?.onPostInstallWelcomeCleared?.(() => {

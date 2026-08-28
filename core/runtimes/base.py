@@ -41,6 +41,7 @@ RUNTIME_STT = 'stt'  # whisper.cpp whisper-server STT adapter
 RUNTIME_FASTER_WHISPER = 'faster-whisper'  # faster-whisper / CTranslate2 STT adapter
 RUNTIME_VIBEVOICE = 'vibevoice'  # Microsoft VibeVoice realtime TTS adapter
 RUNTIME_TRANSFORMERS = 'transformers'  # Hugging Face Transformers / PyTorch LLM adapter
+RUNTIME_VLLM = 'vllm'  # vLLM high-throughput OpenAI server (installed on demand)
 RUNTIME_OLLAMA = 'ollama'  # Ollama local model library (native HTTP API)
 
 # execution_mode values

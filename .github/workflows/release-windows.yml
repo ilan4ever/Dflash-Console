@@ -73,7 +73,7 @@ jobs:
             throw "DFLASH_UPDATE_TOKEN and DFLASH_UPDATE_PRIVATE_KEY repository secrets are required."
           }
           $endpoint = @{
-            manifestUrl = "https://onevoiceai.in/internal-app/dflash-console/latest.json"
+            manifestUrl = "https://onevoiceai.in/?dflash-console-update=latest"
             token = $env:DFLASH_UPDATE_TOKEN
           } | ConvertTo-Json
           $endpoint | Set-Content electron/resources/update-endpoint.json -Encoding UTF8
@@ -166,7 +166,7 @@ jobs:
             --output "dist-electron/latest.json" `
             --version $version `
             --key "$env:RUNNER_TEMP\dflash-update-private.pem" `
-            --download-url "https://onevoiceai.in/internal-app/dflash-console/download"
+            --download-url "https://onevoiceai.in/?dflash-console-update=download"
           $manifest = Get-Content "dist-electron/latest.json" -Raw | ConvertFrom-Json
           if ($manifest.appId -ne "com.dflash.console") { throw "Unexpected DFlash manifest appId." }
 

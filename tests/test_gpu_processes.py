@@ -1,15 +1,25 @@
+import json
+
 from core.gpu_processes import (
+    _attach_external_gpu_activity,
     _attach_external_inference_stats,
     _build_external_card,
     _classify_app,
     _external_card_detail,
     _external_card_path_missing,
+    _fetch_process_details,
     _is_gpu_model_load,
     _model_hint_from_cmdline,
     _probe_loaded_model,
     _probe_lmstudio_loaded_models,
+    _resolve_ai_tools_model_name,
+    _resolve_ai_tools_stt_model_path,
     _resolve_external_model_name,
     _resolve_stt_model_path,
+    _read_speak_stt_active_model,
+    _speak_stt_log_paths,
+    _discover_speak_stt_listener_cards,
+    _retain_alive_external_cards,
     _size_gb_from_path,
 )
 import core.gpu_processes as gpu_processes
@@ -99,6 +109,72 @@ def test_model_hint_from_cmdline():
     assert path.endswith('gemma-4-12b_q4_0-it.gguf')
 
 
+def test_build_external_card_rejects_notepadpp():
+    card = _build_external_card(
+        {'pid': 9090, 'gpu_index': 0, 'vram_mb': 48.0, 'vram_gb': 0.05, 'process_name': 'notepad++.exe'},
+        details={
+            'process_name': r'C:\Program Files\Notepad++\notepad++.exe',
+            'command_line': r'"C:\Program Files\Notepad++\notepad++.exe" notes.txt',
+            'parent_process_name': 'explorer.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
+def test_build_external_card_rejects_windows_voice_recorder():
+    card = _build_external_card(
+        {'pid': 36528, 'gpu_index': 0, 'vram_mb': 48.0, 'vram_gb': 0.05, 'process_name': 'VoiceRecorder.exe'},
+        details={
+            'process_name': 'VoiceRecorder.exe',
+            'command_line': (
+                r'C:\Program Files\WindowsApps\Microsoft.WindowsSoundRecorder_11.2606.0.0_x64__8wekyb3d8bbwe'
+                r'\VoiceRecorder.exe -ServerName:App.AppXrkpg5btabgrsz8zvhn83qm92evdrv0ak.mca'
+            ),
+            'parent_process_name': 'svchost.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
+def test_is_gpu_model_load_rejects_desktop_gpu_noise():
+    assert not _is_gpu_model_load(
+        process_name='CHXSmartScreen.exe',
+        command_line=r'C:\Windows\System32\CHXSmartScreen.exe',
+        model_name='CHXSmartScreen',
+        model_path='',
+    )
+    assert not _is_gpu_model_load(
+        process_name='TabTip.exe',
+        command_line=r'C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe',
+        model_name='TabTip',
+        model_path='',
+    )
+
+
+def test_build_external_card_rejects_desktop_noise():
+    card = _build_external_card(
+        {'pid': 1234, 'gpu_index': 0, 'vram_mb': 64.0, 'vram_gb': 0.06, 'process_name': 'HWiNFO64.exe'},
+        details={
+            'process_name': 'HWiNFO64.exe',
+            'command_line': r'C:\Program Files\HWiNFO64\HWiNFO64.exe',
+            'parent_process_name': '',
+        },
+        gpus=[{'index': 0, 'name': 'GPU', 'display_name': 'GPU 0'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
 def test_is_gpu_model_load_rejects_ui_server():
     assert not _is_gpu_model_load(
         process_name='python.exe',
@@ -131,6 +207,7 @@ def test_is_gpu_model_load_accepts_stt():
 
 
 def test_resolve_external_model_name_speak_stt_loading(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_probe_onevoice_stt_status', lambda *_args, **_kwargs: {})
     monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
     name, path = _resolve_external_model_name(
         app_source='onevoice',
@@ -142,6 +219,55 @@ def test_resolve_external_model_name_speak_stt_loading(monkeypatch):
     assert path == ''
 
 
+def test_resolve_external_model_name_speak_stt_websocket_ready(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_onevoice_stt_status',
+        lambda *_args, **_kwargs: {'model_loaded': True, 'model': 'small.en', 'loading': False},
+    )
+    name, path = _resolve_external_model_name(
+        app_source='onevoice',
+        app_label='OneVoice',
+        process_name='python.exe',
+        command_line=r'python.exe -u C:\tools\stt\speak_stt.py',
+    )
+    assert name == 'small.en'
+
+
+def test_speak_stt_log_paths_prefers_script_tree():
+    command_line = (
+        r'C:\Users\me\AppData\Roaming\onevoice-speak-dev\models\stt\runtime\.venv\Scripts\python.exe -u '
+        r'C:\dev\Speak-OneVoice\tools\stt\speak_stt.py'
+    )
+    paths = _speak_stt_log_paths(command_line)
+    assert 'Speak-OneVoice' in str(paths[0])
+    assert str(paths[0]).endswith(r'tools\logs\speak_stt.debug.log')
+    assert any('OneVoiceSpeak' in str(path) for path in paths)
+
+
+def test_read_speak_stt_active_model_uses_dev_log(tmp_path):
+    gpu_processes._STT_MODEL_CACHE.clear()
+    tools = tmp_path / 'Speak-OneVoice' / 'tools'
+    stt_dir = tools / 'stt'
+    stt_dir.mkdir(parents=True)
+    (stt_dir / 'speak_stt.py').write_text('', encoding='utf-8')
+    log_dir = tools / 'logs'
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / 'speak_stt.debug.log'
+    log_path.write_text(
+        json.dumps(
+            {
+                'ts': '2026-08-22 09:15:13',
+                'event': 'model-ready',
+                'detail': {'model': 'small.en'},
+            }
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+    command_line = f'python.exe -u {stt_dir / "speak_stt.py"}'
+    assert _read_speak_stt_active_model(command_line=command_line, max_age_seconds=0.0) == 'small.en'
+
 def test_probe_loaded_model_marks_busy_port_as_loading(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'tcp_port_open', lambda *_args, **_kwargs: True)
     monkeypatch.setattr(gpu_processes, '_probe_models_fast', lambda *_args, **_kwargs: ([], True))
@@ -151,6 +277,7 @@ def test_probe_loaded_model_marks_busy_port_as_loading(monkeypatch):
 
 
 def test_build_external_card_shows_loading_for_gpu_vram(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_probe_onevoice_stt_status', lambda *_args, **_kwargs: {'loading': True})
     monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
     monkeypatch.setattr(
         gpu_processes,
@@ -172,6 +299,31 @@ def test_build_external_card_shows_loading_for_gpu_vram(monkeypatch):
     assert card is not None
     assert card['card_state'] == 'loading'
     assert card['title'] == 'Loading…'
+
+
+def test_build_external_card_speak_stt_ready_via_websocket(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_onevoice_stt_status',
+        lambda *_args, **_kwargs: {'model_loaded': True, 'model': 'small.en', 'loading': False, 'device': 'cuda'},
+    )
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [2711])
+    card = _build_external_card(
+        {'pid': 4242, 'gpu_index': 0, 'vram_mb': 512.0, 'vram_gb': 0.5, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': r'python.exe -u C:\tools\stt\speak_stt.py',
+            'parent_process_name': 'OneVoiceSpeak.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'ready'
+    assert card['title'] == 'small.en'
+    assert card['listen_port'] == 2711
 
 
 def test_external_card_detail_stt():
@@ -410,11 +562,107 @@ def test_unload_external_kills_worker_after_api_key_failure(monkeypatch):
 
 def test_unload_external_rejects_unknown_pid(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'query_compute_apps', lambda: [])
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
 
     result = gpu_processes.unload_external_gpu_process(1234)
 
     assert result['success'] is False
     assert 'current GPU compute process' in result['error']
+
+
+def test_unload_external_kills_python_stt_worker(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        'query_compute_apps',
+        lambda: [{'pid': 4411, 'process_name': 'python.exe'}],
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda _pids: {
+            4411: {
+                'process_name': 'python.exe',
+                'command_line': r'python.exe C:\dev\OneVoice\speak_stt.py --model small.en',
+            },
+        },
+    )
+    monkeypatch.setattr(
+        gpu_processes.subprocess,
+        'run',
+        lambda *args, **kwargs: type('Result', (), {'returncode': 0, 'stdout': '', 'stderr': ''})(),
+    )
+
+    result = gpu_processes.unload_external_gpu_process(4411)
+
+    assert result['success'] is True
+    assert result['method'] == 'kill'
+
+
+def test_unload_external_kills_cached_python_card(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        'query_compute_apps',
+        lambda: [{'pid': 5522, 'process_name': 'python.exe'}],
+    )
+    monkeypatch.setattr(gpu_processes, '_query_process_details', lambda _pids: {})
+    monkeypatch.setattr(
+        gpu_processes.subprocess,
+        'run',
+        lambda *args, **kwargs: type('Result', (), {'returncode': 0, 'stdout': '', 'stderr': ''})(),
+    )
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = [{
+        'pid': 5522,
+        'process_name': 'python.exe',
+        'model_kind': 'stt',
+        'model_name': 'small.en',
+        'app_label': 'OneVoice',
+    }]
+
+    result = gpu_processes.unload_external_gpu_process(5522)
+
+    assert result['success'] is True
+    assert result['method'] == 'kill'
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
+
+
+def test_unload_external_kills_live_stt_when_card_pid_is_stale(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        'query_compute_apps',
+        lambda: [{'pid': 34460, 'process_name': 'python.exe'}],
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda _pids: {
+            34460: {
+                'process_name': 'python.exe',
+                'command_line': r'python.exe C:\dev\Speak-OneVoice\tools\stt\speak_stt.py',
+            },
+        },
+    )
+    killed = []
+
+    def fake_kill(pid):
+        killed.append(int(pid))
+        return {'success': True, 'pid': int(pid), 'method': 'kill'}
+
+    monkeypatch.setattr(gpu_processes, '_kill_external_pid', fake_kill)
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = [{
+        'pid': 5000,
+        'process_name': 'python.exe',
+        'model_kind': 'stt',
+        'model_name': 'small.en',
+        'app_source': 'onevoice',
+        'app_label': 'OneVoice',
+        'command_line': r'python.exe speak_stt.py',
+    }]
+
+    result = gpu_processes.unload_external_gpu_process(5000)
+
+    assert result['success'] is True
+    assert killed == [34460]
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
 
 
 def test_unload_external_uses_ollama_native_api(monkeypatch):
@@ -463,3 +711,263 @@ def test_unload_external_uses_api_before_pid_lookup(monkeypatch):
 
     assert result['success'] is True
     assert result['method'] == 'api'
+
+
+def test_classify_ai_tools_scraper():
+    source, label = _classify_app(
+        process_name='python.exe',
+        command_line=r'C:\dev\AI-Tools\env\scraper\python.exe C:\dev\AI-Tools\scraper.py --run-functions',
+        parent_name='AI-Tools.exe',
+    )
+    assert source == 'ai-tools'
+    assert label == 'AI Tools'
+
+
+def test_build_external_card_ai_tools_transcribe_without_vram():
+    card = _build_external_card(
+        {'pid': 47060, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': (
+                r'C:\dev\AI-Tools\env\scraper\python.exe -c '
+                r'"from scraper_modules.transcribe_module.transcribe_module import _run_voice_core"'
+            ),
+            'parent_process_name': 'AI-Tools.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is not None
+    assert card['app_label'] == 'AI Tools'
+    assert card['title'] == 'Voice recognition'
+    assert card['model_kind'] == 'stt'
+
+
+def test_resolve_ai_tools_stt_model_path_uses_sibling_models(tmp_path):
+    ai_root = tmp_path / 'AI-Tools'
+    ai_root.mkdir()
+    (ai_root / 'config.json').write_text(
+        json.dumps({'whisper_model': {'model_size': 'small'}}),
+        encoding='utf-8',
+    )
+    model_dir = tmp_path / 'Dflash-Console' / 'models' / 'faster-whisper-small.en'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'model.bin').write_bytes(b'x' * (50 * 1024 * 1024))
+
+    command_line = (
+        rf'{ai_root}\env\scraper\python.exe -c '
+        r'"from scraper_modules.transcribe_module.transcribe_module import _run_voice_core"'
+    )
+    path = _resolve_ai_tools_stt_model_path(command_line)
+    assert path == str(model_dir)
+    size = _size_gb_from_path(path)
+    assert size is not None and size > 0
+
+
+def test_build_external_card_ai_tools_transcribe_includes_disk_size(tmp_path):
+    ai_root = tmp_path / 'AI-Tools'
+    ai_root.mkdir()
+    (ai_root / 'config.json').write_text(
+        json.dumps({'whisper_model': {'model_size': 'small'}}),
+        encoding='utf-8',
+    )
+    model_dir = tmp_path / 'Dflash-Console' / 'models' / 'faster-whisper-small.en'
+    model_dir.mkdir(parents=True)
+    (model_dir / 'model.bin').write_bytes(b'x' * (50 * 1024 * 1024))
+
+    card = _build_external_card(
+        {'pid': 47060, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': (
+                rf'{ai_root}\env\scraper\python.exe -c '
+                r'"from scraper_modules.transcribe_module.transcribe_module import _run_voice_core"'
+            ),
+            'parent_process_name': 'AI-Tools.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=str(tmp_path / 'Dflash-Console'),
+    )
+    assert card is not None
+    assert card['size_gb'] is not None and card['size_gb'] > 0
+    assert card['model_path']
+
+
+def test_build_external_card_ai_tools_scraper_without_vram(tmp_path):
+    functions_file = tmp_path / 'functions.json'
+    functions_file.write_text(
+        json.dumps({'processing_functions': {'speaker_name_transcription': True}}),
+        encoding='utf-8',
+    )
+    card = _build_external_card(
+        {'pid': 39776, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': (
+                rf'C:\dev\AI-Tools\env\scraper\python.exe C:\dev\AI-Tools\scraper.py '
+                rf'--run-functions --functions-file={functions_file}'
+            ),
+            'parent_process_name': 'AI-Tools.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is not None
+    assert card['app_label'] == 'AI Tools'
+    assert card['title'] == 'Speaker names'
+
+
+def test_build_external_card_unknown_cuda_app():
+    card = _build_external_card(
+        {'pid': 4243, 'gpu_index': 1, 'vram_mb': 1024.0, 'vram_gb': 1.0, 'process_name': 'blender.exe'},
+        details={
+            'process_name': 'blender.exe',
+            'command_line': r'C:\Program Files\Blender\blender.exe -b scene.blend -f 1',
+            'parent_process_name': '',
+        },
+        gpus=[{'index': 1, 'display_name': 'GPU 1', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
+def test_build_external_card_rejects_uvicorn_api_server():
+    card = _build_external_card(
+        {'pid': 8787, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': r'python.exe -m uvicorn ui_backend.app:app --host 127.0.0.1 --port 8787',
+            'parent_process_name': 'AI-Tools.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
+def test_build_external_card_rejects_generic_python_training():
+    card = _build_external_card(
+        {'pid': 5555, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': r'C:\apps\MyLab\python.exe C:\apps\MyLab\train.py --epochs 3',
+            'parent_process_name': 'MyTrainer.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is None
+
+
+def test_attach_external_gpu_activity_keeps_per_process_vram(monkeypatch):
+    card = _attach_external_gpu_activity(
+        {'gpu_index': 0, 'title': 'worker', 'vram_gb': 1.25},
+        gpu_live={0: {'index': 0, 'load_percent': 42, 'vram_used_gb': 9.2}},
+    )
+    assert card['vram_gb'] == 1.25
+    assert 'gpu_busy' not in card
+    assert 'gpu_load_percent' not in card
+
+
+def test_discover_speak_stt_listener_cards(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_pid_listening_on_port', lambda port: 2711 if port == 2711 else None)
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            2711: {
+                'process_name': 'python.exe',
+                'command_line': r'python.exe -u C:\dev\Speak-OneVoice\tools\stt\speak_stt.py',
+                'parent_process_name': 'OneVoiceSpeak.exe',
+            }
+        },
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_build_external_card',
+        lambda *_args, **_kwargs: {
+            'id': 'external-gpu-2711',
+            'pid': 2711,
+            'title': 'small.en',
+            'model_kind': 'stt',
+            'card_state': 'ready',
+        },
+    )
+    cards = _discover_speak_stt_listener_cards(
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+        seen_pids=set(),
+    )
+    assert len(cards) == 1
+    assert cards[0]['listen_port'] == 2711
+
+
+def test_retain_alive_external_cards_keeps_stt_listener(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_query_process_details', lambda _pids: {})
+    monkeypatch.setattr(gpu_processes, '_pid_listening_on_port', lambda port: 5555 if port == 2711 else None)
+    kept = _retain_alive_external_cards([
+        {
+            'pid': 4444,
+            'model_kind': 'stt',
+            'title': 'small.en',
+            'listen_port': 2711,
+        },
+    ])
+    assert len(kept) == 1
+    assert kept[0]['pid'] == 5555
+
+
+def test_fetch_process_details_tolerates_access_denied_cmdline(monkeypatch):
+  import psutil
+
+  class _DeniedProc:
+      def ppid(self):
+          return 0
+
+      def cmdline(self):
+          raise psutil.AccessDenied(self)
+
+      def exe(self):
+          return ''
+
+      def name(self):
+          return 'blocked.exe'
+
+  class _OkProc:
+      def ppid(self):
+          return 0
+
+      def cmdline(self):
+          return ['python.exe', 'worker.py']
+
+      def exe(self):
+          return r'C:\Python\python.exe'
+
+      def name(self):
+          return 'python.exe'
+
+  def _fake_process(pid):
+      if int(pid) == 2220:
+          return _DeniedProc()
+      return _OkProc()
+
+  monkeypatch.setattr('psutil.Process', _fake_process)
+  details = _fetch_process_details([2220, 3333])
+  assert details[2220]['process_name'] == 'blocked.exe'
+  assert details[2220]['command_line'] == ''
+  assert details[3333]['process_name'] == 'python.exe'
+  assert 'worker.py' in details[3333]['command_line']

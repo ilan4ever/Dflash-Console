@@ -1,13 +1,20 @@
 {
   "ui_port": 8900,
+  "gateway_port": 8001,
+  "chat_upstream_read_timeout_seconds": 3600,
   "dflash_root": ".",
   "models_root": ".\\models",
   "hardware_settings": {
     "gpu_strategy": "single_largest",
     "enabled_gpu_indices": [],
     "limit_offload_dedicated_vram": true,
-    "offload_kv_cache_to_gpu": true
+    "offload_kv_cache_to_gpu": true,
+    "max_vram_usage_gb": 0
   },
+  "download_settings": {
+    "parallel_connections": 4
+  },
+  "remote_nodes": [],
   "servers": [
     {
       "id": "gemma-31b-dflash",

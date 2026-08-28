@@ -56,6 +56,23 @@ def test_legacy_unload_transitions_to_idle_router(monkeypatch):
     assert result['listener_ready'] is True
 
 
+def test_unload_with_closed_port_preserves_engine_on(monkeypatch):
+    monkeypatch.setattr(app, 'load_config', lambda: _cfg())
+    monkeypatch.setattr(app, 'tcp_port_open', lambda host, port: False)
+    cleared: list[str] = []
+    monkeypatch.setattr(
+        'core.engine_state.note_user_stopped',
+        lambda server_id: cleared.append(server_id) or None,
+    )
+
+    result = app.server_unload('engine-a')
+
+    assert result['success'] is True
+    assert result['engine_stopped'] is True
+    assert result['listener_ready'] is False
+    assert cleared == []
+
+
 def test_embedding_unload_explains_required_stop(monkeypatch):
     monkeypatch.setattr(app, 'load_config', lambda: _cfg('nomic-embed'))
     monkeypatch.setattr(app, 'tcp_port_open', lambda host, port: True)

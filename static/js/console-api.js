@@ -13,7 +13,7 @@ window.ConsoleApi = (function () {
       return 15000;
     }
     if (normalized.startsWith('/api/hf/')) {
-      return 0;
+      return SLOW_GET_TIMEOUT_MS;
     }
     return DEFAULT_GET_TIMEOUT_MS;
   }

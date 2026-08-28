@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
+from core.config import PACKAGE_ROOT
 from core.version import APP_VERSION
 
-_DOCS_ROOT = Path(__file__).resolve().parent.parent / 'docs'
+_DOCS_ROOT = PACKAGE_ROOT / 'docs'
 
 
 def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str, Any]:
@@ -148,7 +148,8 @@ def _overview_html(base: str) -> str:
   <ul class="df-docs-checklist">
     <li>About page with ILAN AVIV attribution, version, GNU AGPL v3-or-later license, and project links</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li><strong>Terminal CLI</strong> — <code>dflash list</code> shows the full local library; <code>dflash list --ollama</code> filters Ollama models. See Documentation → Terminal CLI.</li>
+    <li><strong>pip install dflash-console</strong> then <code>dflash serve</code>. The command is <code>dflash</code>.</li>
+    <li><strong>Terminal CLI</strong> — <code>dflash list</code>, <code>embed</code>, <code>delete</code>, <code>nodes</code>, <code>settings</code>, load, chat, search, and pull. See Documentation → Terminal CLI.</li>
     <li>Dedicated Downloads page for current transfers and last downloads</li>
     <li>Model library filters for DFlash stacks, accelerators, and loaded models</li>
     <li>Hugging Face catalog with README details, install detection, and download progress</li>
@@ -285,8 +286,9 @@ def _multimodal_guide_md() -> str:
     return (
         '**Load any model with one call** — `POST /api/models/load` with `{"path": "<catalog path>"}`. '
         'The console looks the model up in the catalog, detects its modality, and dispatches to the '
-        'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, llama-server '
-        'for llm/embedding/vision/ocr — pass `server_id` to choose the engine).\n\n'
+        'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, vLLM or '
+        'Transformers for SafeTensors LLMs, llama-server for GGUF llm/embedding/vision/ocr — pass '
+        '`runtime_id` or `server_id` to choose the engine).\n\n'
         'Every row of `GET /api/models` now carries a `load_route` field with the exact call to use '
         '(method + path + body).\n\n'
         '### By model type\n'
@@ -310,13 +312,17 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
     rid = '{runtime_id}'
     sid = '{server_id}'
     return [
+        {'method': 'GET', 'path': '/api/components', 'summary': 'Install hub: vLLM, Transformers, speech runtimes, update reminders, active HF downloads.'},
         {'method': 'GET', 'path': '/api/runtimes', 'summary': 'List non-llama runtimes + adapters (piper, stt) and every runtime_id, modality, execution mode.'},
         {'method': 'GET', 'path': '/api/runtimes/manifests', 'summary': 'Aggregated bundle manifests + process identity tokens.'},
         {'method': 'GET', 'path': f'/api/runtimes/{rid}', 'summary': 'Runtime health: running, port, active model.'},
         {'method': 'GET', 'path': f'/api/runtimes/{rid}/voices', 'summary': 'Available Piper voices (id + label).'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/start', 'summary': 'Start a server-mode runtime (whisper). CLI runtimes (piper) report started:false (always ready).'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/stop', 'summary': 'Stop a server-mode runtime process.'},
-        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
+        {'method': 'GET', 'path': f'/api/runtimes/{rid}/install', 'summary': 'On-demand install status for vLLM or Transformers.'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/install', 'summary': 'Start an on-demand vLLM or Transformers download.', 'body': {'backend': 'auto', 'torch_variant': 'auto'}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/uninstall', 'summary': 'Remove an on-demand vLLM or Transformers install (venv + manifest).'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice, vLLM/Transformers folder).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/unload', 'summary': 'Unload the active model and free GPU memory.'},
         {'method': 'POST', 'path': f'/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},

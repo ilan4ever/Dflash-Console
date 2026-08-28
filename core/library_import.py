@@ -5,12 +5,45 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
+import time
 from pathlib import Path
 from typing import Any
+
+_import_progress_lock = threading.Lock()
+_import_progress: dict[str, dict[str, Any]] = {}
+_COPY_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def set_import_progress(progress_id: str | None, **fields: Any) -> None:
+    if not progress_id:
+        return
+    with _import_progress_lock:
+        row = _import_progress.setdefault(str(progress_id), {})
+        row.update(fields)
+        row['updated_at'] = time.time()
+
+
+def get_import_progress(progress_id: str) -> dict[str, Any]:
+    with _import_progress_lock:
+        row = _import_progress.get(str(progress_id))
+        return dict(row) if row else {}
+
+
+def clear_import_progress(progress_id: str | None) -> None:
+    if not progress_id:
+        return
+    with _import_progress_lock:
+        _import_progress.pop(str(progress_id), None)
 
 from core.config import load_config
 from core.model_discovery import collect_model_files, summarize_library_path
 from core.model_paths import _STORAGE_PRESETS, _preset_path
+
+_SPLIT_SHARD_RE = re.compile(
+    r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$',
+    re.I,
+)
 
 _VALID_MODES = frozenset({'link', 'copy', 'move'})
 
@@ -60,12 +93,120 @@ def _cleanup_empty_dirs(root: Path) -> None:
         pass
 
 
-def _copy_file(source: Path, dest: Path) -> None:
+def _copy_file(source: Path, dest: Path, *, progress_id: str | None = None) -> None:
+    _copy_file_with_progress(source, dest, progress_id=progress_id)
+
+
+def _copy_file_with_progress(source: Path, dest: Path, *, progress_id: str | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
+    try:
+        total = int(source.stat().st_size)
+    except OSError:
+        total = 0
+    if progress_id:
+        set_import_progress(
+            progress_id,
+            phase='copying',
+            bytes_total=total,
+            bytes_done=0,
+            progress=0.0 if total else None,
+            file_name=source.name,
+        )
+    done = 0
+    with source.open('rb') as src, dest.open('wb') as dst:
+        while True:
+            block = src.read(_COPY_CHUNK_BYTES)
+            if not block:
+                break
+            dst.write(block)
+            done += len(block)
+            if progress_id and total > 0:
+                set_import_progress(
+                    progress_id,
+                    bytes_done=done,
+                    progress=round(min(100.0, (done / total) * 100.0), 1),
+                )
+    try:
+        shutil.copystat(source, dest)
+    except OSError:
+        pass
+    if progress_id:
+        set_import_progress(progress_id, bytes_done=done or total, progress=100.0)
 
 
-def _move_file(source: Path, dest: Path) -> None:
+def _dir_byte_size(root: Path) -> int:
+    total = 0
+    if not root.is_dir():
+        return 0
+    for path in root.rglob('*'):
+        if not path.is_file():
+            continue
+        try:
+            total += int(path.stat().st_size)
+        except OSError:
+            continue
+    return total
+
+
+def _copy_tree_with_progress(source: Path, dest: Path, *, progress_id: str | None = None) -> None:
+    total = _dir_byte_size(source)
+    done = 0
+    if progress_id:
+        set_import_progress(
+            progress_id,
+            phase='copying',
+            bytes_total=total,
+            bytes_done=0,
+            progress=0.0 if total else None,
+            file_name=source.name,
+        )
+    for src in sorted(source.rglob('*')):
+        rel = src.relative_to(source)
+        dst = dest / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            file_size = int(src.stat().st_size)
+        except OSError:
+            file_size = 0
+        with src.open('rb') as src_file, dst.open('wb') as dst_file:
+            while True:
+                block = src_file.read(_COPY_CHUNK_BYTES)
+                if not block:
+                    break
+                dst_file.write(block)
+                done += len(block)
+                if progress_id and total > 0:
+                    set_import_progress(
+                        progress_id,
+                        bytes_done=done,
+                        progress=round(min(100.0, (done / total) * 100.0), 1),
+                        file_name=src.name,
+                    )
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
+    if progress_id:
+        set_import_progress(progress_id, bytes_done=done or total, progress=100.0)
+
+
+def _move_file(source: Path, dest: Path, *, progress_id: str | None = None) -> None:
+    if progress_id:
+        try:
+            total = int(source.stat().st_size)
+        except OSError:
+            total = 0
+        set_import_progress(
+            progress_id,
+            phase='moving',
+            bytes_total=total,
+            bytes_done=total,
+            progress=100.0,
+            file_name=source.name,
+        )
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
@@ -118,6 +259,7 @@ def import_library_folder(
     *,
     preset: str = 'custom',
     mode: str = 'link',
+    overwrite: bool = False,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = cfg or load_config()
@@ -138,7 +280,26 @@ def import_library_folder(
     else:
         applied_mode = mode_key
         files = collect_model_files(source, preset_key)
-        dest_dir = _unique_dest(dest_root, source.name)
+        if preset_key == 'dflash' and not overwrite:
+            gguf_names = [
+                path.name
+                for path in (files or [])
+                if str(path.suffix or '').lower() == '.gguf'
+            ]
+            if not gguf_names:
+                gguf_names = [path.name for path in source.rglob('*.gguf') if path.is_file()]
+            conflict = _first_console_filename_conflict(gguf_names, cfg=config, preset='dflash')
+            if conflict:
+                return conflict
+        if preset_key == 'dflash':
+            dest_dir = dest_root / _slug_folder(source.name)
+            if dest_dir.exists() and not overwrite:
+                return _duplicate_in_console_response(
+                    str(dest_dir),
+                    error=f'{dest_dir.name} already exists in the DFlash Console library',
+                )
+        else:
+            dest_dir = _unique_dest(dest_root, source.name)
         if not files:
             if mode_key == 'copy':
                 shutil.copytree(source, dest_dir, dirs_exist_ok=False)
@@ -183,6 +344,71 @@ def _console_import_root(preset: str = 'dflash', *, cfg: dict[str, Any] | None =
     return Path(root).expanduser().resolve()
 
 
+def find_existing_in_console_library(
+    filename: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    preset: str = 'dflash',
+) -> list[dict[str, Any]]:
+    """Return GGUF files with the same basename already stored in the Console library."""
+    name = Path(str(filename or '').strip()).name
+    if not name:
+        return []
+    root = _console_import_root(preset, cfg=cfg or load_config())
+    if not root.is_dir():
+        return []
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        for path in root.rglob(name):
+            if not path.is_file() or path.name.lower() != name.lower():
+                continue
+            key = str(path.resolve()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({
+                'path': str(path.resolve()),
+                'filename': path.name,
+                'folder': path.parent.name,
+                'library_label': 'DFlash Console',
+                'match_type': 'console_library',
+            })
+    except OSError:
+        return []
+    matches.sort(key=lambda row: row.get('path') or '')
+    return matches
+
+
+def _duplicate_in_console_response(
+    existing_path: str,
+    *,
+    filename: str = '',
+    error: str = '',
+) -> dict[str, Any]:
+    name = filename or Path(str(existing_path or '')).name
+    return {
+        'success': False,
+        'exists': True,
+        'existing_path': existing_path,
+        'filename': name,
+        'error': error or f'{name} already exists in the DFlash Console library',
+    }
+
+
+def _first_console_filename_conflict(
+    filenames: list[str],
+    *,
+    cfg: dict[str, Any] | None = None,
+    preset: str = 'dflash',
+) -> dict[str, Any] | None:
+    for name in filenames:
+        matches = find_existing_in_console_library(name, cfg=cfg, preset=preset)
+        if matches:
+            return _duplicate_in_console_response(matches[0]['path'], filename=name)
+    return None
+
+
 def is_under_console_models(path: str | Path, *, preset: str = 'dflash', cfg: dict[str, Any] | None = None) -> bool:
     """True when a file/folder is already physically inside the Console library."""
     try:
@@ -204,6 +430,66 @@ def is_faster_whisper_dir(path: str | Path) -> bool:
     except OSError:
         return False
     return target.is_dir() and (target / 'model.bin').is_file()
+
+
+def split_shard_group(source_path: str | Path) -> list[Path]:
+    """Return every split GGUF shard beside ``source_path`` (sorted by part)."""
+    try:
+        source = Path(str(source_path)).expanduser().resolve()
+    except OSError:
+        return []
+    if not source.is_file() or source.suffix.lower() != '.gguf':
+        return []
+    match = _SPLIT_SHARD_RE.match(source.name)
+    if not match:
+        return [source]
+    prefix = match.group('prefix')
+    total = int(match.group('total'))
+    suffix = match.group('suffix')
+    shards: list[tuple[int, Path]] = []
+    try:
+        for sibling in source.parent.glob(f'{prefix}-*-of-{total:05d}{suffix}'):
+            if not sibling.is_file():
+                continue
+            part_match = _SPLIT_SHARD_RE.match(sibling.name)
+            if not part_match:
+                continue
+            shards.append((int(part_match.group('part')), sibling))
+    except OSError:
+        return [source]
+    if not shards:
+        return [source]
+    shards.sort(key=lambda item: item[0])
+    return [path for _part, path in shards]
+
+
+def _split_shard_primary_path(dest_dir: Path, *, prefix: str, total: int) -> Path:
+    preferred = dest_dir / f'{prefix}-00001-of-{total:05d}.gguf'
+    if preferred.is_file():
+        return preferred
+    try:
+        for sibling in sorted(dest_dir.glob(f'{prefix}-*-of-{total:05d}.gguf')):
+            if sibling.is_file():
+                return sibling
+    except OSError:
+        pass
+    return preferred
+
+
+def _resolve_split_dest_dir(source: Path, *, cfg: dict[str, Any], folder_name: str | None = None) -> Path:
+    root = _console_import_root(cfg=cfg)
+    match = _SPLIT_SHARD_RE.match(source.name)
+    if not match:
+        return root / (folder_name or source.stem)
+    prefix = match.group('prefix')
+    total = int(match.group('total'))
+    try:
+        for path in root.rglob(f'{prefix}-*-of-{total:05d}.gguf'):
+            if path.is_file():
+                return path.parent
+    except OSError:
+        pass
+    return root / (folder_name or prefix)
 
 
 def _faster_whisper_import_name(source: Path) -> str:
@@ -233,6 +519,7 @@ def import_single_model_file(
     preset: str = 'dflash',
     folder_name: str | None = None,
     overwrite: bool = False,
+    progress_id: str | None = None,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Copy or move a single external model into the Console's own library.
@@ -270,10 +557,12 @@ def import_single_model_file(
                 }
             shutil.rmtree(dest_dir, ignore_errors=True)
         if mode_key == 'move':
+            if progress_id:
+                set_import_progress(progress_id, phase='moving', progress=100.0, file_name=source.name)
             shutil.move(str(source), str(dest_dir))
         else:
-            shutil.copytree(source, dest_dir)
-        return {
+            _copy_tree_with_progress(source, dest_dir, progress_id=progress_id)
+        result = {
             'success': True,
             'mode': mode_key,
             'source_path': str(source),
@@ -282,6 +571,44 @@ def import_single_model_file(
             'runtime_id': 'faster-whisper',
             'model_kind': 'faster-whisper',
         }
+        if progress_id:
+            set_import_progress(progress_id, phase='done', status='complete', progress=100.0, result=result)
+        return result
+
+    shard_paths = split_shard_group(source)
+    shard_match = _SPLIT_SHARD_RE.match(source.name)
+    if shard_match:
+        dest_dir = _resolve_split_dest_dir(source, cfg=config, folder_name=folder_name)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        if not overwrite:
+            for shard in shard_paths:
+                if (dest_dir / shard.name).is_file():
+                    return _duplicate_in_console_response(
+                        str(dest_dir / shard.name),
+                        filename=shard.name,
+                    )
+        for shard in shard_paths:
+            dest = dest_dir / shard.name
+            if mode_key == 'move':
+                _move_file(shard, dest, progress_id=progress_id)
+            else:
+                _copy_file(shard, dest, progress_id=progress_id)
+        primary = _split_shard_primary_path(
+            dest_dir,
+            prefix=shard_match.group('prefix'),
+            total=int(shard_match.group('total')),
+        )
+        result = {
+            'success': True,
+            'mode': mode_key,
+            'source_path': str(source),
+            'library_path': str(primary),
+            'shard_paths': [str(dest_dir / shard.name) for shard in shard_paths],
+            'preset': preset,
+        }
+        if progress_id:
+            set_import_progress(progress_id, phase='done', status='complete', progress=100.0, result=result)
+        return result
 
     dest_dir = root / (folder_name or source.stem)
     if dest_dir.exists():
@@ -296,16 +623,19 @@ def import_single_model_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / source.name
     if mode_key == 'move':
-        _move_file(source, dest)
+        _move_file(source, dest, progress_id=progress_id)
     else:
-        _copy_file(source, dest)
-    return {
+        _copy_file(source, dest, progress_id=progress_id)
+    result = {
         'success': True,
         'mode': mode_key,
         'source_path': str(source),
         'library_path': str(dest),
         'preset': preset,
     }
+    if progress_id:
+        set_import_progress(progress_id, phase='done', status='complete', progress=100.0, result=result)
+    return result
 
 
 def import_stack_pair(
@@ -315,6 +645,7 @@ def import_stack_pair(
     label: str | None = None,
     preset: str = 'dflash',
     mode: str = 'copy',
+    overwrite: bool = False,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Copy or move a DFlash stack pair (target + accelerator) into the Console library.
@@ -338,8 +669,17 @@ def import_stack_pair(
         raise ValueError('accelerator is not a GGUF file')
     root = _console_import_root(preset, cfg=config)
     root.mkdir(parents=True, exist_ok=True)
+    if not overwrite:
+        conflict = _first_console_filename_conflict([target.name, draft.name], cfg=config, preset=preset)
+        if conflict:
+            return conflict
     folder = _slug_folder(label or target.stem)
-    dest_dir = _unique_dest(root, folder)
+    dest_dir = root / folder
+    if dest_dir.exists() and not overwrite:
+        return _duplicate_in_console_response(
+            str(dest_dir),
+            error=f'{dest_dir.name} already exists in the DFlash Console library',
+        )
     dest_dir.mkdir(parents=True, exist_ok=True)
     target_dest = dest_dir / target.name
     draft_dest = dest_dir / draft.name

@@ -43,6 +43,10 @@ electron/resources/update-endpoint.json
 runtimes/*
 !runtimes/.gitkeep
 
+# Python package build
+dist-pypi/
+*.egg-info/
+
 # Node / Electron
 node_modules/
 dist-electron/
@@ -58,3 +62,10 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Local debug / scratch (may contain machine paths or API dumps)
+tmp-*
+tmp_*
+
+# LAN deployment config (copy example → config.production-deploy.json)
+scripts/deployment/config.production-deploy.json

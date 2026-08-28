@@ -52,7 +52,7 @@
     if (range === '30') return 'in the last 30 days';
     if (range === '90') return 'in the last 90 days';
     if (range === '365') return 'in the last 12 months';
-    return 'on this PC';
+    return 'all time';
   }
 
   function formatWhen(ts) {
@@ -110,39 +110,10 @@
     }
 
     list.innerHTML = rows.map((job) => {
-      const title = jobTitle(job);
-      const width = queue()?.progressWidth?.(job);
-      const indeterminate = job.status === 'downloading' && width == null;
-      const fillStyle = width != null ? ` style="width:${width}%"` : '';
-      const fillClass = indeterminate ? ' is-indeterminate' : '';
-      const speed = job.status === 'downloading' ? (queue()?.formatSpeed?.(job.speed_bps) || '') : '';
-      const eta = job.status === 'downloading' ? (queue()?.formatEta?.(job.eta_seconds) || '') : '';
-      const bytes = job.bytes_total
-        ? `${queue()?.formatBytes?.(job.bytes_read) || '0 B'} / ${queue()?.formatBytes?.(job.bytes_total) || '—'}`
-        : (job.bytes_read ? queue()?.formatBytes?.(job.bytes_read) : '');
-      const statusText = job.status === 'downloading'
-        ? [queue()?.progressLabel?.(job) || 'Starting…', speed].filter(Boolean).join(' · ')
-        : (job.status === 'done' ? (job.origin === 'disk' ? 'On this PC' : 'Complete') : (job.error || 'Failed'));
-      const when = job.status === 'downloading'
-        ? [bytes, eta].filter(Boolean).join(' · ')
-        : formatWhen(job.finished_at || job.started_at);
-      const bar = job.status === 'downloading'
-        ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill${fillClass}"${fillStyle}></div></div>`
-        : '';
       const remove = job.status === 'downloading'
         ? ''
         : `<button type="button" class="lm-icon-btn tiny df-downloads-remove" data-clear-job="${escapeHtml(job.id)}" title="Remove from last downloads" aria-label="Remove from last downloads">×</button>`;
-      return `
-        <div class="df-downloads-page-item${job.status === 'error' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}">
-          <div class="df-downloads-item-head">
-            <span class="df-downloads-item-title">${escapeHtml(title)}</span>
-            <span class="df-downloads-item-status">${escapeHtml(statusText)}</span>
-            ${remove}
-          </div>
-          <div class="df-downloads-item-meta">${escapeHtml(job.repo_id || '')}${job.filename ? ` · ${escapeHtml(job.filename)}` : ''}</div>
-          <div class="df-downloads-item-meta">${escapeHtml(when || job.path || '')}</div>
-          ${bar}
-        </div>`;
+      return queue()?.renderDownloadCardHtml?.(job, { variant: 'page', removeButtonHtml: remove }) || '';
     }).join('');
   }
 

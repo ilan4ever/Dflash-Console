@@ -41,6 +41,8 @@ def auto_approve_library(candidate: dict[str, Any]) -> bool:
     if '/.lmstudio/' in path:
         return True
     if '/.cache/huggingface' in path:
+        # The HF cache holds the SafeTensors models the Transformers engine
+        # loads — suggest it so first-run users see their models right away.
         return True
     if '/models/' in path or path.endswith('/models'):
         return True
@@ -170,13 +172,80 @@ def candidate_to_library(row: dict[str, Any], *, index: int) -> dict[str, Any]:
     }
 
 
+def _is_hf_cache_path(path: str | Path) -> bool:
+    text = str(path or '').replace('\\', '/').lower()
+    return '/.cache/huggingface' in text or '/huggingface/hub' in text
+
+
+def ensure_setup_libraries(
+    selected: list[dict[str, Any]],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Merge wizard picks with on-disk GGUF/LM Studio folders worth scanning."""
+    config = cfg or load_config()
+    merged: dict[str, dict[str, Any]] = {}
+    for row in selected:
+        if not isinstance(row, dict):
+            continue
+        key = _norm_path_key(row.get('path') or '')
+        if key:
+            merged[key] = dict(row)
+
+    from core.model_discovery import summarize_library_path
+
+    essentials: list[tuple[str, Path]] = [
+        ('dflash', get_models_root(config)),
+        ('lmstudio', _preset_path('lmstudio', config)),
+    ]
+    for preset, path in essentials:
+        if not path.is_dir():
+            continue
+        stats = summarize_library_path(path, preset)
+        count = int(stats.get('model_count') or 0)
+        key = _norm_path_key(path)
+        if key in merged:
+            continue
+        if count <= 0 and preset != 'dflash':
+            continue
+        merged[key] = {
+            'path': str(path.resolve()),
+            'preset': preset,
+            'label': stats.get('label_hint') or _STORAGE_PRESETS[preset]['label'],
+            'model_type': stats.get('model_type') or 'gguf',
+            'model_count': count,
+            'enabled': True,
+        }
+
+    rows = list(merged.values())
+    has_gguf = any(
+        (
+            str(row.get('preset') or '') in {'dflash', 'lmstudio', 'gguf'}
+            or str(row.get('model_type') or '') == 'gguf'
+        )
+        and int(row.get('model_count') or 0) > 0
+        and not _is_hf_cache_path(str(row.get('path') or ''))
+        for row in rows
+    )
+    libraries = normalize_model_libraries(rows, cfg=config)
+    if libraries and has_gguf:
+        for row in libraries:
+            row['download_default'] = str(row.get('preset') or '') in {'dflash', 'lmstudio', 'gguf'}
+        if not any(row.get('download_default') for row in libraries):
+            for row in libraries:
+                if row.get('enabled') and not _is_hf_cache_path(str(row.get('path') or '')):
+                    row['download_default'] = True
+                    break
+    return libraries
+
+
 def complete_setup(
     selected: list[dict[str, Any]],
     *,
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = dict(cfg or load_config())
-    libraries = normalize_model_libraries(selected, cfg=config)
+    libraries = ensure_setup_libraries(selected, cfg=config)
     if not libraries:
         libraries = normalize_model_libraries([], cfg=config)
     config['model_libraries'] = libraries

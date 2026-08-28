@@ -13,6 +13,7 @@ const DEFAULTS = {
   notifyOnEngineReady: false,
   allowAutomaticUpdates: true,
   postInstallWelcome: false,
+  postInstallSetup: false,
 };
 
 let cached = null;

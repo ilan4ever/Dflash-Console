@@ -42,10 +42,16 @@ function Write-StartupLine {
 }
 
 function Stop-ListenersOnPort {
-    param([int]$TargetPort)
+    param(
+        [int]$TargetPort,
+        [object[]]$Connections = $null,
+        [switch]$SkipWait
+    )
     $freed = @()
-    $connections = Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue
-    foreach ($conn in $connections) {
+    if ($null -eq $Connections) {
+        $Connections = @(Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)
+    }
+    foreach ($conn in @($Connections | Where-Object { [int]$_.LocalPort -eq $TargetPort })) {
         $procId = [int]$conn.OwningProcess
         if ($procId -le 0) { continue }
         try {
@@ -86,11 +92,13 @@ function Stop-ListenersOnPort {
                 continue
             }
             Stop-Process -Id $procId -Force -ErrorAction Stop
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-                if (-not (Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)) {
-                    break
+            if (-not $SkipWait) {
+                for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                    if (-not (Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)) {
+                        break
+                    }
+                    Start-Sleep -Milliseconds 100
                 }
-                Start-Sleep -Milliseconds 100
             }
             $freed += "$name ($procId)"
         } catch {
@@ -293,21 +301,10 @@ Write-StartupLine "Console UI port: $Port"
 Write-StartupLine ("Mode: {0}" -f $(if ($Restart) { 'full restart' } elseif ($ApiRestart) { 'API restart; preserve engines' } else { 'start if needed' })) 'Gray'
 
 if ($Restart) {
-    Write-StartupLine 'Full restart — releasing managed GPU and stopping engines...' 'Yellow'
-
-    $releaseScript = Join-Path $Root 'scripts\release-managed-gpu.py'
-    if (Test-Path $releaseScript) {
-        try {
-            $env:PYTHONPATH = $Root
-            & python $releaseScript | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "managed GPU release returned exit code $LASTEXITCODE"
-            }
-            Write-StartupLine '  Released managed GPU checkpoints (unload + stop engines)' 'DarkYellow'
-        } catch {
-            Write-StartupLine "  Managed GPU release skipped: $($_.Exception.Message)" 'DarkGray'
-        }
-    }
+    Write-StartupLine 'Full restart — stopping managed engines...' 'Yellow'
+    # A full restart force-stops each managed listener below. Calling the
+    # graceful Python unload helper first made startup wait up to 20 seconds
+    # when an engine was busy, without changing the final process state.
 
     $ports = [System.Collections.Generic.HashSet[int]]::new()
     [void]$ports.Add($Port)
@@ -317,15 +314,21 @@ if ($Restart) {
         }
     }
 
+    # Query Windows networking once. Get-NetTCPConnection is comparatively
+    # expensive when called once for every configured engine port.
+    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { $ports.Contains([int]$_.LocalPort) })
     foreach ($targetPort in ($ports | Sort-Object)) {
         if ($targetPort -eq $Port) { continue }
-        $stopped = Stop-ListenersOnPort -TargetPort $targetPort
+        $portListeners = @($listeners | Where-Object { [int]$_.LocalPort -eq $targetPort })
+        $stopped = Stop-ListenersOnPort -TargetPort $targetPort -Connections $portListeners -SkipWait
         if ($stopped.Count -gt 0) {
             Write-StartupLine "  Freed port $targetPort - $($stopped -join ', ')" 'DarkYellow'
         } else {
             Write-StartupLine "  Port $targetPort already free" 'DarkGray'
         }
     }
+    Start-Sleep -Milliseconds 750
 
 } else {
     Write-StartupLine 'Gentle start — preserving running llama-server engines' 'Gray'
@@ -337,6 +340,13 @@ if (-not $orchestratedStart) {
         Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
     } else {
         Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+    }
+    $gatewayPort = if ($cfg -and $cfg.gateway_port) { [int]$cfg.gateway_port } else { 8001 }
+    if ($gatewayPort -gt 0 -and $gatewayPort -ne $Port) {
+        $gwStopped = Stop-ListenersOnPort -TargetPort $gatewayPort
+        if ($gwStopped.Count -gt 0) {
+            Write-StartupLine "  Stopped stale OpenAI gateway — $($gwStopped -join ', ')" 'DarkYellow'
+        }
     }
 } elseif (-not (Test-ConsoleApiHealthy -TargetPort $Port)) {
     $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
@@ -352,7 +362,7 @@ if (-not $orchestratedStart) {
     }
     $stale = Stop-StaleConsoleApi -TargetPort $Port
     if ($stale.Count -gt 0) {
-        Write-StartupLine "  Orchestrated start — cleared stale listener: $($stale -join ', ')" 'DarkYellow'
+        Write-StartupLine ('  Orchestrated start - cleared stale listener: {0}' -f ($stale -join ', ')) 'DarkYellow'
     }
 }
 
@@ -361,8 +371,29 @@ if ($cfg -and $cfg.servers) {
     foreach ($server in $cfg.servers) {
         $enabled = if ($null -eq $server.enabled) { $true } else { [bool]$server.enabled }
         if (-not $enabled) { continue }
-        Write-StartupLine "  - $($server.label) - http://127.0.0.1:$($server.port)/v1  [$($server.id)]" 'Gray'
+        Write-StartupLine ('  - {0} - http://127.0.0.1:{1}/v1  [{2}]' -f $server.label, $server.port, $server.id) 'Gray'
     }
+}
+
+function Resolve-PwshPath {
+    if ($env:PWSH_PATH -and (Test-Path -LiteralPath $env:PWSH_PATH)) {
+        return $env:PWSH_PATH
+    }
+    $candidates = @(
+        (Join-Path ${env:ProgramFiles} 'PowerShell\7\pwsh.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'PowerShell\7\pwsh.exe'),
+        (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+    $cmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $cmd = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
 }
 
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -370,16 +401,16 @@ if (-not $python) {
     Write-StartupLine 'ERROR: Python not found on PATH' 'Red'
     exit 1
 }
-$pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-if (-not $pwsh) {
-    Write-StartupLine 'ERROR: PowerShell 7 (pwsh.exe) not found on PATH' 'Red'
+$pwshPath = Resolve-PwshPath
+if (-not $Foreground -and -not $pwshPath) {
+    Write-StartupLine 'ERROR: PowerShell not found (install PowerShell 7 or use Windows PowerShell)' 'Red'
     exit 1
 }
 
 $requirementsLock = Join-Path $Root 'requirements.lock'
 $requirementsStamp = Join-Path $logDir '.requirements.lock.sha256'
 if (-not (Test-Path $requirementsLock)) {
-    Write-StartupLine "ERROR: dependency lock file not found: $requirementsLock" 'Red'
+    Write-StartupLine ('ERROR: dependency lock file not found: {0}' -f $requirementsLock) 'Red'
     exit 1
 }
 $requirementsHash = (Get-FileHash -Algorithm SHA256 $requirementsLock).Hash
@@ -399,7 +430,7 @@ if ($requirementsHash -ne $installedHash) {
 $worker = Join-Path $Root 'scripts\start-console-server.ps1'
 
 if ($Foreground) {
-    Write-StartupLine "Starting Console in foreground at $url" 'Green'
+    Write-StartupLine ('Starting Console in foreground at {0}' -f $url) 'Green'
     Write-StartupLine 'Press Ctrl+C to stop.' 'Gray'
     Write-Host ''
     $env:PYTHONPATH = $Root
@@ -409,8 +440,8 @@ if ($Foreground) {
 
 Write-StartupLine 'Starting Console API in background...' 'Green'
 $errLog = Join-Path $logDir 'console-server.err.log'
-$proc = Start-Process -FilePath 'pwsh.exe' `
-    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $worker, '-Port', $Port, '-Root', $Root) `
+$proc = Start-Process -FilePath $pwshPath `
+    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$worker`" -Port $Port -Root `"$Root`"" `
     -WorkingDirectory $Root `
     -WindowStyle Hidden `
     -PassThru `
@@ -418,25 +449,25 @@ $proc = Start-Process -FilePath 'pwsh.exe' `
     -RedirectStandardError $errLog
 
 Start-Sleep -Seconds 2
-Write-StartupLine "Console API PID $($proc.Id) - log: $serverLog" 'Green'
+Write-StartupLine ('Console API PID {0} - log: {1}' -f $proc.Id, $serverLog) 'Green'
 if (-not (Wait-ConsoleApiHealthy -TargetPort $Port -Process $proc)) {
     $proc.Refresh()
     if ($proc.HasExited) {
-        Write-StartupLine "ERROR: Console API exited before becoming ready (exit code $($proc.ExitCode)). See $errLog" 'Red'
+        Write-StartupLine ('ERROR: Console API exited before becoming ready (exit code {0}). See {1}' -f $proc.ExitCode, $errLog) 'Red'
     } else {
-        Write-StartupLine "ERROR: Console API did not become healthy within 30 seconds. See $serverLog and $errLog" 'Red'
+        Write-StartupLine ('ERROR: Console API did not become healthy within 30 seconds. See {0} and {1}' -f $serverLog, $errLog) 'Red'
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
     exit 1
 }
 if (-not $orchestratedStart) {
-    Write-StartupLine "Open UI: $url" 'Green'
+    Write-StartupLine ('Open UI: {0}' -f $url) 'Green'
     Write-Host ''
-    Write-Host "DFlash Console is running at $url" -ForegroundColor Green
-    Write-Host "Logs: $StartupLog" -ForegroundColor DarkGray
+    Write-Host ('DFlash Console is running at {0}' -f $url) -ForegroundColor Green
+    Write-Host ('Logs: {0}' -f $StartupLog) -ForegroundColor DarkGray
     Write-Host 'Use .\server.ps1 -Restart for a full engine reset.' -ForegroundColor DarkGray
     Write-Host 'Use .\server.ps1 -Foreground to attach this terminal.' -ForegroundColor DarkGray
     Write-Host ''
 } else {
-    Write-StartupLine "Console API ready at $url (orchestrated — UI not opened)" 'Green'
+    Write-StartupLine ('Console API ready at {0} (orchestrated; UI not opened)' -f $url) 'Green'
 }

@@ -36,6 +36,7 @@ PowerShell 7+, and Node.js 22.12+ for the Electron shell.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -e .[dev]
 pip install -r requirements-dev.txt
 pytest -q
 python scripts/release-preflight.py

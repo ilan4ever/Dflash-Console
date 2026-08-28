@@ -6,13 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from core.api_access_log import is_error_line, list_api_calls, read_access_log_file
-from core.config import list_servers, load_config
+from core.config import ROOT, list_servers, load_config
 from core.local_models import list_local_models
 from core.model_discovery import summarize_library_path
 from core.model_paths import storage_presets
 from core.version import APP_VERSION
 
-ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / 'logs'
 
 _CONSOLE_LOG_FILES = {

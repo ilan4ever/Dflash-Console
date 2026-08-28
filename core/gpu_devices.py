@@ -9,6 +9,8 @@ from typing import Any
 
 from core.config import DEFAULT_HARDWARE_SETTINGS, normalize_hardware_settings
 
+VRAM_HEADROOM_GB = 1.0
+
 
 def _subprocess_no_window_kwargs() -> dict[str, Any]:
     if sys.platform == 'win32':
@@ -110,6 +112,76 @@ def _model_looks_large(model_id: str) -> bool:
     return any(token in lower for token in ('31b', '70b', '32b', '27b', '30b', '34b', '405b'))
 
 
+def _split_weights_fit(
+    devices: list[dict[str, Any]],
+    weights: list[float],
+    required_gb: float,
+    *,
+    headroom_gb: float = VRAM_HEADROOM_GB,
+) -> bool:
+    if required_gb <= 0 or not devices or len(devices) != len(weights):
+        return True
+    return all(
+        (required_gb * float(weight)) + headroom_gb
+        <= float(device.get('vram_free_gb') or 0.0) + 1e-6
+        for weight, device in zip(weights, devices)
+    )
+
+
+def _free_vram_split_weights(devices: list[dict[str, Any]]) -> list[float]:
+    free = [max(float(item.get('vram_free_gb') or 0.0), 0.01) for item in devices]
+    total = sum(free) or 1.0
+    return [value / total for value in free]
+
+
+def _speed_biased_split_weights(devices: list[dict[str, Any]]) -> list[float]:
+    """When a split is required, give the fastest GPU the larger layer share."""
+    scores: list[float] = []
+    for item in devices:
+        speed, vram = _gpu_preference_score(item)
+        scores.append(max(speed, 1.0) + max(vram, 0.1) * 0.25)
+    total = sum(scores) or 1.0
+    return [score / total for score in scores]
+
+
+def _strategy_split_weights(devices: list[dict[str, Any]], strategy: str) -> list[float]:
+    if strategy == 'split_evenly':
+        return _speed_biased_split_weights(devices)
+    total_vram = sum(max(float(item.get('vram_gb') or 0.0), 0.1) for item in devices)
+    return [
+        max(float(item.get('vram_gb') or 0.0), 0.1) / total_vram
+        for item in devices
+    ]
+
+
+def _speed_and_free_split_weights(devices: list[dict[str, Any]]) -> list[float]:
+    scores: list[float] = []
+    for item in devices:
+        speed, _vram = _gpu_preference_score(item)
+        free = max(float(item.get('vram_free_gb') or 0.0), 0.01)
+        scores.append(max(speed, 1.0) * free)
+    total = sum(scores) or 1.0
+    return [score / total for score in scores]
+
+
+def balanced_split_weights(
+    devices: list[dict[str, Any]],
+    strategy: str,
+    required_gb: float,
+) -> list[float]:
+    """Keep the chosen split unless a GPU would overflow; then prefer fast+free."""
+    weights = _strategy_split_weights(devices, strategy)
+    if _split_weights_fit(devices, weights, required_gb):
+        return weights
+    biased_free = _speed_and_free_split_weights(devices)
+    if _split_weights_fit(devices, biased_free, required_gb):
+        return biased_free
+    free_weights = _free_vram_split_weights(devices)
+    if _split_weights_fit(devices, free_weights, required_gb):
+        return free_weights
+    return weights
+
+
 def _gpu_preference_score(device: dict[str, Any]) -> tuple[float, float]:
     """Prefer fast cards (4090) over slower high-VRAM cards (TITAN)."""
     name = str(device.get('name') or '').lower()
@@ -180,6 +252,7 @@ def resolve_auto_gpu_launch(
     hardware: dict[str, Any] | None = None,
     *,
     context_size: int | None = None,
+    required_gb: float | None = None,
 ) -> dict[str, Any]:
     hw = normalize_hardware_settings(hardware)
     devices = _filter_enabled_gpus(list(gpus or query_gpu_devices()), hw)
@@ -201,14 +274,16 @@ def resolve_auto_gpu_launch(
         return {'main_gpu': main_gpu, 'split_mode': 'none', 'tensor_split': ''}
 
     by_index = sorted(devices, key=lambda item: item['index'])
-    if strategy == 'split_evenly':
-        weights = [1.0 / len(by_index)] * len(by_index)
-    else:
-        total_vram = sum(max(float(item.get('vram_gb') or 0.0), 0.1) for item in by_index)
-        weights = [
-            max(float(item.get('vram_gb') or 0.0), 0.1) / total_vram
-            for item in by_index
-        ]
+    needed = float(required_gb) if required_gb and required_gb > 0 else estimate_model_vram_gb(
+        model_id,
+        context_size=context_size,
+    )
+    preferred = next((item for item in devices if int(item['index']) == int(main_gpu)), None)
+    if preferred is not None:
+        free_pref = preferred.get('vram_free_gb')
+        if free_pref is None or float(free_pref) >= needed:
+            return {'main_gpu': main_gpu, 'split_mode': 'none', 'tensor_split': ''}
+    weights = balanced_split_weights(by_index, strategy, needed)
     return {
         'main_gpu': main_gpu,
         'split_mode': 'layer',
@@ -223,6 +298,7 @@ def resolve_role_gpu_launch_params(
     gpus: list[dict[str, Any]] | None = None,
     hardware: dict[str, Any] | None = None,
     context_size: int | None = None,
+    required_gb: float | None = None,
 ) -> dict[str, Any]:
     raw = str(gpu_device or 'auto').strip().lower()
     if raw in ('', 'auto', 'automatic'):
@@ -231,6 +307,7 @@ def resolve_role_gpu_launch_params(
             gpus,
             hardware,
             context_size=context_size,
+            required_gb=required_gb,
         )
         return {
             'gpu_device': 'auto',
@@ -247,6 +324,7 @@ def resolve_role_gpu_launch_params(
             gpus,
             hardware,
             context_size=context_size,
+            required_gb=required_gb,
         )
         return {
             'gpu_device': 'auto',

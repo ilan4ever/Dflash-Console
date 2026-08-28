@@ -36,6 +36,7 @@ if (-not $python) {
     throw 'Python 3.10+ is required to install the Transformers runtime.'
 }
 
+Write-Host 'DFLASH_PROGRESS 10 Creating Python environment'
 if (Test-Path -LiteralPath $venv) {
     Remove-Item -LiteralPath $venv -Recurse -Force
 }
@@ -44,6 +45,7 @@ if (-not (Test-Path -LiteralPath $venvPy)) {
     throw "Failed to create venv at $venv"
 }
 
+Write-Host 'DFLASH_PROGRESS 18 Upgrading pip'
 & $venvPy -m pip install --upgrade pip wheel setuptools | Write-Host
 
 $useCuda = $false
@@ -61,17 +63,19 @@ if ($TorchVariant -eq 'cuda') {
 }
 
 if ($useCuda) {
-    Write-Host 'Installing PyTorch (CUDA) + Transformers stack...'
+    Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CUDA) + Transformers stack...'
     & $venvPip install torch --index-url https://download.pytorch.org/whl/cu124 | Write-Host
 } else {
-    Write-Host 'Installing PyTorch (CPU) + Transformers stack...'
+    Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CPU) + Transformers stack...'
     & $venvPip install torch --index-url https://download.pytorch.org/whl/cpu | Write-Host
 }
 
+Write-Host 'DFLASH_PROGRESS 70 Installing Transformers libraries'
 & $venvPip install -r (Join-Path $bundleDest 'requirements.txt') | Write-Host
 
 $manifest = @{
     version = 1
+    bundle_revision = 1
     runtime_id = 'transformers'
     worker = (Join-Path $bundleDest 'server.py')
     python = $venvPy

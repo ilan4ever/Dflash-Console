@@ -11,6 +11,7 @@
   let timer = null;
   let badgeEl = null;
   let devBadgeEl = null;
+  let urlEl = null;
   const bootStorageKey = 'dflashConsole.lastSeenBootId';
 
   function badge() {
@@ -21,6 +22,40 @@
   function devBadge() {
     if (!devBadgeEl) devBadgeEl = document.getElementById('devServerBadge');
     return devBadgeEl;
+  }
+
+  function consoleUrlEl() {
+    if (!urlEl) urlEl = document.getElementById('dfConsoleUrl');
+    return urlEl;
+  }
+
+  function consoleUrlText() {
+    return `${window.location.protocol}//${window.location.host}/`;
+  }
+
+  function setConsoleUrl(health) {
+    const el = consoleUrlEl();
+    if (!el) return;
+    const url = consoleUrlText();
+    el.textContent = url;
+    const root = String(health?.process_root || health?.console_root || '').trim();
+    const configPath = String(health?.config_path || '').trim();
+    el.title = [
+      'This Console’s web address — same in the browser and the desktop app.',
+      root ? `Data folder: ${root}` : '',
+      configPath ? `Config: ${configPath}` : '',
+      'Click to copy.',
+    ].filter(Boolean).join('\n');
+  }
+
+  function copyConsoleUrl() {
+    const url = consoleUrlText();
+    const done = () => window.DFlashStatusFeed?.note?.(`Copied ${url}`);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(done).catch(() => {});
+      return;
+    }
+    done();
   }
 
   // Shown only when the health endpoint reports this is the developer server
@@ -52,6 +87,7 @@
       const nextId = data?.boot_id ? String(data.boot_id) : '';
       const nextUi = data?.ui_version ? String(data.ui_version) : '';
       setDeveloperBadge(Boolean(data?.dev_server));
+      setConsoleUrl(data);
       const storedBootId = sessionStorage.getItem(bootStorageKey) || '';
       const restarted = (bootId && nextId && nextId !== bootId)
         || (storedBootId && nextId && nextId !== storedBootId);
@@ -93,6 +129,8 @@
   }
 
   function start() {
+    setConsoleUrl(null);
+    consoleUrlEl()?.addEventListener('click', copyConsoleUrl);
     setConnectionBadge(false);
     void check().finally(scheduleNextCheck);
   }

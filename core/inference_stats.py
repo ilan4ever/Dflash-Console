@@ -116,6 +116,8 @@ def _clear_live_stats(stats: dict[str, Any]) -> None:
     stats['generating_seconds'] = None
     stats['generating_tokens'] = None
     stats['generating_tokens_per_second'] = None
+    stats['prefill_tokens'] = None
+    stats['prefill_tokens_per_second'] = None
     stats.pop('live_updated_at', None)
 
 
@@ -357,10 +359,72 @@ def _match_completion_slot(
         return None
 
 
+def abort_llama_processing_slots(
+    api_url: str,
+    *,
+    model_id: str = '',
+    api_key: str = '',
+    timeout: float = 2.0,
+) -> int:
+    """Best-effort llama-server slot erase when HTTP stream cancel is not enough."""
+    from core.runtime import api_base_url
+
+    base = api_base_url(api_url)
+    if not base:
+        return 0
+    model = str(model_id or '').strip()
+    auth_headers: dict[str, str] | None = None
+    if api_key:
+        auth_headers = {'Authorization': f'Bearer {api_key.strip()}'}
+    rows: list[dict[str, Any]] = []
+    try:
+        slots_url = f'{base}/slots'
+        if model:
+            slots_url = f'{slots_url}?{urlencode({"model": model})}'
+        raw = _fetch_json(slots_url, timeout=min(timeout, 1.0), headers=auth_headers)
+        parsed = raw if isinstance(raw, list) else (raw or {}).get('slots') or []
+        rows = [row for row in parsed if isinstance(row, dict)]
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+        rows = [{'id': slot_id, 'is_processing': True} for slot_id in range(4)]
+
+    body = json.dumps({'model': model} if model else {}).encode('utf-8')
+    post_headers = {'Content-Type': 'application/json', 'Content-Length': str(len(body))}
+    if api_key:
+        post_headers['Authorization'] = f'Bearer {api_key.strip()}'
+    erased = 0
+    for slot in rows:
+        generating, _ = _slot_generation_state(slot)
+        if not generating and not slot.get('is_processing'):
+            continue
+        slot_id = slot.get('id')
+        if slot_id is None:
+            slot_id = slot.get('slot_id', 0)
+        erase_url = f'{base}/slots/{int(slot_id)}?action=erase'
+        if model:
+            erase_url = f'{erase_url}&{urlencode({"model": model})}'
+        try:
+            req = urllib.request.Request(erase_url, data=body, method='POST', headers=post_headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp.read()
+            erased += 1
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+            pass
+    return erased
+
+
 def _fetch_json(url: str, *, timeout: float = 0.9, headers: dict[str, str] | None = None) -> Any:
     request = urllib.request.Request(url, method='GET', headers=headers or {})
     with urllib.request.urlopen(request, timeout=timeout) as resp:
         return json.loads(resp.read().decode('utf-8', errors='replace') or 'null')
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _slot_generation_state(slot: dict[str, Any]) -> tuple[bool, int | None]:
@@ -371,10 +435,28 @@ def _slot_generation_state(slot: dict[str, Any]) -> tuple[bool, int | None]:
     elif isinstance(next_tokens, list) and next_tokens and isinstance(next_tokens[0], dict):
         info = next_tokens[0]
     n_decoded = info.get('n_decoded')
+    if n_decoded is None:
+        n_decoded = slot.get('n_decoded')
     if n_decoded is not None:
         n_decoded = int(n_decoded)
     generating = bool(slot.get('is_processing'))
     return generating, n_decoded
+
+
+def _slot_in_prefill(
+    *,
+    processed: int | None,
+    prompt: int | None,
+    cached: int = 0,
+) -> bool:
+    """True while the prompt is still being ingested into KV.
+
+    llama-server reports ``n_prompt_tokens_cache`` separately. Prefill is done
+    once processed + cached covers the prompt, even if processed < prompt.
+    """
+    if processed is None or prompt is None:
+        return False
+    return int(processed) + int(cached or 0) < int(prompt)
 
 
 def _begin_live_track(server_id: str, *, at: float | None = None) -> dict[str, Any]:
@@ -474,26 +556,101 @@ def _process_slot(server_id: str, slot: dict[str, Any]) -> dict[str, Any]:
                 'tps': None,
                 'decode_started_at': None,
                 'decode_base_tokens': 0,
+                'sample_at': None,
+                'sample_tokens': None,
+                'prefill_tps': None,
             }
             track_by_slot[slot_id] = track
-        out['generating_seconds'] = round(max(0.0, time.time() - float(track['started_at'])), 1)
-        prefill_raw = slot.get('n_prompt_tokens_processed')
+        now = time.time()
+        out['generating_seconds'] = round(max(0.0, now - float(track['started_at'])), 1)
+        prefill_raw = _int_or_none(slot.get('n_prompt_tokens_processed'))
+        cached_prompt = _int_or_none(slot.get('n_prompt_tokens_cache')) or 0
         if prefill_raw is not None:
-            try:
-                out['prefill_tokens'] = int(prefill_raw)
-            except (TypeError, ValueError):
-                pass
+            out['prefill_tokens'] = prefill_raw
         decoded = int(n_decoded or 0)
-        out['generating_tokens'] = decoded
-        if decoded > 0:
-            if track.get('decode_started_at') is None:
-                track['decode_started_at'] = time.time()
-                track['decode_base_tokens'] = 0
+        prev_decoded = track.get('tokens')
+        if prev_decoded is not None and decoded < int(prev_decoded):
+            track['decode_started_at'] = None
+            track['decode_base_tokens'] = 0
+            track['sample_at'] = None
+            track['sample_tokens'] = None
+            track['tps'] = None
+        in_prefill = _slot_in_prefill(
+            processed=prefill_raw,
+            prompt=slot_prompt,
+            cached=cached_prompt,
+        )
+        if in_prefill and decoded > 0:
+            if prev_decoded is not None and decoded > int(prev_decoded):
+                # Live decode while llama-server still reports prompt ingestion
+                # (common with reasoning / streaming prompts where n_prompt_tokens grows).
+                in_prefill = False
+            elif prev_decoded is not None and decoded == int(prev_decoded):
+                prefill_now = int(prefill_raw or 0) + cached_prompt
+                last_prefill = track.get('last_prefill_total')
+                if last_prefill is not None and prefill_now > int(last_prefill):
+                    pass  # Stale n_decoded from a prior completion — keep hiding OUT.
+                else:
+                    in_prefill = False
+            # First sample during prefill with n_decoded > 0: wait one poll so we
+            # can tell stale counts from live decode (see test_inference_stats).
+        if in_prefill and prefill_raw is not None:
+            track['last_prefill_total'] = int(prefill_raw or 0) + cached_prompt
+        if in_prefill:
+            out['generating_tokens'] = 0
+            if slot_prompt is not None:
+                out['prompt_tokens'] = slot_prompt
+            prefill_now = int(prefill_raw or 0) + cached_prompt
+            sample_at = track.get('prefill_sample_at')
+            sample_tokens = track.get('prefill_sample_tokens')
+            if sample_at is None or sample_tokens is None:
+                track['prefill_sample_at'] = now
+                track['prefill_sample_tokens'] = prefill_now
+            elif prefill_now > int(sample_tokens):
+                dt = max(0.001, now - float(sample_at))
+                dtok = prefill_now - int(sample_tokens)
+                if dt >= 0.15:
+                    track['prefill_tps'] = round(dtok / dt, 1)
+                if dt >= 0.5:
+                    track['prefill_sample_at'] = now
+                    track['prefill_sample_tokens'] = prefill_now
+            if track.get('prefill_tps') is not None:
+                out['prefill_tokens_per_second'] = track['prefill_tps']
+            track['sample_at'] = None
+            track['sample_tokens'] = None
+            track['tps'] = None
             track['tokens'] = decoded
-            live_tps = _live_tokens_per_second(track, decoded)
-            if live_tps is not None:
-                out['generating_tokens_per_second'] = live_tps
-                track['tps'] = live_tps
+            return out
+        if decoded <= 0:
+            out['generating_tokens'] = 0
+            track['tokens'] = decoded
+            return out
+        out['generating_tokens'] = decoded
+        sample_at = track.get('sample_at')
+        sample_tokens = track.get('sample_tokens')
+        if sample_at is None or sample_tokens is None:
+            track['sample_at'] = now
+            track['sample_tokens'] = decoded
+            track['decode_started_at'] = now
+            track['decode_base_tokens'] = decoded
+        elif (
+            decoded > int(sample_tokens)
+            and (prev_decoded is None or decoded > int(prev_decoded))
+        ):
+            dt = max(0.001, now - float(sample_at))
+            if dt >= 0.15:
+                # Use the cumulative decode rate rather than a short delta
+                # window. The latter oscillates or disappears whenever two
+                # status polls see the same token count.
+                live_tps = _decode_tokens_per_second(track, decoded)
+                if live_tps is not None:
+                    track['tps'] = live_tps
+            if dt >= 0.5:
+                track['sample_at'] = now
+                track['sample_tokens'] = decoded
+        if track.get('tps') is not None:
+            out['generating_tokens_per_second'] = track['tps']
+        track['tokens'] = decoded
         _apply_slot_last(out, last_by_slot.get(slot_id) or {})
         return out
 
@@ -544,6 +701,7 @@ def _promote_primary_stats(stats: dict[str, Any], slot_rows: list[dict[str, Any]
         'generating_tokens',
         'generating_tokens_per_second',
         'prefill_tokens',
+        'prefill_tokens_per_second',
         'prompt_tokens',
         'generation_tokens',
         'tokens_per_second',

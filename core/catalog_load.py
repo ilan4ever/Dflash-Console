@@ -21,6 +21,22 @@ from core.memory_guardrails import assess_load
 from core.server_boot import load_server_checkpoint
 
 
+def _release_peer_llm_engines(keep: str) -> None:
+    from core.runtimes import get_runtime_adapter
+
+    for runtime_id in ('vllm', 'transformers'):
+        if runtime_id == keep:
+            continue
+        adapter = get_runtime_adapter(runtime_id)
+        if adapter is None or not callable(getattr(adapter, 'health', None)):
+            continue
+        try:
+            if adapter.health().get('running') and callable(getattr(adapter, 'unload', None)):
+                adapter.unload()
+        except Exception:
+            pass
+
+
 def execute_catalog_load(
     *,
     path: str | None = None,
@@ -29,6 +45,7 @@ def execute_catalog_load(
     context_size: int | None = None,
     load_settings: dict[str, Any] | None = None,
     inference_settings: dict[str, Any] | None = None,
+    requested_runtime_id: str | None = None,
     loaded_by: str = 'api',
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -66,6 +83,13 @@ def execute_catalog_load(
     modality = str(target.get('modality') or 'llm')
     runtime_id = str(target.get('runtime_id') or 'llama-server')
     resolved_path = str(target.get('path') or resolved_path)
+    requested_runtime = str(requested_runtime_id or '').strip()
+    if not requested_runtime:
+        requested_runtime = str((load_settings or {}).get('runtime_id') or '').strip()
+    if not requested_runtime and str(server_id or '') in {'vllm', 'transformers'}:
+        requested_runtime = str(server_id)
+    if requested_runtime in {'vllm', 'transformers'}:
+        runtime_id = requested_runtime
 
     from core.ocr_setup import resolve_glmocr_load
 
@@ -141,21 +165,26 @@ def execute_catalog_load(
             'how_to_use': 'POST /api/runtimes/vibevoice/v1/audio/speech {"input": "...", "voice": "en-Carter_man"}',
             **result,
         }
-    if runtime_id == 'transformers':
-        adapter = get_runtime_adapter('transformers')
+    if runtime_id in {'transformers', 'vllm'}:
+        _release_peer_llm_engines(runtime_id)
+        adapter = get_runtime_adapter(runtime_id)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail=f'runtime adapter not found: {runtime_id}')
         model_payload = {'path': resolved_path}
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
+            if load_settings.get('preset'):
+                model_payload['preset'] = load_settings.get('preset')
         result = adapter.load(model_payload)
         if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or 'Transformers load failed')
+            raise HTTPException(status_code=400, detail=result.get('error') or f'{runtime_id} load failed')
         return {
             'success': True,
             'modality': modality,
-            'runtime_id': 'transformers',
+            'runtime_id': runtime_id,
             'loaded': True,
             'path': resolved_path,
-            'how_to_use': 'POST /api/runtimes/transformers/v1/chat/completions',
+            'how_to_use': f'POST /api/servers/{runtime_id}/v1/chat/completions',
             **result,
         }
 

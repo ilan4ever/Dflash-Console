@@ -153,6 +153,11 @@ def model_load_failure_message(lines: list[str]) -> str | None:
             f'Model load failed: llama-server does not support the {arch} architecture yet. '
             'Update llama.cpp to the latest CUDA build, or use a model format this engine supports.'
         )
+    if 'failed to load draft' in lower or 'wrong number of tensors' in lower:
+        return (
+            'Model load failed: the D-Flash draft file is not compatible with this llama-server build. '
+            'The main model can still load without D-Flash acceleration.'
+        )
     return 'Model load failed. Open the engine log for the detailed loader message.'
 
 
@@ -160,7 +165,7 @@ def mark_boot_failed(server_id: str, reason: str) -> None:
     append_log(server_id, f"=== boot failed {time.strftime('%Y-%m-%d %H:%M:%S')} reason={reason} ===")
 
 
-def read_log_tail(server_id: str, *, max_lines: int = 120) -> list[str]:
+def read_log_tail(server_id: str, *, max_lines: int = 400) -> list[str]:
     log_path = LOG_DIR / f'{server_id}.log'
     lines, _ = read_tail_lines(log_path, max_lines=max_lines)
     return lines
@@ -231,6 +236,57 @@ def _progress_from_router_state(payload: dict) -> float | None:
     return round(min(100.0, max(0.0, pct)), 2)
 
 
+_LOAD_VRAM_BASELINE: dict[str, float] = {}
+
+
+def clear_vram_progress_baseline(server_id: str) -> None:
+    if server_id:
+        _LOAD_VRAM_BASELINE.pop(server_id, None)
+
+
+def estimate_vram_load_progress(
+    server_id: str,
+    current_vram_gb: float | None,
+    model_size_gb: float | None,
+    *,
+    active: bool,
+) -> float | None:
+    """Rough load % from VRAM growth when router log progress is unavailable."""
+    if not server_id or not active:
+        clear_vram_progress_baseline(server_id)
+        return None
+    try:
+        current = float(current_vram_gb or 0)
+        target = float(model_size_gb or 0)
+    except (TypeError, ValueError):
+        return None
+    if current <= 0 or target <= 0:
+        return None
+    baseline = _LOAD_VRAM_BASELINE.get(server_id)
+    if baseline is None:
+        _LOAD_VRAM_BASELINE[server_id] = current
+        return None
+    delta = max(0.0, current - baseline)
+    if delta <= 0:
+        return None
+    return round(min(95.0, delta / target * 100.0), 1)
+
+
+def merge_load_progress(*values: float | None) -> float | None:
+    chosen: float | None = None
+    for value in values:
+        if value is None:
+            continue
+        try:
+            pct = float(value)
+        except (TypeError, ValueError):
+            continue
+        pct = min(100.0, max(0.0, pct))
+        if chosen is None or pct > chosen:
+            chosen = pct
+    return chosen
+
+
 def parse_load_progress(lines: list[str]) -> float | None:
     segment = boot_segment(lines)
     if not segment:
@@ -249,11 +305,13 @@ def parse_load_progress(lines: list[str]) -> float | None:
             continue
         if not isinstance(payload, dict):
             continue
-        if str(payload.get('state') or '').lower() != 'loading':
-            return None
-        progress = _progress_from_router_state(payload)
-        if progress is not None:
-            return progress
+        state = str(payload.get('state') or '').lower()
+        if state == 'loading':
+            progress = _progress_from_router_state(payload)
+            if progress is not None:
+                return progress
+        elif state in {'ready', 'error'}:
+            break
 
     for line in reversed(segment):
         lower = line.lower()

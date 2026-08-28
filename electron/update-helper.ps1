@@ -87,7 +87,17 @@ function Start-UpdateInstaller {
         [string]$InstallRoot = ''
     )
     $setupArgs = @("/Package=$Path")
-    if ($InstallRoot) { $setupArgs += "/InstallRoot=$InstallRoot" }
+    $existingExe = $null
+    if ($InstallRoot) {
+        $existingExe = Join-Path $InstallRoot 'DFlash Console.exe'
+        $setupArgs += "/InstallRoot=$InstallRoot"
+        if (Test-Path -LiteralPath $existingExe) {
+            $setupArgs += '/AutoInstall'
+            Write-HelperLog "Existing install at $InstallRoot — silent in-place update"
+        } else {
+            Write-HelperLog "No install at $InstallRoot — setup UI will ask for scope"
+        }
+    }
     $sevenZip = Resolve-SevenZipExe
     if ($sevenZip) {
         $extractRoot = Join-Path $env:TEMP ("DFlash_Update_" + ($(if ($TargetVersion) { $TargetVersion } else { 'pkg' }) -replace '[^\w\.-]', '_'))

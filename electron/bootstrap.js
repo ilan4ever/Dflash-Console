@@ -7,7 +7,9 @@ const RUNTIME_ITEMS = [
   'api',
   'core',
   'static',
+  'assets',
   'scripts',
+  'runtime-bundles',
   'server.ps1',
   'run.ps1',
   'requirements.txt',
@@ -68,6 +70,9 @@ function writeFreshConfig(destRoot) {
     dflash_root: destRoot,
     models_root: modelsDir,
     setup_complete: false,
+    // Fresh installs should not inherit example engine profiles that reference
+    // models missing on a new PC (avoids "target model path missing" errors).
+    servers: [],
     model_libraries: [
       {
         id: 'dflash-checkpoints',
@@ -96,7 +101,10 @@ function ensureRuntimeTree(destRoot, resourcesPath) {
     : '';
 
   const runtimeComplete = RUNTIME_ITEMS.every((item) => fs.existsSync(path.join(destRoot, item)));
-  if (isConsoleRoot(destRoot) && installedVersion === bundledVersion && runtimeComplete) {
+  const bundlesComplete = fs.existsSync(
+    path.join(destRoot, 'runtime-bundles', 'transformers', 'server.py'),
+  );
+  if (isConsoleRoot(destRoot) && installedVersion === bundledVersion && runtimeComplete && bundlesComplete) {
     return destRoot;
   }
 

@@ -3,7 +3,59 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from core.chat_proxy import apply_reasoning_policy, extract_stream_completion_stats, open_upstream_chat_stream, parse_chat_body, upstream_chat_completion, wants_stream
+from core.chat_proxy import apply_reasoning_policy, aggregate_sse_to_completion, extract_stream_completion_stats, open_upstream_chat_stream, parse_chat_body, prepare_upstream_stream_body, upstream_chat_completion, wants_stream
+
+
+def test_aggregate_sse_to_completion():
+    raw = (
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":" world"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    payload = aggregate_sse_to_completion(raw)
+    assert payload['choices'][0]['message']['content'] == 'Hello world'
+    assert payload['usage']['completion_tokens'] == 2
+
+
+def test_upstream_chat_completion_forces_stream(monkeypatch):
+    captured: dict[str, bytes] = {}
+
+    class FakeResp:
+        def __init__(self):
+            self.status = 200
+            self._lines = [
+                b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+                b'data: [DONE]\n\n',
+                b'',
+            ]
+            self._idx = 0
+            self.closed = False
+
+        def readline(self):
+            if self._idx < len(self._lines):
+                line = self._lines[self._idx]
+                self._idx += 1
+                return line
+            return b''
+
+        def close(self):
+            self.closed = True
+
+    def fake_urlopen(req, timeout=600):
+        captured['body'] = req.data
+        return FakeResp()
+
+    monkeypatch.setattr('core.chat_proxy.urllib.request.urlopen', fake_urlopen)
+    status, payload = upstream_chat_completion(
+        'http://127.0.0.1:8092/v1/chat/completions',
+        json.dumps({'messages': [], 'stream': False}).encode(),
+        server_id='gemma-12b-ar',
+    )
+    body = json.loads(captured['body'].decode())
+    assert body['stream'] is True
+    assert status == 200
+    assert payload['choices'][0]['message']['content'] == 'Hi'
 
 
 def test_extract_stream_completion_stats():
@@ -60,17 +112,97 @@ def test_apply_reasoning_policy_passthrough_when_no_reasoning_keys():
 
 
 def test_upstream_chat_completion_success():
-    payload = {'choices': [{'message': {'content': 'hi'}}]}
-    resp = MagicMock()
-    resp.status = 200
-    resp.read.return_value = json.dumps(payload).encode()
-    resp.__enter__ = lambda s: s
-    resp.__exit__ = MagicMock(return_value=False)
+    class FakeResp:
+        status = 200
 
-    with patch('core.chat_proxy.urllib.request.urlopen', return_value=resp):
-        status, body = upstream_chat_completion('http://127.0.0.1:8092/v1/chat/completions', b'{}')
+        def __init__(self):
+            self.closed = False
+            self._lines = [
+                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                b'data: [DONE]\n\n',
+                b'',
+            ]
+            self._idx = 0
+
+        def readline(self) -> bytes:
+            if self._idx < len(self._lines):
+                line = self._lines[self._idx]
+                self._idx += 1
+                return line
+            return b''
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeResp()
+    with patch('core.chat_proxy.urllib.request.urlopen', return_value=fake):
+        status, body = upstream_chat_completion(
+            'http://127.0.0.1:8092/v1/chat/completions',
+            b'{}',
+            server_id='gemma-12b-ar',
+        )
     assert status == 200
-    assert body == payload
+    assert body['choices'][0]['message']['content'] == 'hi'
+    assert fake.closed is True
+
+
+def test_open_upstream_chat_stream_forces_upstream_stream_body():
+    import asyncio
+
+    captured: dict[str, bytes] = {}
+
+    class FakeResp:
+        headers = {'Content-Type': 'text/event-stream; charset=utf-8'}
+
+        def __init__(self):
+            self.closed = False
+            self.raw = MagicMock()
+            self.raw._fp = MagicMock()
+
+        def readline(self) -> bytes:
+            if not hasattr(self, '_lines'):
+                self._lines = [
+                    b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+                    b'data: [DONE]\n\n',
+                    b'',
+                ]
+                self._idx = 0
+            if self._idx < len(self._lines):
+                line = self._lines[self._idx]
+                self._idx += 1
+                return line
+            return b''
+
+        def close(self) -> None:
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=600):
+        captured['body'] = req.data
+        return FakeResp()
+
+    async def run():
+        with patch('core.chat_proxy.urllib.request.urlopen', side_effect=fake_urlopen):
+            media_type, chunks, close_fn = await open_upstream_chat_stream(
+                'http://127.0.0.1:8092/v1/chat/completions',
+                json.dumps({'messages': [], 'stream': False}).encode(),
+                server_id='stream-body-test',
+            )
+        assert 'text/event-stream' in media_type
+        await asyncio.sleep(0.05)
+        out = b''.join([chunk async for chunk in chunks])
+        close_fn()
+        body = json.loads(captured['body'].decode())
+        assert body['stream'] is True
+        assert body['stream_options']['include_usage'] is True
+        assert b'Hi' in out
+
+    asyncio.run(run())
 
 
 def test_open_upstream_chat_stream_yields_chunks():
@@ -147,7 +279,7 @@ def test_build_server_status_exposes_agent_fields(monkeypatch):
     }
 
     monkeypatch.setattr('core.runtime.tcp_port_open', lambda h, p: True)
-    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: (['gemma-4-12b-it-qat'], [], True))
+    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: (['gemma-4-12b-it-qat'], [], True, None))
     monkeypatch.setattr('core.runtime.read_log_tail', lambda sid: [])
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)
@@ -178,7 +310,7 @@ def test_build_server_status_running_not_ready(monkeypatch):
     }
 
     monkeypatch.setattr('core.runtime.tcp_port_open', lambda h, p: True)
-    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: ([], [], True))
+    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: ([], [], True, None))
     monkeypatch.setattr('core.runtime.read_log_tail', lambda sid: [])
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)

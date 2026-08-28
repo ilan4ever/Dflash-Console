@@ -1,4 +1,4 @@
-from core.runtime import _build_visible_cards, _annotate_model_stack
+from core.runtime import _acceleration_metadata, _build_visible_cards, _annotate_model_stack
 
 
 def test_visible_card_is_single_composite_when_loaded():
@@ -103,6 +103,40 @@ def test_visible_cards_keep_all_loaded_models_when_router_reports_multiple():
     assert [card['id'] for card in cards] == ['main', 'vision-model']
     assert cards[1]['role'] == 'loaded-model'
     assert cards[1]['is_adhoc'] is True
+
+
+def test_acceleration_metadata_does_not_infer_dflash_from_profile_name():
+    stack = [
+        {'role': 'target', 'path': r'C:\models\qwen.gguf', 'path_missing': False},
+    ]
+
+    result = _acceleration_metadata(
+        {'profile': 'qwen3-8-27b-q6-k-l-dflash'},
+        stack,
+    )
+
+    assert result == {
+        'acceleration_mode': 'autoregressive',
+        'acceleration_expected': True,
+        'acceleration_label': 'No draft · autoregressive',
+        'draft_loaded': False,
+    }
+
+
+def test_acceleration_metadata_marks_present_dflash_draft():
+    stack = [
+        {'role': 'target', 'path': r'C:\models\qwen.gguf', 'path_missing': False},
+        {'role': 'draft-dflash', 'path': r'C:\models\draft.gguf', 'path_missing': False},
+    ]
+
+    result = _acceleration_metadata(
+        {'profile': 'qwen-dflash'},
+        stack,
+    )
+
+    assert result['acceleration_mode'] == 'dflash'
+    assert result['acceleration_label'] == 'DFlash active'
+    assert result['draft_loaded'] is True
 
 
 def test_api_base_url_strips_v1():

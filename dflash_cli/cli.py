@@ -9,7 +9,9 @@ from typing import Sequence
 from dflash_cli.commands import (
     cmd_api,
     cmd_chat,
+    cmd_delete,
     cmd_downloads,
+    cmd_embed,
     cmd_engines,
     cmd_hardware,
     cmd_help,
@@ -17,6 +19,7 @@ from dflash_cli.commands import (
     cmd_list,
     cmd_load,
     cmd_logs,
+    cmd_nodes,
     cmd_open,
     cmd_ps,
     cmd_pull,
@@ -24,6 +27,7 @@ from dflash_cli.commands import (
     cmd_runtimes,
     cmd_search,
     cmd_serve,
+    cmd_settings,
     cmd_show,
     cmd_start,
     cmd_stats,
@@ -79,7 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument('--dflash', action='store_true', help='DFlash stacks and Console library models')
     listing.add_argument('--ollama', action='store_true', help='Only Ollama models on this PC')
     listing.add_argument('--lmstudio', action='store_true', help='Only LM Studio library models')
-    listing.add_argument('--source', help='Filter by source: ollama, lmstudio, dflash, library')
+    listing.add_argument('--vllm', action='store_true', help='Hugging Face models that can run on vLLM')
+    listing.add_argument('--transformers', action='store_true', help='Hugging Face models that can run on Transformers')
+    listing.add_argument('--source', help='Filter by source: ollama, lmstudio, dflash, library, vllm, transformers')
     listing.add_argument('--type', default='all', help='Filter by type, e.g. llm or ocr')
     listing.add_argument('--filter', help='Text filter')
     listing.add_argument('--quick', action='store_true', help='Engine profiles only, skip the full disk library')
@@ -105,6 +111,32 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument('prompt', nargs='+', help='Message to send')
     chat.add_argument('-e', '--engine', help='Engine id or label')
     chat.add_argument('--max-tokens', type=int, default=512)
+
+    embed = add('embed', help='Turn text into vectors')
+    embed.add_argument('text', nargs='*', help='Text to embed')
+    embed.add_argument('-e', '--engine', help='Embedding engine id or label')
+    embed.add_argument('--file', help='Read one item per line from a file')
+
+    delete = add('delete', aliases=['rm'], help='Delete a local model from disk')
+    delete.add_argument('name', help='Model name or id')
+    delete.add_argument('-y', '--yes', action='store_true', help='Do not ask for confirmation')
+
+    nodes = add('nodes', help='List or manage remote Console nodes')
+    nodes.add_argument(
+        'action',
+        nargs='?',
+        default='list',
+        choices=['list', 'add', 'remove', 'rm', 'health'],
+        help='list, add, remove, or health',
+    )
+    nodes.add_argument('target', nargs='?', help='URL when adding, or node name')
+    nodes.add_argument('--label', help='Display name when adding a node')
+    nodes.add_argument('--token', help='API token when adding a node')
+    nodes.add_argument('--fresh', action='store_true', help='Refresh node health')
+
+    settings = add('settings', aliases=['config'], help='Show or change Console settings')
+    settings.add_argument('--get', dest='get_key', help='Read one key, e.g. ui_port')
+    settings.add_argument('--set', dest='set_pair', help='Write KEY=VALUE, e.g. ui_port=8900')
 
     search = add('search', help='Search Hugging Face')
     search.add_argument('query', help='Search text')
@@ -207,6 +239,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_api(client, args)
         if command in {'open', 'ui'}:
             return cmd_open(client)
+        if command == 'embed':
+            return cmd_embed(client, args)
+        if command in {'delete', 'rm'}:
+            return cmd_delete(client, args)
+        if command == 'nodes':
+            return cmd_nodes(client, args)
+        if command in {'settings', 'config'}:
+            return cmd_settings(client, args)
         return fail(f'Unknown command {command!r}. Run: dflash help')
     except ConsoleError as exc:
         return fail(str(exc))

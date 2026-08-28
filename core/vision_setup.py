@@ -27,12 +27,32 @@ def infer_hf_repo_from_path(path: str | Path) -> str | None:
         return None
     parts = resolved.parts
     for idx, part in enumerate(parts):
-        if part.lower() != 'models' or idx + 2 >= len(parts):
+        if part.lower() != 'models' or idx + 1 >= len(parts):
             continue
         publisher = parts[idx + 1]
-        repo_folder = parts[idx + 2]
-        if resolved.parent.name.lower() == repo_folder.lower():
-            return f'{publisher}/{repo_folder}'
+        if idx + 2 < len(parts):
+            repo_folder = parts[idx + 2]
+            if resolved.parent.name.lower() == repo_folder.lower():
+                return f'{publisher}/{repo_folder}'
+        folder_hint = str(publisher or '').strip()
+        if folder_hint:
+            guessed = _guess_vision_repo_from_hint(folder_hint, resolved.name)
+            if guessed:
+                return guessed
+    return _guess_vision_repo_from_hint(str(resolved.parent.name), resolved.name)
+
+
+def _guess_vision_repo_from_hint(folder_hint: str, filename: str = '') -> str | None:
+    haystack = f'{folder_hint}/{filename}'.lower()
+    known: list[tuple[str, str]] = [
+        ('gemma-4-12b', 'lmstudio-community/gemma-4-12b-it-GGUF'),
+        ('gemma-4-31b', 'google/gemma-4-31B-it-qat-q4_0-gguf'),
+        ('qwen3.8-27b', 'bartowski/Qwen3.8-27B-GGUF'),
+        ('qwen3-8-27b', 'bartowski/Qwen3.8-27B-GGUF'),
+    ]
+    for token, repo in known:
+        if token in haystack:
+            return repo
     return None
 
 
@@ -165,36 +185,35 @@ def vision_plan(*, model_path: str, server_id: str | None = None, cfg: dict[str,
     if server_id and not server.get('id'):
         return {'success': False, 'error': f'unknown server: {server_id}'}
 
-    mmproj_saved = resolve_mmproj_path(server, cfg=config) if server_id else ''
-    if _has_vision_support(path) or mmproj_saved:
-        mmproj = mmproj_saved or (str(_mmproj_siblings(path)[0]) if _mmproj_siblings(path) else '')
+    explicit = str(server.get('mmproj_path') or '').strip()
+    explicit_ok = bool(explicit and Path(explicit).expanduser().is_file())
+    local_mmproj = _mmproj_siblings(path)
+    if local_mmproj or explicit_ok:
+        mmproj = explicit if explicit_ok else str(local_mmproj[0])
+        return {
+            'success': True,
+            'ready': explicit_ok,
+            'needs_download': False,
+            'model_path': str(path),
+            'server_id': server_id or '',
+            'mmproj_path': mmproj,
+            'filename': Path(mmproj).name,
+            'message': 'Vision already available for this model.' if explicit_ok else 'Projector file found locally; ready to wire.',
+        }
+
+    if _has_vision_support(path):
         return {
             'success': True,
             'ready': True,
             'model_path': str(path),
             'server_id': server_id or '',
-            'mmproj_path': mmproj,
+            'mmproj_path': '',
             'message': 'Vision already available for this model.',
         }
 
     repo_id = infer_hf_repo_from_path(path)
     mmproj_filename = pick_mmproj_filename(repo_id, path) if repo_id else None
     dest = path.parent / Path(mmproj_filename).name if mmproj_filename else None
-
-    local_mmproj = _mmproj_siblings(path)
-    if local_mmproj:
-        mmproj_path = str(local_mmproj[0])
-        return {
-            'success': True,
-            'ready': False,
-            'needs_download': False,
-            'model_path': str(path),
-            'server_id': server_id or '',
-            'mmproj_path': mmproj_path,
-            'repo_id': repo_id or '',
-            'filename': local_mmproj[0].name,
-            'message': 'Projector file found locally; ready to wire.',
-        }
 
     if not repo_id or not mmproj_filename:
         return {
@@ -280,3 +299,81 @@ def wire_vision_after_download(post_action: dict[str, Any]) -> None:
         mmproj_path=str(post_action.get('mmproj_path') or post_action.get('dest_path') or ''),
         server_id=str(post_action.get('server_id') or '').strip() or None,
     )
+
+
+def ensure_server_vision(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    download: bool = True,
+) -> dict[str, Any]:
+    """Wire a local mmproj or download one for a server profile."""
+    config = cfg or load_config()
+    server_id = str(server.get('id') or '').strip()
+    target_path = str(server.get('target_path') or '').strip()
+    if not server_id or not target_path:
+        return {'success': False, 'error': 'server is missing id or target_path', 'server_id': server_id}
+    plan = vision_plan(model_path=target_path, server_id=server_id, cfg=config)
+    if not plan.get('success'):
+        return {'success': False, 'server_id': server_id, 'error': plan.get('error') or 'vision plan failed'}
+    if plan.get('ready') and str(plan.get('mmproj_path') or '').strip():
+        wired = wire_vision(
+            model_path=target_path,
+            mmproj_path=str(plan.get('mmproj_path') or ''),
+            server_id=server_id,
+            cfg=config,
+        )
+        return {**plan, **wired, 'server_id': server_id}
+    if plan.get('needs_download'):
+        if not download:
+            return {**plan, 'server_id': server_id, 'downloaded': False}
+        from core.huggingface import start_download
+
+        post_action = {
+            'type': 'wire_vision',
+            'model_path': target_path,
+            'server_id': server_id,
+            'dest_path': plan.get('dest_path') or '',
+        }
+        downloaded = start_download(
+            str(plan.get('repo_id') or ''),
+            str(plan.get('filename') or ''),
+            dest_path=str(plan.get('dest_path') or ''),
+            post_action=post_action,
+            cfg=config,
+        )
+        return {**plan, **downloaded, 'server_id': server_id}
+    mmproj = str(plan.get('mmproj_path') or '').strip()
+    if mmproj:
+        wired = wire_vision(
+            model_path=target_path,
+            mmproj_path=mmproj,
+            server_id=server_id,
+            cfg=config,
+        )
+        return {**plan, **wired, 'server_id': server_id}
+    return {**plan, 'server_id': server_id}
+
+
+def ensure_gemma_qwen_vision_profiles(*, cfg: dict[str, Any] | None = None, download: bool = True) -> list[dict[str, Any]]:
+    """Ensure mmproj companions exist for Gemma and Qwen GGUF engine profiles."""
+    from core.config import list_servers
+
+    config = cfg or load_config()
+    results: list[dict[str, Any]] = []
+    seen_targets: set[str] = set()
+    for server in list_servers(config):
+        if not isinstance(server, dict) or server.get('enabled') is False:
+            continue
+        target_path = str(server.get('target_path') or '').strip().lower()
+        label = f'{server.get("id")} {server.get("label")}'.lower()
+        if not target_path:
+            continue
+        if not any(token in label or token in target_path for token in ('gemma', 'qwen')):
+            continue
+        dedupe_key = f'{target_path}|{server.get("id")}'
+        if dedupe_key in seen_targets:
+            continue
+        seen_targets.add(dedupe_key)
+        results.append(ensure_server_vision(server, cfg=config, download=download))
+    return results

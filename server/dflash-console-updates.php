@@ -129,12 +129,33 @@ if (!function_exists('dflash_console_serve_download')) {
     }
 }
 
+if (!function_exists('dflash_console_update_action')) {
+    function dflash_console_update_action(): string {
+        $query_action = isset($_GET['dflash-console-update'])
+            ? trim((string) wp_unslash($_GET['dflash-console-update']))
+            : '';
+        if ($query_action === 'latest' || $query_action === 'download') {
+            return $query_action;
+        }
+        $uri = isset($_SERVER['REQUEST_URI'])
+            ? strtok((string) $_SERVER['REQUEST_URI'], '?')
+            : '';
+        if ($uri === '/internal-app/dflash-console/latest.json') {
+            return 'latest';
+        }
+        if ($uri === '/internal-app/dflash-console/download') {
+            return 'download';
+        }
+        return '';
+    }
+}
+
 add_action('init', function (): void {
-    $uri = isset($_SERVER['REQUEST_URI']) ? strtok((string) $_SERVER['REQUEST_URI'], '?') : '';
-    if ($uri === '/internal-app/dflash-console/latest.json') {
+    $action = dflash_console_update_action();
+    if ($action === 'latest') {
         dflash_console_serve_manifest();
     }
-    if ($uri === '/internal-app/dflash-console/download') {
+    if ($action === 'download') {
         dflash_console_serve_download();
     }
 });

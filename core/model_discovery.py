@@ -9,16 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_dflash_root, load_config
-from core.model_paths import _STORAGE_PRESETS, _preset_path
+from core.model_paths import _STORAGE_PRESETS, _preset_path, get_models_root
 
 _SKIP_DIR_NAMES = {
     'node_modules', '.git', '__pycache__', 'venv', '.venv', 'site-packages',
     'windows', 'program files', 'program files (x86)', '$recycle.bin',
     'appdata', 'cache', 'temp', 'tmp', 'dist', 'build', '.cursor',
 }
-_MAX_SCAN_SECONDS = 12.0
-_MAX_DIRS = 4000
-_MAX_DEPTH = 6
+_MAX_SCAN_SECONDS = 18.0
+_MAX_DIRS = 6000
+_MAX_DEPTH = 7
+_HF_HUB_MARKERS = ('/.cache/huggingface', '/huggingface/hub')
 
 
 def _norm(path: Path) -> str:
@@ -28,23 +29,43 @@ def _norm(path: Path) -> str:
         return str(path).lower()
 
 
+def _is_under_hf_hub(path: Path) -> bool:
+    text = path.as_posix().lower()
+    return any(marker in text for marker in _HF_HUB_MARKERS)
+
+
+def _should_skip_hf_descent(parent: Path, child_name: str) -> bool:
+    """Avoid walking every HF snapshot while still counting repos at hub level."""
+    if not _is_under_hf_hub(parent):
+        return False
+    lower = child_name.lower()
+    return lower in {'snapshots', 'blobs', 'refs', '.locks', 'tmp', 'modules'}
+
+
 def seed_scan_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
     config = cfg or load_config()
     home = Path.home()
     local = os.environ.get('LOCALAPPDATA') or ''
     roaming = os.environ.get('APPDATA') or ''
     dflash = get_dflash_root(config)
+    models_root = get_models_root(config)
+    # LIFO scan stack pops the last root first — list low-priority paths first and
+    # GGUF-heavy locations last so Gemma/Qwen folders are found before HF cache.
     roots: list[Path] = [
-        dflash / 'models',
-        home / '.lmstudio' / 'models',
         home / '.cache' / 'huggingface',
+        home / 'Downloads',
+        home / 'Documents',
+        Path(local) / 'Programs' / 'DFlash Console' / 'models',
+        Path(local) / 'DFlash Console' / 'models',
+        Path(roaming) / 'DFlash Console' / 'models',
         Path(local) / 'OneVoiceSpeakData' / 'models',
         Path(roaming) / 'OneVoice-Speak' / 'models',
         Path(roaming) / 'onevoice-speak' / 'models',
         Path(roaming) / 'onevoice-speak-dev' / 'models',
-        home / 'Documents',
-        home / 'Downloads',
         home / 'models',
+        home / '.lmstudio' / 'models',
+        models_root,
+        dflash / 'models',
     ]
     for preset in ('speech', 'tts', 'ocr', 'embeddings'):
         roots.append(_preset_path(preset, config))
@@ -372,6 +393,8 @@ def scan_for_preset(
             if not entry.is_dir():
                 continue
             if _should_skip_dir(entry.name):
+                continue
+            if _should_skip_hf_descent(current, entry.name):
                 continue
             stack.append((entry, depth + 1))
 

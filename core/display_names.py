@@ -13,6 +13,7 @@ _FAMILY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r'gemma[-\s]?3', re.I), 'Gemma 3'),
     (re.compile(r'qwen3\.?5', re.I), 'Qwen 3.5'),
     (re.compile(r'qwen3\.?6', re.I), 'Qwen 3.6'),
+    (re.compile(r'qwen3[-\s]?\.?8', re.I), 'Qwen 3.8'),
     (re.compile(r'qwen', re.I), 'Qwen'),
     (re.compile(r'bonsai', re.I), 'Bonsai'),
 )
@@ -26,7 +27,7 @@ _LAB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _QUANT_RE = re.compile(
-    r'(?:^|[\-_])(q\d+(?:_[0-9]+)?(?:_[kmxs]+(?:_[kmxs]+)?)?|f16|bf16|iq\d+(?:_[kmxs]+)?)(?:[\-_.]|$)',
+    r'(?:^|[\-_])(q\d+(?:_[0-9]+)?(?:_[klmxs]+(?:_[klmxs]+)?)?|f16|bf16|iq\d+(?:_[klmxs]+)?)(?:[\-_.]|$)',
     re.I,
 )
 
@@ -115,7 +116,16 @@ def _family_drop_tokens(family: str) -> set[str]:
         tokens.add('gemma4')
         tokens.add('gemma-4')
     if any(part.startswith('qwen') for part in tokens):
-        tokens.update({'qwen', 'qwen3', 'qwen35', 'qwen3.5', 'qwen36', 'qwen3.6'})
+        tokens.update({
+            'qwen',
+            'qwen3',
+            'qwen35',
+            'qwen3.5',
+            'qwen36',
+            'qwen3.6',
+            'qwen38',
+            'qwen3.8',
+        })
     return tokens
 
 
@@ -125,10 +135,16 @@ def _source_distinctive_suffix(
     *,
     family: str = '',
     parameter_size: str = '',
+    quantization_full: str = '',
 ) -> str:
     """Trailing source tokens after family/size, e.g. gemma-4-12b-it-qat -> it qat."""
     drop = _family_drop_tokens(family)
     size_token = str(parameter_size or '').strip().lower().rstrip('b')
+    quant_tokens = {
+        token
+        for token in re.split(r'[-_./\s]+', str(quantization_full or '').lower())
+        if token
+    }
     for raw in (api_model_id, target_model_id):
         text = str(raw or '').strip().lower()
         if not text:
@@ -139,6 +155,8 @@ def _source_distinctive_suffix(
             if token in drop:
                 continue
             if size_token and token.rstrip('b') == size_token:
+                continue
+            if token in quant_tokens or token in {'dflash', 'dspark'}:
                 continue
             if re.fullmatch(r'qwen3?\.?5', token) or token in {'qwen35', 'qwen36'}:
                 continue
@@ -170,6 +188,47 @@ def _title_core(
     if parts:
         return ' '.join(parts)
     return ''
+
+
+_FRIENDLY_QUANT_RE = re.compile(
+    r'(?i)(?:^|[\s_\-])(?:Q\d(?:[_A-Z0-9]+)?|IQ\d[_A-Z0-9]+|F16|F32|BF16)(?:$|[\s_\-])'
+)
+_FRIENDLY_NOISE_RE = re.compile(
+    r'(?i)\b(?:gguf|instruct|chat|it|qat|draft|llama|cpp|ud|of)\b'
+)
+_FRIENDLY_ORG_RE = re.compile(
+    r'(?i)^(qwen|google|bartowski|lmstudio|meta|mistral|microsoft)[\s_\-]+'
+)
+
+
+def friendly_stack_label(name: str | Path) -> str:
+    """Short UI name: family, version, size, and a D-Flash mark. No quant."""
+    stem = Path(str(name or '')).stem
+    stem = _FRIENDLY_QUANT_RE.sub(' ', f' {stem} ').strip()
+    stem = stem.replace('_', ' ').replace('-', ' ')
+    stem = _FRIENDLY_ORG_RE.sub(lambda match: f'{match.group(1)} ', stem, count=1)
+    stem = _FRIENDLY_NOISE_RE.sub(' ', stem)
+    stem = re.sub(r'(?i)\b(qwen|gemma)\s+\1(?=\d)', r'\1', stem)
+    stem = re.sub(r'(?i)\b(qwen)(\d)', r'Qwen \2', stem)
+    stem = re.sub(r'(?i)\b(gemma)(\d)', r'Gemma \2', stem)
+    stem = re.sub(r'\s+', ' ', stem).strip(' .')
+    words: list[str] = []
+    for word in stem.split():
+        lower = word.lower()
+        if lower in {'qwen', 'gemma', 'deepseek', 'bonsai', 'laguna'}:
+            words.append(word[:1].upper() + word[1:].lower())
+        elif re.fullmatch(r'\d+(?:\.\d+)?[Bb]', word):
+            words.append(word.upper().replace('b', 'B'))
+        elif re.fullmatch(r'[A-Za-z]\d+[A-Za-z]?', word):
+            words.append(word.upper())
+        else:
+            words.append(word)
+    label = ' '.join(words).strip()
+    if not label:
+        label = Path(str(name or '')).stem or 'Model'
+    if not re.search(r'(?i)\bd-?flash\b', label):
+        label = f'{label} D-Flash'
+    return label
 
 
 def _ensure_dflash_engine_marker(title_core: str) -> str:
@@ -204,16 +263,21 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
     draft_path = str(draft.get('path') or '')
 
     text_sources = [
-        api_model_id,
-        target_model_id,
         target_filename,
         target_path,
+        target_model_id,
+        api_model_id,
         str(server.get('label') or ''),
         str(server.get('profile') or ''),
     ]
     family = _infer_family(*text_sources)
     parameter_size = _infer_parameter_size(*text_sources)
-    quantization, quantization_full = _infer_quantization(*text_sources)
+    quantization, quantization_full = _infer_quantization(
+        target_filename,
+        target_path,
+        target_model_id,
+        api_model_id,
+    )
     lab = infer_lab(
         path=target_path,
         source=str(target.get('source') or ''),
@@ -226,11 +290,15 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
         target_model_id,
         family=family,
         parameter_size=parameter_size,
+        quantization_full=quantization_full,
     )
+    title_source_suffix = source_suffix
+    if draft and 'dflash' not in title_source_suffix.lower() and 'dspark' not in title_source_suffix.lower():
+        title_source_suffix = f'{title_source_suffix} dflash'.strip()
     title_core_ui = _title_core(
         family,
         parameter_size,
-        source_suffix=source_suffix,
+        source_suffix=title_source_suffix,
         variant=variant,
     )
     if not title_core_ui:

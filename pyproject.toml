@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dflash-console"
+version = "0.3.103"
+description = "Local control panel and terminal CLI for DFlash stacks and local model runtimes"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "ILAN AVIV" }]
+keywords = ["dflash", "llama", "gguf", "local-llm", "embeddings"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.1",
+  "pydantic==2.13.4",
+  "python-multipart==0.0.31",
+  "huggingface_hub>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ilan4ever/Dflash-Console"
+Repository = "https://github.com/ilan4ever/Dflash-Console"
+Issues = "https://github.com/ilan4ever/Dflash-Console/issues"
+
+[project.scripts]
+dflash = "dflash_cli.cli:main"
+dflash-console = "dflash_cli.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1",
+  "httpx==0.28.1",
+  "build>=1.2",
+  "twine>=6.0",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/api",
+  "/core",
+  "/dflash_cli",
+  "/static",
+  "/assets",
+  "/docs",
+  "/config.example.json",
+  "/LICENSE",
+  "/README.md",
+  "/NOTICE.md",
+  "/pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["api", "core", "dflash_cli"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"static" = "static"
+"assets" = "assets"
+"docs" = "docs"
+"config.example.json" = "config.example.json"

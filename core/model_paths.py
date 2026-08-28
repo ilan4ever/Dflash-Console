@@ -7,9 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core.config import ROOT as CONSOLE_ROOT
 from core.config import get_dflash_root, load_config
-
-CONSOLE_ROOT = Path(__file__).resolve().parent.parent
 
 
 def get_models_root(cfg: dict[str, Any] | None = None) -> Path:

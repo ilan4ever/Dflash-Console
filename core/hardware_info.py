@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from core.config import CONFIG_PATH, get_dflash_root, load_config, normalize_hardware_settings
+from core.config import CONFIG_PATH, get_dflash_root, load_config, normalize_download_settings, normalize_hardware_settings
 from core.gpu_devices import query_gpu_devices
 from core.system_stats import get_cpu_info_payload, get_system_stats_payload
 
@@ -47,6 +47,7 @@ def get_hardware_payload(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]
     return {
         'success': True,
         'hardware_settings': normalize_hardware_settings(config.get('hardware_settings')),
+        'download_settings': normalize_download_settings(config.get('download_settings')),
         'cpu': get_cpu_info_payload(),
         'ram': {
             'used_gb': stats.get('ram_used_gb'),

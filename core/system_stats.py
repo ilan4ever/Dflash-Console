@@ -30,7 +30,7 @@ def _subprocess_no_window_kwargs() -> dict[str, Any]:
 def _run_powershell_json(script: str, *, timeout: float = 5) -> dict[str, Any] | None:
     try:
         result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', script],
+            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -104,7 +104,7 @@ def _cpu_from_perf_counter() -> int | None:
     )
     try:
         result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', script],
+            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
             capture_output=True,
             text=True,
             timeout=6,

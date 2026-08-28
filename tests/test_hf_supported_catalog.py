@@ -63,3 +63,28 @@ def test_supported_repo_query_uses_fast_path():
     lookup.assert_called_once()
     assert payload['success'] is True
     assert payload['models'][0]['id'] == 'Kwaipilot/KAT-Coder-V2.5-Dev'
+
+
+def test_supported_repo_query_skips_size_enrich_when_files_present(monkeypatch):
+    from core.huggingface import _search_supported_repo_query
+
+    sample = {
+        'id': 'bartowski/ATH-MaaS_OvisOCR2-GGUF',
+        'has_gguf': True,
+        'gguf_files': [{'filename': 'ATH-MaaS_OvisOCR2-Q8_0.gguf', 'size_gb': 8.0}],
+        'download_files': [{'filename': 'ATH-MaaS_OvisOCR2-Q8_0.gguf', 'size_gb': 8.0}],
+        'size_gb': 8.0,
+        'size_label': '8 GB',
+    }
+
+    def fail_enrich(*args, **kwargs):
+        raise AssertionError('size enrich should be skipped')
+
+    monkeypatch.setattr('core.huggingface._lookup_hf_repo_models', lambda *a, **k: [sample])
+    monkeypatch.setattr('core.huggingface._is_console_supported_model', lambda row: True)
+    monkeypatch.setattr('core.huggingface._enrich_summaries_sizes', fail_enrich)
+    monkeypatch.setattr('core.hf_model_fit.annotate_hf_models_fit', lambda models, **k: None)
+
+    payload = _search_supported_repo_query('bartowski/ATH-MaaS_OvisOCR2-GGUF', limit=5, sort='downloads')
+    assert payload['success'] is True
+    assert payload['models'][0]['id'] == sample['id']

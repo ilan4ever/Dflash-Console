@@ -52,31 +52,28 @@ $setupUiExe = Join-Path $Root 'tools\dflash-setup-ui\bin\dflash-setup-ui.exe'
 if (-not (Test-Path $setupUiExe)) {
     throw 'dflash-setup-ui.exe was not built'
 }
-Copy-Item $setupUiExe (Join-Path $Unpacked 'dflash-setup-ui.exe') -Force
-Set-Content -Path (Join-Path $Unpacked 'install-version.txt') -Value $Version -Encoding ASCII -NoNewline
+# 7zS2.sfx ignores ;!@Install@! config. It extracts to %TEMP%\7z* and then
+# launches the first match of: start / run / install / setup / *.exe.
+# If DFlash Console.exe sits at archive root, Windows "installs" from Temp.
+$SfxStage = Join-Path $env:TEMP "dflash-sfx-stage-$Version"
+if (Test-Path $SfxStage) { Remove-Item -LiteralPath $SfxStage -Recurse -Force }
+$AppStage = Join-Path $SfxStage 'app'
+New-Item -ItemType Directory -Path $AppStage -Force | Out-Null
+Copy-Item -Path (Join-Path $Unpacked '*') -Destination $AppStage -Recurse -Force
+Copy-Item $setupUiExe (Join-Path $SfxStage 'setup.exe') -Force
+Set-Content -Path (Join-Path $SfxStage 'install-version.txt') -Value $Version -Encoding ASCII -NoNewline
 
 Write-Host '[3/4] Creating 7z archive...' -ForegroundColor Yellow
 $TempArchive = Join-Path $env:TEMP "dflash-console-$Version.7z"
 if (Test-Path $TempArchive) { Remove-Item $TempArchive -Force }
-& $SevenZip a -t7z -mx5 -m0=BCJ -m1=LZMA2 -mmt=on -ssc -y $TempArchive "$Unpacked\*" | Out-Null
+& $SevenZip a -t7z -mx5 -m0=BCJ -m1=LZMA2 -mmt=on -ssc -y $TempArchive "$SfxStage\*" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw '7z archive creation failed' }
-
-Remove-Item (Join-Path $Unpacked 'dflash-setup-ui.exe') -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $Unpacked 'install-version.txt') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $SfxStage -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host '[4/4] Building SFX installer...' -ForegroundColor Yellow
-$SfxConfig = @"
-;!@Install@!UTF-8!
-Title="DFlash Console $Version Setup"
-GUIMode="2"
-RunProgram="%%T\dflash-setup-ui.exe"
-;!@InstallEnd@!
-"@
-$ConfigFile = Join-Path $env:TEMP "dflash-console-sfx-$Version.cfg"
-[System.IO.File]::WriteAllText($ConfigFile, $SfxConfig, (New-Object System.Text.UTF8Encoding $false))
-
+# Do not prepend a config block. 7zS2 expects stub + 7z archive only.
 if (Test-Path $OutputExe) { Remove-Item $OutputExe -Force }
-cmd /c copy /b "$SfxStub" + "$ConfigFile" + "$TempArchive" "$OutputExe" | Out-Null
+cmd /c copy /b "$SfxStub" + "$TempArchive" "$OutputExe" | Out-Null
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutputExe)) {
     throw 'SFX assembly failed'
 }

@@ -48,6 +48,17 @@ def bump(part: str, set_version: str | None = None) -> str:
         encoding='utf-8',
     )
 
+    pyproject = ROOT / 'pyproject.toml'
+    if pyproject.is_file():
+        text = pyproject.read_text(encoding='utf-8')
+        text = re.sub(
+            r'(?m)^version = "\d+\.\d+\.\d+"',
+            f'version = "{next_version}"',
+            text,
+            count=1,
+        )
+        pyproject.write_text(text, encoding='utf-8')
+
     html_path = ROOT / 'static' / 'index.html'
     html = html_path.read_text(encoding='utf-8')
     html = re.sub(

@@ -24,18 +24,27 @@ stopped and started together with the console.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from core.chat_proxy import wants_stream
 from core.config import is_embedding_server, list_servers, load_config, normalize_inference_settings
 from core.local_models import model_has_reasoning
+
+logger = logging.getLogger(__name__)
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
 
 _FORWARD_HEADERS = {'content-type', 'accept', 'authorization', 'x-disable-reasoning'}
+_STREAM_HEADERS = {
+    'Cache-Control': 'no-cache',
+    'X-Accel-Buffering': 'no',
+    'Connection': 'keep-alive',
+}
 
 
 def _console_base(cfg: dict[str, Any]) -> str:
@@ -100,6 +109,7 @@ async def health() -> dict[str, Any]:
         'ok': console_ok,
         'gateway_port': int(cfg.get('gateway_port') or 8001),
         'console': _console_base(cfg),
+        'stream_reasoning_filter': 'opt_in',
     }
 
 
@@ -198,23 +208,40 @@ async def _forward_chat(
     headers = _pick_headers(request)
     if filter_reasoning:
         headers['x-disable-reasoning'] = '1'
-    # Always stream upstream so SSE /v1/chat/completions stays incremental.
-    async def stream() -> AsyncIterator[bytes]:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream('POST', url, content=body, headers=headers) as upstream:
-                async for chunk in upstream.aiter_bytes():
-                    yield chunk
+    # The request body may already have been consumed by the route handler.
+    # Always derive stream intent from the forwarded bytes, not request.json().
+    stream_requested = wants_stream(body)
 
-    # Peek whether the caller wants streaming to pick the right content-type.
-    want_stream = False
-    try:
-        payload = await request.json()
-        want_stream = bool(payload.get('stream'))
-    except Exception:
-        pass
-    if want_stream:
-        return StreamingResponse(stream(), media_type='text/event-stream')
-    # Buffered path: read the full body so we can return status + content-type.
+    async def stream() -> AsyncIterator[bytes]:
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream('POST', url, content=body, headers=headers) as upstream:
+                    upstream.raise_for_status()
+                    async for chunk in upstream.aiter_bytes():
+                        yield chunk
+        except httpx.HTTPStatusError as exc:
+            logger.warning('gateway chat upstream HTTP %s for %s', exc.response.status_code, url)
+            try:
+                detail = (await exc.response.aread()).decode('utf-8', errors='replace')
+            except Exception:
+                detail = str(exc)
+            if stream_requested:
+                payload = json.dumps({'error': {'message': detail, 'type': 'upstream_error'}})
+                yield f'data: {payload}\n\n'.encode('utf-8')
+                yield b'data: [DONE]\n\n'
+            else:
+                yield detail.encode('utf-8', errors='replace')
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.WriteError) as exc:
+            logger.warning('gateway chat stream drop for %s: %s', url, exc)
+            if stream_requested:
+                payload = json.dumps({'error': {'message': str(exc), 'type': 'stream_error'}})
+                yield f'data: {payload}\n\n'.encode('utf-8')
+                yield b'data: [DONE]\n\n'
+            else:
+                yield json.dumps({'error': {'message': str(exc), 'type': 'stream_error'}}).encode('utf-8')
+
+    if stream_requested:
+        return StreamingResponse(stream(), media_type='text/event-stream', headers=_STREAM_HEADERS)
     async with httpx.AsyncClient(timeout=None) as client:
         upstream = await client.post(url, content=body, headers=headers)
         content = upstream.content
@@ -253,10 +280,9 @@ async def chat_completions(request: Request) -> Response:
 
         body = apply_reasoning_policy(body, reasoning=model_has_reasoning(server))
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
-    # Default to filtering reasoning so Copilot and similar clients get
-    # clean content deltas.  Clients that understand reasoning_content can
-    # opt out with X-Disable-Reasoning: 0.
-    filter_reasoning = request.headers.get('X-Disable-Reasoning') != '0'
+    # Hide reasoning-only SSE chunks only when the client opts in. Agent
+    # clients (Hermes, tool loops) need reasoning_content by default.
+    filter_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
     return await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
 
 

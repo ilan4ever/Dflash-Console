@@ -36,7 +36,7 @@ def ensure_glmocr_transformers_model(*, cfg: dict[str, Any] | None = None) -> di
     if not python.is_file():
         return {
             'success': False,
-            'error': 'Transformers runtime is not installed. Open Settings → Runtimes to install it.',
+            'error': 'Transformers runtime is not installed. Open Settings → Downloads & engines to install it.',
         }
     dest.parent.mkdir(parents=True, exist_ok=True)
     script = (

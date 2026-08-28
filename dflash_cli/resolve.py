@@ -59,3 +59,7 @@ def pick_engine(query: str, engines: list[dict[str, Any]]) -> dict[str, Any]:
 
 def pick_runtime(query: str, runtimes: list[dict[str, Any]]) -> dict[str, Any]:
     return pick_one(query, runtimes, ('id', 'runtime_id', 'label'), kind='runtime')
+
+
+def pick_node(query: str, nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    return pick_one(query, nodes, ('id', 'label', 'base_url'), kind='node')

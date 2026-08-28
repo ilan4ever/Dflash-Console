@@ -37,6 +37,10 @@
     const isDesktop = Boolean(desktop()?.getAppSettings);
     el('appSettingsBrowserNotice')?.classList.toggle('hidden', isDesktop);
     el('appSettingsForm')?.classList.toggle('hidden', !isDesktop);
+    if (el('appSettingsConsoleUrl')) {
+      el('appSettingsConsoleUrl').textContent = data?.consoleUrl
+        || `${window.location.protocol}//${window.location.host}/`;
+    }
 
     if (!isDesktop || !data) return;
 
@@ -54,6 +58,10 @@
     }
     if (el('appSettingsDataRoot')) el('appSettingsDataRoot').textContent = data.dataRoot || '—';
     if (el('appSettingsUserData')) el('appSettingsUserData').textContent = data.userDataPath || '—';
+    if (el('appSettingsConsoleUrl')) {
+      el('appSettingsConsoleUrl').textContent = data.consoleUrl
+        || `${window.location.protocol}//${window.location.host}/`;
+    }
   }
 
   async function load() {

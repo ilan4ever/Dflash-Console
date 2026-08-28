@@ -1,0 +1,14 @@
+{
+  "developerMachineName": "DEVELOPER",
+  "developerLanIp": "192.168.1.10",
+  "productionMachineName": "PRODUCTION",
+  "productionLanIps": ["192.168.1.20"],
+  "productionLanIp": "192.168.1.20",
+  "repoPath": "C:\\dev\\Dflash-Console",
+  "remoteRepoPosixPath": "/c/dev/Dflash-Console",
+  "branch": "main",
+  "sshUser": "developer",
+  "sshKeyPath": "C:\\Users\\you\\.ssh\\id_ed25519",
+  "sshHosts": ["production", "192.168.1.20"],
+  "sshPort": 22
+}

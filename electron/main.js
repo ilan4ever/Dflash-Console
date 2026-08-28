@@ -4,7 +4,7 @@ const { app, BrowserWindow, shell, dialog, Menu, Tray, nativeImage, ipcMain } = 
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const {
   loadAppSettings,
   saveAppSettings,
@@ -16,7 +16,7 @@ const { registerContextMenus } = require('./context-menu');
 const DEFAULT_PORT = 8900;
 const UI_HOST = '127.0.0.1';
 const HEALTH_PATH = '/api/health';
-const READY_TIMEOUT_MS = 90000;
+const READY_TIMEOUT_MS = 180000;
 const POLL_MS = 500;
 
 let mainWindow = null;
@@ -33,25 +33,36 @@ let updatePopupWindow = null;
 let updatePromptDeferred = false;
 let updatePopupShownFor = '';
 let postInstallWelcomeActive = false;
+let postInstallSetupActive = false;
 
 const POST_INSTALL_LAUNCH_ARGS = new Set(['--dflash-post-update', '--dflash-post-install']);
+const POST_INSTALL_SETUP_ARG = '--dflash-post-install';
 const STARTUP_LAUNCH_ARG = '--dflash-startup';
 
 function hasPostInstallLaunchArg() {
   return process.argv.some((arg) => POST_INSTALL_LAUNCH_ARGS.has(arg));
 }
 
+function hasPostInstallSetupArg() {
+  return process.argv.includes(POST_INSTALL_SETUP_ARG);
+}
+
 function syncPostInstallWelcomeFlag() {
-  if (hasPostInstallLaunchArg()) {
-    saveAppSettings({ postInstallWelcome: true });
+  if (hasPostInstallSetupArg()) {
+    saveAppSettings({ postInstallSetup: true, postInstallWelcome: false });
+  } else if (hasPostInstallLaunchArg()) {
+    saveAppSettings({ postInstallWelcome: true, postInstallSetup: false });
   }
-  postInstallWelcomeActive = Boolean(loadAppSettings().postInstallWelcome);
+  const settings = loadAppSettings();
+  postInstallWelcomeActive = Boolean(settings.postInstallWelcome);
+  postInstallSetupActive = Boolean(settings.postInstallSetup);
 }
 
 function dismissPostInstallWelcome() {
-  if (!postInstallWelcomeActive) return;
+  if (!postInstallWelcomeActive && !postInstallSetupActive) return;
   postInstallWelcomeActive = false;
-  saveAppSettings({ postInstallWelcome: false });
+  postInstallSetupActive = false;
+  saveAppSettings({ postInstallWelcome: false, postInstallSetup: false });
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('post-install-welcome:cleared');
   }
@@ -62,7 +73,7 @@ function isStartupLaunch() {
 }
 
 function shouldShowMainWindowOnReady() {
-  if (postInstallWelcomeActive) return true;
+  if (postInstallWelcomeActive || postInstallSetupActive) return true;
   // "Start minimized to tray" applies only when Windows launches the app at
   // sign-in (--dflash-startup). Opening from a desktop shortcut or tray always
   // shows the window, even when minimize-to-tray is enabled.
@@ -157,7 +168,11 @@ function repoRoot() {
     // Developer badge inside the Electron app. Only non-checkout roots are
     // accepted as an override in packaged mode.
     if (!app.isPackaged || !isDevCheckout(override)) {
-      return path.resolve(override);
+      const resolved = path.resolve(override);
+      if (app.isPackaged) {
+        ensureRuntimeTree(resolved, process.resourcesPath);
+      }
+      return resolved;
     }
   }
 
@@ -492,16 +507,26 @@ function registerAppSettingsIpc() {
   ipcMain.handle('app-settings:get', () => ({
     ...loadAppSettings(),
     postInstallWelcome: postInstallWelcomeActive,
+    postInstallSetup: postInstallSetupActive,
     isElectron: true,
     appVersion: app.getVersion(),
     electronVersion: process.versions.electron,
     dataRoot: repoRoot(),
+    consoleUrl: consoleUrl(activePort),
     userDataPath: app.getPath('userData'),
     platform: process.platform,
   }));
 
   ipcMain.handle('app-settings:set', (_event, patch) => {
     const saved = saveAppSettings(patch);
+    if (patch && typeof patch === 'object') {
+      if (Object.prototype.hasOwnProperty.call(patch, 'postInstallWelcome')) {
+        postInstallWelcomeActive = Boolean(saved.postInstallWelcome);
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'postInstallSetup')) {
+        postInstallSetupActive = Boolean(saved.postInstallSetup);
+      }
+    }
     applyTrayFromSettings();
     return {
       ...saved,
@@ -509,6 +534,7 @@ function registerAppSettingsIpc() {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,
       dataRoot: repoRoot(),
+      consoleUrl: consoleUrl(activePort),
       userDataPath: app.getPath('userData'),
       platform: process.platform,
     };
@@ -522,6 +548,7 @@ function registerAppSettingsIpc() {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,
       dataRoot: selected,
+      consoleUrl: consoleUrl(activePort),
       userDataPath: app.getPath('userData'),
       platform: process.platform,
     };
@@ -624,6 +651,11 @@ function createSplashWindow() {
     },
   });
   void splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+  setTimeout(() => {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.setAlwaysOnTop(false);
+    }
+  }, 15000);
 }
 
 function closeSplashWindow() {
@@ -634,9 +666,27 @@ function closeSplashWindow() {
 
 function healthMatchesConsoleRoot(health, root) {
   if (!health || !root) return false;
-  const reported = String(health.console_root || '').trim();
-  if (!reported) return !app.isPackaged;
-  return path.resolve(reported) === path.resolve(root);
+  const resolved = path.resolve(root);
+  const candidates = [health.process_root, health.console_root]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  if (!candidates.length) return !app.isPackaged;
+  return candidates.some((candidate) => path.resolve(candidate) === resolved);
+}
+
+/**
+ * A running server from an older/newer build must not be reused: its Python
+ * code is frozen in memory, so the updated data root (new UI + new API) would
+ * be served by stale backend code. Versions stay in sync across package.json
+ * and core/version.py, so a mismatch always means "restart me".
+ */
+function healthMatchesAppVersion(health) {
+  if (!health) return false;
+  const appVersion = String(app.getVersion() || '').trim();
+  if (!appVersion) return true;
+  const serverVersion = String(health.version || '').trim();
+  if (!serverVersion) return false;
+  return serverVersion === appVersion;
 }
 
 function fetchHealth(port = DEFAULT_PORT) {
@@ -686,21 +736,46 @@ async function waitForHealthy(port = DEFAULT_PORT, timeoutMs = READY_TIMEOUT_MS)
   return null;
 }
 
-function findPwsh() {
+function findPowerShellShell() {
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
   const candidates = [
     process.env.PWSH_PATH,
-    'pwsh.exe',
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
-    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'PowerShell', '7', 'pwsh.exe'),
+    path.join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
+    path.join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'),
+    path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
-      if (candidate === 'pwsh.exe' || fs.existsSync(candidate)) return candidate;
+      if (fs.existsSync(candidate)) return candidate;
     } catch (_err) {
       // continue
     }
   }
-  return 'pwsh.exe';
+  try {
+    const result = spawnSync('where.exe', ['pwsh.exe'], {
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    if (result.status === 0 && result.stdout) {
+      const resolved = String(result.stdout).trim().split(/\r?\n/)[0].trim();
+      if (resolved && fs.existsSync(resolved)) return resolved;
+    }
+  } catch (_err) {
+    // fall through
+  }
+  const winPs = path.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  if (fs.existsSync(winPs)) return winPs;
+  throw new Error(
+    'PowerShell was not found. Install PowerShell 7 or ensure Windows PowerShell is available.',
+  );
 }
 
 function startConsoleServer(port = DEFAULT_PORT) {
@@ -708,11 +783,20 @@ function startConsoleServer(port = DEFAULT_PORT) {
   if (!root) {
     throw new Error('DFlash Console data root is not configured.');
   }
+  if (app.isPackaged) {
+    // Repair a partially copied data root before Python resolves api.app.
+    // This keeps the installed app independent of any developer checkout or
+    // stale DFLASH_CONSOLE_ROOT value left in the user's environment.
+    ensureRuntimeTree(root, process.resourcesPath);
+  }
   const serverScript = path.join(root, 'server.ps1');
   if (!fs.existsSync(serverScript)) {
     throw new Error(`server.ps1 not found at ${serverScript}`);
   }
-  const pwsh = findPwsh();
+  const shellExe = findPowerShellShell();
+  if (!fs.existsSync(shellExe)) {
+    throw new Error(`PowerShell executable not found at ${shellExe}`);
+  }
   const logDir = path.join(root, 'logs');
   try {
     fs.mkdirSync(logDir, { recursive: true });
@@ -728,10 +812,10 @@ function startConsoleServer(port = DEFAULT_PORT) {
     outFd = null;
     errFd = null;
   }
-  // Foreground mode: the spawned pwsh runs uvicorn directly, so Electron owns
+  // Foreground mode: the spawned shell runs uvicorn directly, so Electron owns
   // the live server process and can stop it (and its tree) when the app quits.
   const child = spawn(
-    pwsh,
+    shellExe,
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript, '-Port', String(port), '-Foreground'],
     {
       cwd: root,
@@ -746,6 +830,9 @@ function startConsoleServer(port = DEFAULT_PORT) {
         ...(app.isPackaged ? { DFLASH_CONSOLE_SHELL_VERSION: app.getVersion() } : {}),
         // App-owned servers release their managed engines on shutdown.
         DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN: '1',
+        // Lets the API exit itself if this shell process dies without a
+        // graceful quit (force-kill, crash) so no stale server survives.
+        DFLASH_CONSOLE_PARENT_PID: String(process.pid),
       },
     },
   );
@@ -925,22 +1012,23 @@ async function ensureBackend() {
   let root = repoRoot();
   let port = configuredPort(root);
   const existing = await fetchHealth(port);
-  if (existing && healthMatchesConsoleRoot(existing, root)) {
+  if (existing && healthMatchesConsoleRoot(existing, root) && healthMatchesAppVersion(existing)) {
     activePort = port;
     startedByApp = false;
     return existing;
   }
 
   if (existing) {
-    // A different Console instance (dev or installed) holds the port — stop it
-    // so only one DFlash server runs at a time on this PC, then take over.
+    // A different Console instance (dev or installed) — or a stale server from
+    // another version — holds the port. Stop it so only one current DFlash
+    // server runs at a time on this PC, then take over.
     await stopForeignConsole(port);
   }
 
   root = root || await chooseDataRoot();
   port = configuredPort(root);
   const owned = await fetchHealth(port);
-  if (owned && healthMatchesConsoleRoot(owned, root)) {
+  if (owned && healthMatchesConsoleRoot(owned, root) && healthMatchesAppVersion(owned)) {
     activePort = port;
     startedByApp = false;
     return owned;
@@ -1032,11 +1120,15 @@ function buildMenu() {
 
 async function createWindow() {
   const icon = iconPath();
+  const { screen } = require('electron');
+  const workArea = screen.getPrimaryDisplay()?.workAreaSize || { width: 1440, height: 960 };
+  const width = Math.min(1440, Math.max(960, workArea.width - 48));
+  const height = Math.min(960, Math.max(640, workArea.height - 48));
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 1100,
-    minHeight: 720,
+    width,
+    height,
+    minWidth: 820,
+    minHeight: 560,
     backgroundColor: '#0b0f14',
     title: 'DFlash Console',
     autoHideMenuBar: true,
@@ -1047,6 +1139,9 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The window loads while hidden behind the splash. Default Chromium
+      // throttling then delays the Engines poll until the page looks stuck.
+      backgroundThrottling: false,
       // Keep localStorage/sessionStorage for http://127.0.0.1:<port>/ across restarts.
       partition: 'persist:dflash-console',
     },
@@ -1100,7 +1195,14 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  await mainWindow.loadURL(consoleUrl(activePort));
+  try {
+    await mainWindow.webContents.session.clearCache();
+  } catch (_err) {
+    // Cache clear is best-effort so a stale page cannot show old Settings.
+  }
+  const url = consoleUrl(activePort);
+  mainWindow.setTitle(`DFlash Console — ${url}`);
+  await mainWindow.loadURL(url);
 }
 
 async function boot() {
@@ -1124,13 +1226,18 @@ async function boot() {
   } finally {
     booting = false;
   }
-  if (!mainWindow) {
-    await createWindow();
-  } else if (shouldShowMainWindowOnReady()) {
+  closeSplashWindow();
+  try {
+    if (!mainWindow) {
+      await createWindow();
+    } else if (shouldShowMainWindowOnReady()) {
+      showMainWindow({ bringToFront: !isStartupLaunch() });
+    }
+  } catch (err) {
     closeSplashWindow();
-    showMainWindow({ bringToFront: !isStartupLaunch() });
-  } else {
-    closeSplashWindow();
+    dialog.showErrorBox('DFlash Console', String(err && err.message ? err.message : err));
+    quitApp();
+    return;
   }
 }
 

@@ -29,8 +29,9 @@ Browser or Electron shell
   Ollama, LM Studio, DFlash, or library files.
 - `core/` contains configuration validation, model discovery, Hugging Face
   integration, engine lifecycle, GPU inspection, and inference statistics.
-- `dflash_cli/` is the PowerShell `dflash` command. `dflash list` reads the
-  same catalog as the Models tab.
+- `dflash_cli/` is the `dflash` command (`pip install dflash-console`).
+  `dflash list`, `embed`, `delete`, `nodes`, and `settings` talk to the same
+  local API as the UI.
 - `static/` contains the browser UI, in-app documentation, and About page.
 - `scripts/` contains Windows startup, restart, release, and engine helpers.
 - `electron/` contains the sandboxed desktop shell.
@@ -38,9 +39,12 @@ Browser or Electron shell
 ## Runtime roots
 
 The Console data root contains the backend, UI, configuration, scripts, and
-local runtime state. `DFLASH_ROOT` may point to a separate engine tree when
-the native llama.cpp build or model storage is managed elsewhere. Model
-weights, logs, and credentials are intentionally not part of the repository.
+local runtime state. A pip install ships the Python packages plus `static/`,
+`assets/`, and `docs/`. Writable config and logs then live under
+`DFLASH_CONSOLE_ROOT` or `%LOCALAPPDATA%\DFlash Console`. `DFLASH_ROOT` may
+point to a separate engine tree when the native llama.cpp build or model
+storage is managed elsewhere. Model weights, logs, and credentials are
+intentionally not part of the repository.
 
 The Electron installer is a thin shell. A packaged launch uses
 `DFLASH_CONSOLE_ROOT` or asks the user to select a Console data root. This

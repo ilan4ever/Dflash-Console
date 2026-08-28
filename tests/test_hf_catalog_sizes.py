@@ -47,6 +47,25 @@ def test_preferred_size_folders_ranks_quant_dirs():
     assert 'Q5_K_M' in folders
 
 
+def test_resolve_repo_tree_prefers_blobs_before_tree(monkeypatch):
+    calls: list[str] = []
+
+    def fake_blobs(repo):
+        calls.append('blobs')
+        return [{'rfilename': 'model.gguf', 'lfs': {'size': 4_000_000_000}}]
+
+    def fake_tree(repo, *, recursive=False, path=''):
+        calls.append('tree')
+        return []
+
+    monkeypatch.setattr('core.huggingface._fetch_repo_siblings_with_blobs', fake_blobs)
+    monkeypatch.setattr('core.huggingface._fetch_repo_tree', fake_tree)
+
+    tree = _resolve_repo_tree('org/repo', [{'rfilename': 'model.gguf'}])
+    assert calls == ['blobs']
+    assert any(row.get('path') == 'model.gguf' for row in tree)
+
+
 def test_resolve_repo_tree_follows_quant_folder(monkeypatch):
     calls: list[tuple[str, str, bool]] = []
 

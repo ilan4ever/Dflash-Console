@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
 import time
 import urllib.error
@@ -14,7 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from core.config import ROOT, load_config
+from core.config import ROOT, load_config, normalize_download_settings
+from core.dflash_generation import dflash_generation_label, repo_dflash_generation
 from core.model_paths import allowed_model_roots, get_download_dir, get_library_by_id
 
 HF_API = 'https://huggingface.co/api'
@@ -35,8 +37,14 @@ HF_CATEGORIES: dict[str, dict[str, Any]] = {
         'gguf_only': False,
     },
     'dflash': {
-        'label': 'DFlash Accelerator',
+        'label': 'DFlash 1 Accelerator',
         'search': 'dflash gguf',
+        'filter': 'gguf',
+        'gguf_only': True,
+    },
+    'dflash2': {
+        'label': 'DFlash 2 Accelerator',
+        'search': 'dflash2 gguf',
         'filter': 'gguf',
         'gguf_only': True,
     },
@@ -100,8 +108,10 @@ _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml'
 _download_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 _HISTORY_PATH = ROOT / 'logs' / 'hf-download-history.json'
+_PENDING_PATH = ROOT / 'logs' / 'hf-download-pending.json'
 _MAX_HISTORY = 200
 _history_loaded = False
+_pending_loaded = False
 _cleared_ids: set[str] = set()
 _discover_roots_override: list[Path] | None = None
 _disk_scan_at = 0.0
@@ -355,40 +365,66 @@ def _preferred_size_folders(tree: list[dict[str, Any]], siblings: list[Any] | No
     return folders
 
 
-def _resolve_repo_tree(repo: str, siblings: list[Any] | None) -> list[dict[str, Any]]:
+def _blob_tree_from_siblings(blobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            'path': _entry_name(row),
+            'rfilename': _entry_name(row),
+            'size': _entry_size_bytes(row),
+            'lfs': row.get('lfs'),
+            'type': 'file',
+        }
+        for row in blobs
+        if _entry_name(row)
+    ]
+
+
+def _resolve_repo_tree(
+    repo: str,
+    siblings: list[Any] | None,
+    *,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     """Fetch the smallest Hub tree needed to fill missing file sizes."""
     if _siblings_have_file_sizes(siblings):
         return []
+
+    def timed_out() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    # One Hub round-trip with LFS sizes — avoid walking every quant folder first.
+    blobs = _fetch_repo_siblings_with_blobs(repo)
+    blob_tree = _blob_tree_from_siblings(blobs) if blobs else []
+    if blob_tree and _siblings_have_file_sizes(_siblings_with_sizes(siblings, blob_tree)):
+        return blob_tree
+
+    if timed_out():
+        return blob_tree
+
     tree = _fetch_repo_tree(repo, recursive=False)
     if _siblings_have_file_sizes(_siblings_with_sizes(siblings, tree)):
         return tree
 
     extra: list[dict[str, Any]] = []
     for folder in _preferred_size_folders(tree, siblings)[:4]:
+        if timed_out():
+            break
         extra.extend(_fetch_repo_tree(repo, path=folder, recursive=False))
         combined = tree + extra
         if _siblings_have_file_sizes(_siblings_with_sizes(siblings, combined)):
             return combined
+        if timed_out():
+            break
         extra.extend(_fetch_repo_tree(repo, path=folder, recursive=True))
         combined = tree + extra
         if _siblings_have_file_sizes(_siblings_with_sizes(siblings, combined)):
             return combined
 
-    blobs = _fetch_repo_siblings_with_blobs(repo)
-    if blobs:
-        blob_tree = [
-            {
-                'path': _entry_name(row),
-                'rfilename': _entry_name(row),
-                'size': _entry_size_bytes(row),
-                'lfs': row.get('lfs'),
-                'type': 'file',
-            }
-            for row in blobs
-            if _entry_name(row)
-        ]
-        if _siblings_have_file_sizes(_siblings_with_sizes(siblings, blob_tree)):
-            return tree + extra + blob_tree
+    if blob_tree and _siblings_have_file_sizes(_siblings_with_sizes(siblings, blob_tree)):
+        return tree + extra + blob_tree
+
+    if timed_out():
+        return tree + extra + blob_tree
 
     file_count = sum(1 for row in tree if not _tree_entry_is_dir(row))
     if not extra and (len(tree) <= 64 or file_count == 0):
@@ -824,6 +860,14 @@ def _transformers_runtime_available() -> bool:
         return False
 
 
+def _vllm_runtime_available() -> bool:
+    try:
+        from core.runtimes.vllm import VllmRuntimeAdapter
+        return VllmRuntimeAdapter.is_installed()
+    except Exception:
+        return False
+
+
 def _hf_modality_fields(
     *,
     pipeline_tag: str,
@@ -866,14 +910,22 @@ def _hf_modality_fields(
         'translation': 'translate',
         'llm': 'chat',
     }.get(modality, 'chat')
+    from core.hf_engines import HF_LLM_ENGINES, preferred_hf_runtime
+
     transformers_ready = runtime_id == 'transformers' and _transformers_runtime_available()
+    vllm_ready = runtime_id == 'transformers' and _vllm_runtime_available()
+    engines: list[str] = []
+    if runtime_id == 'transformers':
+        runtime_id = preferred_hf_runtime()
+        engines = list(HF_LLM_ENGINES)
     return {
         'modality': modality,
         'runtime_id': runtime_id,
+        'engines': engines,
         'kind': kind,
         'catalog_visible': True,
         'downloadable': bool(downloadable) or has_gguf or kind == 'repo',
-        'runnable': (runtime_id == 'llama-server' and has_gguf) or transformers_ready,
+        'runnable': (runtime_id == 'llama-server' and has_gguf) or transformers_ready or vllm_ready,
         'family': '',
         'task': task,
     }
@@ -908,6 +960,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         size_gb = None
         size_label = '—'
     accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
+    accel_gen = repo_dflash_generation(repo_id, repo_label) if accelerator_only else None
     modality_fields = _hf_modality_fields(
         pipeline_tag=str(raw.get('pipeline_tag') or ''),
         has_gguf=has_gguf,
@@ -931,6 +984,8 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'size_gb': size_gb,
         'size_label': size_label,
         'accelerator_only': accelerator_only,
+        'dflash_generation': accel_gen,
+        'dflash_generation_label': dflash_generation_label(accel_gen) if accel_gen else None,
         'tags': tags,
         'pipeline_tag': str(raw.get('pipeline_tag') or ''),
         'description': description,
@@ -1066,6 +1121,32 @@ def _is_repo_id_query(query: str) -> bool:
     return len(parts) >= 2
 
 
+def _fetch_repo_summary_light(repo_id: str, *, category: str = 'dflash') -> dict[str, Any] | None:
+    """Fast repo-id lookup for catalog search — metadata and files, no README/tree walk."""
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return None
+    url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
+    try:
+        raw = _request_json(url, timeout=25)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    siblings = raw.get('siblings')
+    if not _siblings_have_file_sizes(siblings):
+        blobs = _fetch_repo_siblings_with_blobs(repo)
+        if blobs:
+            siblings = _siblings_with_sizes(siblings, _blob_tree_from_siblings(blobs))
+
+    enriched = dict(raw)
+    enriched['siblings'] = siblings
+    summary = _summary_from_model(enriched)
+    summary['category'] = str(category or 'dflash')
+    return summary
+
+
 def _cached_model_detail(repo_id: str, *, category: str) -> dict[str, Any]:
     from core.hf_catalog_cache import get_or_fetch_detail
 
@@ -1123,9 +1204,9 @@ def _lookup_hf_repo_models_uncached(query: str, *, category: str = 'all') -> lis
         if repo_id and repo_id not in found:
             found[repo_id] = model
 
-    detail = _cached_model_detail(query, category=category)
-    if detail.get('success') and isinstance(detail.get('model'), dict):
-        add_model(detail['model'])
+    light = _fetch_repo_summary_light(query, category=category)
+    if light:
+        add_model(light)
 
     search_terms = []
     if '/' in query:
@@ -1208,7 +1289,8 @@ def _search_supported_repo_query(
     ]
     matches.sort(key=_supported_sort_key)
     models = matches[:response_limit]
-    models = _enrich_summaries_sizes(models)
+    if any(_row_needs_size_enrich(row) for row in models):
+        models = _enrich_summaries_sizes(models, max_fetches=1)
     from core.config import load_config
     from core.hf_model_fit import annotate_hf_models_fit
 
@@ -1255,7 +1337,7 @@ def _is_console_supported_model(row: dict[str, Any]) -> bool:
         return True
     modality = str(row.get('modality') or '').strip().lower()
     if modality in ('llm', 'embedding', 'vision'):
-        if modality == 'llm' and str(row.get('runtime_id') or '') == 'transformers':
+        if modality == 'llm' and str(row.get('runtime_id') or '') in {'transformers', 'vllm'}:
             return bool(
                 row.get('downloadable')
                 or row.get('has_files')
@@ -1467,7 +1549,17 @@ def search_models(
             cfg=config,
         )
     if cat_key == 'dflash':
-        models = [row for row in models if row.get('accelerator_only')]
+        models = [
+            row for row in models
+            if row.get('accelerator_only')
+            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) != 'dflash2'
+        ]
+    elif cat_key == 'dflash2':
+        models = [
+            row for row in models
+            if row.get('accelerator_only')
+            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) == 'dflash2'
+        ]
     models = models[:response_limit]
     from core.hf_model_fit import annotate_hf_models_fit
 
@@ -1507,7 +1599,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
 
     card = raw.get('cardData') if isinstance(raw.get('cardData'), dict) else {}
     tags = [str(t) for t in (raw.get('tags') or []) if t]
-    tree = _resolve_repo_tree(repo, raw.get('siblings'))
+    tree = _resolve_repo_tree(repo, raw.get('siblings'), deadline=time.monotonic() + 25.0)
     siblings = _siblings_with_sizes(raw.get('siblings'), tree)
     gguf_files = _gguf_files(siblings)
     downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)
@@ -1620,7 +1712,21 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
 
 _DOWNLOAD_CHUNK = 8 * 1024 * 1024
 _MIN_PARALLEL_BYTES = 32 * 1024 * 1024
-_MAX_DOWNLOAD_CONNECTIONS = 6
+_MAX_DOWNLOAD_CONNECTIONS = 8
+_DOWNLOAD_RETRY_SECONDS = 5.0
+_PENDING_SAVE_INTERVAL_SECONDS = 12.0
+_PENDING_SAVE_BYTES = 5 * 1024 * 1024
+_last_pending_save_at: dict[str, float] = {}
+_last_pending_save_bytes: dict[str, int] = {}
+_BENCHMARK_REPO_ID = 'bartowski/Qwen3.8-27B-GGUF'
+_BENCHMARK_FILENAME = 'Qwen3.8-27B-Q6_K_L.gguf'
+_DEFAULT_BENCHMARK_MIB = 32
+
+
+def get_download_parallel_connections(cfg: dict[str, Any] | None = None) -> int:
+    config = cfg or load_config()
+    settings = normalize_download_settings(config.get('download_settings'))
+    return int(settings['parallel_connections'])
 
 
 def _hf_download_headers() -> dict[str, str]:
@@ -1632,6 +1738,40 @@ def _hf_download_headers() -> dict[str, str]:
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'
     return headers
+
+
+def _is_transient_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+    if isinstance(exc, urllib.error.HTTPError):
+        code = int(getattr(exc, 'code', 0) or 0)
+        return code in (408, 429, 500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, 'reason', None)
+        if reason is None or isinstance(reason, str):
+            return True
+        if isinstance(reason, (TimeoutError, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return True
+        if isinstance(reason, OSError):
+            return True
+        return False
+    if isinstance(exc, OSError):
+        text = str(exc).lower()
+        return 'ended early' in text or 'incomplete' in text
+    return False
+
+
+def _set_job_retrying(job_id: str, retrying: bool) -> None:
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if not job:
+            return
+        if retrying:
+            job['retrying'] = True
+            job['speed_bps'] = 0.0
+            job['eta_seconds'] = None
+        else:
+            job.pop('retrying', None)
 
 
 def _split_byte_ranges(total: int, connections: int) -> list[tuple[int, int]]:
@@ -1647,12 +1787,158 @@ def _split_byte_ranges(total: int, connections: int) -> list[tuple[int, int]]:
     return ranges
 
 
-def _connection_count(total: int, *, ranged: bool) -> int:
+def _connection_count(total: int, *, ranged: bool, parallel_connections: int | None = None) -> int:
     if not ranged or total < _MIN_PARALLEL_BYTES:
         return 1
-    if total < 256 * 1024 * 1024:
-        return 4
-    return _MAX_DOWNLOAD_CONNECTIONS
+    desired = parallel_connections
+    if desired is None:
+        desired = get_download_parallel_connections()
+    try:
+        count = int(desired)
+    except (TypeError, ValueError):
+        count = int(normalize_download_settings({})['parallel_connections'])
+    return max(1, min(_MAX_DOWNLOAD_CONNECTIONS, count))
+
+
+def _download_range_to_file(
+    url: str,
+    headers: dict[str, str],
+    dest: Path,
+    start: int,
+    end: int,
+) -> int:
+    req_headers = dict(headers)
+    req_headers['Range'] = f'bytes={start}-{end}'
+    req = urllib.request.Request(url, headers=req_headers)
+    written = 0
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        with dest.open('r+b') as handle:
+            handle.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = resp.read(min(_DOWNLOAD_CHUNK, remaining))
+                if not chunk:
+                    raise OSError(f'range {start}-{end} ended early')
+                handle.write(chunk)
+                nbytes = len(chunk)
+                written += nbytes
+                remaining -= nbytes
+    return written
+
+
+def _benchmark_single_stream(url: str, headers: dict[str, str], dest: Path, end: int) -> float:
+    dest.unlink(missing_ok=True)
+    with dest.open('wb') as handle:
+        handle.truncate(end + 1)
+    started = time.perf_counter()
+    _download_range_to_file(url, headers, dest, 0, end)
+    elapsed = time.perf_counter() - started
+    return (end + 1) / max(elapsed, 1e-6)
+
+
+def _benchmark_parallel_stream(url: str, headers: dict[str, str], dest: Path, end: int, connections: int) -> float:
+    dest.unlink(missing_ok=True)
+    total = end + 1
+    with dest.open('wb') as handle:
+        handle.truncate(total)
+    ranges = _split_byte_ranges(total, connections)
+    errors: list[BaseException] = []
+
+    def worker(start: int, stop: int) -> None:
+        try:
+            _download_range_to_file(url, headers, dest, start, stop)
+        except BaseException as exc:
+            errors.append(exc)
+
+    started = time.perf_counter()
+    threads = [threading.Thread(target=worker, args=item, daemon=True) for item in ranges]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    elapsed = time.perf_counter() - started
+    if errors:
+        raise errors[0]
+    return total / max(elapsed, 1e-6)
+
+
+def benchmark_download_connections(
+    connections: list[int] | None = None,
+    *,
+    test_mib: int = _DEFAULT_BENCHMARK_MIB,
+    repo_id: str = _BENCHMARK_REPO_ID,
+    filename: str = _BENCHMARK_FILENAME,
+) -> dict[str, Any]:
+    """Measure HF download throughput for 1..N parallel range connections."""
+    test_mib = max(8, min(128, int(test_mib)))
+    test_bytes = test_mib * 1024 * 1024
+    wanted = connections or [1, 2, 4, 6, 8]
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for item in wanted:
+        try:
+            count = max(1, min(_MAX_DOWNLOAD_CONNECTIONS, int(item)))
+        except (TypeError, ValueError):
+            continue
+        if count in seen:
+            continue
+        seen.add(count)
+        normalized.append(count)
+    if not normalized:
+        normalized = [1, 2, 4, 6, 8]
+
+    url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
+    headers = _hf_download_headers()
+    try:
+        final_url, file_total, ranged = _probe_hf_download(url, headers)
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+    if not ranged or file_total <= 0:
+        return {
+            'success': False,
+            'error': 'Benchmark file does not support ranged downloads — parallel mode unavailable.',
+        }
+
+    end = min(test_bytes, file_total) - 1
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix='hf-bench-') as tmp:
+        tmp_path = Path(tmp)
+        for count in normalized:
+            dest = tmp_path / f'sample-{count}.part'
+            row: dict[str, Any] = {'connections': count}
+            try:
+                if count <= 1:
+                    bps = _benchmark_single_stream(final_url, headers, dest, end)
+                else:
+                    bps = _benchmark_parallel_stream(final_url, headers, dest, end, count)
+                row['bps'] = round(bps, 1)
+                row['mbps'] = round(bps / (1024 * 1024), 2)
+                row['success'] = True
+            except Exception as exc:
+                row['success'] = False
+                row['error'] = str(exc)
+            results.append(row)
+            time.sleep(0.35)
+
+    ok_rows = [row for row in results if row.get('success')]
+    best = max(ok_rows, key=lambda row: float(row.get('bps') or 0), default=None)
+    single = next((row for row in ok_rows if int(row.get('connections') or 0) <= 1), None)
+    gain_pct = None
+    if best and single and float(single.get('bps') or 0) > 0:
+        gain_pct = round((float(best['bps']) / float(single['bps']) - 1.0) * 100.0, 1)
+
+    return {
+        'success': bool(ok_rows),
+        'repo_id': repo_id,
+        'filename': filename,
+        'test_mib': test_mib,
+        'test_bytes': end + 1,
+        'results': results,
+        'best_connections': int(best['connections']) if best else None,
+        'best_mbps': best.get('mbps') if best else None,
+        'gain_vs_single_pct': gain_pct,
+    }
 
 
 def _refresh_job_speed(job: dict[str, Any], *, now: float | None = None) -> None:
@@ -1678,6 +1964,8 @@ def _refresh_job_speed(job: dict[str, Any], *, now: float | None = None) -> None
 def _add_job_bytes(job_id: str, nbytes: int, total: int | None) -> None:
     if nbytes <= 0 and not total:
         return
+    save_pending = False
+    read = 0
     with _jobs_lock:
         job = _download_jobs.get(job_id)
         if not job:
@@ -1685,16 +1973,122 @@ def _add_job_bytes(job_id: str, nbytes: int, total: int | None) -> None:
         job['bytes_read'] = int(job.get('bytes_read') or 0) + max(0, int(nbytes))
         if total:
             job['bytes_total'] = int(total)
+        if int(nbytes) > 0:
+            job.pop('retrying', None)
         read = int(job.get('bytes_read') or 0)
         known = int(job.get('bytes_total') or 0)
-        job['progress'] = round(read / known * 100, 1) if known > 0 else None
+        job['progress'] = round(read / known * 100, 1) if known > 0 and read > 0 else None
         _refresh_job_speed(job)
+        save_pending = int(nbytes) > 0
+    if save_pending:
+        _maybe_save_pending_during_download(job_id, read)
 
 
 def _public_download_job(job: dict[str, Any]) -> dict[str, Any]:
     row = dict(job)
     for key in ('_speed_at', '_speed_bytes', 'post_action'):
         row.pop(key, None)
+    return row
+
+
+def _estimate_parallel_bytes_written(part: Path, total: int, connections: int) -> int:
+    if not part.is_file() or total <= 0:
+        return 0
+    ranges = _split_byte_ranges(total, max(1, int(connections)))
+    written = 0
+    for start, end in ranges:
+        if _range_appears_complete(part, start, end):
+            written += end - start + 1
+    progress = _load_part_progress(part)
+    progress_bytes = int(progress.get('bytes_read') or 0)
+    return min(int(total), max(written, progress_bytes))
+
+
+def _inspect_download_files(dest: Path, *, total: int | None = None) -> dict[str, Any]:
+    final = dest
+    part = dest.with_suffix(dest.suffix + '.part')
+    total_known = int(total or 0)
+    connections = _connection_count(total_known, ranged=True, parallel_connections=get_download_parallel_connections()) if total_known > 0 else 1
+    if final.is_file() and _looks_like_complete_download(final, total=total_known or None):
+        try:
+            size = int(final.stat().st_size)
+        except OSError:
+            size = 0
+        return {
+            'final_exists': True,
+            'part_exists': part.is_file(),
+            'disk_bytes': size,
+            'complete': True,
+            'needs_finalize': False,
+        }
+    if part.is_file():
+        try:
+            part_size = int(part.stat().st_size)
+        except OSError:
+            part_size = 0
+        estimated = _estimate_parallel_bytes_written(part, total_known, connections) if total_known > 0 else part_size
+        if total_known > 0 and estimated >= total_known and _looks_like_complete_download(part, total=total_known):
+            return {
+                'final_exists': False,
+                'part_exists': True,
+                'disk_bytes': total_known,
+                'complete': True,
+                'needs_finalize': True,
+            }
+        return {
+            'final_exists': False,
+            'part_exists': True,
+            'disk_bytes': estimated,
+            'complete': False,
+            'needs_finalize': False,
+        }
+    return {
+        'final_exists': False,
+        'part_exists': False,
+        'disk_bytes': 0,
+        'complete': False,
+        'needs_finalize': False,
+    }
+
+
+def _has_resumable_part(dest: Path, *, total: int | None = None) -> bool:
+    part = dest.with_suffix(dest.suffix + '.part')
+    if not part.is_file():
+        return False
+    total_known = int(total or 0)
+    inspect = _inspect_download_files(dest, total=total_known or None)
+    return bool(inspect.get('part_exists')) and not inspect.get('complete')
+
+
+def _enrich_download_job(job: dict[str, Any]) -> dict[str, Any]:
+    row = _public_download_job(job)
+    path_text = str(job.get('path') or '').strip()
+    if not path_text:
+        return row
+    try:
+        dest = Path(path_text).expanduser().resolve()
+    except OSError:
+        return row
+    total = int(row.get('bytes_total') or 0)
+    inspect = _inspect_download_files(dest, total=total or None)
+    row['disk_bytes'] = int(inspect.get('disk_bytes') or 0)
+    row['disk_complete'] = bool(inspect.get('complete'))
+    row['has_part_file'] = bool(inspect.get('part_exists'))
+    row['needs_finalize'] = bool(inspect.get('needs_finalize'))
+    status = str(row.get('status') or '')
+    disk_bytes = int(row.get('disk_bytes') or 0)
+    if status in {'done', 'error', 'incomplete'} and not inspect.get('complete') and inspect.get('part_exists'):
+        row['status'] = 'incomplete'
+        row['bytes_read'] = disk_bytes
+        if total > 0 and disk_bytes > 0:
+            row['progress'] = round(disk_bytes / total * 100, 1)
+        row.pop('finished_at', None)
+    elif status == 'downloading' and disk_bytes > int(row.get('bytes_read') or 0):
+        row['bytes_read'] = disk_bytes
+        if total > 0 and disk_bytes > 0:
+            row['progress'] = round(min(disk_bytes, total) / total * 100, 1)
+    elif status == 'done' and inspect.get('complete') and disk_bytes > 0:
+        row['bytes_read'] = disk_bytes if total <= 0 else min(disk_bytes, total)
     return row
 
 
@@ -1917,6 +2311,64 @@ def _save_download_history() -> None:
     )
 
 
+def _pending_job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
+    row = _public_download_job(job)
+    for key in ('path', 'library_id', 'kind', 'started_at', 'bytes_read', 'bytes_total'):
+        if key in job:
+            row[key] = job.get(key)
+    post_action = job.get('post_action')
+    if isinstance(post_action, dict):
+        row['post_action'] = post_action
+    return row
+
+
+def _save_pending_downloads() -> None:
+    with _jobs_lock:
+        pending = [
+            _pending_job_snapshot(job)
+            for job in _download_jobs.values()
+            if str(job.get('status') or '') == 'downloading'
+        ]
+    _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PENDING_PATH.write_text(
+        json.dumps({'version': 1, 'jobs': pending}, indent=2),
+        encoding='utf-8',
+    )
+
+
+def _clear_pending_downloads() -> None:
+    try:
+        if _PENDING_PATH.is_file():
+            _PENDING_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _load_pending_downloads() -> list[dict[str, Any]]:
+    if not _PENDING_PATH.is_file():
+        return []
+    try:
+        payload = json.loads(_PENDING_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = payload.get('jobs') if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _remove_pending_job(job_id: str) -> None:
+    key = str(job_id or '').strip()
+    if not key:
+        return
+    rows = [row for row in _load_pending_downloads() if str(row.get('id') or '').strip() != key]
+    if not rows:
+        _clear_pending_downloads()
+        return
+    _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PENDING_PATH.write_text(json.dumps({'version': 1, 'jobs': rows}, indent=2), encoding='utf-8')
+
+
 def _mark_job_finished(job_id: str, status: str, **fields: Any) -> None:
     with _jobs_lock:
         job = _download_jobs.get(job_id)
@@ -1933,6 +2385,84 @@ def _mark_job_finished(job_id: str, status: str, **fields: Any) -> None:
         _save_download_history()
     except OSError:
         pass
+    if status != 'downloading':
+        _remove_pending_job(job_id)
+        try:
+            _save_pending_downloads()
+        except OSError:
+            pass
+
+
+def _part_progress_path(part: Path) -> Path:
+    return part.with_name(part.name + '.progress.json')
+
+
+def _range_key(start: int, end: int) -> str:
+    return f'{int(start)}-{int(end)}'
+
+
+def _load_part_progress(part: Path) -> dict[str, Any]:
+    path = _part_progress_path(part)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_part_progress(part: Path, *, total: int, completed_ranges: list[str], bytes_read: int) -> None:
+    path = _part_progress_path(part)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            'version': 1,
+            'total': int(total),
+            'bytes_read': int(bytes_read),
+            'completed_ranges': sorted(set(completed_ranges)),
+        }, indent=2),
+        encoding='utf-8',
+    )
+
+
+def _delete_part_progress(part: Path) -> None:
+    try:
+        _part_progress_path(part).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _range_appears_complete(part: Path, start: int, end: int) -> bool:
+    """Best-effort check that a parallel range was fully written (tail is non-zero)."""
+    span = end - start + 1
+    if span <= 0:
+        return True
+    try:
+        with part.open('rb') as handle:
+            check_len = min(4096, span)
+            handle.seek(end - check_len + 1)
+            chunk = handle.read(check_len)
+            return len(chunk) == check_len and any(byte != 0 for byte in chunk)
+    except OSError:
+        return False
+
+
+def _maybe_save_pending_during_download(job_id: str, bytes_read: int) -> None:
+    key = str(job_id or '').strip()
+    if not key:
+        return
+    now = time.time()
+    last_at = float(_last_pending_save_at.get(key) or 0)
+    last_bytes = int(_last_pending_save_bytes.get(key) or 0)
+    if now - last_at < _PENDING_SAVE_INTERVAL_SECONDS and bytes_read - last_bytes < _PENDING_SAVE_BYTES:
+        return
+    try:
+        _save_pending_downloads()
+    except OSError:
+        pass
+    _last_pending_save_at[key] = now
+    _last_pending_save_bytes[key] = bytes_read
 
 
 def _probe_hf_download(url: str, headers: dict[str, str]) -> tuple[str, int, bool]:
@@ -1978,15 +2508,33 @@ def _download_parallel(
     dest: Path,
     total: int,
     connections: int,
+    *,
+    resume: bool = False,
 ) -> None:
     ranges = _split_byte_ranges(total, connections)
-    with dest.open('wb') as handle:
-        handle.truncate(total)
+    progress = _load_part_progress(dest) if resume else {}
+    completed = set(progress.get('completed_ranges') or [])
+    if not dest.is_file() or dest.stat().st_size != total:
+        with dest.open('wb') as handle:
+            handle.truncate(total)
+        completed.clear()
+    elif not resume:
+        with dest.open('wb') as handle:
+            handle.truncate(total)
+        completed.clear()
     errors: list[BaseException] = []
 
     def worker(start: int, end: int) -> None:
+        key = _range_key(start, end)
         try:
+            if key in completed or _range_appears_complete(dest, start, end):
+                return
             _download_range(job_id, url, headers, dest, start, end, total)
+            completed.add(key)
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                bytes_read = int(job.get('bytes_read') or 0) if job else 0
+            _save_part_progress(dest, total=total, completed_ranges=sorted(completed), bytes_read=bytes_read)
         except BaseException as exc:
             errors.append(exc)
 
@@ -1999,6 +2547,7 @@ def _download_parallel(
         raise errors[0]
     if dest.stat().st_size != total:
         raise OSError('incomplete parallel download')
+    _delete_part_progress(dest)
 
 
 def _download_single(
@@ -2020,31 +2569,126 @@ def _download_single(
                 _add_job_bytes(job_id, len(chunk), known or None)
 
 
-def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> None:
+def _download_single_resume(
+    job_id: str,
+    url: str,
+    headers: dict[str, str],
+    dest: Path,
+    start_offset: int,
+    total: int,
+) -> None:
+    offset = max(0, int(start_offset))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.is_file():
+        with dest.open('wb') as handle:
+            if offset > 0:
+                handle.truncate(offset)
+    req_headers = dict(headers)
+    req_headers['Range'] = f'bytes={offset}-'
+    req = urllib.request.Request(url, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        with dest.open('r+b') as handle:
+            handle.seek(offset)
+            while True:
+                chunk = resp.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                _add_job_bytes(job_id, len(chunk), total)
+
+
+def _looks_like_complete_download(path: Path, *, total: int | None = None) -> bool:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size < 1024:
+        return False
+    if total is not None and int(total) > 0 and size < int(total):
+        return False
+    try:
+        with path.open('rb') as handle:
+            head = handle.read(4)
+            if head == b'GGUF':
+                if size <= 64:
+                    return False
+                handle.seek(max(0, size - 8192))
+                tail = handle.read(8192)
+                return any(byte != 0 for byte in tail)
+            if size > 4096:
+                handle.seek(max(0, size - 4096))
+                tail = handle.read(4096)
+                return any(byte != 0 for byte in tail)
+            return size > 0
+    except OSError:
+        return False
+
+
+def _cleanup_incomplete_download(dest: Path, *, total: int | None = None) -> bool:
+    removed = False
+    part = dest.with_suffix(dest.suffix + '.part')
+    if dest.is_file() and not _looks_like_complete_download(dest, total=total):
+        try:
+            dest.unlink()
+            removed = True
+        except OSError:
+            pass
+    if part.is_file():
+        try:
+            part.unlink()
+            removed = True
+        except OSError:
+            pass
+        _delete_part_progress(part)
+    return removed
+
+
+def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, *, resume: bool = False) -> None:
     url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
     headers = _hf_download_headers()
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(dest.suffix + '.part')
-        final_url, total, ranged = _probe_hf_download(url, headers)
-        connections = _connection_count(total, ranged=ranged)
-        if connections > 1:
-            try:
-                _download_parallel(job_id, final_url, headers, tmp, total, connections)
-            except Exception:
-                with _jobs_lock:
-                    job = _download_jobs.get(job_id)
-                    if job:
-                        job['bytes_read'] = 0
-                        job['progress'] = 0.0
-                        job['speed_bps'] = 0.0
-                        job['eta_seconds'] = None
-                        job['_speed_at'] = time.time()
-                        job['_speed_bytes'] = 0
-                _download_single(job_id, final_url, headers, tmp, total)
-        else:
-            _download_single(job_id, final_url or url, headers, tmp, total or None)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + '.part')
+    part_size = tmp.stat().st_size if tmp.is_file() else 0
+    final_url, total, ranged = _probe_hf_download(url, headers)
+    if dest.is_file():
+        if _looks_like_complete_download(dest, total=total or None):
+            _mark_job_finished(job_id, 'done', path=str(dest))
+            return
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        known_read = int(job.get('bytes_read') or 0) if job else 0
+    if total > 0:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['bytes_total'] = int(total)
+                if resume and known_read > 0:
+                    job['bytes_read'] = min(known_read, int(total))
+                    known_read = int(job['bytes_read'] or 0)
+                    job['progress'] = round(known_read / total * 100, 1) if known_read > 0 else None
+                elif resume and tmp.is_file() and total > 0:
+                    connections = _connection_count(total, ranged=ranged, parallel_connections=get_download_parallel_connections())
+                    estimated = _estimate_parallel_bytes_written(tmp, total, connections) if part_size >= total else part_size
+                    if estimated > 0 and estimated < total:
+                        job['bytes_read'] = estimated
+                        known_read = estimated
+                        job['progress'] = round(estimated / total * 100, 1)
+        _add_job_bytes(job_id, 0, total)
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            known_read = int(job.get('bytes_read') or 0) if job else 0
+    if (
+        total > 0
+        and known_read >= total
+        and tmp.is_file()
+        and _looks_like_complete_download(tmp, total=total)
+    ):
         tmp.replace(dest)
+        _delete_part_progress(tmp)
         if dest.suffix.lower() == '.safetensors':
             _complete_transformers_repo_files(repo_id, dest.parent, job_id=job_id)
         post_action = None
@@ -2061,8 +2705,102 @@ def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path) -> No
         _mark_job_finished(job_id, 'done', **extra)
         from core.local_models import invalidate_model_catalog_cache
         invalidate_model_catalog_cache()
-    except Exception as exc:
-        _mark_job_finished(job_id, 'error', error=str(exc))
+        return
+
+    connections = _connection_count(total, ranged=ranged, parallel_connections=get_download_parallel_connections())
+    resumed = False
+    if resume and tmp.is_file() and total > 0:
+        if known_read <= 0 and part_size >= total:
+            known_read = _estimate_parallel_bytes_written(tmp, total, connections)
+            if known_read > 0:
+                with _jobs_lock:
+                    job = _download_jobs.get(job_id)
+                    if job:
+                        job['bytes_read'] = min(known_read, int(total))
+                        known_read = int(job.get('bytes_read') or 0)
+                        job['progress'] = round(known_read / total * 100, 1) if known_read > 0 else None
+        if known_read > 0 and known_read < total:
+            if connections > 1 and ranged:
+                _download_parallel(job_id, final_url, headers, tmp, total, connections, resume=True)
+                resumed = True
+            elif ranged:
+                offset = known_read if part_size >= total else (part_size if part_size < total else known_read)
+                _download_single_resume(job_id, final_url, headers, tmp, offset, total)
+                resumed = True
+    elif resume and tmp.is_file() and part_size > 0 and total > 0 and part_size < total and ranged:
+        _download_single_resume(job_id, final_url, headers, tmp, part_size, total)
+        resumed = True
+
+    if not resumed:
+        if tmp.is_file() and known_read <= 0:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            _delete_part_progress(tmp)
+        if connections > 1 and total > 0 and ranged:
+            try:
+                _download_parallel(job_id, final_url, headers, tmp, total, connections, resume=False)
+            except Exception as exc:
+                if _is_transient_download_error(exc):
+                    raise
+                with _jobs_lock:
+                    job = _download_jobs.get(job_id)
+                    if job:
+                        job['progress'] = None
+                        job['speed_bps'] = 0.0
+                        job['eta_seconds'] = None
+                        job['_speed_at'] = time.time()
+                        job['_speed_bytes'] = int(job.get('bytes_read') or 0)
+                _download_single(job_id, final_url, headers, tmp, total)
+        else:
+            _download_single(job_id, final_url or url, headers, tmp, total or None)
+    tmp.replace(dest)
+    _delete_part_progress(tmp)
+    if dest.suffix.lower() == '.safetensors':
+        _complete_transformers_repo_files(repo_id, dest.parent, job_id=job_id)
+    post_action = None
+    with _jobs_lock:
+        post_action = (_download_jobs.get(job_id) or {}).get('post_action')
+    extra = {'path': str(dest)}
+    if isinstance(post_action, dict) and post_action.get('type') == 'wire_vision':
+        try:
+            from core.vision_setup import wire_vision_after_download
+
+            wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
+        except Exception as exc:
+            extra['post_action_error'] = str(exc)
+    _mark_job_finished(job_id, 'done', **extra)
+    from core.local_models import invalidate_model_catalog_cache
+    invalidate_model_catalog_cache()
+
+
+def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path, *, resume: bool = False) -> None:
+    attempt = 0
+    while True:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if not job or str(job.get('status') or '') != 'downloading':
+                return
+        try:
+            _set_job_retrying(job_id, False)
+            _download_worker_once(job_id, repo_id, filename, dest, resume=resume or attempt > 0)
+            return
+        except Exception as exc:
+            if not _is_transient_download_error(exc):
+                _mark_job_finished(job_id, 'error', error=str(exc))
+                return
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if not job or str(job.get('status') or '') != 'downloading':
+                    return
+            _set_job_retrying(job_id, True)
+            try:
+                _save_pending_downloads()
+            except OSError:
+                pass
+            time.sleep(_DOWNLOAD_RETRY_SECONDS)
+            attempt += 1
 
 
 def start_download(
@@ -2096,6 +2834,16 @@ def start_download(
         author, repo_name = repo.split('/', 1)
         dest = root / author / repo_name / Path(name).name
     from core.hf_local_match import find_local_matches
+
+    probe_total = 0
+    if dest.is_file() or dest.with_suffix(dest.suffix + '.part').is_file():
+        try:
+            probe_url = f'{HF_BASE}/{repo}/resolve/main/{urllib.parse.quote(name, safe="/")}'
+            _, probe_total, _ = _probe_hf_download(probe_url, _hf_download_headers())
+        except Exception:
+            probe_total = 0
+        if not _has_resumable_part(dest, total=probe_total or None):
+            _cleanup_incomplete_download(dest, total=probe_total or None)
 
     if dest.is_file():
         if post_action and post_action.get('type') == 'wire_vision':
@@ -2134,6 +2882,17 @@ def start_download(
                 'matches': existing,
                 'path': existing[0].get('path'),
             }
+        from core.library_import import find_existing_in_console_library
+
+        console_existing = find_existing_in_console_library(name, cfg=config)
+        if console_existing:
+            return {
+                'success': False,
+                'error': 'This model file is already in the DFlash Console library',
+                'already_installed': True,
+                'matches': console_existing,
+                'path': console_existing[0].get('path'),
+            }
     suffix = abs(hash(repo + name + str(dest))) % 1_000_000
     job_id = f'{int(time.time())}-{suffix:06d}'
     with _jobs_lock:
@@ -2142,7 +2901,7 @@ def start_download(
             'repo_id': repo,
             'filename': name,
             'status': 'downloading',
-            'progress': 0.0,
+            'progress': None,
             'bytes_read': 0,
             'bytes_total': None,
             'speed_bps': 0.0,
@@ -2154,6 +2913,10 @@ def start_download(
             'post_action': post_action,
             'kind': 'vision' if isinstance(post_action, dict) else '',
         }
+    try:
+        _save_pending_downloads()
+    except OSError:
+        pass
     thread = threading.Thread(target=_download_worker, args=(job_id, repo, name, dest), daemon=True)
     thread.start()
     return {
@@ -2230,7 +2993,7 @@ def start_repo_download(
             'repo_id': repo,
             'filename': '',
             'status': 'downloading',
-            'progress': 0.0,
+            'progress': None,
             'bytes_read': 0,
             'bytes_total': None,
             'speed_bps': 0.0,
@@ -2253,6 +3016,155 @@ def start_repo_download(
     }
 
 
+def repair_stale_download_jobs(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Re-open finished download rows that still have an incomplete .part file on disk."""
+    config = cfg or load_config()
+    _ensure_download_history_loaded()
+    repaired: list[str] = []
+    with _jobs_lock:
+        rows = list(_download_jobs.items())
+    for job_id, job in rows:
+        if str(job.get('status') or '') not in {'done', 'error', 'incomplete'}:
+            continue
+        path_text = str(job.get('path') or '').strip()
+        if not path_text:
+            continue
+        try:
+            dest = Path(path_text).expanduser().resolve()
+        except OSError:
+            continue
+        if not _is_under_allowed_model_root(dest, config):
+            continue
+        inspect = _inspect_download_files(dest, total=int(job.get('bytes_total') or 0) or None)
+        if inspect.get('complete'):
+            if inspect.get('needs_finalize') and dest.with_suffix(dest.suffix + '.part').is_file():
+                with _jobs_lock:
+                    live = _download_jobs.get(job_id)
+                    if not live:
+                        continue
+                    live['status'] = 'downloading'
+                    live['finished_at'] = None
+                    live['error'] = None
+                    live['bytes_read'] = int(inspect.get('disk_bytes') or 0)
+                repaired.append(job_id)
+            continue
+        if not inspect.get('part_exists'):
+            continue
+        disk_bytes = int(inspect.get('disk_bytes') or 0)
+        with _jobs_lock:
+            live = _download_jobs.get(job_id)
+            if not live:
+                continue
+            live['status'] = 'downloading'
+            live['finished_at'] = None
+            live['error'] = None
+            live['bytes_read'] = disk_bytes
+            total = int(live.get('bytes_total') or 0)
+            live['progress'] = round(disk_bytes / total * 100, 1) if total > 0 and disk_bytes > 0 else None
+        repaired.append(job_id)
+    for job_id in repaired:
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if not job:
+                continue
+            repo = str(job.get('repo_id') or '').strip()
+            name = str(job.get('filename') or '').strip()
+            path_text = str(job.get('path') or '').strip()
+        if not repo or not name or not path_text:
+            continue
+        try:
+            dest = Path(path_text).expanduser().resolve()
+        except OSError:
+            continue
+        thread = threading.Thread(
+            target=_download_worker,
+            args=(job_id, repo, name, dest),
+            kwargs={'resume': True},
+            daemon=True,
+        )
+        thread.start()
+    if repaired:
+        try:
+            _save_pending_downloads()
+            _save_download_history()
+        except OSError:
+            pass
+    return {'success': True, 'repaired': repaired, 'count': len(repaired)}
+
+
+def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Restart Hugging Face file downloads that were active when the server last stopped."""
+    config = cfg or load_config()
+    _ensure_download_history_loaded()
+    pending = _load_pending_downloads()
+    resumed: list[str] = []
+    skipped: list[str] = []
+    for row in pending:
+        job_id = str(row.get('id') or '').strip()
+        repo = str(row.get('repo_id') or '').strip()
+        name = str(row.get('filename') or '').strip()
+        path_text = str(row.get('path') or '').strip()
+        if not job_id or not repo or not name or not path_text:
+            skipped.append(job_id or 'invalid')
+            continue
+        try:
+            dest = Path(path_text).expanduser().resolve()
+        except OSError:
+            skipped.append(job_id)
+            continue
+        if not _is_under_allowed_model_root(dest, config):
+            skipped.append(job_id)
+            continue
+        if dest.is_file() and _inspect_download_files(dest, total=int(row.get('bytes_total') or 0) or None).get('complete'):
+            with _jobs_lock:
+                _download_jobs[job_id] = {
+                    **row,
+                    'status': 'done',
+                    'progress': 100.0,
+                    'path': str(dest),
+                    'finished_at': time.time(),
+                }
+            _remove_pending_job(job_id)
+            skipped.append(job_id)
+            continue
+        with _jobs_lock:
+            already = any(
+                str(job.get('status') or '') == 'downloading'
+                and str(job.get('repo_id') or '') == repo
+                and str(job.get('filename') or '') == name
+                for job in _download_jobs.values()
+            )
+            if already:
+                skipped.append(job_id)
+                continue
+            restored = dict(row)
+            restored['status'] = 'downloading'
+            restored['speed_bps'] = 0.0
+            restored['eta_seconds'] = None
+            restored['finished_at'] = None
+            restored['error'] = None
+            _download_jobs[job_id] = restored
+        thread = threading.Thread(
+            target=_download_worker,
+            args=(job_id, repo, name, dest),
+            kwargs={'resume': True},
+            daemon=True,
+        )
+        thread.start()
+        resumed.append(job_id)
+    if not pending:
+        _clear_pending_downloads()
+    repair = repair_stale_download_jobs(cfg=config)
+    return {
+        'success': True,
+        'resumed': resumed,
+        'skipped': skipped,
+        'count': len(resumed),
+        'repaired': repair.get('repaired') or [],
+        'repaired_count': repair.get('count') or 0,
+    }
+
+
 def get_download_job(job_id: str) -> dict[str, Any]:
     _ensure_download_history_loaded()
     with _jobs_lock:
@@ -2262,11 +3174,31 @@ def get_download_job(job_id: str) -> dict[str, Any]:
         return {'success': True, 'job': _public_download_job(job)}
 
 
-def list_download_jobs(*, active_only: bool = False, discover: bool = False) -> dict[str, Any]:
+def _is_console_download_job(job: dict[str, Any]) -> bool:
+    """True when DFlash Console started the download (HF job), not a disk scan."""
+    if str(job.get('origin') or '').strip().lower() == 'disk':
+        return False
+    if str(job.get('kind') or '').strip().lower() == 'disk':
+        return False
+    job_id = str(job.get('id') or '').strip()
+    if job_id.startswith('disk-'):
+        return False
+    return True
+
+
+def list_download_jobs(
+    *,
+    active_only: bool = False,
+    discover: bool = False,
+    console_only: bool = True,
+) -> dict[str, Any]:
     _ensure_download_history_loaded()
-    _merge_disk_download_history(force=discover)
+    if not console_only:
+        _merge_disk_download_history(force=discover)
     with _jobs_lock:
-        jobs = [_public_download_job(job) for job in _download_jobs.values()]
+        jobs = [_enrich_download_job(job) for job in _download_jobs.values()]
+    if console_only:
+        jobs = [job for job in jobs if _is_console_download_job(job)]
     if active_only:
         jobs = [job for job in jobs if str(job.get('status') or '') == 'downloading']
     jobs.sort(
@@ -2320,3 +3252,8 @@ def clear_download_history() -> dict[str, Any]:
     except OSError as exc:
         return {'success': False, 'error': str(exc)}
     return {'success': True, 'cleared': cleared}
+
+
+def save_pending_downloads() -> None:
+    """Persist in-progress downloads so they can resume after a server restart."""
+    _save_pending_downloads()

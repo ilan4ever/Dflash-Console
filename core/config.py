@@ -5,14 +5,58 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
+import shutil
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
-ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def default_user_data_root() -> Path:
+    if os.name == 'nt':
+        base = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Local'))
+        return (base / 'DFlash Console').resolve()
+    return (Path.home() / '.dflash-console').resolve()
+
+
+def is_source_checkout(root: Path | None = None) -> bool:
+    base = root if root is not None else PACKAGE_ROOT
+    return (base / 'server.ps1').is_file() or (base / '.git').is_dir()
+
+
+def resolve_console_root() -> Path:
+    override = str(os.environ.get('DFLASH_CONSOLE_ROOT') or '').strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if is_source_checkout(PACKAGE_ROOT):
+        return PACKAGE_ROOT
+    return default_user_data_root()
+
+
+def ensure_console_data_root() -> Path:
+    root = resolve_console_root()
+    root.mkdir(parents=True, exist_ok=True)
+    config_path = root / 'config.json'
+    if not config_path.is_file():
+        example = PACKAGE_ROOT / 'config.example.json'
+        if example.is_file():
+            shutil.copy2(example, config_path)
+        else:
+            config_path.write_text(
+                '{"ui_port": 8900, "gateway_port": 8001, "dflash_root": ".", "servers": []}\n',
+                encoding='utf-8',
+            )
+    (root / 'logs').mkdir(parents=True, exist_ok=True)
+    return root
+
+
+ROOT = resolve_console_root()
 CONFIG_PATH = ROOT / 'config.json'
 _CONFIG_SAVE_LOCK = threading.Lock()
 
@@ -59,6 +103,15 @@ DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     'limit_offload_dedicated_vram': True,
     'offload_kv_cache_to_gpu': True,
 }
+
+DEFAULT_DOWNLOAD_SETTINGS: dict[str, Any] = {
+    # Parallel HTTP range connections for Hugging Face downloads (when the CDN supports ranges).
+    'parallel_connections': 4,
+}
+
+MAX_DOWNLOAD_PARALLEL_CONNECTIONS = 8
+
+DEFAULT_REMOTE_NODES: list[dict[str, Any]] = []
 
 # Auto-grow context: when a chat request needs a larger per-slot context than
 # the model is currently loaded with, the Console reloads the model with the
@@ -184,6 +237,14 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         if not is_loopback_url(api_url):
             raise ValueError(f'runtimes[{index}].api_url must be loopback-only')
 
+    remote_nodes = cfg.get('remote_nodes')
+    if remote_nodes is None:
+        cfg['remote_nodes'] = []
+    elif not isinstance(remote_nodes, list):
+        raise ValueError('remote_nodes must be a list')
+    else:
+        cfg['remote_nodes'] = normalize_remote_nodes(remote_nodes)
+
     return cfg
 
 
@@ -233,6 +294,68 @@ def normalize_inference_settings(raw: Any) -> dict[str, Any]:
     }
 
 
+def normalize_download_settings(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        parallel = int(raw.get('parallel_connections') if raw.get('parallel_connections') is not None else DEFAULT_DOWNLOAD_SETTINGS['parallel_connections'])
+    except (TypeError, ValueError):
+        parallel = int(DEFAULT_DOWNLOAD_SETTINGS['parallel_connections'])
+    parallel = max(1, min(MAX_DOWNLOAD_PARALLEL_CONNECTIONS, parallel))
+    return {
+        'parallel_connections': parallel,
+    }
+
+
+def _slug_node_id(value: str) -> str:
+    slug = re.sub(r'[^a-z0-9]+', '-', str(value or '').strip().lower()).strip('-')
+    return slug[:64] or 'node'
+
+
+def normalize_remote_node(raw: Any, *, existing_ids: set[str] | None = None) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError('remote node must be an object')
+    label = str(raw.get('label') or '').strip() or 'Remote node'
+    node_id = str(raw.get('id') or '').strip() or _slug_node_id(label)
+    taken = existing_ids or set()
+    base_id = node_id
+    suffix = 2
+    while node_id in taken:
+        node_id = f'{base_id}-{suffix}'
+        suffix += 1
+    base_url = str(raw.get('base_url') or '').strip().rstrip('/')
+    if not base_url:
+        raise ValueError('remote node base_url is required')
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+        raise ValueError('remote node base_url must be http(s)://host[:port]')
+    api_token = str(raw.get('api_token') or '').strip()
+    return {
+        'id': node_id,
+        'label': label,
+        'base_url': base_url,
+        'api_token': api_token,
+        'enabled': raw.get('enabled') is not False,
+    }
+
+
+def normalize_remote_nodes(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError('remote_nodes must be a list')
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for index, row in enumerate(raw):
+        try:
+            normalized = normalize_remote_node(row, existing_ids=seen)
+        except ValueError as exc:
+            raise ValueError(f'remote_nodes[{index}]: {exc}') from exc
+        seen.add(normalized['id'])
+        out.append(normalized)
+    return out
+
+
 def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
@@ -247,11 +370,16 @@ def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
                 enabled_indices.append(int(item))
             except (TypeError, ValueError):
                 continue
+    try:
+        max_vram_gb = float(raw.get('max_vram_usage_gb') or 0.0)
+    except (TypeError, ValueError):
+        max_vram_gb = 0.0
     return {
         'gpu_strategy': strategy,
         'enabled_gpu_indices': enabled_indices,
         'limit_offload_dedicated_vram': raw.get('limit_offload_dedicated_vram') is not False,
         'offload_kv_cache_to_gpu': raw.get('offload_kv_cache_to_gpu') is not False,
+        'max_vram_usage_gb': max(0.0, max_vram_gb),
     }
 
 
@@ -368,6 +496,9 @@ def load_config() -> dict[str, Any]:
         data['gateway_port'] = DEFAULT_GATEWAY_PORT
     data['gateway_server_id'] = str(data.get('gateway_server_id') or '').strip()
     data['hardware_settings'] = normalize_hardware_settings(data.get('hardware_settings'))
+    data['download_settings'] = normalize_download_settings(data.get('download_settings'))
+    if 'remote_nodes' in data:
+        data['remote_nodes'] = normalize_remote_nodes(data.get('remote_nodes'))
     if 'ui_layout' in data:
         data['ui_layout'] = normalize_ui_layout(data.get('ui_layout'))
     return validate_config(data)
@@ -442,7 +573,9 @@ def save_config(cfg: dict[str, Any]) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_name = ''
     with _CONFIG_SAVE_LOCK:
-        with _config_file_lock():
+        with _config_file_lock() as locked:
+            if not locked:
+                return
             try:
                 fd, temp_name = tempfile.mkstemp(
                     prefix=f'.{CONFIG_PATH.name}.',
@@ -465,8 +598,9 @@ def save_config(cfg: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _config_file_lock() -> Iterator[None]:
+def _config_file_lock(*, timeout_s: float = 15.0) -> Iterator[bool]:
     lock_path = CONFIG_PATH.with_name(f'{CONFIG_PATH.name}.lock')
+    acquired = False
     with lock_path.open('a+b') as handle:
         handle.seek(0)
         if handle.tell() == 0:
@@ -476,13 +610,30 @@ def _config_file_lock() -> Iterator[None]:
         if os.name == 'nt':
             import msvcrt
 
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            deadline = time.monotonic() + max(0.1, float(timeout_s))
+            while time.monotonic() < deadline:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError:
+                    time.sleep(0.05)
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + max(0.1, float(timeout_s))
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError:
+                    time.sleep(0.05)
+        if not acquired:
+            yield False
+            return
         try:
-            yield
+            yield True
         finally:
             if os.name == 'nt':
                 import msvcrt

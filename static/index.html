@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.28</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.103</span>
           </div>
         </div>
       </div>
@@ -59,9 +59,17 @@
       <div class="df-sidenav-footer">
         <div class="df-downloads-tray" id="dfDownloadsTray">
           <button type="button" class="df-downloads-toggle" id="dfDownloadsToggle" aria-expanded="false" title="Open current and last downloads">
-            <span class="df-downloads-toggle-icon" aria-hidden="true">↓</span>
-            <span class="df-downloads-toggle-label">Downloads</span>
-            <span class="df-downloads-badge hidden" id="dfDownloadsBadge">0</span>
+            <span class="df-downloads-toggle-main">
+              <span class="df-downloads-toggle-icon" aria-hidden="true">↓</span>
+              <span class="df-downloads-toggle-label">Downloads</span>
+              <span class="df-downloads-badge hidden" id="dfDownloadsBadge">0</span>
+            </span>
+            <span class="df-downloads-toggle-progress hidden" id="dfDownloadsToggleProgress" aria-hidden="true">
+              <span class="df-downloads-toggle-progress-bar">
+                <span class="df-downloads-toggle-progress-fill" id="dfDownloadsToggleProgressFill"></span>
+              </span>
+              <span class="df-downloads-toggle-progress-pct" id="dfDownloadsToggleProgressPct"></span>
+            </span>
           </button>
           <div class="df-downloads-panel hidden" id="dfDownloadsPanel" role="region" aria-label="Download queue">
             <div class="df-downloads-panel-head">
@@ -84,6 +92,7 @@
       <div class="lm-sysbar-row">
         <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
         <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+        <button type="button" class="lm-console-url" id="dfConsoleUrl" title="This Console’s web address — same for the browser and the desktop app. Click to copy.">http://127.0.0.1:8900/</button>
         <div class="lm-server-link-badge developer hidden" id="devServerBadge" role="status" title="Developer build — served from the git checkout">Developer</div>
         <div class="lm-server-link-badge online" id="serverLinkBadge" role="status" aria-live="polite" title="Console API connection">Online</div>
         <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Activity status">
@@ -127,6 +136,7 @@ try {
             <aside class="df-chat-sidebar" aria-label="Chat sessions">
               <button type="button" class="lm-btn primary small df-chat-new" id="chatNewBtn">New chat</button>
               <div class="df-chat-session-list" id="chatSessionList"></div>
+              <div class="df-chat-sidebar-resize-handle" id="chatSidebarResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize chat sessions" tabindex="0"></div>
             </aside>
             <div class="df-chat-main">
               <header class="df-chat-head">
@@ -138,18 +148,25 @@ try {
                     <button type="button" class="lm-filter-chip" data-playground-mode="embed" role="tab" aria-selected="false">Embed</button>
                   </div>
                   <div class="df-chat-load-row">
+                    <label class="df-chat-engine-label" for="chatEngineKindPick">Engine</label>
+                    <select class="lm-select" id="chatEngineKindPick" data-load-engine-pick title="Which engine loads the model">
+                      <option value="dflash">DFlash / GGUF</option>
+                      <option value="vllm">vLLM</option>
+                      <option value="transformers">Transformers</option>
+                    </select>
                     <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
                     <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by source" disabled>
                       <option value="">All sources</option>
                     </select>
                     <select id="chatEnginePick" hidden aria-hidden="true"></select>
-                    <label class="df-chat-engine-label" for="chatCheckpointPick">Model</label>
-                    <select class="lm-select df-chat-checkpoint-pick is-loading" id="chatCheckpointPick" title="Choose the model file to load into the selected server" disabled>
-                      <option value="">Loading models…</option>
-                    </select>
+                    <div class="df-chat-model-load">
+                      <label class="df-chat-engine-label" for="chatCheckpointPick">Model</label>
+                      <select class="lm-select df-chat-checkpoint-pick is-loading" id="chatCheckpointPick" data-df-model-filter="1" title="Choose the model file to load into the selected server" disabled>
+                        <option value="">Loading models…</option>
+                      </select>
+                      <button type="button" class="lm-btn primary small df-chat-load-btn" id="chatLoadBtn" disabled>Load</button>
+                    </div>
                   </div>
-                  <span class="df-chat-model-tag" id="chatModelTag" title="Model ready for chat">—</span>
-                  <button type="button" class="lm-btn primary small df-chat-load-btn" id="chatLoadBtn" disabled>Load</button>
                 </div>
               </header>
               <div class="df-chat-body">
@@ -157,8 +174,8 @@ try {
                 <div class="df-chat-welcome" id="chatWelcome">
                   <div class="df-chat-welcome-icon" aria-hidden="true">▷</div>
                   <h2>Playground</h2>
-                  <p>Pick a source and model above, click <strong>Load</strong>, then chat to test prompts and speed.</p>
-                  <p class="lm-hint">Works with DFlash profiles, LM Studio files, and other local GGUF models.</p>
+                  <p>Pick an <strong>Engine</strong> (DFlash, vLLM, or Transformers), then a model, then <strong>Load</strong>.</p>
+                  <p class="lm-hint">Use vLLM for Hugging Face SafeTensors models. GGUF files stay on DFlash.</p>
                 </div>
               </div>
               <footer class="df-chat-composer">
@@ -197,7 +214,7 @@ try {
               <section class="df-speak-panel hidden" id="transcribePanel" aria-label="Speech to text">
                 <div class="df-speak-toolbar">
                   <label class="df-chat-engine-label" for="sttModelPick">STT model</label>
-                  <select class="lm-select" id="sttModelPick" title="Whisper model to load">
+                  <select class="lm-select" id="sttModelPick" data-df-model-filter="1" title="Whisper model to load">
                     <option value="">Loading models…</option>
                   </select>
                   <button type="button" class="lm-btn primary" id="sttLoadBtn">Load</button>
@@ -237,7 +254,7 @@ try {
         <div class="lm-view active" data-view="server">
           <div class="lm-server-upper">
             <div class="lm-server-bar">
-              <div class="lm-server-bar-top">
+              <div class="lm-server-bar-row lm-server-bar-row-power">
                 <div class="lm-server-engine-meta">
                   <button class="lm-icon-btn small lm-engine-settings-btn" type="button" data-action="open-settings-panel" data-settings-panel="gw-engines" title="Engine settings" aria-label="Engine settings">
                     <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -252,23 +269,34 @@ try {
                     <span class="lm-status-label">Engine:</span>
                     <span class="lm-status-running" id="serverStatusText">Stopped</span>
                   </div>
-                </div>
-                <div class="lm-server-bar-center">
-                  <div class="lm-engine-load-group">
-                    <select id="serverSourcePick" class="lm-select lm-engine-source-pick is-loading" title="Filter models by source" disabled>
-                      <option value="">All sources</option>
-                    </select>
-                    <select id="serverModelPick" class="lm-select lm-engine-model-pick is-loading" title="Choose a model to load on the DFlash Console Server" disabled>
-                      <option value="">Model to load</option>
-                    </select>
-                    <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
-                  </div>
-                  <div id="serverLoadMemoryNotice" class="lm-engine-load-notice hidden" role="status" aria-live="polite"></div>
+                  <button class="lm-btn ghost small lm-engine-dropdowns-toggle" type="button" id="serverEngineDropdownsToggle" aria-expanded="false" aria-controls="serverEngineDropdowns" title="Show engine and model pickers">Pickers</button>
                 </div>
                 <div class="lm-server-api">
                   <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
                   <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy API URL">⧉</button>
                 </div>
+              </div>
+              <div class="lm-server-bar-row lm-server-bar-row-load">
+                <div class="lm-engine-load-group" id="serverEngineLoadGroup">
+                  <div class="lm-engine-load-dropdowns" id="serverEngineDropdowns">
+                    <label class="lm-status-label" for="serverEngineKindPick">Engine</label>
+                    <select id="serverEngineKindPick" class="lm-select lm-engine-kind-pick" data-load-engine-pick title="Which engine loads the model">
+                      <option value="dflash">DFlash / GGUF</option>
+                      <option value="vllm">vLLM</option>
+                      <option value="transformers">Transformers</option>
+                    </select>
+                    <select id="serverSourcePick" class="lm-select lm-engine-source-pick is-loading" title="Filter models by source" disabled>
+                      <option value="">All sources</option>
+                    </select>
+                    <select id="serverModelPick" class="lm-select lm-engine-model-pick is-loading" data-df-model-filter="1" title="Choose a model to load on the DFlash Console Server" disabled>
+                      <option value="">Model to load</option>
+                    </select>
+                  </div>
+                  <div class="lm-engine-load-actions">
+                    <button class="lm-btn primary small" type="button" id="serverModelLoadBtn" disabled>Load</button>
+                  </div>
+                </div>
+                <div id="serverLoadMemoryNotice" class="lm-engine-load-notice hidden" role="status" aria-live="polite"></div>
               </div>
             </div>
             <div id="enginePageNotice" class="lm-engine-page-notice hidden" role="status" aria-live="polite">
@@ -283,6 +311,8 @@ try {
             <div class="lm-section-head lm-engine-cards-head">
               <span class="lm-section-label" id="engineCardsSectionLabel">No models loaded on GPU</span>
               <div class="lm-engine-cards-filters">
+                <span class="lm-engine-cards-refresh-meta" id="engineCardsRefreshMeta" aria-live="polite"></span>
+                <button type="button" class="lm-icon-btn tiny" id="engineCardsRefreshBtn" title="Refresh engine cards" aria-label="Refresh engine cards">↻</button>
                 <button type="button" class="lm-filter-chip active" id="engineCardsFilterBtn" title="Show This app, External apps, or all models">All models</button>
               </div>
             </div>
@@ -337,20 +367,28 @@ try {
             <div class="lm-models-toolbar-right">
               <div class="lm-models-filter" role="group" aria-label="Model filter">
                 <button type="button" class="lm-filter-chip active" data-models-filter="all" data-tooltip="Shows every local model, including regular GGUF files and DFlash profiles.">All models</button>
-                <button type="button" class="lm-filter-chip" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash accelerator and ready to run.">DFlash stacks</button>
-                <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash or DSpark draft checkpoint files.">Accelerators</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="dflash" data-tooltip="Shows models paired with a DFlash 1 or DFlash 2 accelerator and ready to run.">DFlash stacks</button>
+                <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash 1, DFlash 2, or DSpark draft checkpoint files.">Accelerators</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="loaded" data-tooltip="Shows only models currently loaded on the GPU.">Loaded</button>
               </div>
+              <label class="lm-models-engine-label" for="modelsEngineKindPick">Load with</label>
+              <select class="lm-select lm-models-engine-pick" id="modelsEngineKindPick" data-load-engine-pick title="Engine used when you click Load on a Hugging Face model">
+                <option value="dflash">DFlash / GGUF</option>
+                <option value="vllm">vLLM</option>
+                <option value="transformers">Transformers</option>
+              </select>
               <select class="lm-select lm-models-type-filter" id="modelsTypeFilter" aria-label="Filter model type" title="Filter the library by model type">
                 <option value="all">All model types</option>
                 <option value="llm">LLM / chat</option>
                 <option value="dflash">DFlash</option>
+                <option value="accelerators">Accelerators</option>
                 <option value="ocr">OCR</option>
                 <option value="translation">Translation</option>
                 <option value="speech-to-text">Speech-to-text</option>
                 <option value="text-to-speech">Text-to-speech</option>
                 <option value="embedding">Embeddings</option>
                 <option value="vision">Vision</option>
+                <option value="projector">Projectors</option>
                 <option value="other">Other</option>
                 <option value="hf-accelerator">HF accelerators available</option>
               </select>
@@ -362,13 +400,13 @@ try {
             <table class="lm-models-table" data-resizable-columns data-resize-key="models-library">
               <thead>
                 <tr>
-                  <th class="lm-col-model" data-col-id="model" data-col-min="180">Model</th>
+                  <th class="lm-col-model" data-col-id="model" data-col-min="220" data-col-default="480">Model</th>
                   <th class="lm-col-meta" data-col-id="family" data-col-min="48">Family</th>
                   <th class="lm-col-meta" data-col-id="scale" data-col-min="40">Scale</th>
                   <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
                   <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
                   <th class="lm-col-meta" data-col-id="updated" data-col-min="64">Updated</th>
-                  <th class="lm-col-action" data-col-id="action" data-col-min="68" data-col-default="72"></th>
+                  <th class="lm-col-action" data-col-id="action" data-col-min="132" data-col-default="200"></th>
                 </tr>
               </thead>
               <tbody id="modelsTableBody">
@@ -415,18 +453,23 @@ try {
           </div>
         </div>
 
-        <!-- Devices -->
+        <!-- Devices / Remote nodes -->
         <div class="lm-view" data-view="devices">
-          <div class="lm-devices-page">
-            <span class="lm-preview-badge">PLANNED</span>
-            <div class="lm-devices-illus">◎ ··· ◎</div>
-            <h1>Remote inference nodes</h1>
-            <p>Connect additional machines running DFlash engines and route workloads across your lab. End-to-end encrypted tunnels are on the roadmap.</p>
-            <div class="lm-devices-actions">
-              <button class="lm-btn primary" type="button" disabled>Add node</button>
-              <button class="lm-btn ghost" type="button" disabled>Documentation</button>
+          <div class="lm-nodes-page">
+            <div class="lm-nodes-header">
+              <div>
+                <h1>Remote inference nodes</h1>
+                <p class="lm-setting-desc">Connect other DFlash Console instances on your network. Check health and send a test chat through each node.</p>
+              </div>
+              <div class="lm-nodes-header-actions">
+                <button class="lm-btn ghost" type="button" id="nodesConnectBtn">Connect securely</button>
+                <button class="lm-btn primary" type="button" id="nodesAddBtn">Add node</button>
+              </div>
             </div>
-            <div class="lm-devices-footer">Remote nodes are not available in this build.</div>
+            <div class="lm-nodes-list" id="nodesList">
+              <p class="lm-setting-desc">Loading nodes…</p>
+            </div>
+            <p class="lm-nodes-footer lm-setting-desc">Use <strong>Connect securely</strong> for Tailscale or SSH tunnel setup, or add a LAN URL manually.</p>
           </div>
         </div>
 
@@ -465,7 +508,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.28</strong>
+                <strong id="dfAboutVersion">v0.3.103</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -568,12 +611,13 @@ try {
             <input type="search" class="lm-search-input lm-search-input-modal" id="hfSearchInput" placeholder="Search Hugging Face models…" autocomplete="off">
             <div class="lm-search-list-header">
               <div class="df-catalog-toolbar">
-                <div class="df-catalog-toolbar-group">
-                  <label class="df-catalog-filter-label" for="hfSearchCategory">Provider</label>
-                  <select class="lm-select small" id="hfSearchCategory" aria-label="Provider">
+                <div class="df-catalog-toolbar-group df-catalog-toolbar-group-category">
+                  <label class="df-catalog-filter-label" for="hfSearchCategory">Category</label>
+                  <select class="lm-select small" id="hfSearchCategory" aria-label="Category">
                     <option value="all" selected>All models</option>
                     <option value="all-gguf">All GGUF</option>
-                    <option value="dflash">DFlash Accelerator</option>
+                    <option value="dflash">DFlash 1 Accelerator</option>
+                    <option value="dflash2">DFlash 2 Accelerator</option>
                     <option value="text-generation">Text generation (GGUF)</option>
                     <option value="text-to-speech">Text-to-speech</option>
                     <option value="automatic-speech-recognition">Speech-to-text</option>
@@ -592,10 +636,16 @@ try {
                     <option value="fits_machine">Fits this PC</option>
                   </select>
                 </div>
-                <div class="df-catalog-toolbar-group df-catalog-toolbar-group-full">
+                <div class="df-catalog-toolbar-group df-catalog-toolbar-group-lab">
                   <label class="df-catalog-filter-label" for="hfSearchCreator">Lab</label>
                   <select class="lm-select small" id="hfSearchCreator" aria-label="Lab">
                     <option value="">All labs</option>
+                  </select>
+                </div>
+                <div class="df-catalog-toolbar-group df-catalog-toolbar-group-uploader">
+                  <label class="df-catalog-filter-label" for="hfSearchUploader">Provider</label>
+                  <select class="lm-select small" id="hfSearchUploader" aria-label="Provider">
+                    <option value="">All providers</option>
                   </select>
                 </div>
               </div>
@@ -618,8 +668,18 @@ try {
         <!-- Settings -->
         <div class="lm-view" data-view="settings">
           <div class="df-settings-shell">
+            <div class="lm-settings-search-bar">
+              <input type="search" class="lm-input lm-settings-search-input" id="settingsSearchInput" placeholder="Search settings…" autocomplete="off" aria-label="Search settings" aria-controls="settingsSearchResults">
+              <div class="lm-settings-search-results hidden" id="settingsSearchResults" role="listbox" aria-label="Settings search results"></div>
+            </div>
             <div class="lm-settings-layout">
           <nav class="lm-settings-nav" id="settingsNav">
+            <div class="lm-settings-nav-section">Install</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="dl-components">
+              Downloads &amp; engines
+              <span class="lm-settings-nav-badge hidden" id="componentsNavBadge" aria-hidden="true"></span>
+            </button>
+
             <div class="lm-settings-nav-section">General</div>
             <button type="button" class="lm-settings-nav-item active" data-settings-panel="app-settings">Desktop app</button>
 
@@ -644,9 +704,58 @@ try {
           </nav>
 
           <div class="lm-settings-content">
+            <div class="lm-settings-panel" data-settings-panel="dl-components">
+              <div class="lm-settings-header"><h2>Downloads &amp; engines</h2></div>
+              <p class="lm-setting-desc" data-settings-search="vllm transformers piper whisper downloads install engine modules">Everything you download after setup: LLM engines (vLLM, Transformers), speech runtimes, and Hugging Face model downloads. Install an engine here, then pick it on the Engines, Playground, or Models tab and load a model.</p>
+
+              <div id="componentsAttentionBanner" class="lm-components-banner hidden" role="status"></div>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Engine modules</strong>
+                  <p class="lm-setting-desc">Extra downloads you install after setup appear first. Speech and GGUF engines bundled with the app are listed below.</p>
+                </div>
+                <div id="componentsHubList" class="lm-components-hub"><p class="lm-setting-desc">Loading components…</p></div>
+              </section>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Active model downloads</strong>
+                  <p class="lm-setting-desc">Hugging Face downloads currently in progress</p>
+                </div>
+                <div id="componentsDownloadsList" class="lm-components-downloads"><p class="lm-setting-desc">None in progress.</p></div>
+                <div class="lm-settings-inline-actions">
+                  <button class="lm-btn ghost small" type="button" data-action="open-catalog-tab">Open Model catalog</button>
+                  <button class="lm-btn ghost small" type="button" data-action="open-downloads-tab">Open Downloads tab</button>
+                </div>
+              </section>
+
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>App updates</strong>
+                  <p class="lm-setting-desc">New Console releases may ship updated speech bundles. Check for signed Windows updates in Desktop app settings.</p>
+                </div>
+                <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="app-settings">Check app updates</button>
+              </section>
+            </div>
+
             <div class="lm-settings-panel active" data-settings-panel="app-settings">
               <div class="lm-settings-header"><h2>Desktop app</h2></div>
               <p class="lm-setting-desc">Tray, startup, and other preferences for the Windows installer. The browser UI ignores these options.</p>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>This Console</strong>
+                  <p class="lm-setting-desc">The browser and the desktop app must show the same address. Both read one config file from this server.</p>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Web address</strong><p class="lm-setting-desc">Open this in a browser to see the same Settings as the desktop app.</p></div>
+                  <code class="lm-settings-path lm-settings-path-inline" id="appSettingsConsoleUrl">—</code>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>Config file</strong><p class="lm-setting-desc">Shared hardware and engine settings</p></div>
+                  <code class="lm-settings-path" id="appSettingsConfigPath">—</code>
+                </div>
+              </section>
               <div class="lm-settings-note hidden" id="appSettingsBrowserNotice">
                 Install the DFlash Console desktop app to control startup, tray, and shell preferences here.
               </div>
@@ -729,6 +838,29 @@ try {
                   <select class="lm-select" id="settingsDownloadLibrary"></select>
                 </div>
               </section>
+              <section class="lm-settings-section" id="settingsDownloadConnectionsSection" data-settings-search="download connections parallel hugging face speed benchmark">
+                <div class="lm-setting-row">
+                  <div>
+                    <strong>Download connections</strong>
+                    <p class="lm-setting-desc">Parallel HTTP ranges for Hugging Face downloads. Files under 32&nbsp;MiB always use one connection.</p>
+                  </div>
+                  <select class="lm-select" id="settingsDownloadConnections" aria-label="Parallel download connections">
+                    <option value="1">1 connection</option>
+                    <option value="2">2 connections</option>
+                    <option value="4" selected>4 connections (default)</option>
+                    <option value="6">6 connections</option>
+                    <option value="8">8 connections</option>
+                  </select>
+                </div>
+                <div class="lm-setting-row lm-setting-row-actions">
+                  <div>
+                    <strong>Test download speed</strong>
+                    <p class="lm-setting-desc">Downloads a small sample from Hugging Face and compares 1, 2, 4, 6, and 8 parallel connections on this PC.</p>
+                  </div>
+                  <button class="lm-btn ghost small" type="button" id="settingsDownloadBenchmarkBtn">Run test</button>
+                </div>
+                <div class="lm-download-benchmark-results hidden" id="settingsDownloadBenchmarkResults" aria-live="polite"></div>
+              </section>
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
                   <strong>Library locations</strong>
@@ -806,13 +938,34 @@ try {
             <div class="lm-settings-panel" data-settings-panel="hw-strategy">
               <div class="lm-settings-header"><h2>Multi-GPU</h2></div>
               <section class="lm-settings-section">
-                <div class="lm-setting-row">
-                  <div><strong>Multi-GPU mode</strong><p class="lm-setting-desc" id="settingsGpuStrategyHint">How weights spread when an engine uses automatic GPU selection.</p></div>
-                  <select class="lm-select" id="settingsGpuStrategy">
-                    <option value="single_largest">Single GPU (largest VRAM)</option>
-                    <option value="split_evenly">Split evenly</option>
-                    <option value="split_by_vram">Split by VRAM (large models only)</option>
-                  </select>
+                <div class="lm-settings-section-head">
+                  <div>
+                    <strong>Multi-GPU mode</strong>
+                    <p class="lm-setting-desc">Used when an engine is set to pick the GPU automatically. A GPU you choose by hand on Engines still wins. Changing this reloads loaded models that need a new layout — you do not restart DFlash Console.</p>
+                  </div>
+                </div>
+                <div class="lm-guardrail-list" id="settingsGpuStrategyList">
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuStrategy" value="single_largest">
+                    <span>
+                      <strong>Single GPU</strong>
+                      <small>Put the whole model on your fastest card with the most free memory (the RTX 4090 here). The other GPU stays free. This is the usual choice — it is almost always faster than splitting.</small>
+                    </span>
+                  </label>
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuStrategy" value="split_evenly">
+                    <span>
+                      <strong>Split evenly</strong>
+                      <small>Cut every model 50/50 across both GPUs. The cards must wait on each other over the PCIe cable, so speed often drops a lot. Use this only if you want both GPUs busy on purpose.</small>
+                    </span>
+                  </label>
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuStrategy" value="split_by_vram">
+                    <span>
+                      <strong>Split by VRAM</strong>
+                      <small>Keep small models on one GPU. For large models (about 27B and up), split layers by memory size — more on the 4090, fewer on the Titan. Only helps when the model cannot fit on one card.</small>
+                    </span>
+                  </label>
                 </div>
                 <div class="lm-setting-row">
                   <div><strong>Dedicated VRAM only</strong><p class="lm-setting-desc">Prefer dedicated GPU memory over shared memory for weights.</p></div>
@@ -959,27 +1112,14 @@ try {
 
             <div class="lm-settings-panel" data-settings-panel="rt-runtimes">
               <div class="lm-settings-header"><h2>Speech &amp; runtimes</h2></div>
-              <p class="lm-setting-desc">Manage non-llama runtimes — Piper TTS, Whisper STT, Transformers (PyTorch) — installed as native bundles under <code>runtimes/</code>. Heavy runtimes are downloaded on demand; the installer stays lightweight.</p>
+              <p class="lm-setting-desc">Device policy, CPU fallback, and memory budget for Piper, Whisper, and other non-llama runtimes. To install vLLM or Transformers, use Downloads &amp; engines.</p>
 
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
-                  <strong>Transformers / PyTorch runtime</strong>
-                  <p class="lm-setting-desc">Required to run Hugging Face SafeTensors models (OPT, Qwen, T5, …). Installs torch + transformers into <code>runtimes/transformers/venv</code>.</p>
+                  <strong>Install engines</strong>
+                  <p class="lm-setting-desc">vLLM and Transformers downloads are in one place — not here.</p>
                 </div>
-                <div class="lm-setting-row">
-                  <div>
-                    <strong>Install status</strong>
-                    <p class="lm-setting-desc" id="transformersRuntimeStatus">Checking…</p>
-                  </div>
-                  <div class="lm-setting-actions">
-                    <select class="lm-select small" id="transformersTorchVariant" title="PyTorch build">
-                      <option value="auto" selected>Auto (GPU if available)</option>
-                      <option value="cuda">CUDA</option>
-                      <option value="cpu">CPU only</option>
-                    </select>
-                    <button class="lm-btn primary small" type="button" id="transformersRuntimeInstall">Install / repair</button>
-                  </div>
-                </div>
+                <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="dl-components">Open Downloads &amp; engines</button>
               </section>
 
               <section class="lm-settings-section">
@@ -1252,18 +1392,18 @@ try {
         <div class="lm-scan-header">
           <div>
             <h2 id="setupWizardTitle">Welcome to DFlash Console</h2>
-            <p class="lm-setting-desc" id="setupWizardSubtitle">We will scan this PC for model folders, then you confirm where to look for GGUF, LM Studio, Whisper, OCR, and other installs.</p>
+            <p class="lm-setting-desc" id="setupWizardSubtitle">We will find model folders on this PC. DFlash / GGUF uses the bundled llama.cpp engine; Transformers and vLLM are optional engines for Hugging Face SafeTensors models.</p>
           </div>
         </div>
         <div class="lm-setup-step active" data-setup-step="welcome">
           <p class="lm-setting-desc">Your Console data lives in your user folder. Models stay where they are — DFlash links to existing folders instead of moving files.</p>
-          <p class="lm-setting-desc">Folders with models already installed (for example LM Studio or DFlash checkpoints) are pre-selected when we find them.</p>
+          <p class="lm-setting-desc">New PCs do not need vLLM, Transformers, or models yet. You can skip folders and install engines in the next step.</p>
           <button class="lm-btn df-btn-accent" type="button" id="setupWizardStart">Scan this PC</button>
         </div>
         <div class="lm-setup-step" data-setup-step="scan">
           <div class="lm-setup-scanning">
             <div class="lm-setup-spinner" aria-hidden="true"></div>
-            <p class="lm-setting-desc">Scanning installed models…</p>
+            <p class="lm-setting-desc lm-setup-scan-status">Scanning installed models…</p>
           </div>
         </div>
         <div class="lm-setup-step" data-setup-step="review">
@@ -1275,7 +1415,26 @@ try {
           <div class="lm-setup-footer">
             <span class="lm-setting-desc" id="setupWizardMeta">—</span>
             <span class="lm-setting-desc" id="setupWizardSummary">—</span>
-            <button class="lm-btn df-btn-accent" type="button" id="setupWizardFinish" disabled>Confirm locations</button>
+            <button class="lm-btn ghost" type="button" id="setupWizardSkipFolders">Skip — I’ll download models later</button>
+            <button class="lm-btn df-btn-accent" type="button" id="setupWizardFinish">Continue</button>
+          </div>
+        </div>
+        <div class="lm-setup-step" data-setup-step="engines">
+          <p class="lm-setting-desc">DFlash / GGUF and llama.cpp are bundled. Transformers is required for Hugging Face models and installs automatically now. vLLM is optional for NVIDIA GPUs.</p>
+          <div class="lm-setup-engine-card lm-setup-engine-card-required">
+            <strong>Transformers</strong>
+            <p class="lm-setting-desc">Required on new PCs. Installs PyTorch and the Transformers runtime so you can load models without extra prompts later.</p>
+            <p class="lm-setting-desc" id="setupTfStatus">Preparing install…</p>
+            <button class="lm-btn primary small" type="button" id="setupTfInstall" hidden>Retry Transformers</button>
+          </div>
+          <div class="lm-setup-engine-card">
+            <strong>vLLM</strong>
+            <p class="lm-setting-desc">Optional. Best for NVIDIA GPUs and large Hugging Face models. On Windows this may use WSL.</p>
+            <p class="lm-setting-desc" id="setupVllmStatus">Checking…</p>
+            <button class="lm-btn ghost small" type="button" id="setupVllmInstall">Install vLLM</button>
+          </div>
+          <div class="lm-setup-footer">
+            <button class="lm-btn df-btn-accent" type="button" id="setupWizardFinishEngines" disabled>Installing Transformers…</button>
           </div>
         </div>
       </div>
@@ -1355,10 +1514,76 @@ try {
     </div>
   </div>
 
+  <div id="nodesContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
+  <div id="downloadsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="modelsContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="hfCatalogContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="serverCardContextMenu" class="lm-context-menu hidden" role="menu" aria-hidden="true"></div>
   <div id="chatSessionContextMenu" class="lm-context-menu df-chat-session-context-menu hidden" role="menu" aria-hidden="true"></div>
+
+  <div class="lm-modal df-chat-load-modal" id="chatLoadModal" data-no-dismiss="1" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-chat-load-dialog" role="dialog" aria-modal="true" aria-labelledby="chatLoadModalTitle">
+        <div class="lm-modal-head">
+          <h2 id="chatLoadModalTitle">Loading model</h2>
+        </div>
+        <div class="lm-modal-scroll">
+          <p id="chatLoadModalText">Reading weights into GPU…</p>
+          <div class="df-chat-load-progress" aria-hidden="true">
+            <div class="df-chat-load-progress-bar" id="chatLoadModalBar"></div>
+          </div>
+          <p class="lm-hint" id="chatLoadModalHint">This can take a minute for large models.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lm-modal" id="nodeConnectModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-node-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="nodeConnectTitle">
+        <div class="lm-modal-head">
+          <h2 id="nodeConnectTitle">Connect securely</h2>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="lm-modal-scroll" id="nodeConnectBody">
+          <p class="lm-setting-desc">Loading connection options…</p>
+        </div>
+        <div class="lm-modal-foot" id="nodeConnectFoot">
+          <button class="lm-btn ghost" type="button" data-action="close-modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="lm-modal" id="nodeAddModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog lm-node-dialog" role="dialog" aria-modal="true" aria-labelledby="nodeAddTitle">
+        <div class="lm-modal-head">
+          <h2 id="nodeAddTitle">Add remote node</h2>
+          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+        </div>
+        <div class="lm-modal-scroll">
+          <label class="lm-field">
+            <span>Name</span>
+            <input class="lm-input" id="nodeAddLabel" type="text" placeholder="Lab GPU box" autocomplete="off">
+          </label>
+          <label class="lm-field">
+            <span>Console URL</span>
+            <input class="lm-input" id="nodeAddUrl" type="url" placeholder="http://192.168.1.50:8900" autocomplete="off">
+            <span class="lm-setting-desc">Root URL of the remote DFlash Console (same port as its UI).</span>
+          </label>
+          <label class="lm-field">
+            <span>API token (optional)</span>
+            <input class="lm-input" id="nodeAddToken" type="password" placeholder="Shared secret" autocomplete="off">
+          </label>
+        </div>
+        <div class="lm-modal-foot">
+          <button class="lm-btn ghost" type="button" data-action="close-modal">Cancel</button>
+          <button class="lm-btn primary" type="button" id="nodeAddSaveBtn">Add node</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="lm-modal" id="modelMetadataModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -1374,8 +1599,29 @@ try {
     </div>
   </div>
 
+  <!-- GPU layout apply progress (reload loaded engines after Multi-GPU changes). -->
+  <div class="lm-modal df-confirm-modal" id="hardwareApplyModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="hardwareApplyTitle">
+        <div class="lm-modal-head df-confirm-head">
+          <div>
+            <div class="df-update-kicker">GPU layout</div>
+            <h2 id="hardwareApplyTitle">Applying GPU layout</h2>
+          </div>
+        </div>
+        <div class="df-confirm-body">
+          <p id="hardwareApplyMessage">Loaded models keep the old GPU layout until they are started again. Reloading them now.</p>
+          <ul class="lm-setting-desc" id="hardwareApplyList"></ul>
+        </div>
+        <div class="lm-modal-footer df-confirm-footer">
+          <button class="lm-btn ghost" type="button" id="hardwareApplyClose" hidden>Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Dark in-app delete confirmation (no native Windows confirm box). -->
-  <div class="lm-modal df-confirm-modal" id="deleteModelConfirmModal" aria-hidden="true">
+  <div class="lm-modal df-confirm-modal" id="deleteModelConfirmModal" aria-hidden="true" data-no-dismiss>
     <div class="lm-modal-backdrop">
       <div class="lm-modal-dialog df-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModelConfirmTitle">
         <div class="lm-modal-head df-confirm-head">
@@ -1383,7 +1629,7 @@ try {
             <div class="df-update-kicker">Delete model</div>
             <h2 id="deleteModelConfirmTitle">Delete model?</h2>
           </div>
-          <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
+          <button class="lm-icon-btn" type="button" id="deleteModelConfirmClose" aria-label="Close">✕</button>
         </div>
         <div class="df-confirm-body">
           <p id="deleteModelConfirmMessage">Are you sure you want to delete this model? This action cannot be undone.</p>
@@ -1437,6 +1683,23 @@ try {
     </div>
   </div>
 
+  <div class="lm-modal df-chat-load-modal" id="importProgressModal" data-no-dismiss="1" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-chat-load-dialog df-import-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="importProgressTitle">
+        <div class="lm-modal-head">
+          <h2 id="importProgressTitle">Importing model</h2>
+        </div>
+        <div class="lm-modal-scroll">
+          <p id="importProgressText">Preparing…</p>
+          <div class="df-chat-load-progress" aria-hidden="true">
+            <div class="df-chat-load-progress-bar" id="importProgressBar"></div>
+          </div>
+          <p class="lm-hint" id="importProgressHint">Large GGUF files can take a minute to copy.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Dark in-app update prompt; keep update decisions inside the DFlash shell. -->
   <div class="lm-modal df-update-modal" id="desktopUpdateModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -1460,6 +1723,56 @@ try {
     </div>
   </div>
 
+  <!-- On-demand engine install (vLLM, Transformers) when loading a model. -->
+  <div class="lm-modal df-confirm-modal" id="componentInstallModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="componentInstallTitle">
+        <div class="lm-modal-head df-confirm-head">
+          <div>
+            <div class="df-update-kicker" id="componentInstallKicker">Install required</div>
+            <h2 id="componentInstallTitle">Engine not installed</h2>
+          </div>
+          <button class="lm-icon-btn" type="button" data-action="close-component-install" aria-label="Close">✕</button>
+        </div>
+        <div class="df-confirm-body" id="componentInstallConfirmBody">
+          <p id="componentInstallMessage">This engine must be installed before you can load models with it.</p>
+          <p class="lm-setting-desc" id="componentInstallSub"></p>
+          <div class="lm-setting-row hidden" id="componentInstallBackendRow">
+            <div><strong>Install path</strong><p class="lm-setting-desc">Windows native first, or WSL on Windows</p></div>
+            <select class="lm-select small" id="componentInstallBackend">
+              <option value="auto" selected>Auto (Windows, then WSL)</option>
+              <option value="native">Windows only</option>
+              <option value="wsl">WSL only</option>
+            </select>
+          </div>
+          <div class="lm-setting-row hidden" id="componentInstallTorchRow">
+            <div><strong>PyTorch build</strong><p class="lm-setting-desc">CUDA if you have an NVIDIA GPU</p></div>
+            <select class="lm-select small" id="componentInstallTorch">
+              <option value="auto" selected>Auto (GPU if available)</option>
+              <option value="cuda">CUDA</option>
+              <option value="cpu">CPU only</option>
+            </select>
+          </div>
+        </div>
+        <div class="df-confirm-body hidden" id="componentInstallProgress" role="status">
+          <div class="df-install-progress" aria-live="polite">
+            <p class="df-catalog-loading-title" id="componentInstallProgressText">Installing…</p>
+            <div class="df-install-progress-track" aria-hidden="true">
+              <div class="df-install-progress-bar" id="componentInstallProgressBar"></div>
+            </div>
+            <p class="df-install-progress-pct" id="componentInstallProgressPct">0%</p>
+            <p class="df-catalog-loading-sub" id="componentInstallProgressSub">This download is several gigabytes and can take 10 minutes or more. The bar moves as packages arrive.</p>
+            <p class="df-install-progress-log" id="componentInstallProgressLog"></p>
+          </div>
+        </div>
+        <div class="lm-modal-footer df-confirm-footer" id="componentInstallFooterConfirm">
+          <button class="lm-btn ghost" type="button" id="componentInstallCancel">Not now</button>
+          <button class="lm-btn primary" type="button" id="componentInstallConfirm">Install &amp; continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
@@ -1467,6 +1780,7 @@ try {
   <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/download-queue.js"></script>
   <script src="/static/js/downloads-live.js"></script>
+  <script src="/static/js/component-install-live.js"></script>
   <script src="/static/js/server-reload-watch.js"></script>
   <script src="/static/js/library-type-options.js"></script>
   <script src="/static/js/library-scan-live.js"></script>
@@ -1480,12 +1794,14 @@ try {
   <script src="/static/js/runtime-recommendations.js"></script>
   <script src="/static/js/log-format.js"></script>
   <script src="/static/js/model-catalog-groups.js"></script>
+  <script src="/static/js/model-card.js"></script>
   <script src="/static/js/server-live.js"></script>
   <script src="/static/js/table-column-resize.js"></script>
   <script src="/static/js/models-live.js"></script>
   <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
   <script src="/static/js/desktop-shell.js"></script>
+  <script src="/static/js/nodes-live.js"></script>
   <script src="/static/js/about-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
   <script src="/static/js/speak-live.js"></script>

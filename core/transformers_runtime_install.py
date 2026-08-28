@@ -6,10 +6,18 @@ import subprocess
 import sys
 import threading
 import time
+import shutil
 from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
+from core.runtime_install_job import (
+    apply_job_progress,
+    job_snapshot,
+    parse_install_line,
+    run_install_process,
+    start_progress_heartbeat,
+)
 
 _BUNDLE = ROOT / 'runtimes' / 'transformers'
 _SCRIPT = ROOT / 'scripts' / 'install-transformers-runtime.ps1'
@@ -36,20 +44,30 @@ def install_status() -> dict[str, Any]:
     return {
         'installed': is_installed(),
         'status': str(job.get('status') or ('installed' if is_installed() else 'idle')),
-        'progress': job.get('progress'),
         'error': str(job.get('error') or ''),
         'started_at': job.get('started_at'),
         'finished_at': job.get('finished_at'),
+        **job_snapshot(job),
         **bundle_paths(),
     }
 
 
 def _install_worker(*, torch_variant: str) -> None:
+    started = time.time()
+    apply_job_progress(
+        _STATE_LOCK,
+        _JOB,
+        progress=4.0,
+        message='Starting Transformers install',
+        status='installing',
+        error='',
+    )
     with _STATE_LOCK:
-        _JOB.update({'status': 'installing', 'progress': 5.0, 'error': '', 'started_at': time.time()})
+        _JOB['started_at'] = started
     if not _SCRIPT.is_file():
+        apply_job_progress(_STATE_LOCK, _JOB, status='error', error='install script missing')
         with _STATE_LOCK:
-            _JOB.update({'status': 'error', 'error': 'install script missing', 'finished_at': time.time()})
+            _JOB['finished_at'] = time.time()
         return
     cmd = [
         'powershell',
@@ -61,33 +79,52 @@ def _install_worker(*, torch_variant: str) -> None:
         '-TorchVariant',
         str(torch_variant or 'auto'),
     ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
+    stop = threading.Event()
+    start_progress_heartbeat(_STATE_LOCK, _JOB, started_at=started, stop=stop)
+    log_tail: list[str] = []
+
+    def on_line(line: str) -> None:
+        progress, message = parse_install_line(line)
+        cleaned = message or line.strip()
+        if cleaned:
+            log_tail.append(cleaned)
+            if len(log_tail) > 40:
+                del log_tail[: len(log_tail) - 40]
+        apply_job_progress(
+            _STATE_LOCK,
+            _JOB,
+            progress=progress,
+            message=message,
+            log_line=cleaned,
         )
+
+    try:
+        code = run_install_process(cmd, cwd=str(ROOT), timeout=3600, on_line=on_line)
     except (OSError, subprocess.SubprocessError) as exc:
+        stop.set()
+        apply_job_progress(_STATE_LOCK, _JOB, status='error', error=str(exc))
         with _STATE_LOCK:
-            _JOB.update({'status': 'error', 'error': str(exc), 'finished_at': time.time()})
+            _JOB['finished_at'] = time.time()
         return
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or '').strip()[:2000]
+    stop.set()
+    if code != 0:
+        detail = '\n'.join(log_tail[-12:]).strip()
+        apply_job_progress(
+            _STATE_LOCK,
+            _JOB,
+            status='error',
+            error=detail or f'install exited with code {code}',
+        )
         with _STATE_LOCK:
-            _JOB.update({
-                'status': 'error',
-                'error': detail or f'install exited with code {proc.returncode}',
-                'finished_at': time.time(),
-            })
+            _JOB['finished_at'] = time.time()
         return
+    ok = is_installed()
     with _STATE_LOCK:
         _JOB.update({
-            'status': 'installed' if is_installed() else 'error',
-            'progress': 100.0,
-            'error': '' if is_installed() else 'install finished but venv is missing',
+            'status': 'installed' if ok else 'error',
+            'progress': 100.0 if ok else float(_JOB.get('progress') or 90.0),
+            'message': 'Transformers is ready' if ok else 'Install finished but venv is missing',
+            'error': '' if ok else 'install finished but venv is missing',
             'finished_at': time.time(),
         })
 
@@ -103,3 +140,45 @@ def start_install(*, torch_variant: str = 'auto') -> dict[str, Any]:
     thread = threading.Thread(target=_install_worker, kwargs={'torch_variant': torch_variant}, daemon=True)
     thread.start()
     return {'success': True, 'started': True, **install_status()}
+
+
+def _stop_runtime() -> None:
+    try:
+        from core.runtimes import get_runtime_adapter
+
+        adapter = get_runtime_adapter('transformers')
+        if adapter is None:
+            return
+        unload = getattr(adapter, 'unload', None)
+        if callable(unload):
+            unload()
+    except Exception:
+        pass
+
+
+def uninstall() -> dict[str, Any]:
+    with _STATE_LOCK:
+        if str(_JOB.get('status') or '') == 'installing':
+            return {'success': False, 'error': 'install in progress', **install_status()}
+    _stop_runtime()
+    removed: list[str] = []
+    venv = _BUNDLE / 'venv'
+    manifest = _BUNDLE / 'manifest.json'
+    try:
+        if venv.is_dir():
+            shutil.rmtree(venv)
+            removed.append('venv')
+        if manifest.is_file():
+            manifest.unlink()
+            removed.append('manifest')
+    except OSError as exc:
+        return {'success': False, 'error': str(exc), **install_status()}
+    with _STATE_LOCK:
+        _JOB.clear()
+    return {
+        'success': True,
+        'runtime_id': 'transformers',
+        'removed': removed,
+        'installed': is_installed(),
+        **install_status(),
+    }

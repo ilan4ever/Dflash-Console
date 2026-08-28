@@ -162,6 +162,20 @@ def _register_plain(cfg: dict[str, Any], target: Path) -> dict[str, Any]:
     return _append_server(cfg, entry)
 
 
+def _registered_target_filenames(cfg: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for server in list_servers(cfg):
+        try:
+            stack = resolve_model_stack(server, cfg=cfg)
+        except Exception:
+            stack = []
+        for row in stack:
+            path_text = str(row.get('path') or '').strip()
+            if path_text:
+                names.add(Path(path_text).name.lower())
+    return names
+
+
 def auto_register_console_models(*, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """Register every unregistered model under the Console's own models root.
 
@@ -181,6 +195,7 @@ def auto_register_console_models(*, cfg: dict[str, Any] | None = None) -> dict[s
 
     root = get_models_root(config)
     registered = _registered_model_paths(config)
+    registered_names = _registered_target_filenames(config)
     results: dict[str, Any] = {
         'success': True,
         'enabled': True,
@@ -198,6 +213,12 @@ def auto_register_console_models(*, cfg: dict[str, Any] | None = None) -> dict[s
         key = _resolved_key(path)
         if key in registered:
             results['already_registered'] += 1
+            continue
+        if path.name.lower() in registered_names:
+            results['skipped'].append({
+                'path': str(path),
+                'reason': 'duplicate filename already registered in Console library',
+            })
             continue
         if path.name.lower().startswith('mmproj'):
             continue
@@ -245,6 +266,7 @@ def auto_register_console_models(*, cfg: dict[str, Any] | None = None) -> dict[s
                 'kind': kind,
             })
             registered.add(key)
+            registered_names.add(path.name.lower())
         except Exception as exc:  # noqa: BLE001 - keep the scan resilient
             results['skipped'].append({'path': str(path), 'reason': str(exc)})
 

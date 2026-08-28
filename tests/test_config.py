@@ -548,6 +548,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(ports[8090], 'server:one')
         self.assertEqual(ports[8910], 'runtime:rt')
 
+    def test_resolve_console_root_honors_env(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw)
+            with patch.dict('os.environ', {'DFLASH_CONSOLE_ROOT': str(target)}, clear=False):
+                self.assertEqual(cfg.resolve_console_root(), target.resolve())
+
+    def test_ensure_console_data_root_seeds_config(self):
+        with tempfile.TemporaryDirectory() as raw:
+            target = Path(raw) / 'data'
+            with patch.dict('os.environ', {'DFLASH_CONSOLE_ROOT': str(target)}, clear=False):
+                root = cfg.ensure_console_data_root()
+                self.assertEqual(root, target.resolve())
+                self.assertTrue((root / 'config.json').is_file())
+                self.assertTrue((root / 'logs').is_dir())
+
+    def test_source_checkout_detects_repo(self):
+        self.assertTrue(cfg.is_source_checkout())
+
 
 if __name__ == '__main__':
     unittest.main()

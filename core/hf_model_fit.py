@@ -8,7 +8,8 @@ import time
 from collections import defaultdict
 from typing import Any
 
-from core.memory_guardrails import _VRAM_HEADROOM_GB, _vram_budget
+from core.gpu_devices import VRAM_HEADROOM_GB
+from core.memory_guardrails import _vram_budget
 
 _SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)(?:[-_])(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$',
@@ -129,13 +130,13 @@ def machine_fit_budget_gb(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             return dict(_budget_cache)
 
     free_gb, total_gb, gpu_count = _vram_budget(config)
-    usable = round(max(0.0, total_gb - _VRAM_HEADROOM_GB - _KV_RESERVE_GB), 2)
+    usable = round(max(0.0, total_gb - VRAM_HEADROOM_GB - _KV_RESERVE_GB), 2)
     result = {
         'vram_total_gb': total_gb,
         'vram_free_gb': free_gb,
         'fits_budget_gb': usable,
         'gpu_count': gpu_count,
-        'headroom_gb': _VRAM_HEADROOM_GB,
+        'headroom_gb': VRAM_HEADROOM_GB,
         'kv_reserve_gb': _KV_RESERVE_GB,
     }
     with _budget_lock:

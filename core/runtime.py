@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,8 +28,11 @@ _ROUTER_UNLOAD_CACHE_TTL = 300.0
 
 from core.gpu_devices import format_gpu_assignment, query_gpu_devices, resolve_role_gpu_launch_params
 from core.load_progress import (
+    clear_vram_progress_baseline,
+    estimate_vram_load_progress,
     is_active_boot,
     is_active_model_load,
+    merge_load_progress,
     model_load_failure_message,
     parse_load_progress,
     read_log_tail,
@@ -191,6 +195,24 @@ def _loading_model_ids(entries: list[dict[str, Any]]) -> list[str]:
     return ids
 
 
+def _loading_progress_from_models(entries: list[dict[str, Any]]) -> float | None:
+    best: float | None = None
+    for entry in entries:
+        if _model_state(entry) != 'loading':
+            continue
+        status = entry.get('status')
+        if not isinstance(status, dict):
+            continue
+        value = status.get('progress')
+        if not isinstance(value, (int, float)):
+            continue
+        pct = float(value) * 100.0 if float(value) <= 1.0 else float(value)
+        pct = min(100.0, max(0.0, pct))
+        if best is None or pct > best:
+            best = pct
+    return best
+
+
 def probe_models(api_url: str) -> list[str]:
     entries = _fetch_models_payload(api_url)
     router = router_unload_available(api_url)
@@ -214,11 +236,16 @@ def _router_unload_cached(api_url: str) -> bool:
     return value
 
 
-def probe_runtime_state(api_url: str) -> tuple[list[str], list[str], bool]:
+def probe_runtime_state(api_url: str) -> tuple[list[str], list[str], bool, float | None]:
     """Single /models fetch for status polling — avoids duplicate HTTP calls."""
     entries = _fetch_models_payload(api_url)
     router = _router_unload_cached(api_url)
-    return _loaded_model_ids(entries, router=router), _loading_model_ids(entries), router
+    return (
+        _loaded_model_ids(entries, router=router),
+        _loading_model_ids(entries),
+        router,
+        _loading_progress_from_models(entries),
+    )
 
 
 def api_base_url(api_url: str) -> str:
@@ -386,6 +413,7 @@ def _stack_detail(entry: dict[str, Any]) -> dict[str, Any]:
         'role': entry.get('role'),
         'label': entry.get('label') or entry.get('role'),
         'name': filename or str(entry.get('id') or ''),
+        'path': path,
         'size_gb': entry.get('size_gb'),
         'source': entry.get('source'),
     }
@@ -408,6 +436,37 @@ def _stack_size_gb(parts: list[dict[str, Any]]) -> float | None:
 
 def _stack_has_dflash_draft(parts: list[dict[str, Any]]) -> bool:
     return any(str(row.get('role') or '').startswith('draft') for row in parts)
+
+
+def _acceleration_metadata(
+    server: dict[str, Any],
+    stack: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe configured speculative decoding without inferring it from names."""
+    parts = [row for row in stack if str(row.get('role') or '') != 'alias']
+    draft_loaded = any(
+        str(row.get('role') or '').startswith('draft')
+        and bool(str(row.get('path') or '').strip())
+        and not row.get('path_missing')
+        for row in parts
+    )
+    profile = str(server.get('profile') or '').strip().lower()
+    acceleration_expected = 'dflash' in profile or 'dspark' in profile
+    if draft_loaded:
+        label = 'DFlash active'
+        mode = 'dflash'
+    elif acceleration_expected:
+        label = 'No draft · autoregressive'
+        mode = 'autoregressive'
+    else:
+        label = ''
+        mode = 'autoregressive'
+    return {
+        'acceleration_mode': mode,
+        'acceleration_expected': acceleration_expected,
+        'acceleration_label': label,
+        'draft_loaded': draft_loaded,
+    }
 
 
 def _fallback_loaded_card(
@@ -689,6 +748,8 @@ def _build_embedding_server_status(
         )
         if listener_vram_gb is not None:
             card['vram_gb'] = listener_vram_gb
+        if entry.get('context_size'):
+            card['context_size'] = int(entry.get('context_size'))
         if card.get('size_gb') is None and model_path is not None:
             try:
                 card['size_gb'] = round(model_path.stat().st_size / (1024 ** 3), 2)
@@ -889,9 +950,9 @@ def build_server_status(
     } if started_launch else launch
     gpu_display = format_gpu_assignment(str(server.get('gpu_device') or 'auto'), display_launch, gpus)
     if running and api_url:
-        loaded_models, loading_models, router_ready = probe_runtime_state(api_url)
+        loaded_models, loading_models, router_ready, api_load_progress = probe_runtime_state(api_url)
     else:
-        loaded_models, loading_models, router_ready = [], [], False
+        loaded_models, loading_models, router_ready, api_load_progress = [], [], False, None
     loaded_models = _normalize_loaded_model_ids(
         loaded_models,
         configured_model_id=configured_model_id,
@@ -908,11 +969,25 @@ def build_server_status(
     status_error = boot_error or load_error
     active_boot = is_active_boot(log_lines)
     active_model_load = is_active_model_load(log_lines)
-    load_progress = parse_load_progress(log_lines) if (active_boot or active_model_load) and not load_error else None
+    log_load_progress = parse_load_progress(log_lines) if (active_boot or active_model_load) and not load_error else None
     alias_ready = bool(loaded_models)
     booting = running and not alias_ready and not status_error and (
         bool(loading_models) or active_model_load or (active_boot and not router_ready)
     )
+    listener_vram_gb = None
+    if running and port > 0:
+        from core.gpu_processes import vram_gb_for_port
+
+        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map)
+    stack = resolve_model_stack(server, cfg=cfg)
+    model_size_gb = _stack_size_gb([row for row in stack if str(row.get('role') or '') != 'alias'])
+    vram_load_progress = estimate_vram_load_progress(
+        server_id,
+        listener_vram_gb,
+        model_size_gb,
+        active=booting,
+    )
+    load_progress = merge_load_progress(log_load_progress, api_load_progress, vram_load_progress)
     started = get_started_launch(port)
     status = 'stopped'
     if status_error:
@@ -929,8 +1004,9 @@ def build_server_status(
         loaded_models = []
         loading_models = []
         booting = False
+    if not booting:
+        clear_vram_progress_baseline(server_id)
 
-    stack = resolve_model_stack(server, cfg=cfg)
     model_stack = _annotate_model_stack(
         stack,
         booting=booting,
@@ -954,11 +1030,10 @@ def build_server_status(
         loaded_models=loaded_models,
         progress=load_progress,
     )
-    listener_vram_gb = None
-    if running and port > 0:
-        from core.gpu_processes import vram_gb_for_port
-
-        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map)
+    acceleration = _acceleration_metadata(server, model_stack)
+    for card in visible_cards:
+        card_acceleration = _acceleration_metadata(server, card.get('stack_details') or model_stack)
+        card.update(card_acceleration)
     from core.gpu_processes import _model_kind_fields
 
     loaded_by = str(server.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
@@ -981,6 +1056,8 @@ def build_server_status(
         )
         if listener_vram_gb is not None:
             card['vram_gb'] = listener_vram_gb
+        if server.get('context_size'):
+            card['context_size'] = int(server.get('context_size'))
         if card.get('size_gb') is None:
             card['size_gb'] = card.get('size_gb') or _stack_size_gb([card])
 
@@ -1013,6 +1090,14 @@ def build_server_status(
 
     active_model_id = loaded_models[0] if loaded_models else ''
 
+    from core.vision_setup import resolve_mmproj_path
+    from core.local_models import _has_vision_support
+
+    mmproj_path = resolve_mmproj_path(server, cfg=cfg)
+    target_path = str(server.get('target_path') or '').strip()
+    target_file = Path(target_path).expanduser() if target_path else None
+    supports_vision = bool(mmproj_path) or _has_vision_support(target_file if target_file and target_file.is_file() else None)
+
     result = {
         **server,
         'model_id': configured_model_id,
@@ -1026,7 +1111,11 @@ def build_server_status(
         'ready_for_chat': bool(loaded_models),
         'model_stack': model_stack,
         'visible_cards': visible_cards,
+        **acceleration,
         'gpu_display': gpu_display,
+        'mmproj_path': mmproj_path or str(server.get('mmproj_path') or '').strip(),
+        'supports_vision': supports_vision,
+        'capabilities': ['vision'] if supports_vision else [],
         'launch': started or {
             'context': server.get('context_size'),
             'main_gpu': launch.get('main_gpu'),
@@ -1214,12 +1303,15 @@ def get_status_payload(
         'stale': False,
     }
     if include_external:
-        payload['external_gpu_loads'] = get_external_gpu_loads(
-            servers=servers,
-            gpus=resolved_gpus,
-            cfg=cfg,
-            fast=_any_proxy_generating(servers),
-        )
+        try:
+            payload['external_gpu_loads'] = get_external_gpu_loads(
+                servers=servers,
+                gpus=resolved_gpus,
+                cfg=cfg,
+                fast=_any_proxy_generating(servers),
+            )
+        except Exception:
+            payload['external_gpu_loads'] = _cached_external_gpu_loads()
     else:
         payload['external_gpu_loads'] = []
     _store_status_payload(payload, include_external=include_external)

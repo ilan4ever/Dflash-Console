@@ -251,7 +251,28 @@
   }
 
   function normalizeModelToken(value) {
-    return String(value || '').replace(/\\/g, '/').trim().toLowerCase();
+    return String(value || '')
+      .replace(/\\/g, '/')
+      .trim()
+      .toLowerCase()
+      .replace(/^library-file:/, '');
+  }
+
+  function modelIdentityTokens(model) {
+    const tokens = [model?.id, model?.model_id, model?.filename, model?.path]
+      .map(normalizeModelToken)
+      .filter(Boolean);
+    const extras = [];
+    for (const token of tokens) {
+      const base = token.split('/').pop();
+      if (base && base !== token) extras.push(base);
+    }
+    return [...new Set([...tokens, ...extras])];
+  }
+
+  function tokenSetsOverlap(left, right) {
+    return left.some((token) => right.includes(token)
+      || right.some((other) => other.endsWith(token) || token.endsWith(other)));
   }
 
   function modelMatchesLoadedServer(model, server) {
@@ -260,9 +281,9 @@
       ...(Array.isArray(server.loaded_models) ? server.loaded_models : []),
       server.active_model_id,
     ].map(normalizeModelToken).filter(Boolean);
-    const modelTokens = [model.id, model.model_id, model.filename, model.path]
-      .map(normalizeModelToken).filter(Boolean);
-    if (loadedTokens.some((token) => modelTokens.includes(token))) return true;
+    const modelTokens = modelIdentityTokens(model);
+    const live = server.status === 'loaded' || loadedTokens.length > 0;
+    if (live && tokenSetsOverlap(loadedTokens, modelTokens)) return true;
 
     // Older llama-server builds do not expose loaded_models consistently, but
     // the configured profile checkpoint is still unambiguous.
@@ -273,15 +294,34 @@
       server.model_catalog?.target_path,
       server.target_path,
     ].map(normalizeModelToken).filter(Boolean);
-    return server.status === 'loaded'
-      && configuredTokens.some((token) => modelTokens.includes(token));
+    return live
+      && tokenSetsOverlap(configuredTokens, modelTokens);
+  }
+
+  function findLoadedServerForModel(model) {
+    if (!model) return null;
+    const preferred = String(model.server_id || model.bound_profile_id || '').trim();
+    if (preferred) {
+      const server = serverById.get(preferred);
+      if (modelMatchesLoadedServer(model, server)) return server;
+    }
+    for (const server of serverById.values()) {
+      if (modelMatchesLoadedServer(model, server)) return server;
+    }
+    return null;
   }
 
   function modelLoadState(model) {
-    const server = serverById.get(String(model?.server_id || ''));
-    if (!server) return 'idle';
-    if (server.status === 'booting' || server.booting || server.load_progress != null) return 'loading';
-    return modelMatchesLoadedServer(model, server) ? 'loaded' : 'idle';
+    const loaded = findLoadedServerForModel(model);
+    if (loaded) {
+      if (loaded.status === 'booting' || loaded.booting || loaded.load_progress != null) return 'loading';
+      return 'loaded';
+    }
+    const preferred = serverById.get(String(model?.server_id || model?.bound_profile_id || ''));
+    if (preferred && (preferred.status === 'booting' || preferred.booting || preferred.load_progress != null)) {
+      return 'loading';
+    }
+    return 'idle';
   }
 
   function isChatModel(model) {
@@ -296,16 +336,17 @@
   // DFlash stack (dflash_stack / draft_path / "dflash" capability) is a chat
   // model and must stay visible.
   function isAcceleratorOnlyModel(model) {
+    if (window.DFlashModelGroups?.isAcceleratorOnlyModel) {
+      return window.DFlashModelGroups.isAcceleratorOnlyModel(model);
+    }
     if (!model) return false;
-    const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
-    const isDflashTarget = !!(
-      model.dflash_stack
-      || model.draft_path
-      || capabilities.includes('dflash')
-    );
-    if (isDflashTarget) return false;
-    const name = `${model.filename || ''} ${model.label || ''}`.toLowerCase();
-    return !!name && !name.startsWith('mmproj') && /dflash|dspark/.test(name);
+    if (model.dflash_stack || model.draft_path) return false;
+    if (model.plain_llm || model.is_adhoc || String(model.role || '') === 'loaded-model') return false;
+    const size = Number(model.size_gb);
+    if (Number.isFinite(size) && size > 8) return false;
+    if (model.accelerator_only === true) return true;
+    const name = `${model.filename || ''} ${model.path || ''}`.toLowerCase();
+    return /\.gguf/i.test(name) && /dflash|dspark|(?:^|[^a-z])draft(?:[^a-z]|$)/.test(name);
   }
 
   function appendLoadedChatModels(models) {
@@ -349,10 +390,17 @@
   }
 
   function checkpointLabel(model) {
-    const parts = [model.label || model.filename || model.id || 'Model'];
+    if (window.DFlashModelGroups?.defaultOptionLabel) {
+      return window.DFlashModelGroups.defaultOptionLabel(model);
+    }
+    const label = model.label || model.filename || model.id || 'Model';
+    const filename = String(model.filename || '').trim();
+    const title = filename && label && filename.localeCompare(label, undefined, { sensitivity: 'base' }) !== 0
+      ? `${label} — ${filename}`
+      : label;
+    const parts = [title];
     if (model.quant && model.quant !== '—') parts.push(model.quant);
     if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
-    if (model.loadable && model.port) parts.push(`:${model.port}`);
     return parts.join(' · ');
   }
 
@@ -444,11 +492,17 @@
   }
 
   function selectedCatalogModel() {
-    return catalogModels.find((m) => modelCatalogKey(m) === selectedCheckpointKey) || null;
+    const loadable = playgroundLoadableModels();
+    return loadable.find((m) => modelCatalogKey(m) === selectedCheckpointKey)
+      || catalogModels.find((m) => (
+        modelCatalogKey(m) === selectedCheckpointKey && !m.library_file
+      ))
+      || null;
   }
 
   function syncEngineToModel(model = selectedCatalogModel()) {
-    const serverId = String(model?.server_id || '').trim();
+    const live = findLoadedServerForModel(model);
+    const serverId = String(live?.id || model?.server_id || model?.bound_profile_id || '').trim();
     if (!serverId || !serverById.has(serverId)) return '';
     const enginePick = document.getElementById('chatEnginePick');
     if (enginePick) enginePick.value = serverId;
@@ -483,6 +537,20 @@
       }
     }
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }
+
+  function playgroundLoadableModels() {
+    const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+    const hfFilter = window.DFlashModelsLive?.isHfEngineModel;
+    const loadableModels = catalogModels.filter((model) => (
+      window.DFlashModelGroups?.isPickerVisibleModel?.(model, catalogModels)
+      ?? !isAcceleratorOnlyModel(model)
+    ));
+    return window.DFlashModelGroups?.modelsForLoadPicker?.(
+      loadableModels,
+      loadEngine,
+      hfFilter,
+    ) || loadableModels;
   }
 
   function scheduleCatalogRetry() {
@@ -537,9 +605,13 @@
     }
 
     try {
+      const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+      const modelsPath = (loadEngine === 'vllm' || loadEngine === 'transformers')
+        ? '/api/models'
+        : '/api/models?quick=1';
       const [profilesData, quickModelsData] = await Promise.all([
         api('/api/servers/profiles', { timeoutMs: 15000 }),
-        api('/api/models?quick=1', { timeoutMs: 15000 }),
+        api(modelsPath, { timeoutMs: loadEngine === 'vllm' || loadEngine === 'transformers' ? 60000 : 15000 }),
       ]);
       if (gen !== catalogRefreshGen) return;
       applyServersData(profilesData);
@@ -586,7 +658,6 @@
         renderEnginePicker();
         renderCheckpointPicker();
       }
-      renderModelTag();
       updateComposerState();
       window.DFlashStatusFeed?.refresh?.();
     } catch {
@@ -608,7 +679,6 @@
       catalogModels = appendLoadedChatModels(catalogModels);
       renderEnginePicker();
       renderCheckpointPicker();
-      renderModelTag();
       updateComposerState();
     } catch {
       /* keep last known state */
@@ -642,15 +712,17 @@
 
     const prev = pick.value || selectedCheckpointKey || '';
     const sourceKey = String(selectedSource || '').trim().toLowerCase();
-    const sig = `${catalogSignature(catalogModels)}:${catalogStateSignature(catalogModels)}:${sourceKey}`;
-    if (pick.dataset.catalogSig === sig && prev && catalogModels.some((m) => modelCatalogKey(m) === prev)) {
+    const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+    const sig = `${catalogSignature(catalogModels)}:${catalogStateSignature(catalogModels)}:${sourceKey}:${loadEngine}`;
+    if (pick.dataset.catalogSig === sig && prev && playgroundLoadableModels().some((m) => modelCatalogKey(m) === prev)) {
       return;
     }
     pick.dataset.catalogSig = sig;
 
+    const engineModels = playgroundLoadableModels();
     const visibleModels = selectedSource
-      ? catalogModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
-      : catalogModels;
+      ? engineModels.filter((m) => String(window.DFlashModelGroups?.sourceIdFor?.(m) || '').trim().toLowerCase() === sourceKey)
+      : engineModels;
     if (window.DFlashModelGroups?.renderGroupedSelectOptions) {
       pick.innerHTML = window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
         catalogKey: modelCatalogKey,
@@ -665,7 +737,9 @@
         selectedKey: prev,
       });
     } else {
-      const sorted = visibleModels.slice().sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
+      const sorted = window.DFlashModelGroups?.sortModels?.(visibleModels, {
+        optionLabel: (model) => checkpointLabel(model),
+      }) || visibleModels.slice().sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
       const options = ['<option value="">Select model…</option>'];
       for (const model of sorted) {
         const key = modelCatalogKey(model);
@@ -680,33 +754,15 @@
     }
     window.DFlashSelectTheme?.syncSelect?.(pick);
 
-    if (prev && catalogModels.some((m) => modelCatalogKey(m) === prev)) {
+    if (prev && visibleModels.some((m) => modelCatalogKey(m) === prev)) {
       pick.value = prev;
       selectedCheckpointKey = prev;
-    } else if (selectedCheckpointKey && catalogModels.some((m) => modelCatalogKey(m) === selectedCheckpointKey)) {
+    } else if (selectedCheckpointKey && visibleModels.some((m) => modelCatalogKey(m) === selectedCheckpointKey)) {
       pick.value = selectedCheckpointKey;
-    } else if (catalogModels[0] && !prev) {
-      selectedCheckpointKey = modelCatalogKey(catalogModels[0]);
+    } else if (visibleModels[0]) {
+      selectedCheckpointKey = modelCatalogKey(visibleModels[0]);
       pick.value = selectedCheckpointKey;
       persist();
-    }
-  }
-
-  function renderModelTag() {
-    const tag = document.getElementById('chatModelTag');
-    if (!tag) return;
-    const ready = chatReadyEngine();
-    if (ready) {
-      tag.textContent = `Ready · ${ready.modelId}`;
-      tag.classList.add('is-ready');
-    } else {
-      const server = serverById.get(document.getElementById('chatEnginePick')?.value || '');
-      if (server && (server.status === 'booting' || server.booting)) {
-        tag.textContent = 'Loading…';
-      } else {
-        tag.textContent = 'Not loaded';
-      }
-      tag.classList.remove('is-ready');
     }
   }
 
@@ -714,20 +770,21 @@
     renderEnginePicker();
     renderSourcePicker();
     renderCheckpointPicker();
-    renderModelTag();
   }
 
   function renderSourcePicker() {
     const pick = document.getElementById('chatSourcePick');
     if (!pick) return;
+    const loadableModels = playgroundLoadableModels();
     const options = ['<option value="">All sources</option>'];
-    for (const [id, label] of sourceOptionsFor(catalogModels)) {
+    for (const [id, label] of sourceOptionsFor(loadableModels)) {
       options.push(`<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`);
     }
     pick.innerHTML = options.join('');
     pick.value = selectedSource;
     pick.disabled = false;
     pick.classList.remove('is-loading');
+    window.DFlashSelectTheme?.syncSelect?.(pick);
   }
 
   function syncSessionEngine() {
@@ -951,7 +1008,9 @@
     const selectedModel = selectedCatalogModel();
     const selectedState = modelLoadState(selectedModel);
     const ready = !!engine && !sending && !loadingCheckpoint;
-    const canLoad = !!document.getElementById('chatEnginePick')?.value
+    const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+    const hfEngine = loadEngine === 'vllm' || loadEngine === 'transformers';
+    const canLoad = (hfEngine || !!document.getElementById('chatEnginePick')?.value)
       && !!selectedModel
       && !sending
       && !loadingCheckpoint;
@@ -965,12 +1024,15 @@
     }
     if (sendBtn) sendBtn.disabled = !ready || (!String(input?.value || '').trim() && !pendingAttachments.length);
     if (loadBtn) {
-      loadBtn.textContent = selectedState === 'loaded'
-        ? 'Use in chat'
+      const usingChat = selectedState === 'loaded';
+      loadBtn.textContent = usingChat
+        ? 'Using chat'
         : selectedState === 'loading' || loadingCheckpoint
           ? 'Loading…'
           : 'Load';
       loadBtn.disabled = !canLoad || selectedState === 'loading';
+      loadBtn.classList.toggle('is-ready', usingChat);
+      loadBtn.title = usingChat ? 'This model is loaded — you can chat now' : 'Load the selected model';
     }
     if (clearBtn) clearBtn.disabled = !session?.messages?.length;
     if (attachBtn) {
@@ -979,7 +1041,6 @@
         ? 'Attach images or text files'
         : 'Text files only — this model does not support image input';
     }
-    renderModelTag();
   }
 
   function formatInferenceStats(stats, { live = false } = {}) {
@@ -1079,11 +1140,142 @@
     renderAll();
   }
 
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function showLoadModal(label, detail) {
+    const modal = document.getElementById('chatLoadModal');
+    const title = document.getElementById('chatLoadModalTitle');
+    const text = document.getElementById('chatLoadModalText');
+    const hint = document.getElementById('chatLoadModalHint');
+    const bar = document.getElementById('chatLoadModalBar');
+    if (!modal) return;
+    if (title) title.textContent = 'Loading model';
+    if (text) text.textContent = `Loading ${label || 'model'}…`;
+    if (hint) hint.textContent = detail || 'Reading weights into GPU. Large models can take a minute.';
+    if (bar) bar.style.width = '8%';
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+  }
+
+  function updateLoadModal(server) {
+    const text = document.getElementById('chatLoadModalText');
+    const hint = document.getElementById('chatLoadModalHint');
+    const bar = document.getElementById('chatLoadModalBar');
+    const progress = Number(server?.load_progress);
+    const label = server?.label || server?.active_model_id || 'model';
+    if (Number.isFinite(progress) && progress > 0) {
+      if (bar) bar.style.width = `${Math.min(100, Math.max(8, progress))}%`;
+      if (text) text.textContent = `Loading ${label}… ${Math.round(progress)}%`;
+      if (hint) hint.textContent = progress >= 90
+        ? 'Finishing GPU setup…'
+        : 'Reading weights into GPU.';
+      return;
+    }
+    if (text && !text.textContent.includes('%')) {
+      text.textContent = `Loading ${label}…`;
+    }
+  }
+
+  function hideLoadModal() {
+    const modal = document.getElementById('chatLoadModal');
+    if (!modal) return;
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+    if (!document.querySelector('.lm-modal.open')) {
+      document.body.classList.remove('modal-open');
+    }
+  }
+
+  function setupChatSidebarResize() {
+    const sidebar = document.querySelector('.df-chat-sidebar');
+    const handle = document.getElementById('chatSidebarResizeHandle');
+    if (!sidebar || !handle) return;
+    const widthMin = 140;
+    const widthMax = 420;
+    const applyStored = () => {
+      const stored = window.DFlashUiLayout?.getNumber?.('chat_sidebar_width');
+      if (Number.isFinite(stored) && stored >= widthMin) {
+        const width = clamp(stored, widthMin, widthMax);
+        sidebar.style.width = `${width}px`;
+        sidebar.style.flexBasis = `${width}px`;
+      }
+    };
+    applyStored();
+    window.DFlashUiLayout?.whenReady?.().then(applyStored);
+
+    const startResize = (clientX) => {
+      const startX = clientX;
+      const startW = sidebar.getBoundingClientRect().width;
+      document.body.classList.add('lm-resizing-chat-sidebar');
+      const onMove = (ev) => {
+        const x = ev.clientX ?? ev.touches?.[0]?.clientX;
+        if (x == null) return;
+        if (ev.cancelable) ev.preventDefault();
+        const next = clamp(startW + (x - startX), widthMin, widthMax);
+        sidebar.style.width = `${next}px`;
+        sidebar.style.flexBasis = `${next}px`;
+      };
+      const onUp = () => {
+        document.body.classList.remove('lm-resizing-chat-sidebar');
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        window.removeEventListener('touchmove', onMove);
+        window.removeEventListener('touchend', onUp);
+        const width = Math.round(sidebar.getBoundingClientRect().width);
+        window.DFlashUiLayout?.setNumber?.('chat_sidebar_width', width);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      window.addEventListener('touchmove', onMove, { passive: false });
+      window.addEventListener('touchend', onUp);
+    };
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startResize(e.clientX);
+    });
+    handle.addEventListener('touchstart', (e) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      e.preventDefault();
+      startResize(touch.clientX);
+    }, { passive: false });
+  }
+
   async function loadCheckpoint() {
     const model = selectedCatalogModel();
-    const serverId = syncEngineToModel(model)
-      || document.getElementById('chatEnginePick')?.value;
-    if (!serverId || !model) {
+    const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+    if ((loadEngine === 'vllm' || loadEngine === 'transformers') && model) {
+      if (!window.DFlashModelsLive?.isHfEngineModel?.(model)) {
+        toast('vLLM and Transformers need a Hugging Face model folder, not a GGUF file.', false);
+        return;
+      }
+      loadingCheckpoint = true;
+      const label = model.label || model.id;
+      showLoadModal(label, `Loading on ${loadEngine === 'vllm' ? 'vLLM' : 'Transformers'}…`);
+      setStatus(`Loading ${label} on ${loadEngine === 'vllm' ? 'vLLM' : 'Transformers'}…`);
+      renderAll();
+      try {
+        await window.DFlashModelsLive.loadModel({ ...model, runtime_id: loadEngine });
+        await refreshStatus({ fresh: true });
+        const pick = document.getElementById('chatEnginePick');
+        if (pick) pick.value = loadEngine;
+        syncSessionEngine();
+        setStatus('Model loaded — you can chat now');
+      } catch (err) {
+        toast(err.message || 'Load failed', false);
+        setStatus('');
+      } finally {
+        loadingCheckpoint = false;
+        hideLoadModal();
+        renderAll();
+      }
+      return;
+    }
+    if (!model) {
       toast('Select an engine and model', false);
       return;
     }
@@ -1092,20 +1284,38 @@
       return;
     }
 
-    if (modelLoadState(model) === 'loaded') {
+    const live = findLoadedServerForModel(model);
+    if (live) {
+      const pick = document.getElementById('chatEnginePick');
+      if (pick) pick.value = live.id;
       syncSessionEngine();
-      setStatus('Model ready — you can chat now');
+      setStatus('Model already loaded — you can chat now');
       updateComposerState();
       document.getElementById('chatInput')?.focus();
+      toast('Model already loaded');
+      return;
+    }
+
+    const serverId = syncEngineToModel(model)
+      || document.getElementById('chatEnginePick')?.value;
+    if (!serverId) {
+      toast('Select an engine and model', false);
       return;
     }
 
     loadingCheckpoint = true;
-    setStatus(`Loading ${model.label || model.id}…`);
+    const label = model.label || model.id;
+    showLoadModal(label);
+    setStatus(`Loading ${label}…`);
     renderAll();
     try {
-      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model);
-      if (!loaded) throw new Error('Model load did not complete. Check the engine log and try again.');
+      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model, {
+        onProgress: (server) => updateLoadModal(server || { label }),
+      });
+      if (!loaded) {
+        setStatus('');
+        return;
+      }
       await refreshStatus({ fresh: true });
       syncSessionEngine();
       setStatus('Model loaded — you can chat now');
@@ -1114,6 +1324,7 @@
       setStatus('');
     } finally {
       loadingCheckpoint = false;
+      hideLoadModal();
       renderAll();
     }
   }
@@ -1368,9 +1579,20 @@
     });
     document.getElementById('chatSendBtn')?.addEventListener('click', () => void sendMessage());
     document.getElementById('chatLoadBtn')?.addEventListener('click', () => void loadCheckpoint());
+    setupChatSidebarResize();
 
     document.getElementById('chatEnginePick')?.addEventListener('change', () => {
       syncSessionEngine();
+      updateComposerState();
+    });
+    window.addEventListener('dflash-load-engine', () => {
+      selectedCheckpointKey = '';
+      const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
+      if (loadEngine === 'vllm' || loadEngine === 'transformers') {
+        void refreshCatalog({ force: true, shouldRender: true });
+      } else {
+        renderCheckpointPicker();
+      }
       updateComposerState();
     });
     document.getElementById('chatSourcePick')?.addEventListener('change', (e) => {

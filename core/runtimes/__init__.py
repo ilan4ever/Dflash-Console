@@ -29,6 +29,7 @@ from core.runtimes.base import (
     RUNTIME_STT,
     RUNTIME_TRANSFORMERS,
     RUNTIME_VIBEVOICE,
+    RUNTIME_VLLM,
     RuntimeAdapter,
 )
 from core.runtimes.faster_whisper import FasterWhisperRuntimeAdapter
@@ -46,6 +47,7 @@ from core.runtimes.registry import (
 from core.runtimes.stt import SttRuntimeAdapter
 from core.runtimes.transformers_hf import TransformersRuntimeAdapter
 from core.runtimes.vibevoice import VibeVoiceRuntimeAdapter
+from core.runtimes.vllm import VllmRuntimeAdapter
 
 # The no-op adapter is always available so the UI can list installed adapters
 # before any real inference runtime ships.
@@ -65,6 +67,9 @@ register_runtime_adapter(VibeVoiceRuntimeAdapter())
 # Transformers / PyTorch LLM adapter (server mode). Registered always; reports
 # installed=false until the venv under runtimes/transformers/ exists.
 register_runtime_adapter(TransformersRuntimeAdapter())
+# vLLM OpenAI server adapter (server mode). Registered always; reports
+# installed=false until the on-demand bundle under runtimes/vllm/ exists.
+register_runtime_adapter(VllmRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -83,6 +88,7 @@ __all__ = [
     RUNTIME_STT,
     RUNTIME_TRANSFORMERS,
     RUNTIME_VIBEVOICE,
+    RUNTIME_VLLM,
     RuntimeAdapter,
     'NoopRuntimeAdapter',
     'PiperRuntimeAdapter',
@@ -90,6 +96,7 @@ __all__ = [
     'FasterWhisperRuntimeAdapter',
     'TransformersRuntimeAdapter',
     'VibeVoiceRuntimeAdapter',
+    'VllmRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',
     'register_runtime_adapter',

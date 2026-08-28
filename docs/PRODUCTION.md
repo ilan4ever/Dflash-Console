@@ -38,13 +38,14 @@ developer checkout to a trusted production deployment.
 ## 5. Packaging (Windows)
 
 - [ ] Electron installer stays thin; `runtimes/` + weights live in the data root
-- [ ] Version bumped via `scripts/bump-version.ps1` (package, lockfile, About, README)
+- [ ] Version bumped via `scripts/bump-version.ps1` (package, lockfile, About, README, `pyproject.toml`)
 - [ ] Windows artifacts signed before public distribution
 - [ ] Update manifest + update endpoint deployed (see `automatic-updates.md`)
+- [ ] PyPI package `dflash-console` published when a token is available (`scripts/publish-pypi.ps1`)
 
 ## 6. Docs
 
-- [ ] `README.md` capability matrix current
+- [ ] `README.md` capability matrix current (pip install, full `dflash` command map)
 - [ ] `docs/ARCHITECTURE.md`, `docs/USER-GUIDE.md`, `docs/CLI.md`, `docs/ui/*` current
-- [ ] In-app Documentation includes User guide and Terminal CLI
+- [ ] In-app Documentation includes User guide and Terminal CLI (`embed`, `delete`, `nodes`, `settings`)
 - [ ] Docs deployed to the public site via `scripts/deploy-docs.ps1 -IncludeReadme`

@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+# Per-read socket timeout while draining an upstream SSE stream. Each readline()
+# must complete within this window; long gaps without tokens (e.g. reasoning)
+# need Console-side SSE keep-alives so clients do not think the hop died.
+DEFAULT_CHAT_UPSTREAM_READ_TIMEOUT = 3600.0
+SSE_KEEPALIVE_COMMENT = b': keep-alive\n\n'
 
 
 _ACTIVE_UPSTREAM_LOCK = threading.Lock()
@@ -66,6 +75,111 @@ def estimate_request_context(body: dict[str, Any], *, default_output: int = 4096
     return input_tokens + max_tokens + 512
 
 
+def chat_upstream_read_timeout(cfg: dict[str, Any] | None = None) -> float:
+    """Return the upstream per-read timeout (seconds) for chat SSE streams."""
+    if isinstance(cfg, dict):
+        try:
+            value = float(cfg.get('chat_upstream_read_timeout_seconds') or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    return DEFAULT_CHAT_UPSTREAM_READ_TIMEOUT
+
+
+def prepare_upstream_stream_body(raw: bytes) -> bytes:
+    """Force OpenAI-style streaming + usage on every upstream chat request."""
+    body = parse_chat_body(raw)
+    body['stream'] = True
+    stream_options = body.get('stream_options')
+    if not isinstance(stream_options, dict):
+        stream_options = {}
+    stream_options.setdefault('include_usage', True)
+    body['stream_options'] = stream_options
+    return json.dumps(body).encode('utf-8')
+
+
+def sse_stream_complete(raw: bytes) -> bool:
+    """Return True when an SSE buffer ends with an explicit ``[DONE]`` marker."""
+    if not raw:
+        return False
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        payload = line[5:].strip() if line.startswith('data:') else line.strip()
+        if payload == '[DONE]':
+            return True
+    return False
+
+
+def sse_had_content_delta(raw: bytes) -> bool:
+    """Return True when any SSE chunk carried a non-empty assistant content delta."""
+    if not raw:
+        return False
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        if not line.startswith('data:'):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == '[DONE]':
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        choices = parsed.get('choices')
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        delta = choice.get('delta') if isinstance(choice.get('delta'), dict) else {}
+        message = choice.get('message') if isinstance(choice.get('message'), dict) else {}
+        piece = delta.get('content')
+        if piece is None:
+            piece = message.get('content')
+        if isinstance(piece, str) and piece:
+            return True
+    return False
+
+
+def empty_completion_guard(payload: dict[str, Any]) -> str | None:
+    """Return a client-facing error when a completion has no assistant content."""
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get('choices')
+    if not isinstance(choices, list) or not choices:
+        return None
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get('message') if isinstance(choice.get('message'), dict) else {}
+    content = message.get('content')
+    if isinstance(content, str) and content.strip():
+        return None
+    reasoning = message.get('reasoning_content')
+    finish_reason = str(choice.get('finish_reason') or '')
+    if isinstance(reasoning, str) and reasoning.strip():
+        if finish_reason == 'length':
+            return (
+                'Model stopped at max_tokens while still in reasoning; '
+                'increase max_tokens or send X-Disable-Reasoning: 0 to receive reasoning_content.'
+            )
+        return (
+            'Model produced reasoning only; increase max_tokens or send '
+            'X-Disable-Reasoning: 0 to receive reasoning_content.'
+        )
+    if finish_reason == 'length':
+        return 'Model stopped at max_tokens before emitting assistant content.'
+    return None
+
+
+def sse_stream_error_chunk(message: str) -> bytes:
+    """Emit a terminal OpenAI-style SSE error frame."""
+    body = json.dumps({
+        'error': {
+            'message': message,
+            'type': 'stream_error',
+        },
+    })
+    return f'data: {body}\n\n'.encode('utf-8') + b'data: [DONE]\n\n'
+
+
 def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
     """Rewrite a chat request body's reasoning controls for the target model.
 
@@ -95,6 +209,65 @@ def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
         return json.dumps(body).encode('utf-8')
     except (TypeError, ValueError):
         return raw
+
+
+def aggregate_sse_to_completion(raw: bytes) -> dict[str, Any]:
+    """Fold an OpenAI-style SSE chat stream into one completion JSON object."""
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
+    model: str | None = None
+    if not raw:
+        return {'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'stop'}]}
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        if not line.startswith('data:'):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == '[DONE]':
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if isinstance(parsed.get('model'), str):
+            model = parsed['model']
+        choices = parsed.get('choices')
+        if isinstance(choices, list) and choices:
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            delta = choice.get('delta') if isinstance(choice.get('delta'), dict) else {}
+            message = choice.get('message') if isinstance(choice.get('message'), dict) else {}
+            piece = delta.get('content')
+            if piece is None:
+                piece = message.get('content')
+            if isinstance(piece, str) and piece:
+                content_parts.append(piece)
+            reasoning = delta.get('reasoning_content')
+            if reasoning is None:
+                reasoning = message.get('reasoning_content')
+            if isinstance(reasoning, str) and reasoning:
+                reasoning_parts.append(reasoning)
+            if isinstance(choice.get('finish_reason'), str):
+                finish_reason = choice['finish_reason']
+        if isinstance(parsed.get('usage'), dict):
+            usage = parsed['usage']
+    message: dict[str, Any] = {'role': 'assistant', 'content': ''.join(content_parts)}
+    if reasoning_parts:
+        message['reasoning_content'] = ''.join(reasoning_parts)
+    result: dict[str, Any] = {
+        'choices': [{
+            'index': 0,
+            'message': message,
+            'finish_reason': finish_reason or 'stop',
+        }],
+    }
+    if model:
+        result['model'] = model
+    if usage:
+        result['usage'] = usage
+    return result
 
 
 def extract_stream_completion_stats(raw: bytes) -> dict[str, Any] | None:
@@ -151,19 +324,90 @@ def is_reasoning_only_chunk(chunk: bytes) -> bool:
     return False
 
 
-def upstream_chat_completion(url: str, raw: bytes, *, content_type: str = 'application/json') -> tuple[int, dict[str, Any]]:
-    upstream = urllib.request.Request(url, data=raw, method='POST', headers={'Content-Type': content_type})
+def _upstream_stream_raw(
+    url: str,
+    raw: bytes,
+    *,
+    content_type: str = 'application/json',
+    extra_headers: dict[str, str] | None = None,
+    server_id: str = '',
+    read_timeout: float | None = None,
+) -> tuple[int, bytes | dict[str, Any]]:
+    """Open a cancellable upstream SSE chat stream and return the raw SSE bytes."""
+    upstream_raw = prepare_upstream_stream_body(raw)
+    timeout = float(read_timeout or DEFAULT_CHAT_UPSTREAM_READ_TIMEOUT)
+
+    headers = {'Content-Type': content_type}
+    if extra_headers:
+        headers.update({str(k): str(v) for k, v in extra_headers.items()})
+    upstream = urllib.request.Request(url, data=upstream_raw, method='POST', headers=headers)
+    stream = UpstreamChatStream(server_id)
+    _register_upstream(stream)
+    buffer = bytearray()
     try:
-        with urllib.request.urlopen(upstream, timeout=600) as resp:
-            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
-            return resp.status, payload if isinstance(payload, dict) else {}
+        resp = urllib.request.urlopen(upstream, timeout=timeout)
+        stream.bind_response(resp)
+        if stream.cancel.is_set():
+            return 499, {'error': 'inference cancelled'}
+        try:
+            while not stream.cancel.is_set():
+                line = resp.readline()
+                if not line:
+                    break
+                buffer.extend(line)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        if stream.cancel.is_set():
+            return 499, {'error': 'inference cancelled'}
+        payload = bytes(buffer)
+        if payload and not sse_stream_complete(payload):
+            logger.warning(
+                'upstream chat stream closed before [DONE] server=%s url=%s bytes=%d',
+                server_id or '-',
+                url,
+                len(payload),
+            )
+        return int(getattr(resp, 'status', 200) or 200), payload
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode('utf-8', errors='replace')
         try:
-            body = json.loads(detail)
+            body_json = json.loads(detail)
         except json.JSONDecodeError:
-            body = {'error': detail or str(exc)}
-        return exc.code, body if isinstance(body, dict) else {'error': str(body)}
+            body_json = {'error': detail or str(exc)}
+        return exc.code, body_json if isinstance(body_json, dict) else {'error': str(body_json)}
+    finally:
+        stream.close()
+        _unregister_upstream(stream)
+
+
+def upstream_chat_completion(
+    url: str,
+    raw: bytes,
+    *,
+    content_type: str = 'application/json',
+    extra_headers: dict[str, str] | None = None,
+    server_id: str = '',
+) -> tuple[int, dict[str, Any]]:
+    """Blocking chat/completions proxy — upstream always streams so Stop closes llama."""
+    status, payload = _upstream_stream_raw(
+        url,
+        raw,
+        content_type=content_type,
+        extra_headers=extra_headers,
+        server_id=server_id,
+    )
+    if isinstance(payload, dict):
+        return status, payload
+    if status >= 400:
+        try:
+            parsed = json.loads(payload.decode('utf-8', errors='replace') or '{}')
+        except json.JSONDecodeError:
+            parsed = {'error': payload.decode('utf-8', errors='replace')[:500]}
+        return status, parsed if isinstance(parsed, dict) else {'error': str(parsed)}
+    return status, aggregate_sse_to_completion(payload)
 
 
 class UpstreamChatStream:
@@ -251,6 +495,8 @@ def _stream_worker(
     loop: asyncio.AbstractEventLoop,
     out_q: asyncio.Queue,
     stream: UpstreamChatStream,
+    extra_headers: dict[str, str] | None = None,
+    read_timeout: float | None = None,
 ) -> None:
     def _put(item: tuple[str, Any]) -> None:
         if stream.cancel.is_set():
@@ -261,24 +507,45 @@ def _stream_worker(
             # Event loop already closed after client disconnect.
             pass
 
+    saw_done = False
+    timeout = float(read_timeout or DEFAULT_CHAT_UPSTREAM_READ_TIMEOUT)
     try:
-        upstream = urllib.request.Request(url, data=raw, method='POST', headers={'Content-Type': content_type})
-        with urllib.request.urlopen(upstream, timeout=600) as resp:
+        headers = {'Content-Type': content_type}
+        if extra_headers:
+            headers.update({str(k): str(v) for k, v in extra_headers.items()})
+        upstream_raw = prepare_upstream_stream_body(raw)
+        upstream = urllib.request.Request(url, data=upstream_raw, method='POST', headers=headers)
+        with urllib.request.urlopen(upstream, timeout=timeout) as resp:
             stream.bind_response(resp)
             if stream.cancel.is_set():
-                _put(('done', None))
+                _put(('done', True))
                 return
             _put(('media_type', resp.headers.get('Content-Type', 'text/event-stream')))
             while not stream.cancel.is_set():
                 line = resp.readline()
                 if not line:
                     break
+                payload = line.strip()
+                if payload == b'data: [DONE]' or payload.endswith(b'[DONE]'):
+                    saw_done = True
                 _put(('chunk', line))
-        _put(('done', None))
+        if not saw_done and not stream.cancel.is_set():
+            logger.warning(
+                'upstream chat stream worker closed before [DONE] server=%s url=%s',
+                stream.server_id or '-',
+                url,
+            )
+        _put(('done', saw_done))
     except Exception as exc:
         if stream.cancel.is_set():
-            _put(('done', None))
+            _put(('done', True))
         else:
+            logger.warning(
+                'upstream chat stream worker failed server=%s url=%s: %s',
+                stream.server_id or '-',
+                url,
+                exc,
+            )
             _put(('error', exc))
     finally:
         stream.close()
@@ -291,6 +558,8 @@ async def open_upstream_chat_stream(
     *,
     content_type: str = 'application/json',
     server_id: str = '',
+    extra_headers: dict[str, str] | None = None,
+    read_timeout: float | None = None,
 ) -> tuple[str, AsyncIterator[bytes], Callable[[], None]]:
     """Open upstream SSE. Returns (media_type, chunks, close_fn).
 
@@ -303,7 +572,7 @@ async def open_upstream_chat_stream(
     _register_upstream(stream)
     threading.Thread(
         target=_stream_worker,
-        args=(url, raw, content_type, loop, out_q, stream),
+        args=(url, raw, content_type, loop, out_q, stream, extra_headers, read_timeout),
         daemon=True,
         name='chat-proxy-stream',
     ).start()
@@ -336,9 +605,12 @@ async def open_upstream_chat_stream(
                 if event_kind == 'chunk':
                     yield event_payload
                 elif event_kind == 'done':
+                    if event_payload is False:
+                        yield sse_stream_error_chunk('Upstream chat stream closed before completion')
                     break
                 elif event_kind == 'error':
-                    raise event_payload
+                    yield sse_stream_error_chunk(str(event_payload))
+                    break
         finally:
             stream.close()
             _unregister_upstream(stream)

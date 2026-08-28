@@ -10,11 +10,11 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from core.config import ROOT
+from core.config import PACKAGE_ROOT, ROOT, ensure_console_data_root, is_embedding_server, is_source_checkout
 from dflash_cli import __version__
 from dflash_cli.http import ConsoleClient, ConsoleError
 from dflash_cli.render import emit, emit_json, fail, format_table, yes_no
-from dflash_cli.resolve import pick_engine, pick_model, pick_runtime
+from dflash_cli.resolve import pick_engine, pick_model, pick_node, pick_runtime
 
 BIN_DIR = ROOT / 'bin'
 
@@ -112,6 +112,10 @@ def _list_source_filters(args: Any) -> list[str]:
         sources.append('lmstudio')
     if getattr(args, 'dflash', False):
         sources.append('dflash')
+    if getattr(args, 'vllm', False):
+        sources.append('vllm')
+    if getattr(args, 'transformers', False):
+        sources.append('transformers')
     extra = str(getattr(args, 'source', '') or '').strip()
     if extra and extra.lower() != 'all':
         sources.append(extra)
@@ -489,19 +493,156 @@ def cmd_open(client: ConsoleClient) -> int:
     return 0
 
 
+def cmd_embed(client: ConsoleClient, args: Any) -> int:
+    texts = [part for part in (args.text or []) if str(part).strip()]
+    if args.file:
+        path = Path(str(args.file)).expanduser()
+        if not path.is_file():
+            return fail(f'File not found: {path}')
+        texts.extend(
+            line.strip()
+            for line in path.read_text(encoding='utf-8').splitlines()
+            if line.strip()
+        )
+    if not texts:
+        return fail('Usage: dflash embed [-e ENGINE] "text"   or   dflash embed --file notes.txt')
+    engine = _pick_embed_engine(client, getattr(args, 'engine', None))
+    result = client.post(
+        f"/api/servers/{engine['id']}/v1/embeddings",
+        {'input': texts if len(texts) > 1 else texts[0], 'model': engine.get('id')},
+        timeout=max(30.0, float(args.timeout or 30)),
+    )
+    if args.json:
+        return emit_json(result)
+    rows = result.get('data') or []
+    emit(f"{engine.get('label') or engine.get('id')}  {len(rows)} vector{'s' if len(rows) != 1 else ''}")
+    for row in rows:
+        vector = row.get('embedding') or []
+        preview = ', '.join(f'{float(value):.4f}' for value in vector[:8])
+        extra = f' … +{len(vector) - 8}' if len(vector) > 8 else ''
+        emit(f"  [{row.get('index', 0)}] dim {len(vector)}  [{preview}{extra}]")
+    return 0
+
+
+def cmd_delete(client: ConsoleClient, args: Any) -> int:
+    model = pick_model(args.name, client.get('/api/models').get('models') or [])
+    label = str(model.get('label') or model.get('id') or args.name)
+    if not args.yes:
+        answer = input(f'Delete {label} from disk? [y/N] ').strip().lower()
+        if answer not in {'y', 'yes'}:
+            emit('Canceled')
+            return 0
+    query = {
+        'path': model.get('path') or '',
+        'source': model.get('source') or '',
+        'model_id': model.get('id') or '',
+        'server_id': model.get('server_id') or '',
+    }
+    result = client.delete('/api/models/file', **query)
+    if args.json:
+        return emit_json(result)
+    emit(f"Deleted {result.get('model') or label}")
+    return 0
+
+
+def cmd_nodes(client: ConsoleClient, args: Any) -> int:
+    action = str(args.action or 'list').lower()
+    if action == 'add':
+        url = str(args.target or '').strip()
+        if not url:
+            return fail('Usage: dflash nodes add http://host:8900 [--label NAME] [--token TOKEN]')
+        label = str(args.label or '').strip() or _label_from_url(url)
+        body: dict[str, Any] = {'label': label, 'base_url': url, 'enabled': True}
+        if args.token:
+            body['api_token'] = args.token
+        result = client.post('/api/nodes', body)
+        if args.json:
+            return emit_json(result)
+        node = result.get('node') or {}
+        emit(f"Added {node.get('label') or label}  {node.get('base_url') or url}")
+        return 0
+    if action in {'remove', 'rm'}:
+        name = str(args.target or args.label or '').strip()
+        if not name:
+            return fail('Usage: dflash nodes remove <name>')
+        node = pick_node(name, client.get('/api/nodes').get('nodes') or [])
+        result = client.delete(f"/api/nodes/{node['id']}")
+        if args.json:
+            return emit_json(result)
+        emit(f"Removed {node.get('label') or node.get('id')}")
+        return 0
+    if action == 'health':
+        name = str(args.target or '').strip()
+        if not name:
+            return fail('Usage: dflash nodes health <name>')
+        node = pick_node(name, client.get('/api/nodes').get('nodes') or [])
+        result = client.post(f"/api/nodes/{node['id']}/health")
+        if args.json:
+            return emit_json(result)
+        status = 'online' if result.get('online') else (result.get('status') or 'offline')
+        emit(f"{node.get('label') or node.get('id')}  {status}  {result.get('remote_version') or ''}".rstrip())
+        return 0
+    data = client.get('/api/nodes', fresh=1 if args.fresh else 0)
+    if args.json:
+        return emit_json(data)
+    rows = [{
+        'name': row.get('label') or row.get('id'),
+        'id': row.get('id') or '',
+        'url': row.get('base_url') or '',
+        'status': row.get('status') or ('online' if row.get('online') else 'offline'),
+        'version': row.get('remote_version') or '-',
+    } for row in data.get('nodes') or []]
+    if not rows:
+        emit('No remote nodes. Add one with:  dflash nodes add http://host:8900 --label NAME')
+        return 0
+    emit(format_table(rows, [
+        ('NAME', 'name'), ('ID', 'id'), ('URL', 'url'),
+        ('STATUS', 'status'), ('VERSION', 'version'),
+    ]))
+    return 0
+
+
+def cmd_settings(client: ConsoleClient, args: Any) -> int:
+    if args.set_pair:
+        key, value = _parse_setting_pair(args.set_pair)
+        body = _settings_patch_body(key, value)
+        result = client.request('PUT', '/api/config', body=body)
+        if args.json:
+            return emit_json(result)
+        emit(f'Set {key} = {value}')
+        return 0
+    data = client.get('/api/config')
+    config = data.get('config') or {}
+    if args.get_key:
+        value = _settings_get(config, args.get_key)
+        if args.json:
+            return emit_json({'key': args.get_key, 'value': value})
+        emit(_format_setting(value))
+        return 0
+    summary = _settings_summary(config)
+    if args.json:
+        return emit_json(summary)
+    for key, value in summary.items():
+        emit(f'{key:24} {_format_setting(value)}')
+    return 0
+
+
 def cmd_serve(args: Any) -> int:
     port = int(args.port or 8900)
     if _already_up(port):
         emit(f'Already running at http://127.0.0.1:{port}')
         return 0
+    root = ensure_console_data_root()
     env = os.environ.copy()
-    env['PYTHONPATH'] = str(ROOT)
+    env['PYTHONPATH'] = str(PACKAGE_ROOT) + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    env['DFLASH_CONSOLE_ROOT'] = str(root)
     if not env.get('DFLASH_ROOT'):
-        env['DFLASH_ROOT'] = str(ROOT)
+        env['DFLASH_ROOT'] = str(root)
     emit(f'Starting DFlash Console on http://127.0.0.1:{port}')
+    emit(f'data    {root}')
     return subprocess.call(
         [sys.executable, '-m', 'uvicorn', 'api.app:app', '--host', '127.0.0.1', '--port', str(port)],
-        cwd=str(ROOT),
+        cwd=str(root),
         env=env,
     )
 
@@ -527,6 +668,138 @@ def cmd_install(*, as_json: bool) -> int:
     if profile:
         emit(f'Also registered in your PowerShell profile: {profile}')
     return 0
+
+
+_SETTINGS_KEYS = {
+    'ui_port',
+    'gateway_port',
+    'gateway_server_id',
+    'dflash_root',
+    'models_root',
+    'cpu_slow_warn',
+    'runtime_stop_others_on_load',
+    'context_auto_grow',
+    'context_max',
+}
+_SETTINGS_NESTED = {
+    'download_settings': {'parallel_connections'},
+    'hardware_settings': {
+        'gpu_strategy',
+        'max_vram_usage_gb',
+        'limit_offload_dedicated_vram',
+        'offload_kv_cache_to_gpu',
+    },
+}
+
+
+def _pick_embed_engine(client: ConsoleClient, name: str | None) -> dict[str, Any]:
+    engines = _engines(client, all_servers=True)
+    embedders = [row for row in engines if is_embedding_server(row)]
+    if name:
+        return pick_engine(name, embedders or engines)
+    if embedders:
+        return embedders[0]
+    raise ValueError('No embedding engine. Load one with: dflash load <embed-model>')
+
+
+def _label_from_url(url: str) -> str:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url if '://' in url else f'http://{url}')
+    host = parsed.hostname or url
+    port = parsed.port
+    return f'{host}:{port}' if port else host
+
+
+def _parse_setting_pair(raw: str) -> tuple[str, Any]:
+    if '=' not in str(raw):
+        raise ValueError('Usage: dflash settings --set KEY=VALUE')
+    key, text = str(raw).split('=', 1)
+    key = key.strip()
+    if not key:
+        raise ValueError('Usage: dflash settings --set KEY=VALUE')
+    return key, _parse_setting_value(text.strip())
+
+
+def _parse_setting_value(text: str) -> Any:
+    lowered = text.lower()
+    if lowered in {'true', 'yes', 'on'}:
+        return True
+    if lowered in {'false', 'no', 'off'}:
+        return False
+    try:
+        if text.startswith(('+', '-')) or text.isdigit():
+            return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _settings_patch_body(key: str, value: Any) -> dict[str, Any]:
+    if key in _SETTINGS_KEYS:
+        return {key: value}
+    if '.' in key:
+        parent, child = key.split('.', 1)
+        allowed = _SETTINGS_NESTED.get(parent)
+        if allowed and child in allowed:
+            return {parent: {child: value}}
+    raise ValueError(
+        f'Unknown setting {key!r}. Try: ui_port, gateway_port, dflash_root, '
+        'download_settings.parallel_connections'
+    )
+
+
+def _settings_get(config: dict[str, Any], key: str) -> Any:
+    if _is_secret_setting(key):
+        return '(hidden)'
+    if '.' in key:
+        parent, child = key.split('.', 1)
+        row = config.get(parent)
+        if isinstance(row, dict):
+            return row.get(child)
+        return None
+    return config.get(key)
+
+
+def _settings_summary(config: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in (
+        'ui_port',
+        'gateway_port',
+        'dflash_root',
+        'models_root',
+        'gateway_server_id',
+        'context_auto_grow',
+        'context_max',
+    ):
+        if key in config:
+            summary[key] = config.get(key)
+    hardware = config.get('hardware_settings') or {}
+    if isinstance(hardware, dict) and hardware.get('gpu_strategy'):
+        summary['hardware_settings.gpu_strategy'] = hardware.get('gpu_strategy')
+    downloads = config.get('download_settings') or {}
+    if isinstance(downloads, dict) and downloads.get('parallel_connections') is not None:
+        summary['download_settings.parallel_connections'] = downloads.get('parallel_connections')
+    summary['engines'] = len(config.get('servers') or [])
+    summary['nodes'] = len(config.get('remote_nodes') or [])
+    summary['libraries'] = len(config.get('model_libraries') or [])
+    return summary
+
+
+def _format_setting(value: Any) -> str:
+    if value is None:
+        return '-'
+    if isinstance(value, bool):
+        return 'yes' if value else 'no'
+    return str(value)
+
+
+def _is_secret_setting(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in ('token', 'password', 'secret'))
 
 
 def _engines(client: ConsoleClient, *, all_servers: bool = False) -> list[dict[str, Any]]:
@@ -584,26 +857,42 @@ def _already_up(port: int) -> bool:
 
 
 def _cmd_shim_text() -> str:
-    root = str(ROOT.resolve())
+    if is_source_checkout():
+        root = str(ROOT.resolve())
+        return (
+            '@echo off\r\n'
+            'setlocal\r\n'
+            f'set "ROOT={root}"\r\n'
+            'set "PYTHONPATH=%ROOT%"\r\n'
+            'if not defined DFLASH_ROOT set "DFLASH_ROOT=%ROOT%"\r\n'
+            'python -m dflash_cli %*\r\n'
+            'exit /b %ERRORLEVEL%\r\n'
+        )
     return (
         '@echo off\r\n'
         'setlocal\r\n'
-        f'set "ROOT={root}"\r\n'
-        'set "PYTHONPATH=%ROOT%"\r\n'
-        'if not defined DFLASH_ROOT set "DFLASH_ROOT=%ROOT%"\r\n'
-        'python -m dflash_cli %*\r\n'
+        f'"{sys.executable}" -m dflash_cli %*\r\n'
         'exit /b %ERRORLEVEL%\r\n'
     )
 
 
 def _profile_function_text() -> str:
-    root = str(ROOT.resolve()).replace("'", "''")
+    if is_source_checkout():
+        root = str(ROOT.resolve()).replace("'", "''")
+        return (
+            '# BEGIN DFLASH CLI\n'
+            'function dflash {\n'
+            '    $env:PYTHONPATH = \'' + root + '\'\n'
+            '    if (-not $env:DFLASH_ROOT) { $env:DFLASH_ROOT = \'' + root + '\' }\n'
+            '    & python -m dflash_cli @args\n'
+            '}\n'
+            '# END DFLASH CLI\n'
+        )
+    exe = str(Path(sys.executable).resolve()).replace("'", "''")
     return (
         '# BEGIN DFLASH CLI\n'
         'function dflash {\n'
-        '    $env:PYTHONPATH = \'' + root + '\'\n'
-        '    if (-not $env:DFLASH_ROOT) { $env:DFLASH_ROOT = \'' + root + '\' }\n'
-        '    & python -m dflash_cli @args\n'
+        f"    & '{exe}' -m dflash_cli @args\n"
         '}\n'
         '# END DFLASH CLI\n'
     )
@@ -690,13 +979,15 @@ Getting started
   dflash chat "hello"        Send a prompt
 
 Models
-  dflash list [--ollama] [--lmstudio] [--dflash] [--source NAME]
+  dflash list [--ollama] [--lmstudio] [--dflash] [--vllm] [--transformers] [--source NAME]
   dflash list [--loaded] [--type llm] [--filter qwen] [--refresh]
   dflash show <name>         Details for one model
   dflash load <name>         Load a model
   dflash unload <name>       Unload an engine or runtime
   dflash start <engine>      Start an engine
   dflash stop <engine>       Stop an engine
+  dflash delete <name>       Remove a local model from disk
+  dflash embed "text"        Turn text into vectors
 
 Catalog
   dflash search <query>      Search Hugging Face
@@ -709,6 +1000,8 @@ Machine
   dflash stats               CPU, RAM, VRAM
   dflash report              Full status
   dflash logs [--engine NAME] [--errors]
+  dflash nodes               Remote Consoles
+  dflash settings            Show or change settings
 
 Server
   dflash serve               Start the Console if it is not running

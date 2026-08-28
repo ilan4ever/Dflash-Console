@@ -15,5 +15,15 @@ if ($Port -gt 0) {
     $args += @('-Port', [string]$Port)
 }
 
-& pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $serverScript @args
+$command = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+$shell = if ($command) { $command.Source } else { $null }
+if (-not $shell) {
+    $command = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    $shell = if ($command) { $command.Source } else { $null }
+}
+if (-not $shell) {
+    throw 'PowerShell is required to restart the Console server.'
+}
+
+& $shell -NoProfile -ExecutionPolicy Bypass -File $serverScript @args
 exit $LASTEXITCODE

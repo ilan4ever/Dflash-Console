@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import secrets
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -34,11 +38,17 @@ _SPLIT_SHARD_RE = re.compile(
 
 _DESKTOP_NOISE = re.compile(
     r'(?:^|[\\/])(?:explorer|ShellHost|SearchHost|StartMenuExperienceHost|LockApp|'
-    r'ShellExperienceHost|CrossDeviceResume|TextInputHost|ApplicationFrameHost|'
-    r'SystemSettings|msedge|msedgewebview2|Discord|ShareX|Telegram|WhatsApp|'
-    r'PhoneExperienceHost|DCv2|Cursor)\.exe$',
+    r'ShellExperienceHost|ShellInfrastructureHost|CrossDeviceResume|TextInputHost|'
+    r'ApplicationFrameHost|SystemSettings|msedge|msedgewebview2|Discord|ShareX|'
+    r'Telegram|WhatsApp(?:\.Root)?|dwm|PhoneExperienceHost|DCv2|Cursor|Code|'
+    r'Code - Insiders|notepad(?:\+\+)?|sublime_text|winword|excel|powerpnt|outlook|'
+    r'spotify|vlc|VoiceRecorder|SoundRecorder|WindowsSoundRecorder|'
+    r'CHXSmartScreen|SmartScreen|TabTip|Dashboard|HWiNFO(?:64)?|ctfmon|Widgets|'
+    r'GameBar|RuntimeBroker|sihost|taskhostw|fontdrvhost|SecurityHealthSystray)\.exe$',
     re.I,
 )
+
+_ELECTRON_UI = re.compile(r'electron\.exe$', re.I)
 
 _ML_PROCESS = re.compile(
     r'llama-server|ollama|whisper|piper|kobold|comfyui|text-generation-webui|'
@@ -49,9 +59,24 @@ _ML_PROCESS = re.compile(
 _ML_CMD = re.compile(
     r'\.gguf|\.bin|\.onnx|whisper|faster.whisper|llama-server|ollama|piper|'
     r'transcribe|speech|cuda|torch|transformers|llama\.cpp|speak_stt|'
-    r'\\stt\\|/stt/|onevoice',
+    r'\\stt\\|/stt/|onevoice|scraper\.py|transcribe_module|voice_core|speaker_diagnosis',
     re.I,
 )
+
+_AI_TOOLS_PATH = re.compile(r'\\ai-tools\\|/ai-tools/|ai-tools\.exe', re.I)
+
+_AI_TOOLS_FUNC_LABELS: dict[str, str] = {
+    'speaker_name_transcription': 'Speaker names',
+    'transcribe_audio': 'Transcription',
+    'force_english_transcription': 'English transcription',
+    'generate_srt': 'SRT generation',
+    'refine_srt': 'SRT refinement',
+    'recognize_faces': 'Face recognition',
+    'label_faces': 'Face labeling',
+    'ocr': 'OCR',
+    'generate_summary_long': 'Long summary',
+    'generate_summary_short': 'Short summary',
+}
 
 _APP_SERVER_CMD = re.compile(
     r'(?:\bserver\.py\b|\bapp\.py\b|\bweb_ui\.py\b|\bui_backend\b|'
@@ -70,7 +95,15 @@ def _infer_model_kind(
     role: str = '',
 ) -> tuple[str, str]:
     hay = f'{model_name} {model_path} {command_line} {process_name} {role}'.lower()
-    if 'speak_stt' in hay or 'whisper' in hay or 'small.en' in hay or 'faster-whisper' in hay:
+    if (
+        'speak_stt' in hay
+        or 'whisper' in hay
+        or 'small.en' in hay
+        or 'faster-whisper' in hay
+        or 'transcribe_module' in hay
+        or 'voice_core' in hay
+        or 'speaker_diagnosis' in hay
+    ):
         return 'stt', 'Speech-to-text'
     if '--embedding' in hay or 'nomic-embed' in hay or 'embed-text' in hay or '/embed/' in hay.replace('\\', '/'):
         return 'embedding', 'Embedding'
@@ -125,6 +158,49 @@ def _parse_vram_mib(raw: str) -> float | None:
         return None
 
 
+def _is_ui_only_process(*, process_name: str, command_line: str) -> bool:
+    hay = f'{process_name} {command_line}'
+    if _APP_SERVER_CMD.search(hay):
+        return True
+    if _is_lmstudio_chromium_helper(command_line):
+        return True
+    if _ELECTRON_UI.search(process_name) and not (_ML_PROCESS.search(hay) or _ML_CMD.search(hay)):
+        return True
+    if re.search(r'Microsoft\.WindowsSoundRecorder|WindowsApps\\[^\\]*SoundRecorder', hay, re.I):
+        return True
+    return False
+
+
+def _generic_workload_title(
+    *,
+    process_name: str,
+    command_line: str,
+    parent_name: str,
+    app_label: str,
+) -> str:
+    cmd = str(command_line or '')
+    module_match = re.search(r'(?:^|\s)-m\s+([\w.]+)', cmd)
+    if module_match:
+        return module_match.group(1).split('.')[-1]
+    script_match = re.search(r'([\w.-]+\.py)\b', cmd, re.I)
+    if script_match:
+        script = script_match.group(1)
+        if script.lower() not in {'server.py', 'app.py', 'web_ui.py', 'stt_manager.py'}:
+            return script[:-3] if script.lower().endswith('.py') else script
+    hinted_name, _ = _model_hint_from_cmdline(cmd)
+    if hinted_name and hinted_name.lower() not in {'python', 'pythonw'}:
+        return hinted_name
+    parent_clean = str(parent_name or '').strip()
+    if parent_clean.lower().endswith('.exe'):
+        parent_clean = parent_clean[:-4]
+    proc_clean = str(process_name or '').replace('\\', '/').split('/')[-1]
+    if proc_clean.lower().endswith('.exe'):
+        proc_clean = proc_clean[:-4]
+    if proc_clean.lower() in {'python', 'pythonw'} and parent_clean:
+        return f'{parent_clean} worker'
+    return str(app_label or proc_clean or 'GPU workload').strip()
+
+
 def _should_track_process(
     *,
     process_name: str,
@@ -135,22 +211,15 @@ def _should_track_process(
 ) -> bool:
     if _DESKTOP_NOISE.search(process_name):
         return False
-    if vram_mib is not None and vram_mib >= _MIN_VRAM_MIB:
-        return True
-    hay = f'{process_name} {command_line} {parent_name}'
-    if _ML_PROCESS.search(hay):
-        return True
-    if _ML_CMD.search(hay):
-        return True
-    if app_source in {'lmstudio', 'ollama', 'whisper', 'piper', 'comfyui', 'kobold', 'textgen', 'llama-server'}:
-        return True
-    if app_source == 'onevoice':
-        if vram_mib is not None and vram_mib >= _MIN_VRAM_MIB:
-            return True
-        if _ML_PROCESS.search(hay) or _ML_CMD.search(hay):
-            return True
+    if _is_ui_only_process(process_name=process_name, command_line=command_line):
         return False
-    return False
+    # nvidia-smi listed this PID under compute apps — show it unless filtered above.
+    return True
+
+
+def _has_ml_signals(*parts: str) -> bool:
+    hay = ' '.join(str(part or '') for part in parts).lower()
+    return bool(_ML_PROCESS.search(hay) or _ML_CMD.search(hay))
 
 
 def _is_gpu_model_load(
@@ -164,7 +233,7 @@ def _is_gpu_model_load(
     vram_mib: float | None = None,
 ) -> bool:
     hay = f'{process_name} {command_line} {model_name} {model_path}'.lower()
-    if _APP_SERVER_CMD.search(hay):
+    if _is_ui_only_process(process_name=process_name, command_line=command_line):
         return False
     if model_id and api_url:
         return True
@@ -176,9 +245,9 @@ def _is_gpu_model_load(
         return True
     if '--embedding' in hay:
         return True
-    if vram_mib is not None and vram_mib >= _MIN_VRAM_MIB:
-        return bool(_ML_PROCESS.search(hay) or _ML_CMD.search(hay))
-    return False
+    if not _has_ml_signals(process_name, command_line, model_name, model_path):
+        return False
+    return bool(str(model_name or '').strip())
 
 
 def _subprocess_no_window_kwargs() -> dict[str, Any]:
@@ -346,7 +415,9 @@ def _external_card_detail(
     hay = f'{model_name} {model_path} {command_line}'.lower()
     parts: list[str] = []
     if model_kind == 'stt':
-        engine = 'faster-whisper' if 'speak_stt' in hay or 'faster-whisper' in hay or 'faster_whisper' in hay else 'Whisper'
+        engine = 'AI Tools' if _AI_TOOLS_PATH.search(hay) else (
+            'faster-whisper' if 'speak_stt' in hay or 'faster-whisper' in hay or 'faster_whisper' in hay else 'Whisper'
+        )
         parts.extend(['Whisper', engine])
         if model_name and model_name.lower() not in {'whisper', 'onevoice'}:
             parts.append(model_name)
@@ -468,8 +539,14 @@ def _managed_listener_pids(servers: list[dict[str, Any]]) -> set[int]:
     return pids
 
 
-def _listening_ports_for_pid(pid: int) -> list[int]:
-    ports: list[int] = []
+def _listening_ports_map() -> dict[int, list[int]]:
+    global _LISTEN_PORTS_CACHE
+    now = time.time()
+    cached_at, cached = _LISTEN_PORTS_CACHE
+    if cached and (now - cached_at) < _LISTEN_PORTS_TTL_SECONDS:
+        return cached
+
+    mapping: dict[int, list[int]] = {}
     try:
         if sys.platform == 'win32':
             result = subprocess.run(
@@ -480,44 +557,137 @@ def _listening_ports_for_pid(pid: int) -> list[int]:
                 check=False,
                 **_subprocess_no_window_kwargs(),
             )
-            needle = str(int(pid))
             for line in result.stdout.splitlines():
                 parts = line.strip().split()
                 if len(parts) < 5 or 'LISTENING' not in parts[3]:
                     continue
-                if parts[4] != needle:
-                    continue
                 local_addr = parts[1]
                 if ':' not in local_addr:
                     continue
-                port_raw = local_addr.rsplit(':', 1)[-1]
-                try:
-                    port = int(port_raw)
-                except ValueError:
+                if not (
+                    local_addr.startswith('127.0.0.1')
+                    or local_addr.startswith('0.0.0.0')
+                    or local_addr.startswith('[::]')
+                ):
                     continue
-                if local_addr.startswith('127.0.0.1') or local_addr.startswith('0.0.0.0') or local_addr.startswith('[::]'):
-                    ports.append(port)
+                try:
+                    pid = int(parts[4])
+                    port = int(local_addr.rsplit(':', 1)[-1])
+                except (TypeError, ValueError):
+                    continue
+                mapping.setdefault(pid, []).append(port)
         else:
             result = subprocess.run(
-                ['lsof', '-Pan', f'-p{int(pid)}', '-iTCP', '-sTCP:LISTEN'],
+                ['lsof', '-Pan', '-iTCP', '-sTCP:LISTEN'],
                 capture_output=True,
                 text=True,
                 timeout=5,
                 check=False,
             )
             for line in result.stdout.splitlines()[1:]:
-                match = re.search(r':(\d+)\s+\(LISTEN\)', line)
-                if match:
-                    ports.append(int(match.group(1)))
+                match = re.search(r'^(\S+)\s+(\d+)\s+.*:(\d+)\s+\(LISTEN\)', line)
+                if not match:
+                    continue
+                try:
+                    pid = int(match.group(2))
+                    port = int(match.group(3))
+                except (TypeError, ValueError):
+                    continue
+                mapping.setdefault(pid, []).append(port)
     except Exception:
-        return []
-    return sorted(set(ports))
+        return cached or {}
+
+    for pid, ports in list(mapping.items()):
+        mapping[pid] = sorted(set(ports))
+    _LISTEN_PORTS_CACHE = (now, mapping)
+    return mapping
+
+
+def _listening_ports_for_pid(pid: int) -> list[int]:
+    return list(_listening_ports_map().get(int(pid), []))
 
 
 def _query_process_details(pids: list[int]) -> dict[int, dict[str, Any]]:
+    pid_set = {int(pid) for pid in pids if int(pid) > 0}
+    if not pid_set:
+        return {}
+
+    now = time.time()
+    cache = _PROCESS_DETAILS_CACHE
+    cached_map = cache.get('map') if isinstance(cache.get('map'), dict) else {}
+    cached_at = float(cache.get('at') or 0.0)
+    if cached_map and (now - cached_at) < _PROCESS_DETAILS_TTL_SECONDS:
+        if pid_set <= set(cached_map.keys()):
+            return {pid: dict(cached_map[pid]) for pid in pid_set if pid in cached_map}
+
+    missing = sorted(pid for pid in pid_set if pid not in cached_map)
+    if not missing and cached_map and (now - cached_at) < _PROCESS_DETAILS_TTL_SECONDS:
+        return {pid: dict(cached_map[pid]) for pid in pid_set if pid in cached_map}
+
+    fetched = _fetch_process_details(missing or sorted(pid_set))
+    merged = dict(cached_map) if (now - cached_at) < _PROCESS_DETAILS_TTL_SECONDS else {}
+    merged.update(fetched)
+    _PROCESS_DETAILS_CACHE['at'] = now
+    _PROCESS_DETAILS_CACHE['map'] = merged
+    return {pid: dict(merged.get(pid, {})) for pid in pid_set}
+
+
+def _fetch_process_details(pids: list[int]) -> dict[int, dict[str, Any]]:
     if not pids:
         return {}
-    if sys.platform != 'win32':
+    try:
+        import psutil
+    except ImportError:
+        return _fetch_process_details_powershell(pids)
+
+    details: dict[int, dict[str, Any]] = {}
+    parent_pids: set[int] = set()
+    for pid in sorted({int(item) for item in pids if int(item) > 0}):
+        try:
+            proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        try:
+            parent_pid = int(proc.ppid() or 0)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            parent_pid = 0
+        if parent_pid > 0:
+            parent_pids.add(parent_pid)
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            cmdline = []
+        try:
+            executable_path = proc.exe()
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            executable_path = ''
+        try:
+            process_name = proc.name()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            process_name = ''
+        details[pid] = {
+            'process_name': process_name,
+            'command_line': ' '.join(cmdline) if cmdline else '',
+            'executable_path': executable_path,
+            'parent_process_name': '',
+            'parent_pid': parent_pid or None,
+        }
+
+    parent_names: dict[int, str] = {}
+    for parent_pid in parent_pids:
+        try:
+            parent_names[parent_pid] = psutil.Process(parent_pid).name()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    for row in details.values():
+        parent_pid = row.get('parent_pid')
+        if parent_pid:
+            row['parent_process_name'] = parent_names.get(int(parent_pid), '')
+    return details
+
+
+def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, Any]]:
+    if not pids or sys.platform != 'win32':
         return {}
     pid_list = ','.join(str(int(pid)) for pid in sorted(set(pids)))
     script = (
@@ -533,7 +703,7 @@ def _query_process_details(pids: list[int]) -> dict[int, dict[str, Any]]:
     )
     try:
         result = subprocess.run(
-            ['powershell', '-NoProfile', '-Command', script],
+            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
             capture_output=True,
             text=True,
             timeout=8,
@@ -586,7 +756,8 @@ def _query_process_details(pids: list[int]) -> dict[int, dict[str, Any]]:
 
 
 _RUNTIME_APP_RULES: list[tuple[str, str, str]] = [
-    ('onevoice', r'onevoice|speak_stt|\\dev\\onevoice|\\dev\\ai-tools', 'OneVoice'),
+    ('ai-tools', r'\\ai-tools\\|/ai-tools/|ai-tools\.exe', 'AI Tools'),
+    ('onevoice', r'onevoice|speak_stt|\\dev\\onevoice', 'OneVoice'),
     ('dflash', r'dflash|start_llama_server', 'DFlash Console'),
     ('lmstudio', r'lm studio|lmstudio\.exe|lm-studio', 'LM Studio'),
     ('ollama', r'\bollama\b', 'Ollama'),
@@ -629,14 +800,32 @@ def _classify_app(*, process_name: str, command_line: str, parent_name: str) -> 
             return source, label
 
     hay = f'{process_name} {command_line} {parent}'.lower()
+    proc_lower = str(process_name or '').lower()
+    if proc_lower.endswith(('python.exe', 'pythonw.exe')) and parent:
+        parent_clean = parent
+        if parent_clean.lower().endswith('.exe'):
+            parent_clean = parent_clean[:-4]
+        if parent_clean:
+            return 'unknown', parent_clean
+
     for source, pattern, label in [*_RUNTIME_APP_RULES, *_FALLBACK_APP_RULES]:
         if re.search(pattern, hay, re.I):
             return source, label
 
-    clean = process_name or 'Unknown app'
-    if clean.lower().endswith('.exe'):
-        clean = clean[:-4]
-    return 'unknown', clean
+    proc_base = str(process_name or '').strip()
+    if proc_base.lower().endswith('.exe'):
+        proc_base = proc_base[:-4]
+    exe = _executable_hint(process_name, command_line)
+    exe_base = os.path.basename(exe) if exe else ''
+    if exe_base.lower().endswith('.exe'):
+        exe_base = exe_base[:-4]
+    base = proc_base or exe_base
+    parent_clean = parent
+    if parent_clean.lower().endswith('.exe'):
+        parent_clean = parent_clean[:-4]
+    if base.lower() in {'python', 'pythonw'} and parent_clean:
+        return 'unknown', parent_clean
+    return 'unknown', base or 'Unknown app'
 
 
 def _model_hint_from_cmdline(command_line: str) -> tuple[str, str]:
@@ -680,7 +869,7 @@ def _display_name_from_path(path: str) -> str:
     return base or clean
 
 
-_STT_MODEL_CACHE: tuple[float, str] = (0.0, '')
+_STT_MODEL_CACHE: dict[str, tuple[float, str]] = {}
 
 # The STT debug log is append-heavy transcription JSONL and can be multi-GB
 # (OneVoiceSpeak's speak_stt.debug.log is ~2.4 GB here). Reading the whole file
@@ -691,10 +880,37 @@ _STT_LOG_SCAN_BYTES = 512 * 1024 * 1024
 _STT_LOG_SCAN_CHUNK = 4 * 1024 * 1024
 
 
-def _speak_stt_log_paths() -> list[Path]:
-    return [
-        Path(os.path.expanduser('~')) / 'AppData' / 'Local' / 'Programs' / 'OneVoiceSpeak' / 'resources' / 'tools' / 'logs' / 'speak_stt.debug.log',
-    ]
+def _speak_stt_log_paths(command_line: str = '') -> list[Path]:
+    """Return candidate speak_stt debug logs, preferring the running script's tree."""
+    paths: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        paths.append(path)
+
+    cmd = str(command_line or '')
+    match = re.search(r'([A-Za-z]:[^"\s]*speak_stt\.py)', cmd, re.IGNORECASE)
+    if match:
+        # speak_stt.py lives in .../stt/; logs in sibling .../logs/ directory.
+        tools_dir = Path(match.group(1)).resolve().parent.parent
+        add(tools_dir / 'logs' / 'speak_stt.debug.log')
+
+    add(
+        Path(os.path.expanduser('~'))
+        / 'AppData'
+        / 'Local'
+        / 'Programs'
+        / 'OneVoiceSpeak'
+        / 'resources'
+        / 'tools'
+        / 'logs'
+        / 'speak_stt.debug.log'
+    )
+    return paths
 
 
 def _read_last_json_log_model(log_path: Path, *, events: tuple[str, ...]) -> str:
@@ -726,9 +942,17 @@ def _read_last_json_log_model(log_path: Path, *, events: tuple[str, ...]) -> str
                 data = (handle.read(take) + carry).decode('utf-8', errors='replace')
                 lines = data.split('\n')
                 # lines[0] may be a partial line whose head lives in the older
-                # chunk; carry it forward and only scan complete lines.
-                carry = lines[0].encode('utf-8', errors='replace')
-                for line in reversed(lines[1:]):
+                # chunk; carry it forward and only scan complete lines. When this
+                # chunk starts at the beginning of the scan window, lines[0] is
+                # a complete line and must be included.
+                at_bof = pos == 0
+                if at_bof:
+                    scan_lines = lines
+                    carry = b''
+                else:
+                    scan_lines = lines[1:]
+                    carry = lines[0].encode('utf-8', errors='replace')
+                for line in reversed(scan_lines):
                     if not any(event in line for event in events):
                         continue
                     try:
@@ -749,19 +973,159 @@ def _read_last_json_log_model(log_path: Path, *, events: tuple[str, ...]) -> str
     return model
 
 
-def _read_speak_stt_active_model(*, max_age_seconds: float = 45.0) -> str:
+def _read_speak_stt_active_model(*, command_line: str = '', max_age_seconds: float = 45.0) -> str:
     global _STT_MODEL_CACHE
     now = time.time()
-    cached_at, cached_model = _STT_MODEL_CACHE
+    cache_key = '|'.join(str(path).lower() for path in _speak_stt_log_paths(command_line))
+    cached_at, cached_model = _STT_MODEL_CACHE.get(cache_key, (0.0, ''))
     if cached_model and (now - cached_at) < max_age_seconds:
         return cached_model
     model = ''
-    for path in _speak_stt_log_paths():
+    for path in _speak_stt_log_paths(command_line):
         model = _read_last_json_log_model(path, events=('model-ready', 'server-start', 'model-loading'))
         if model:
             break
-    _STT_MODEL_CACHE = (now, model)
+    _STT_MODEL_CACHE[cache_key] = (now, model)
     return model
+
+
+_STT_WS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_STT_WS_CACHE_TTL = 5.0
+
+
+def _ws_send_text_frame(sock: socket.socket, text: str) -> None:
+    payload = text.encode('utf-8')
+    mask = secrets.token_bytes(4)
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    header = bytearray([0x81])
+    length = len(payload)
+    if length <= 125:
+        header.append(0x80 | length)
+    elif length <= 65535:
+        header.append(0x80 | 126)
+        header.extend(struct.pack('!H', length))
+    else:
+        header.append(0x80 | 127)
+        header.extend(struct.pack('!Q', length))
+    header.extend(mask)
+    header.extend(masked)
+    sock.sendall(header)
+
+
+def _ws_recv_text_frame(sock: socket.socket) -> str:
+    header = sock.recv(2)
+    if len(header) < 2:
+        return ''
+    opcode = header[0] & 0x0F
+    masked = bool(header[1] & 0x80)
+    length = header[1] & 0x7F
+    if length == 126:
+        length = struct.unpack('!H', sock.recv(2))[0]
+    elif length == 127:
+        length = struct.unpack('!Q', sock.recv(8))[0]
+    mask_key = sock.recv(4) if masked else b''
+    payload = bytearray(sock.recv(length))
+    if masked and mask_key:
+        payload = bytearray(byte ^ mask_key[index % 4] for index, byte in enumerate(payload))
+    if opcode == 0x8:
+        return ''
+    if opcode != 0x1:
+        return ''
+    return payload.decode('utf-8', errors='replace')
+
+
+def _probe_onevoice_stt_status(host: str = '127.0.0.1', port: int = 2711, *, timeout: float = 2.5) -> dict[str, Any]:
+    """Read live model readiness from OneVoice speak_stt's local WebSocket."""
+    cache_key = f'{host}:{int(port)}'
+    now = time.time()
+    cached_at, cached = _STT_WS_CACHE.get(cache_key, (0.0, {}))
+    if cached and (now - cached_at) < _STT_WS_CACHE_TTL:
+        return dict(cached)
+
+    result: dict[str, Any] = {}
+    if not tcp_port_open(host, port):
+        _STT_WS_CACHE[cache_key] = (now, result)
+        return result
+
+    sock: socket.socket | None = None
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=timeout)
+        sock.settimeout(timeout)
+        ws_key = base64.b64encode(secrets.token_bytes(16)).decode('ascii')
+        request = (
+            f'GET / HTTP/1.1\r\n'
+            f'Host: {host}:{int(port)}\r\n'
+            f'Upgrade: websocket\r\n'
+            f'Connection: Upgrade\r\n'
+            f'Sec-WebSocket-Key: {ws_key}\r\n'
+            f'Sec-WebSocket-Version: 13\r\n'
+            f'\r\n'
+        )
+        sock.sendall(request.encode('ascii'))
+        response = b''
+        while b'\r\n\r\n' not in response and len(response) < 65536:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        if b' 101 ' not in response:
+            _STT_WS_CACHE[cache_key] = (now, result)
+            return result
+
+        _ws_send_text_frame(sock, json.dumps({'config': {}}))
+        model = ''
+        model_loaded = False
+        loading = False
+        error = ''
+        device = ''
+        for _ in range(6):
+            text = _ws_recv_text_frame(sock)
+            if not text:
+                break
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            status = str(payload.get('status') or '').lower()
+            if payload.get('model_loaded') is True:
+                model_loaded = True
+            if payload.get('model'):
+                model = str(payload.get('model') or '').strip()
+            if payload.get('device'):
+                device = str(payload.get('device') or '').strip()
+            if status in {'loading-model', 'loading'}:
+                loading = True
+            if status == 'model-ready':
+                model_loaded = True
+                loading = False
+            if status == 'error' or payload.get('error'):
+                error = str(payload.get('error') or payload.get('message') or '').strip()
+                model_loaded = False
+                loading = False
+            if model_loaded and model:
+                break
+
+        if model_loaded or loading or error:
+            result = {
+                'model': model,
+                'model_loaded': model_loaded,
+                'loading': loading and not model_loaded,
+                'device': device,
+                'error': error,
+            }
+    except OSError:
+        result = {}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    _STT_WS_CACHE[cache_key] = (time.time(), result)
+    return result
 
 
 def _is_lmstudio_chromium_helper(command_line: str) -> bool:
@@ -865,12 +1229,133 @@ def _probe_ollama_running_models(host: str = '127.0.0.1', port: int = 11434) -> 
     return loaded
 
 
+def _ai_tools_root_from_command(command_line: str) -> Path | None:
+    cmd = str(command_line or '')
+    for match in re.finditer(r'([A-Za-z]:[\\/][^"\'\s]+?[\\/]AI-Tools)', cmd, re.I):
+        candidate = Path(match.group(1))
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _read_ai_tools_whisper_model_size(ai_tools_root: Path) -> str:
+    config_path = ai_tools_root / 'config.json'
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8', errors='replace'))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return 'medium'
+    whisper_cfg = payload.get('whisper_model')
+    if isinstance(whisper_cfg, dict):
+        size = str(whisper_cfg.get('model_size') or '').strip()
+        if size:
+            return size
+    legacy = payload.get('whisper')
+    if isinstance(legacy, dict):
+        size = str(legacy.get('model_size') or '').strip()
+        if size:
+            return size
+    return 'medium'
+
+
+def _resolve_ai_tools_stt_model_path(command_line: str) -> str:
+    hay = str(command_line or '').lower()
+    if 'transcribe_module' not in hay and 'voice_core' not in hay and 'speaker_diagnosis' not in hay:
+        return ''
+    root = _ai_tools_root_from_command(command_line)
+    if root is None:
+        return ''
+    model_size = _read_ai_tools_whisper_model_size(root)
+    variants: list[str] = []
+    for token in (model_size, f'{model_size}.en'):
+        token = str(token or '').strip()
+        if token and token not in variants:
+            variants.append(token)
+
+    local_dirs: list[Path] = [root / '.model_cache']
+    sibling_models = root.parent / 'Dflash-Console' / 'models'
+    if sibling_models.is_dir():
+        local_dirs.append(sibling_models)
+
+    def _pick_from_base(base: Path, slug: str) -> str:
+        if not base.is_dir():
+            return ''
+        direct = base / f'faster-whisper-{slug}'
+        if direct.is_dir():
+            return str(direct)
+        for match in base.glob(f'models--*--faster-whisper-{slug}'):
+            snapshots = match / 'snapshots'
+            if snapshots.is_dir():
+                candidates = sorted(
+                    (p for p in snapshots.iterdir() if p.is_dir()),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+                if candidates:
+                    return str(candidates[0])
+            return str(match)
+        return ''
+
+    for base in local_dirs:
+        for variant in variants:
+            for slug in {variant, variant.replace('.', '-'), variant.replace('-', '.')}:
+                picked = _pick_from_base(base, slug)
+                if picked:
+                    return picked
+
+    for variant in variants:
+        for slug in {variant, variant.replace('.', '-'), variant.replace('-', '.')}:
+            for base in _stt_hub_search_roots():
+                picked = _pick_from_base(base, slug)
+                if picked:
+                    return picked
+    return _resolve_stt_model_path(model_size, command_line)
+
+
+def _ai_tools_task_from_functions_file(functions_file: str) -> str:
+    path = Path(str(functions_file or '').strip().strip('"').strip("'"))
+    if not path.is_file():
+        return ''
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8', errors='replace') or '{}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ''
+    processing = payload.get('processing_functions') if isinstance(payload, dict) else None
+    if not isinstance(processing, dict):
+        return ''
+    labels: list[str] = []
+    for key, enabled in processing.items():
+        if not enabled:
+            continue
+        label = _AI_TOOLS_FUNC_LABELS.get(str(key), '')
+        if label and label not in labels:
+            labels.append(label)
+    return ' + '.join(labels[:2])
+
+
+def _resolve_ai_tools_model_name(command_line: str) -> str:
+    cmd = str(command_line or '')
+    hay = cmd.lower()
+    if 'transcribe_module' in hay or 'voice_core' in hay or 'speaker_diagnosis' in hay:
+        return 'Voice recognition'
+    match = re.search(r'--functions-file=(\S+)', cmd, re.I)
+    if match:
+        task = _ai_tools_task_from_functions_file(match.group(1))
+        if task:
+            return task
+    if 'scraper.py' in hay and '--run-functions' in hay:
+        return 'GPU worker'
+    if 'transcribe' in hay:
+        return 'Transcription'
+    return 'GPU worker'
+
+
 def _resolve_external_model_name(
     *,
     app_source: str,
     app_label: str,
     process_name: str,
     command_line: str,
+    parent_name: str = '',
     api_model_id: str = '',
 ) -> tuple[str, str]:
     hinted_name, model_path = _model_hint_from_cmdline(command_line)
@@ -879,10 +1364,25 @@ def _resolve_external_model_name(
 
     model_name = hinted_name
 
+    if app_source == 'ai-tools':
+        ai_name = _resolve_ai_tools_model_name(command_line)
+        if ai_name and not model_path:
+            model_path = _resolve_ai_tools_stt_model_path(command_line)
+        if ai_name:
+            return ai_name, model_path
+
     if not model_name and app_source in {'onevoice', 'whisper'} and 'speak_stt' in command_line.lower():
-        log_model = _read_speak_stt_active_model(max_age_seconds=3.0)
-        if log_model:
-            model_name = log_model
+        for port in _ONEVOICE_STT_PORTS:
+            stt = _probe_onevoice_stt_status('127.0.0.1', port)
+            if stt.get('model_loaded') and str(stt.get('model') or '').strip():
+                model_name = str(stt.get('model') or '').strip()
+                break
+            if stt.get('loading'):
+                return 'Loading…', model_path
+        if not model_name:
+            log_model = _read_speak_stt_active_model(command_line=command_line, max_age_seconds=45.0)
+            if log_model:
+                model_name = log_model
 
     if not model_name and 'speak_stt.py' in command_line.lower():
         return 'Loading…', model_path
@@ -898,6 +1398,15 @@ def _resolve_external_model_name(
             model_name = app_label
         else:
             model_name = clean_process or app_label
+
+    generic = _generic_workload_title(
+        process_name=process_name,
+        command_line=command_line,
+        parent_name=parent_name,
+        app_label=app_label,
+    )
+    if generic and (not model_name or model_name == app_label):
+        model_name = generic
 
     return model_name, model_path
 
@@ -1025,8 +1534,28 @@ def _build_external_card(
     if any(port in configured_ports for port in listen_ports):
         return None
 
-    for port in listen_ports:
+    ports_to_check = list(listen_ports)
+    if 'speak_stt.py' in command_line.lower():
+        for port in _ONEVOICE_STT_PORTS:
+            if port not in ports_to_check and port not in configured_ports:
+                ports_to_check.append(port)
+
+    for port in ports_to_check:
         if port in configured_ports:
+            continue
+        if port in _ONEVOICE_STT_PORTS:
+            stt = _probe_onevoice_stt_status('127.0.0.1', port)
+            listen_port = port
+            if stt.get('model_loaded'):
+                model_id = str(stt.get('model') or '').strip()
+                loading = False
+                break
+            if stt.get('loading'):
+                loading = True
+                break
+            if stt.get('error'):
+                loading = False
+                break
             continue
         probe = _probe_loaded_model('127.0.0.1', port)
         if probe.get('loading'):
@@ -1046,6 +1575,7 @@ def _build_external_card(
         app_label=app_label,
         process_name=process_name,
         command_line=command_line,
+        parent_name=parent_name,
         api_model_id=model_id,
     )
     if not str(model_name or '').strip():
@@ -1053,12 +1583,25 @@ def _build_external_card(
             model_name = 'Loading…'
             loading = True
         else:
-            return None
+            model_name = _generic_workload_title(
+                process_name=process_name,
+                command_line=command_line,
+                parent_name=parent_name,
+                app_label=app_label,
+            )
+            if not model_name:
+                return None
     elif str(model_name).strip().lower().startswith('loading'):
         loading = True
+    speak_stt_ready = (
+        'speak_stt.py' in command_line.lower()
+        and model_name
+        and not str(model_name).strip().lower().startswith('loading')
+    )
     if (
         not loading
         and not api_url
+        and not speak_stt_ready
         and vram_mib is not None
         and float(vram_mib) >= _MIN_VRAM_MIB
         and _should_track_process(
@@ -1070,12 +1613,6 @@ def _build_external_card(
         )
     ):
         loading = True
-    if (
-        not loading
-        and model_name == app_label
-        and str(process_name or '').lower().endswith(('python.exe', 'pythonw.exe'))
-    ):
-        return None
     if not _is_gpu_model_load(
         process_name=process_name,
         command_line=command_line,
@@ -1270,6 +1807,15 @@ def _cards_from_known_apps(
 
 _API_KEY_RE = re.compile(r'--api-key[=\s]+(\S+)', re.I)
 _API_KEY_CACHE: dict[int, tuple[float, str]] = {}
+_PROCESS_DETAILS_CACHE: dict[str, Any] = {'at': 0.0, 'map': {}}
+_LISTEN_PORTS_CACHE: tuple[float, dict[int, list[int]]] = (0.0, {})
+_PROCESS_DETAILS_TTL_SECONDS = 30.0
+_LISTEN_PORTS_TTL_SECONDS = 3.0
+_GPU_BUSY_THRESHOLD = 5
+_GPU_LIVE_CACHE: tuple[float, dict[int, dict[str, Any]]] = (0.0, {})
+_GPU_LIVE_TTL_SECONDS = 1.5
+_EXTERNAL_SCAN_CACHE: dict[str, Any] = {'at': 0.0, 'cards': []}
+_EXTERNAL_SCAN_MIN_INTERVAL = 2.5
 
 
 def _api_key_from_cmdline(command_line: str) -> str:
@@ -1307,9 +1853,10 @@ def _attach_external_inference_stats(card: dict[str, Any]) -> dict[str, Any]:
     API URL. fetch_inference_stats fails gracefully (returns empty stats) for
     endpoints without /slots, so STT/TTS cards simply keep showing zeros.
     """
+    enriched = dict(card)
     api_url = str(card.get('api_url') or '').strip()
     if not api_url:
-        return card
+        return enriched
     pid = int(card.get('pid') or 0)
     server_id = f'external-{pid}' if pid > 0 else str(card.get('id') or '')
     from core.inference_stats import fetch_inference_stats
@@ -1320,13 +1867,42 @@ def _attach_external_inference_stats(card: dict[str, Any]) -> dict[str, Any]:
     if str(card.get('app_source') or '').lower() == 'lmstudio':
         api_key = _api_key_for_process(pid, fallback_cmdline=str(card.get('command_line') or ''))
 
-    enriched = dict(card)
     enriched['inference_stats'] = fetch_inference_stats(
         api_url,
         server_id=server_id,
         model_id=str(card.get('model_id') or card.get('model_name') or ''),
         api_key=api_key,
     )
+    return enriched
+
+
+def _gpu_live_map() -> dict[int, dict[str, Any]]:
+    global _GPU_LIVE_CACHE
+    now = time.time()
+    cached_at, cached = _GPU_LIVE_CACHE
+    if cached and (now - cached_at) < _GPU_LIVE_TTL_SECONDS:
+        return cached
+
+    from core.system_stats import _query_gpus_live
+
+    live = {int(row.get('index', -1)): row for row in _query_gpus_live() if int(row.get('index', -1)) >= 0}
+    _GPU_LIVE_CACHE = (now, live)
+    return live
+
+
+def _attach_external_gpu_activity(card: dict[str, Any], *, gpu_live: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    """Keep per-process VRAM from nvidia-smi; never substitute whole-GPU stats."""
+    return dict(card)
+
+
+def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = True) -> list[dict[str, Any]]:
+    gpu_live = _gpu_live_map()
+    enriched: list[dict[str, Any]] = []
+    for card in cards:
+        row = _attach_external_gpu_activity(card, gpu_live=gpu_live)
+        if attach_stats:
+            row = _attach_external_inference_stats(row)
+        enriched.append(row)
     return enriched
 
 
@@ -1383,6 +1959,86 @@ def _external_card_path_missing(card: dict[str, Any]) -> bool:
         return False
 
 
+_ONEVOICE_STT_PORTS = (2711,)
+
+
+def _retain_alive_external_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep recent external cards when nvidia-smi briefly drops a live process."""
+    kept: list[dict[str, Any]] = []
+    pids = [int(card['pid']) for card in cards if int(card.get('pid') or 0) > 0]
+    details_map = _query_process_details(pids) if pids else {}
+    for card in cards:
+        pid = int(card.get('pid') or 0)
+        if pid > 0 and pid in details_map:
+            kept.append(dict(card))
+            continue
+        listen_port = int(card.get('listen_port') or 0)
+        if listen_port > 0 and _pid_listening_on_port(listen_port) == pid:
+            kept.append(dict(card))
+            continue
+        if str(card.get('model_kind') or '').lower() == 'stt':
+            for port in _ONEVOICE_STT_PORTS:
+                live_pid = _pid_listening_on_port(port)
+                if live_pid == pid or (live_pid and live_pid > 0):
+                    refreshed = dict(card)
+                    if live_pid != pid:
+                        refreshed['pid'] = live_pid
+                        refreshed['id'] = f'external-gpu-{live_pid}'
+                    refreshed['listen_port'] = port
+                    kept.append(refreshed)
+                    break
+    return kept
+
+
+def _discover_speak_stt_listener_cards(
+    *,
+    gpus: list[dict[str, Any]],
+    managed_pids: set[int],
+    configured_ports: set[int],
+    dflash_root: str,
+    seen_pids: set[int],
+) -> list[dict[str, Any]]:
+    """Find OneVoice speak_stt even when nvidia-smi omits the worker PID."""
+    cards: list[dict[str, Any]] = []
+    for port in _ONEVOICE_STT_PORTS:
+        if port in configured_ports:
+            continue
+        pid = _pid_listening_on_port(port)
+        if not pid or pid in seen_pids or pid in managed_pids:
+            continue
+        details_map = _query_process_details([pid])
+        details = details_map.get(pid, {})
+        hay = ' '.join(
+            [
+                str(details.get('process_name') or ''),
+                str(details.get('command_line') or ''),
+                str(details.get('parent_process_name') or ''),
+            ]
+        ).lower()
+        if 'speak_stt' not in hay:
+            continue
+        entry = {
+            'pid': pid,
+            'gpu_index': 0,
+            'vram_mb': None,
+            'vram_gb': None,
+            'process_name': str(details.get('process_name') or 'python.exe'),
+        }
+        card = _build_external_card(
+            entry,
+            details=details,
+            gpus=gpus,
+            managed_pids=managed_pids,
+            configured_ports=configured_ports,
+            dflash_root=dflash_root,
+        )
+        if card:
+            card['listen_port'] = port
+            cards.append(card)
+            seen_pids.add(pid)
+    return cards
+
+
 def get_external_gpu_loads(
     *,
     servers: list[dict[str, Any]] | None = None,
@@ -1399,6 +2055,16 @@ def get_external_gpu_loads(
     hardware = (cfg or {}).get('hardware_settings') or {}
     if hardware.get('detect_external_gpu_loads') is False:
         return []
+
+    now = time.time()
+    cached_cards = _EXTERNAL_SCAN_CACHE.get('cards')
+    cached_at = float(_EXTERNAL_SCAN_CACHE.get('at') or 0.0)
+    if (
+        isinstance(cached_cards, list)
+        and cached_cards
+        and (now - cached_at) < _EXTERNAL_SCAN_MIN_INTERVAL
+    ):
+        return _enrich_external_cards([dict(row) for row in cached_cards], attach_stats=not fast)
 
     compute_rows = _query_compute_apps()
     if not compute_rows:
@@ -1448,15 +2114,111 @@ def get_external_gpu_loads(
             seen_ids.add(card_id)
             cards.append(card)
 
+    for card in _discover_speak_stt_listener_cards(
+        gpus=gpus,
+        managed_pids=managed_pids,
+        configured_ports=configured_ports,
+        dflash_root=dflash_root,
+        seen_pids=seen_pids,
+    ):
+        card_id = str(card.get('id') or '')
+        if card_id in seen_ids:
+            continue
+        seen_ids.add(card_id)
+        cards.append(card)
+
     cards = _dedupe_external_cards(cards)
     # Never show a card for a model file that no longer exists on disk (e.g.
     # after the file was moved or deleted) — a card for a missing file is
     # misleading. Applies to every external card.
     cards = [card for card in cards if not _external_card_path_missing(card)]
+    if not cards:
+        prev = _EXTERNAL_SCAN_CACHE.get('cards') or []
+        if isinstance(prev, list) and prev:
+            cards = _retain_alive_external_cards(prev)
     cards.sort(key=lambda item: (-float(item.get('vram_mb') or 0), str(item.get('title') or '')))
-    if fast:
-        return cards
-    return [_attach_external_inference_stats(card) for card in cards]
+    _EXTERNAL_SCAN_CACHE['at'] = time.time()
+    _EXTERNAL_SCAN_CACHE['cards'] = [dict(card) for card in cards]
+    return _enrich_external_cards(cards, attach_stats=not fast)
+
+
+def _forget_external_scan() -> None:
+    _EXTERNAL_SCAN_CACHE['at'] = 0.0
+    _EXTERNAL_SCAN_CACHE['cards'] = []
+
+
+def _related_external_compute_pids(
+    target_pid: int,
+    *,
+    cached: dict[str, Any] | None,
+    matching: dict[str, Any] | None,
+) -> list[int]:
+    """Live GPU PIDs for the same external model, not just the (possibly stale) card PID."""
+    seed = ' '.join(
+        [
+            str((matching or {}).get('command_line') or ''),
+            str((matching or {}).get('process_name') or ''),
+            str((cached or {}).get('command_line') or ''),
+            str((cached or {}).get('process_name') or ''),
+            str((cached or {}).get('model_name') or ''),
+            str((cached or {}).get('model_path') or ''),
+        ]
+    ).lower()
+    kind = str((cached or {}).get('model_kind') or '').lower()
+    app_source = str((cached or {}).get('app_source') or '').strip().lower()
+    model = str((cached or {}).get('model_name') or '').strip().lower()
+    want_stt = (
+        kind == 'stt'
+        or 'speak_stt' in seed
+        or 'faster-whisper' in seed
+        or 'faster_whisper' in seed
+        or (app_source in {'onevoice', 'whisper'} and 'python' in seed)
+    )
+    compute = query_compute_apps()
+    pids = [int(row['pid']) for row in compute if int(row.get('pid') or 0) > 0]
+    details_map = _query_process_details(pids) if pids else {}
+    live: set[int] = set()
+    for row in compute:
+        pid = int(row['pid'])
+        details = details_map.get(pid, {})
+        process_name = str(details.get('process_name') or row.get('process_name') or '')
+        command_line = str(details.get('command_line') or row.get('command_line') or '')
+        hay = f'{process_name} {command_line}'.lower()
+        source, _ = _classify_app(
+            process_name=process_name,
+            command_line=command_line,
+            parent_name=str(details.get('parent_process_name') or ''),
+        )
+        if pid == int(target_pid):
+            live.add(pid)
+            continue
+        if want_stt and ('speak_stt' in hay or 'faster-whisper' in hay or 'faster_whisper' in hay):
+            live.add(pid)
+            continue
+        if app_source and source == app_source and model and model in hay:
+            live.add(pid)
+    return sorted(live)
+
+
+def _kill_external_pid(pid: int) -> dict[str, Any]:
+    try:
+        if sys.platform == 'win32':
+            proc = subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(int(pid))],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+                **_subprocess_no_window_kwargs(),
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or '').strip() or 'taskkill failed'
+                return {'success': False, 'error': detail, 'pid': int(pid)}
+        else:
+            os.kill(int(pid), 9)
+    except Exception as exc:
+        return {'success': False, 'error': str(exc), 'pid': int(pid)}
+    return {'success': True, 'pid': int(pid), 'method': 'kill'}
 
 
 def unload_external_gpu_process(
@@ -1477,6 +2239,7 @@ def unload_external_gpu_process(
         if parsed_api.port == 11434:
             native = _unload_ollama_model(api_url=api, model_id=model)
             if native.get('success'):
+                _forget_external_scan()
                 return {**native, 'pid': target_pid, 'method': 'ollama-api'}
 
         native_urls = [api]
@@ -1488,6 +2251,7 @@ def unload_external_gpu_process(
         for native_url in native_urls:
             native = _unload_lmstudio_model(api_url=native_url, model_id=model)
             if native.get('success'):
+                _forget_external_scan()
                 return {**native, 'pid': target_pid, 'method': 'lmstudio-api'}
 
         # Generic OpenAI-compatible unload (Ollama, llama-server, LM Studio
@@ -1496,6 +2260,7 @@ def unload_external_gpu_process(
         # compute worker, so it would not appear in nvidia-smi's compute apps.
         result = unload_model(api_url=api, model_id=model)
         if result.get('success'):
+            _forget_external_scan()
             return {**result, 'pid': target_pid, 'method': 'api'}
         # Some LM Studio worker endpoints reject the legacy unload route with
         # 401/403. The worker PID is still safe to terminate below.
@@ -1509,34 +2274,69 @@ def unload_external_gpu_process(
         ),
         None,
     )
-    if not matching:
-        return {'success': False, 'error': 'process is not a current GPU compute process', 'pid': target_pid}
-    identity = ' '.join(
-        str(matching.get(key) or '')
-        for key in ('process_name', 'command_line', 'model_name', 'model_path')
+    cached = next(
+        (
+            row for row in (_EXTERNAL_SCAN_CACHE.get('cards') or [])
+            if int(row.get('pid') or 0) == target_pid
+        ),
+        None,
     )
-    if _APP_SERVER_CMD.search(identity) or not (_ML_PROCESS.search(identity) or _ML_CMD.search(identity)):
-        return {'success': False, 'error': 'process is not an approved model process', 'pid': target_pid}
+    related = _related_external_compute_pids(target_pid, cached=cached, matching=matching)
+    if not matching and not cached and not related:
+        return {'success': False, 'error': 'process is not a current GPU compute process', 'pid': target_pid}
 
-    try:
-        if sys.platform == 'win32':
-            proc = subprocess.run(
-                ['taskkill', '/F', '/T', '/PID', str(target_pid)],
-                capture_output=True,
-                text=True,
-                timeout=8,
-                check=False,
-                **_subprocess_no_window_kwargs(),
-            )
-            if proc.returncode != 0:
-                detail = (proc.stderr or proc.stdout or '').strip() or 'taskkill failed'
-                return {'success': False, 'error': detail, 'pid': target_pid}
+    killed: list[int] = []
+    last_error = ''
+    kill_targets = related or ([target_pid] if (matching or cached) else [])
+    for kill_pid in kill_targets:
+        details = _query_process_details([kill_pid]).get(kill_pid, {})
+        process_name = str(
+            details.get('process_name')
+            or (matching or {}).get('process_name')
+            or (cached or {}).get('process_name')
+            or ''
+        )
+        command_line = str(
+            details.get('command_line')
+            or (matching or {}).get('command_line')
+            or (cached or {}).get('command_line')
+            or ''
+        )
+        if _DESKTOP_NOISE.search(process_name) or _is_ui_only_process(
+            process_name=process_name,
+            command_line=command_line,
+        ):
+            last_error = 'process is not an approved model process'
+            continue
+        identity = f'{process_name} {command_line}'
+        # A card we already listed as an external model is safe to unload even
+        # when nvidia-smi only reports python.exe with no model keywords.
+        if not cached and (
+            _APP_SERVER_CMD.search(identity)
+            or not (_ML_PROCESS.search(identity) or _ML_CMD.search(identity))
+        ):
+            last_error = 'process is not an approved model process'
+            continue
+        result = _kill_external_pid(kill_pid)
+        if result.get('success'):
+            killed.append(kill_pid)
         else:
-            os.kill(target_pid, 9)
-    except Exception as exc:
-        return {'success': False, 'error': str(exc), 'pid': target_pid}
+            last_error = str(result.get('error') or 'taskkill failed')
 
-    return {'success': True, 'pid': target_pid, 'method': 'kill', 'message': 'Process terminated'}
+    _forget_external_scan()
+    if not killed:
+        return {
+            'success': False,
+            'error': last_error or 'process is not an approved model process',
+            'pid': target_pid,
+        }
+    return {
+        'success': True,
+        'pid': target_pid,
+        'killed_pids': killed,
+        'method': 'kill',
+        'message': 'Process terminated',
+    }
 
 
 def _unload_lmstudio_model(*, api_url: str, model_id: str) -> dict[str, Any]:

@@ -20,7 +20,13 @@ from core.config import (
 )
 from core.gpu_devices import resolve_role_gpu_launch_params
 from core.log_utils import rotate_log
-from core.model_presets import infer_profile_from_path, model_id_from_path, preset_path_for, write_server_preset
+from core.model_presets import (
+    infer_profile_from_path,
+    model_id_from_path,
+    preset_path_for,
+    sanitize_preset_model_id,
+    write_server_preset,
+)
 from core.runtimes import runtime_process_identity_tokens
 
 _started_launch: dict[int, dict[str, Any]] = {}
@@ -32,6 +38,21 @@ _boot_attempt_at: dict[int, float] = {}
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / 'logs'
+
+
+def _resolve_pwsh_exe() -> str:
+    override = str(os.environ.get('PWSH_PATH', '')).strip()
+    if override and Path(override).is_file():
+        return override
+    candidates = [
+        Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'PowerShell' / '7' / 'pwsh.exe',
+        Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'PowerShell' / '7' / 'pwsh.exe',
+        Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return 'powershell.exe'
 
 
 def register_started_launch(port: int, signature: dict[str, Any]) -> None:
@@ -333,7 +354,7 @@ def _spawn_router(
     dflash_root = get_dflash_root()
     script = dflash_root / 'scripts' / 'start_llama_server.ps1'
     cmd = [
-        'pwsh.exe',
+        _resolve_pwsh_exe(),
         '-NoProfile',
         '-ExecutionPolicy',
         'Bypass',
@@ -547,12 +568,159 @@ def eject_to_router_idle(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     return start_router_listener(entry, cfg=cfg)
 
 
+def resolve_checkpoint_load_id(
+    server: dict[str, Any],
+    *,
+    model_path: str | None = None,
+    model_id: str | None = None,
+) -> str:
+    entry = normalize_server(server)
+    custom_path = str(model_path or entry.get('adhoc_model_path') or '').strip()
+    if custom_path:
+        path_obj = Path(custom_path)
+        if path_obj.is_file():
+            return sanitize_preset_model_id(model_id or model_id_from_path(path_obj), path_obj)
+    if model_id:
+        return sanitize_preset_model_id(model_id, entry.get('target_path'))
+    return sanitize_preset_model_id(entry.get('model_id'), entry.get('target_path'))
+
+
+def _checkpoint_tokens(value: str) -> set[str]:
+    token = str(value or '').strip().lower().replace('\\', '/')
+    if not token:
+        return set()
+    if token.startswith('library-file:'):
+        token = token.split(':', 1)[1].strip()
+    names = {token}
+    base = token.rsplit('/', 1)[-1]
+    if base:
+        names.add(base)
+        stem = base[:-5] if base.endswith('.gguf') else base
+        names.add(stem)
+        names.add(stem.replace('_', '-'))
+    return {row for row in names if row}
+
+
+def _checkpoint_id_loaded(load_id: str, loaded_ids: list[str]) -> bool:
+    wanted = _checkpoint_tokens(load_id)
+    if not wanted:
+        return False
+    have: set[str] = set()
+    for row in loaded_ids:
+        have |= _checkpoint_tokens(str(row or ''))
+    return bool(wanted & have)
+
+
+def _normalize_model_path(path: str | Path) -> str:
+    try:
+        return str(Path(path).expanduser().resolve()).lower()
+    except OSError:
+        return str(path).replace('\\', '/').lower()
+
+
+def resolve_load_target_path(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    model_path: str | None = None,
+) -> str:
+    custom = str(model_path or server.get('adhoc_model_path') or '').strip()
+    if custom:
+        return _normalize_model_path(custom)
+    explicit = str(server.get('target_path') or '').strip()
+    if explicit:
+        return _normalize_model_path(explicit)
+    from core.model_stack import resolve_model_stack
+
+    for row in resolve_model_stack(server, cfg=cfg):
+        if str(row.get('role') or '') == 'target' and row.get('path'):
+            return _normalize_model_path(row['path'])
+    return ''
+
+
+def find_target_loaded_elsewhere(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    model_path: str | None = None,
+    exclude_server_id: str | None = None,
+) -> dict[str, Any] | None:
+    """True when the same GGUF target is already live on another Console engine."""
+    from core.config import is_embedding_server, list_servers
+    from core.runtime import build_server_status
+
+    target = resolve_load_target_path(server, cfg=cfg, model_path=model_path)
+    if not target:
+        return None
+
+    config = cfg or load_config()
+    self_id = str(exclude_server_id or server.get('id') or '')
+    for other in list_servers(config):
+        other_id = str(other.get('id') or '')
+        if not other_id or other_id == self_id or other.get('enabled', True) is False:
+            continue
+        if is_embedding_server(other):
+            continue
+        status = build_server_status(other, cfg=config)
+        if status.get('status') != 'loaded' and not status.get('loaded_models'):
+            continue
+        other_target = resolve_load_target_path(other, cfg=config)
+        if other_target and other_target == target:
+            return {
+                'server_id': other_id,
+                'label': str(other.get('label') or other_id),
+                'port': int(other.get('port') or 0),
+                'target_path': target,
+            }
+    return None
+
+
+def checkpoint_already_loaded(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    model_path: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a success payload when the requested checkpoint is already live."""
+    from core.config import is_embedding_server
+
+    entry = normalize_server(server)
+    if is_embedding_server(entry):
+        return None
+
+    port = int(entry['port'] or 0)
+    host = str(entry['host'] or '127.0.0.1')
+    api_url = str(entry.get('api_url') or '')
+    load_id = resolve_checkpoint_load_id(entry, model_path=model_path, model_id=model_id)
+    if port <= 0 or not api_url or not load_id or not _tcp_port_open(host, port):
+        return None
+
+    from core.runtime import probe_models
+
+    adopted = adopt_running_engine(entry, cfg=cfg)
+    if not adopted.get('success'):
+        return None
+    loaded = probe_models(api_url)
+    if not _checkpoint_id_loaded(load_id, loaded):
+        return None
+    note_boot_cycle_end(port)
+    return {
+        'success': True,
+        'port': port,
+        'loaded': True,
+        'already_loaded': True,
+        'model': load_id,
+    }
+
+
 def load_server_checkpoint(
     server: dict[str, Any],
     *,
     cfg: dict[str, Any] | None = None,
     model_path: str | None = None,
     model_id: str | None = None,
+    skip_draft: bool = False,
 ) -> dict[str, Any]:
     """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
     from core.config import is_embedding_server
@@ -561,6 +729,27 @@ def load_server_checkpoint(
     entry = normalize_server(server)
     if is_embedding_server(entry):
         return start_embedding_server(entry, cfg=cfg)
+
+    custom_path = str(model_path or '').strip()
+    elsewhere = find_target_loaded_elsewhere(
+        entry,
+        cfg=cfg,
+        model_path=custom_path or None,
+        exclude_server_id=str(entry.get('id') or ''),
+    )
+    if elsewhere:
+        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
+        port = int(elsewhere.get('port') or 0)
+        port_text = f' (port {port})' if port else ''
+        return {
+            'success': False,
+            'already_loaded_elsewhere': True,
+            'error': (
+                f'This model is already loaded on {host_label}{port_text}. '
+                'Unload it before loading a second copy.'
+            ),
+            **elsewhere,
+        }
 
     from core.runtime import _fetch_models_payload, load_model, probe_models, stop_server
 
@@ -596,8 +785,8 @@ def load_server_checkpoint(
             load_settings = dict(preset_entry.get('load_settings') or {})
             load_settings['flash_attention'] = False
             preset_entry['load_settings'] = load_settings
-        load_id = str(model_id or model_id_from_path(path_obj)).strip()
-        profile_source = str(model_id or path_obj)
+        load_id = sanitize_preset_model_id(model_id or model_id_from_path(path_obj), path_obj)
+        profile_source = str(path_obj)
         load_profile = infer_profile_from_path(profile_source)
         try:
             write_server_preset(
@@ -615,10 +804,9 @@ def load_server_checkpoint(
             adopted = adopt_running_engine(entry, cfg=cfg)
             if not adopted.get('success'):
                 return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
-            loaded = probe_models(api_url)
-            if load_id in loaded:
-                note_boot_cycle_end(port)
-                return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True, 'model': load_id}
+            already = checkpoint_already_loaded(entry, cfg=cfg, model_path=custom_path, model_id=load_id)
+            if already:
+                return already
             stop_server(port=port, host=host, api_url=api_url)
 
         listen = start_router_listener(entry, cfg=cfg, skip_preset_write=True)
@@ -635,13 +823,16 @@ def load_server_checkpoint(
             'port': port,
         }
     else:
-        load_id = str(entry.get('model_id') or '').strip()
+        load_id = str(model_id or entry.get('model_id') or '').strip()
         if not load_id:
             return {'success': False, 'error': 'model_id required'}
         try:
-            write_server_preset(entry, cfg=cfg)
+            write_server_preset(entry, cfg=cfg, use_draft=False if skip_draft else None)
         except ValueError as exc:
             return {'success': False, 'error': str(exc), 'port': port}
+
+    if skip_draft and _tcp_port_open(host, port):
+        stop_server(port=port, host=host, api_url=api_url)
 
     if port <= 0:
         return {'success': False, 'error': 'invalid port'}
@@ -656,10 +847,9 @@ def load_server_checkpoint(
         adopted = adopt_running_engine(entry, cfg=cfg)
         if not adopted.get('success'):
             return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
-        loaded = probe_models(api_url)
-        if load_id in loaded:
-            note_boot_cycle_end(port)
-            return {'success': True, 'port': port, 'loaded': True, 'already_loaded': True, 'model': load_id}
+        already = checkpoint_already_loaded(entry, cfg=cfg, model_path=model_path, model_id=load_id)
+        if already:
+            return already
         if load_id not in registered_ids:
             stop_server(port=port, host=host, api_url=api_url)
     else:
@@ -833,7 +1023,11 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     return {'success': False, 'error': f'timed out waiting for port {port}', 'port': port, 'log_file': str(log_path)}
 
 
-def reload_server(server: dict[str, Any]) -> dict[str, Any]:
+def reload_server(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from core.config import is_embedding_server
     from core.embedding_server import start_embedding_server, stop_embedding_server
 
@@ -842,11 +1036,11 @@ def reload_server(server: dict[str, Any]) -> dict[str, Any]:
         stop_result = stop_embedding_server(entry)
         if not stop_result.get('success'):
             return stop_result
-        return start_embedding_server(entry)
+        return start_embedding_server(entry, cfg=cfg)
 
     from core.runtime import stop_server
 
     result = stop_server(port=int(entry['port']), host=str(entry['host']), api_url=entry.get('api_url'))
     if not result.get('success'):
         return result
-    return start_server(entry)
+    return start_server(entry, cfg=cfg)

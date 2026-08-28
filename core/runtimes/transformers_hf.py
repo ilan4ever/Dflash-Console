@@ -127,6 +127,8 @@ class TransformersRuntimeAdapter:
             'execution_mode': self.execution_mode,
             'running': running,
             'port': port,
+            'host': _HOST,
+            'api_url': f'http://{_HOST}:{port}' if port else '',
             'active_model': model,
             'device': device,
             'torch_dtype': dtype,
@@ -143,7 +145,9 @@ class TransformersRuntimeAdapter:
         if not self.is_installed():
             return {
                 'success': False,
-                'error': 'Transformers runtime is not installed — open Settings → Speech & runtimes to download it',
+                'error': 'Transformers runtime is not installed.',
+                'requires_install': True,
+                'runtime_id': self.runtime_id,
             }
         self._ensure_worker()
         self.write_manifest()
@@ -263,7 +267,7 @@ class TransformersRuntimeAdapter:
         global _PROCESS, _PORT
         self._terminate()
         if not self.is_installed():
-            return {'success': False, 'error': 'Transformers runtime is not installed'}
+            return {'success': False, 'error': 'Transformers runtime is not installed', 'requires_install': True, 'runtime_id': self.runtime_id}
         port = int(_PROFILE.get('port') or 0)
         if port <= 0:
             port = suggest_runtime_port()
@@ -359,8 +363,21 @@ class TransformersRuntimeAdapter:
 
     def write_manifest(self) -> Path:
         try:
+            # Keep the installer-stamped bundle_revision so the components hub
+            # does not report a false "Update available" after the first start.
+            existing: dict[str, Any] = {}
+            try:
+                existing = json.loads(TF_MANIFEST.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                existing = {}
+            revision = existing.get('bundle_revision')
+            if not revision:
+                from core.components_hub import BUNDLE_REVISIONS
+
+                revision = int(BUNDLE_REVISIONS.get(self.runtime_id, 0) or 0)
             payload = {
                 'version': 1,
+                'bundle_revision': int(revision or 0),
                 'runtime_id': self.runtime_id,
                 'worker': str(TF_SERVER),
                 'python': self.python(),
