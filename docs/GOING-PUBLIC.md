@@ -67,3 +67,5 @@ gh release create "v0.3.103" `
 - README **Download** link works for everyone
 - Rotate `DFLASH_UPDATE_TOKEN` if it was ever committed (history scan)
 - Review open Issues/Discussions defaults and branch protection on `main`
+- **Project board:** https://github.com/users/ilan4ever/projects/1 (Bugs / triage)
+- **Announcement:** post in Discussions → Announcements (`docs/announcements/public-preview-v0.3.103.md`)

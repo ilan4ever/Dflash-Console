@@ -14,10 +14,11 @@ Public docs: [https://onevoiceai.in/dflash-console/docs/CLI.md](https://onevoice
 
 ## Install
 
-The PyPI package name is **`dflash-console`**. The command you type is
-**`dflash`**. Do not run `pip install dflash` — that is a different project.
+The PyPI package name will be **`dflash-console`** (not published yet). The
+command you type is **`dflash`**. Do not run `pip install dflash` — that is a
+different project.
 
-### From pip
+### From pip (after PyPI publish)
 
 ```powershell
 pip install dflash-console
@@ -25,12 +26,9 @@ dflash serve
 dflash help
 ```
 
-`dflash serve` starts the web UI at **http://127.0.0.1:8900/**. Model weights
-and `llama-server` stay on this PC. After a pip install, settings and logs
-default to `%LOCALAPPDATA%\DFlash Console` unless you set
-`DFLASH_CONSOLE_ROOT`.
+Until PyPI is live, use a git checkout (below).
 
-### From a git checkout
+### From a git checkout (current)
 
 ```powershell
 pip install -e .
