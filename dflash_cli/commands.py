@@ -13,6 +13,13 @@ from typing import Any
 from core.config import PACKAGE_ROOT, ROOT, ensure_console_data_root, is_embedding_server, is_source_checkout
 from dflash_cli import __version__
 from dflash_cli.http import ConsoleClient, ConsoleError
+from dflash_cli.server_takeover import (
+    console_health,
+    console_roots_match,
+    console_versions_match,
+    stop_console_on_port,
+    tcp_port_open,
+)
 from dflash_cli.render import emit, emit_json, fail, format_table, yes_no
 from dflash_cli.resolve import pick_engine, pick_model, pick_node, pick_runtime
 
@@ -629,10 +636,19 @@ def cmd_settings(client: ConsoleClient, args: Any) -> int:
 
 def cmd_serve(args: Any) -> int:
     port = int(args.port or 8900)
-    if _already_up(port):
-        emit(f'Already running at http://127.0.0.1:{port}')
-        return 0
     root = ensure_console_data_root()
+    health = console_health(port)
+    if health:
+        if console_roots_match(health, root) and console_versions_match(health, __version__):
+            emit(f'Already running at http://127.0.0.1:{port}')
+            emit(f'data    {root}')
+            return 0
+        existing = health.get('process_root') or health.get('console_root') or 'unknown'
+        emit(f'Stopping Console on port {port} ({existing})...')
+        if not stop_console_on_port(port):
+            return fail(f'Could not free port {port} for DFlash Console')
+    elif tcp_port_open('127.0.0.1', port):
+        return fail(f'Port {port} is in use by another application')
     env = os.environ.copy()
     env['PYTHONPATH'] = str(PACKAGE_ROOT) + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
     env['DFLASH_CONSOLE_ROOT'] = str(root)
@@ -846,15 +862,6 @@ def _wait_job(client: ConsoleClient, job_id: str, *, as_json: bool) -> int:
         if status in {'done', 'error'}:
             return 0 if status == 'done' else fail(job.get('error') or 'download failed')
         time.sleep(1.5)
-
-
-def _already_up(port: int) -> bool:
-    try:
-        ConsoleClient(f'http://127.0.0.1:{port}', timeout=2).get('/api/health')
-        return True
-    except ConsoleError:
-        return False
-
 
 def _cmd_shim_text() -> str:
     if is_source_checkout():

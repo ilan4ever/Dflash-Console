@@ -25,10 +25,12 @@ dflash serve
 dflash help
 ```
 
-`dflash serve` starts the web UI at **http://127.0.0.1:8900/**. Model weights
-and `llama-server` stay on this PC. After a pip install, settings and logs
-default to `%LOCALAPPDATA%\DFlash Console` unless you set
-`DFLASH_CONSOLE_ROOT`.
+`dflash serve` starts the web UI at **http://127.0.0.1:8900/**. If another
+Console instance (dev checkout, desktop app, or older pip server) already holds
+that port, `dflash serve` stops it first and starts the pip-installed server for
+your Console data folder. Model weights and `llama-server` stay on this PC.
+After a pip install, settings and logs default to `%LOCALAPPDATA%\DFlash Console`
+unless you set `DFLASH_CONSOLE_ROOT`.
 
 ### From a git checkout
 
