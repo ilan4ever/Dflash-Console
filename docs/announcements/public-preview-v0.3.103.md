@@ -12,7 +12,7 @@ A local control panel for **DFlash speculative-decoding stacks** and a unified m
 2. Requires **Windows 10+**, **Python 3.10+**, and **PowerShell 7+** for the Console data root.
 3. Open **http://127.0.0.1:8900/** after install (or use the desktop app).
 
-**Terminal CLI (optional):** from a git checkout run `pip install -e .` then `dflash serve`. PyPI (`pip install dflash-console`) will be enabled in a follow-up release.
+**Terminal CLI (optional):** `pip install dflash-console` then `dflash serve`.
 
 ## Please report
 

@@ -13,13 +13,12 @@ Pick one install path:
 
 | Path | What to run |
 |------|-------------|
-| **pip / git** | Clone the repo, `pip install -e .`, then `dflash serve` (PyPI coming soon) |
+| **pip** | `pip install dflash-console` then `dflash serve` |
 | **Windows installer** | Install the desktop app, then open it (it starts the same server) |
 | **Git checkout** | Copy `config.example.json` to `config.json`, set **DFlash root** and engine profiles, then `.\run.ps1` or `dflash serve` |
 
 The PyPI name is **`dflash-console`**. The terminal command is **`dflash`**.
-`pip install dflash` is a different project. **PyPI is not published yet** — clone
-the repo and run `pip install -e .` until `pip install dflash-console` works.
+`pip install dflash` is a different project.
 
 1. Start the server (`dflash serve`, `.\run.ps1`, or the desktop app).
 2. Open **http://127.0.0.1:8900/** if you started the API without Electron.
@@ -477,7 +476,7 @@ change configuration or contact external services.
 ## 10a. Terminal CLI
 
 `dflash` talks to the same local server as the browser. Install with
-`pip install -e .` from a git checkout or `.\dflash.ps1 install`, then:
+`pip install dflash-console` or `.\dflash.ps1 install`, then:
 
 ```powershell
 dflash help
@@ -508,9 +507,9 @@ list: **Documentation → Terminal CLI** or [CLI.md](./CLI.md).
 | Stats stuck on dashes | Run at least one completion through the engine or console proxy |
 | CPU looks wrong | Wait for the next monitor poll or restart the Console server |
 | Backend changes not visible | Run `.\scripts\restart-console-server.ps1` |
-| `dflash` not found | `pip install -e .` from a git checkout or `.\dflash.ps1 install`, then open a new terminal |
+| `dflash` not found | `pip install dflash-console` or `.\dflash.ps1 install`, then open a new terminal |
 | `Cannot reach DFlash Console` | Start it with `dflash serve` or `.\server.ps1` |
-| `pip install dflash` installs the wrong app | Use `dflash-console` from this repo (PyPI pending) |
+| `pip install dflash` installs the wrong app | Use `pip install dflash-console` |
 
 ---
 

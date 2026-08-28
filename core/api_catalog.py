@@ -148,7 +148,7 @@ def _overview_html(base: str) -> str:
   <ul class="df-docs-checklist">
     <li>About page with ILAN AVIV attribution, version, GNU AGPL v3-or-later license, and project links</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li><strong>git checkout</strong> — <code>pip install -e .</code> then <code>dflash serve</code>. PyPI (<code>pip install dflash-console</code>) is planned.</li>
+    <li><strong>pip install dflash-console</strong> then <code>dflash serve</code>. The command is <code>dflash</code>.</li>
     <li><strong>Terminal CLI</strong> — <code>dflash list</code>, <code>embed</code>, <code>delete</code>, <code>nodes</code>, <code>settings</code>, load, chat, search, and pull. See Documentation → Terminal CLI.</li>
     <li>Dedicated Downloads page for current transfers and last downloads</li>
     <li>Model library filters for DFlash stacks, accelerators, and loaded models</li>

@@ -12,7 +12,7 @@
 |---------|------|
 | **Setup installer** (recommended) | [Latest GitHub Release](https://github.com/ilan4ever/Dflash-Console/releases/latest) — `DFlash-Console-Setup-*-x64.exe` |
 | **Portable** | Same Releases page — `DFlash-Console-Portable-*-x64.exe` when published |
-| **CLI only** | From a [git checkout](https://github.com/ilan4ever/Dflash-Console): `pip install -e .` then `dflash serve`. PyPI publish is pending — `pip install dflash-console` is not live yet. |
+| **CLI only** | `pip install dflash-console` then `dflash serve` |
 
 Installed desktop apps check for updates through a separate signed feed (not GitHub).
 New installs: use the GitHub Release installer above.
@@ -31,7 +31,7 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
 | **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
 | **Documentation** | In-app API reference, user guide, terminal CLI, and release notes |
-| **Terminal CLI** | `dflash` command: list, load, chat, embed, delete, nodes, settings, search, pull. Install from a git checkout (`pip install -e .`) until PyPI is published. |
+| **Terminal CLI** | `dflash` command: list, load, chat, embed, delete, nodes, settings, search, pull. Install with `pip install dflash-console` |
 | **About** | Developer attribution, version, license, runtime boundary, and public project links |
 | **Discovery** | **Scan PC** finds model folders; **Add folder** opens a drive-aware browser (C:, D:, …) |
 
@@ -139,7 +139,7 @@ registry); CLI runtimes use `port: 0`.
 
 | Feature | Description |
 |---------|-------------|
-| **pip package** | `pip install -e .` from a git checkout, then `dflash serve`. PyPI (`pip install dflash-console`) ships in a follow-up release. |
+| **pip package** | `pip install dflash-console` then `dflash serve`. The command is `dflash`. |
 | **Terminal** | `dflash embed`, `dflash delete`, `dflash nodes`, and `dflash settings`. |
 
 ### v0.3.30 — choose vLLM in the toolbar
@@ -261,18 +261,16 @@ registry); CLI runtimes use `port: 0`.
 
 ## Quick start
 
-### Install CLI from git (PyPI coming soon)
+### Install with pip
 
 ```powershell
-git clone https://github.com/ilan4ever/Dflash-Console.git
-cd Dflash-Console
-pip install -e .
+pip install dflash-console
 dflash serve
 ```
 
-Open **http://127.0.0.1:8900/**. The terminal command is `dflash`.
-`pip install dflash-console` on PyPI is planned but **not published yet**.
-`pip install dflash` is a different project.
+Open **http://127.0.0.1:8900/**. The PyPI package is `dflash-console`; the terminal
+command is `dflash`. Model weights and `llama-server` stay on this PC
+(`DFLASH_ROOT` or Settings). `pip install dflash` is a different project.
 
 ### From source
 
@@ -300,7 +298,7 @@ The Console is the source of truth for models on this PC. `dflash list` shows
 the same full library as the Models tab, including Ollama and LM Studio.
 
 ```powershell
-pip install -e .
+pip install dflash-console
 dflash serve
 dflash help
 dflash list
