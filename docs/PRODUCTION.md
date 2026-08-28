@@ -41,7 +41,7 @@ developer checkout to a trusted production deployment.
 - [ ] Version bumped via `scripts/bump-version.ps1` (package, lockfile, About, README, `pyproject.toml`)
 - [ ] Windows artifacts signed before public distribution
 - [ ] Update manifest + update endpoint deployed (see `automatic-updates.md`)
-- [ ] PyPI package `dflash-console` published when a token is available (`scripts/publish-pypi.ps1`)
+- [ ] PyPI package `dflash-console` published (`scripts/publish-pypi.ps1`) — live at https://pypi.org/project/dflash-console/
 
 ## 6. Docs
 

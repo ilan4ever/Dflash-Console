@@ -56,10 +56,11 @@ git push origin "v$v"
 **Option B — manual upload** (local build):
 
 ```powershell
-gh release create "v0.3.103" `
-  --title "DFlash Console v0.3.103" `
-  --notes-file docs/release-notes-0.3.103.md `
-  "dist-electron/DFlash-Console-Setup-0.3.103-x64.exe"
+$v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+gh release create "v$v" `
+  --title "DFlash Console v$v" `
+  --notes-file "docs/release-notes-v$v.md" `
+  "dist-electron/DFlash-Console-Setup-$v-x64.exe"
 ```
 
 ## After going public
@@ -68,4 +69,5 @@ gh release create "v0.3.103" `
 - Rotate `DFLASH_UPDATE_TOKEN` if it was ever committed (history scan)
 - Review open Issues/Discussions defaults and branch protection on `main`
 - **Project board:** https://github.com/users/ilan4ever/projects/1 (Bugs / triage)
-- **Announcement:** post in Discussions → Announcements (`docs/announcements/public-preview-v0.3.103.md`)
+- **Announcement:** post in Discussions → Announcements (`docs/announcements/public-preview.md`)
+- **PyPI:** https://pypi.org/project/dflash-console/ (`pip install dflash-console`)

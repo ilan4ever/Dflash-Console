@@ -116,10 +116,10 @@ release assets.
 
 ## 5. Publish the pip package
 
-The PyPI name is `dflash-console`. **Do not advertise `pip install dflash-console`
-in user-facing docs until this step succeeds.** Users install with
-`pip install dflash-console` and then run `dflash serve` / `dflash list`. Do not
-upload as `dflash`; that name is a different project.
+The PyPI name is `dflash-console`. Publish with `scripts/publish-pypi.ps1`
+after every version bump so `pip install dflash-console` matches the release.
+Users run `dflash serve` / `dflash list`. Do not upload as `dflash`; that name
+is a different project.
 
 After the version bump:
 

@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.104
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.105
 
 ## Download (Windows)
 
@@ -134,6 +134,21 @@ registry); CLI runtimes use `port: 0`.
 ---
 
 ## Recent improvements
+
+### v0.3.105 — public preview documentation
+
+| Feature | Description |
+|---------|-------------|
+| **Docs** | README, user guide, CLI, About page, and in-app Documentation aligned for launch |
+| **Install** | GitHub Releases + PyPI + single-server rule documented everywhere |
+
+### v0.3.104 — pip on PyPI and single-server takeover
+
+| Feature | Description |
+|---------|-------------|
+| **PyPI** | `pip install dflash-console` is live on [PyPI](https://pypi.org/project/dflash-console/) |
+| **dflash serve** | Stops a foreign Console on port 8900 (dev, EXE, or older pip) before starting |
+| **Public preview** | GitHub Releases for the Windows installer; Discussions and Issues for feedback |
 
 ### v0.3.98 — pip install and extra terminal commands
 

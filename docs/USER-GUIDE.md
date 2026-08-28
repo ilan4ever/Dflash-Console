@@ -20,6 +20,19 @@ Pick one install path:
 The PyPI name is **`dflash-console`**. The terminal command is **`dflash`**.
 `pip install dflash` is a different project.
 
+### One Console server per machine
+
+Only **one** Console API should listen on port **8900** at a time. The Windows
+desktop app and `dflash serve` both stop a foreign instance (different data root
+or version) before starting. If you use pip, the default data folder is
+`%LOCALAPPDATA%\DFlash Console` unless you set `DFLASH_CONSOLE_ROOT`.
+
+| Install | Typical data root |
+|---------|-------------------|
+| **Windows installer** | Folder you chose at first launch |
+| **pip** | `%LOCALAPPDATA%\DFlash Console` |
+| **Git checkout** | Repository folder |
+
 1. Start the server (`dflash serve`, `.\run.ps1`, or the desktop app).
 2. Open **http://127.0.0.1:8900/** if you started the API without Electron.
 3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM** or **Transformers** there, or later in **Settings → Speech & runtimes**. Those engines download after install so the Windows setup stays small.

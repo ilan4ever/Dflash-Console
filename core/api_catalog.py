@@ -146,16 +146,13 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
-    <li>About page with ILAN AVIV attribution, version, GNU AGPL v3-or-later license, and project links</li>
+    <li><strong>Public preview</strong> — Windows installer on <a href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and <strong>pip install dflash-console</strong> on PyPI</li>
+    <li><strong>dflash serve</strong> stops another Console on port 8900 (dev checkout, desktop app, or older pip) before starting — only one server at a time</li>
+    <li>Gemma/Qwen vision projectors, split-GGUF import, and accelerator filtering on the Models tab</li>
     <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li><strong>pip install dflash-console</strong> then <code>dflash serve</code>. The command is <code>dflash</code>.</li>
-    <li><strong>Terminal CLI</strong> — <code>dflash list</code>, <code>embed</code>, <code>delete</code>, <code>nodes</code>, <code>settings</code>, load, chat, search, and pull. See Documentation → Terminal CLI.</li>
-    <li>Dedicated Downloads page for current transfers and last downloads</li>
-    <li>Model library filters for DFlash stacks, accelerators, and loaded models</li>
-    <li>Hugging Face catalog with README details, install detection, and download progress</li>
-    <li>Locations panel with config, preset, and model-library management</li>
-    <li>Loopback validation and an external Console data root for the Electron shell</li>
-    <li><strong>Multi-modal runtimes</strong> — Piper TTS, Whisper STT, and embeddings with a unified <code>POST /api/models/load</code> that loads any model type by path</li>
+    <li><strong>Terminal CLI</strong> — <code>dflash list</code>, <code>embed</code>, <code>delete</code>, <code>nodes</code>, <code>settings</code>, load, chat, search, and pull</li>
+    <li>Dedicated Downloads page, Hugging Face catalog, and Locations panel for config and libraries</li>
+    <li><strong>Multi-modal runtimes</strong> — Piper TTS, Whisper STT, and embeddings with unified <code>POST /api/models/load</code></li>
   </ul>
 </section>
 
@@ -175,10 +172,20 @@ def _overview_html(base: str) -> str:
 </section>
 
 <section class="df-docs-section-block">
+  <h3>Install</h3>
+  <ul class="df-docs-checklist">
+    <li><strong>Windows (recommended):</strong> download <code>DFlash-Console-Setup-*-x64.exe</code> from <a href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">GitHub Releases</a></li>
+    <li><strong>Terminal CLI:</strong> <code>pip install dflash-console</code> then <code>dflash serve</code> (PyPI package name; command is <code>dflash</code>)</li>
+    <li><strong>Git checkout:</strong> copy <code>config.example.json</code> → <code>config.json</code>, set <code>dflash_root</code>, then <code>.\\run.ps1</code> or <code>dflash serve</code></li>
+  </ul>
+  <p>Only one Console API should listen on port 8900. The desktop app and <code>dflash serve</code> stop a foreign instance before starting.</p>
+</section>
+
+<section class="df-docs-section-block">
   <h3>Quick start</h3>
   <ol class="df-docs-steps">
-    <li>Copy <code>config.example.json</code> → <code>config.json</code> and set <code>dflash_root</code>.</li>
-    <li>Run <code>.\\run.ps1</code> and open <a href="{base}/">{base}/</a>.</li>
+    <li>Install with the Windows setup EXE, <code>pip install dflash-console</code>, or a git checkout.</li>
+    <li>Start the server (<code>dflash serve</code>, <code>.\\run.ps1</code>, or the desktop app) and open <a href="{base}/">{base}/</a>.</li>
     <li>On <strong>Engines</strong>, turn on a profile and load a checkpoint.</li>
     <li>Point your app at the card URL or the console chat proxy.</li>
   </ol>

@@ -1011,7 +1011,7 @@ Machine
   dflash settings            Show or change settings
 
 Server
-  dflash serve               Start the Console if it is not running
+  dflash serve               Start Console (stops foreign instance on 8900 first)
   dflash open                Open the UI
   dflash api GET /api/health Raw HTTP helper
   dflash install             Add `dflash` to your user PATH
