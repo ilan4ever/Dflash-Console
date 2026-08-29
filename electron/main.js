@@ -11,6 +11,7 @@ const {
   syncStartupRegistration,
 } = require('./app-settings');
 const { UpdateService } = require('./update-service');
+const { compareVersions } = require('./update-contract');
 const { registerContextMenus } = require('./context-menu');
 
 const DEFAULT_PORT = 8900;
@@ -680,13 +681,25 @@ function healthMatchesConsoleRoot(health, root) {
  * be served by stale backend code. Versions stay in sync across package.json
  * and core/version.py, so a mismatch always means "restart me".
  */
-function healthMatchesAppVersion(health) {
+function healthMatchesAppVersion(health, root) {
   if (!health) return false;
   const appVersion = String(app.getVersion() || '').trim();
   if (!appVersion) return true;
   const serverVersion = String(health.version || '').trim();
   if (!serverVersion) return false;
-  return serverVersion === appVersion;
+  if (serverVersion === appVersion) return true;
+  // The packaged app syncs newer Python/UI files into the data root on every
+  // start. Reuse a same-root server that already runs that newer API instead
+  // of stop/restart loops when the desktop shell exe was not updated yet.
+  if (
+    app.isPackaged
+    && root
+    && healthMatchesConsoleRoot(health, root)
+    && compareVersions(serverVersion, appVersion) >= 0
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function fetchHealth(port = DEFAULT_PORT) {
@@ -1012,7 +1025,7 @@ async function ensureBackend() {
   let root = repoRoot();
   let port = configuredPort(root);
   const existing = await fetchHealth(port);
-  if (existing && healthMatchesConsoleRoot(existing, root) && healthMatchesAppVersion(existing)) {
+  if (existing && healthMatchesConsoleRoot(existing, root) && healthMatchesAppVersion(existing, root)) {
     activePort = port;
     startedByApp = false;
     return existing;
@@ -1028,7 +1041,7 @@ async function ensureBackend() {
   root = root || await chooseDataRoot();
   port = configuredPort(root);
   const owned = await fetchHealth(port);
-  if (owned && healthMatchesConsoleRoot(owned, root) && healthMatchesAppVersion(owned)) {
+  if (owned && healthMatchesConsoleRoot(owned, root) && healthMatchesAppVersion(owned, root)) {
     activePort = port;
     startedByApp = false;
     return owned;
@@ -1205,6 +1218,25 @@ async function createWindow() {
   await mainWindow.loadURL(url);
 }
 
+async function focusOrBoot() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow({ bringToFront: true });
+    return;
+  }
+  const deadline = Date.now() + 30000;
+  while (booting && Date.now() < deadline) {
+    await sleep(250);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      showMainWindow({ bringToFront: true });
+      return;
+    }
+  }
+  await boot();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow({ bringToFront: true });
+  }
+}
+
 async function boot() {
   if (booting) return;
   booting = true;
@@ -1260,11 +1292,7 @@ if (!gotLock) {
   }
 
   app.on('second-instance', () => {
-    if (mainWindow) {
-      showMainWindow({ bringToFront: true });
-      return;
-    }
-    void boot();
+    void focusOrBoot();
   });
 
   app.whenReady().then(() => {
