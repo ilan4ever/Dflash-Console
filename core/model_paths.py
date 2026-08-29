@@ -94,6 +94,85 @@ def _source_for_preset(preset: str) -> str:
     return 'library'
 
 
+def infer_discovered_from(
+    *,
+    path: str = '',
+    source: str = '',
+    preset: str = '',
+    library_label: str = '',
+) -> str:
+    """Human-readable origin for a catalog row (Models tab Source column)."""
+    source_key = str(source or '').strip().lower()
+    if source_key == 'lmstudio':
+        return 'LM Studio'
+    if source_key == 'ollama':
+        return 'Ollama'
+    if source_key in {'dflash', 'dflash-profile', 'dflash-stack'}:
+        return 'DFlash'
+
+    preset_key = str(preset or '').strip().lower()
+    if preset_key and preset_key != 'custom':
+        preset_meta = _STORAGE_PRESETS.get(preset_key)
+        if preset_meta:
+            return str(preset_meta.get('label') or preset_key)
+
+    label = str(library_label or '').strip()
+    if label:
+        return label
+
+    text = str(path or '').replace('\\', '/').lower()
+    path_rules: list[tuple[str, str]] = [
+        (r'\.lmstudio[/\\]|/lmstudio/|\\lm studio\\|/lm studio/', 'LM Studio'),
+        (r'\\ollama[/\\]|/ollama/', 'Ollama'),
+        (r'onevoice', 'OneVoice'),
+        (r'huggingface[/\\]hub|\.cache[/\\]huggingface', 'Hugging Face hub'),
+        (r'comfyui', 'ComfyUI'),
+        (r'kobold', 'KoboldCpp'),
+        (r'gpt4all', 'GPT4All'),
+        (r'text-generation-webui|oobabooga', 'text-generation-webui'),
+        (r'[/\\]jan[/\\]', 'Jan'),
+        (r'autobot', 'Autobot'),
+    ]
+    for pattern, name in path_rules:
+        if re.search(pattern, text, re.I):
+            return name
+    return 'External'
+
+
+def annotate_discovered_from(
+    row: dict[str, Any],
+    *,
+    source: str,
+    library_preset: str = '',
+    library_label: str = '',
+) -> None:
+    preset = str(library_preset or row.get('library_preset') or '').strip()
+    label = str(library_label or row.get('library_label') or '').strip()
+    if preset:
+        row['library_preset'] = preset
+    if label:
+        row['library_label'] = label
+    row['discovered_from'] = infer_discovered_from(
+        path=str(row.get('path') or ''),
+        source=source or str(row.get('source') or ''),
+        preset=preset,
+        library_label=label,
+    )
+
+
+def _preset_label_for_seed_root(path: Path) -> tuple[str, str]:
+    text = str(path).replace('\\', '/').lower()
+    if '/.lmstudio/' in text or '/lm studio/' in text or text.endswith('/.lmstudio/models'):
+        return 'lmstudio', _STORAGE_PRESETS['lmstudio']['label']
+    if 'onevoice' in text:
+        return 'custom', 'OneVoice'
+    if 'huggingface' in text:
+        return 'custom', 'Hugging Face hub'
+    if '/ollama/' in text or '\\ollama\\' in text:
+        return 'custom', 'Ollama'
+    return 'custom', path.name
+
+
 def default_model_libraries(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     config = cfg or load_config()
     root = _preset_path('dflash', config)
@@ -199,8 +278,8 @@ def get_library_by_id(library_id: str, cfg: dict[str, Any] | None = None) -> dic
     return None
 
 
-def enabled_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]:
-    roots: list[tuple[Path, str]] = []
+def enabled_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str, str, str]]:
+    roots: list[tuple[Path, str, str, str]] = []
     seen: set[str] = set()
     for row in get_model_libraries(cfg):
         if not row.get('enabled'):
@@ -211,22 +290,34 @@ def enabled_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, st
             continue
         seen.add(key)
         preset = str(row.get('preset') or 'custom')
-        roots.append((path, _source_for_preset(preset)))
+        label = str(row.get('label') or _STORAGE_PRESETS.get(preset, {}).get('label') or path.name)
+        roots.append((path, _source_for_preset(preset), preset, label))
     return roots
 
 
-def _source_for_seed_root(path: Path) -> str:
-    text = str(path).replace('\\', '/').lower()
-    if '/.lmstudio/' in text or text.endswith('/.lmstudio/models'):
-        return 'lmstudio'
-    if 'huggingface' in text:
-        return 'library'
-    if 'onevoice' in text:
-        return 'library'
-    return 'library'
+def library_context_for_path(
+    path: str | Path,
+    cfg: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """Best matching scan root for a model path: (source, preset, label)."""
+    try:
+        target = str(Path(path).expanduser().resolve()).lower()
+    except OSError:
+        return '', '', ''
+    best_len = -1
+    best: tuple[str, str, str] = ('', '', '')
+    for root, source, preset, label in disk_scan_roots(cfg):
+        try:
+            root_key = str(root.expanduser().resolve()).lower()
+        except OSError:
+            root_key = str(root).lower()
+        if target.startswith(root_key) and len(root_key) > best_len:
+            best_len = len(root_key)
+            best = (source, preset, label)
+    return best
 
 
-def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]:
+def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str, str, str]]:
     """Library roots for All models: enabled libraries plus common on-disk model folders.
 
     Skips broad home folders and huge caches (Documents/Downloads/HF hub).
@@ -235,8 +326,8 @@ def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]
     config = cfg if cfg is not None else load_config()
     roots = list(enabled_scan_roots(config))
     seen: set[str] = set()
-    ordered: list[tuple[Path, str]] = []
-    for path, source in roots:
+    ordered: list[tuple[Path, str, str, str]] = []
+    for path, source, preset, label in roots:
         try:
             key = str(path.expanduser().resolve()).lower()
         except OSError:
@@ -244,7 +335,7 @@ def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]
         if key in seen:
             continue
         seen.add(key)
-        ordered.append((path, source))
+        ordered.append((path, source, preset, label))
 
     home = Path.home()
     local = Path(os.environ.get('LOCALAPPDATA') or '')
@@ -270,14 +361,15 @@ def disk_scan_roots(cfg: dict[str, Any] | None = None) -> list[tuple[Path, str]]
         if not resolved.is_dir():
             continue
         seen.add(key)
-        ordered.append((resolved, _source_for_seed_root(resolved)))
+        preset, label = _preset_label_for_seed_root(resolved)
+        ordered.append((resolved, _source_for_preset(preset), preset, label))
     return ordered
 
 
 def allowed_model_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
-    for path, _source in enabled_scan_roots(cfg):
+    for path, _source, _preset, _label in enabled_scan_roots(cfg):
         try:
             resolved = path.resolve()
         except OSError:

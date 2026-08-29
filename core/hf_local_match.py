@@ -100,7 +100,7 @@ def find_local_matches(repo_id: str, filename: str, *, cfg: dict[str, Any] | Non
         if row.get('path')
     }
 
-    for root, _source in enabled_scan_roots(config):
+    for root, *_rest in enabled_scan_roots(config):
         expected = root.expanduser() / author / repo_name / target_name
         row = catalog_by_path.get(str(expected.resolve()).lower()) if expected.is_file() else None
         add_match(expected, 'exact_path', row)
@@ -134,7 +134,7 @@ def _extract_hf_repo_from_path(path: Path, config: dict[str, Any]) -> str | None
         resolved = path.expanduser().resolve()
     except OSError:
         return None
-    for root, _source in enabled_scan_roots(config):
+    for root, *_rest in enabled_scan_roots(config):
         try:
             root_resolved = root.expanduser().resolve()
             rel = resolved.relative_to(root_resolved)

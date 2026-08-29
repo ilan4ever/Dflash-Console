@@ -88,7 +88,7 @@ def test_catalog_ready_matches_hf_layout_stack(tmp_path, monkeypatch):
     monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: cfg['servers'])
     monkeypatch.setattr('core.local_models._CATALOG_CACHE', None)
     monkeypatch.setattr('core.local_models._CATALOG_CACHE_AT', 0.0)
-    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library')])
+    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library', 'custom', 'Test')])
 
     from core.hf_local_match import is_catalog_ready_to_load
 
@@ -130,7 +130,7 @@ def test_catalog_ready_rejects_qwen36_when_stack_is_qwen35(tmp_path, monkeypatch
     monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: cfg['servers'])
     monkeypatch.setattr('core.local_models._CATALOG_CACHE', None)
     monkeypatch.setattr('core.local_models._CATALOG_CACHE_AT', 0.0)
-    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library')])
+    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library', 'custom', 'Test')])
 
     from core.hf_local_match import is_catalog_ready_to_load
 
@@ -181,7 +181,7 @@ def test_catalog_ready_rejects_dflash2_repo_when_stack_has_dflash1_draft(tmp_pat
     monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: cfg['servers'])
     monkeypatch.setattr('core.local_models._CATALOG_CACHE', None)
     monkeypatch.setattr('core.local_models._CATALOG_CACHE_AT', 0.0)
-    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library')])
+    monkeypatch.setattr('core.local_models.disk_scan_roots', lambda _cfg: [(root, 'library', 'custom', 'Test')])
 
     from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
 

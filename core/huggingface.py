@@ -2142,7 +2142,7 @@ def _discover_roots(cfg: dict[str, Any] | None = None) -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
     candidates = [get_download_dir(cfg)]
-    candidates.extend(path for path, _source in enabled_scan_roots(cfg))
+    candidates.extend(path for path, *_rest in enabled_scan_roots(cfg))
     for raw in candidates:
         try:
             path = Path(raw).expanduser().resolve()

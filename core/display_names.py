@@ -231,6 +231,36 @@ def friendly_stack_label(name: str | Path) -> str:
     return label
 
 
+def _engine_mode_suffix(*, profile: str, draft: dict[str, Any] | None) -> str:
+    """Short mode label so AR and DFlash profiles with the same weights stay distinct."""
+    profile_key = str(profile or '').strip().lower()
+    draft_path = str((draft or {}).get('path') or '')
+    draft_role = str((draft or {}).get('role') or '').lower()
+    if draft_path or any(token in profile_key for token in ('dflash', 'dspark', '-spec')):
+        if 'dspark' in profile_key or 'dspark' in draft_role:
+            return 'DSpark'
+        from core.dflash_generation import dflash_generation_label, infer_dflash_generation
+
+        return dflash_generation_label(infer_dflash_generation(draft_path or profile_key))
+    if profile_key.endswith('-ar') or profile_key in {'generic-ar', 'bonsai', 'qwen-ar', 'gemma-ar'}:
+        return 'AR'
+    if 'embed' in profile_key:
+        return 'Embedding'
+    return ''
+
+
+def _append_mode_suffix(title: str, mode_suffix: str) -> str:
+    core = str(title or '').strip()
+    mode = str(mode_suffix or '').strip()
+    if not core:
+        return mode
+    if not mode:
+        return core
+    if core.lower().endswith(f'— {mode.lower()}') or core.lower().endswith(f'- {mode.lower()}'):
+        return core
+    return f'{core} — {mode}'
+
+
 def _ensure_dflash_engine_marker(title_core: str) -> str:
     """Console titles must identify DFlash engines — not plain LM Studio models."""
     core = str(title_core or '').strip()
@@ -292,18 +322,19 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
         parameter_size=parameter_size,
         quantization_full=quantization_full,
     )
-    title_source_suffix = source_suffix
-    if draft and 'dflash' not in title_source_suffix.lower() and 'dspark' not in title_source_suffix.lower():
-        title_source_suffix = f'{title_source_suffix} dflash'.strip()
     title_core_ui = _title_core(
         family,
         parameter_size,
-        source_suffix=title_source_suffix,
+        source_suffix=source_suffix,
         variant=variant,
     )
     if not title_core_ui:
-        title_core_ui = str(server.get('label') or api_model_id or 'DFlash model').strip()
-    title_core_ui = _ensure_dflash_engine_marker(title_core_ui)
+        title_core_ui = str(server.get('label') or api_model_id or 'Model').strip()
+    mode_suffix = _engine_mode_suffix(
+        profile=str(server.get('profile') or ''),
+        draft=draft if draft else None,
+    )
+    title_core_ui = _append_mode_suffix(title_core_ui, mode_suffix)
     title_core_full = (
         f'{title_core_ui} {quantization}'.strip()
         if quantization
@@ -313,6 +344,7 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
     return {
         'display_name': title_core_ui,
         'display_name_full': title_core_full,
+        'engine_mode': mode_suffix,
         'family': family,
         'parameter_size': parameter_size,
         'quantization': quantization,

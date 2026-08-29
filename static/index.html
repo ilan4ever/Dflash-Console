@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.106</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.114</span>
           </div>
         </div>
       </div>
@@ -371,17 +371,12 @@ try {
                 <button type="button" class="lm-filter-chip" data-models-filter="accelerators" data-tooltip="Shows only the small DFlash 1, DFlash 2, or DSpark draft checkpoint files.">Accelerators</button>
                 <button type="button" class="lm-filter-chip" data-models-filter="loaded" data-tooltip="Shows only models currently loaded on the GPU.">Loaded</button>
               </div>
-              <label class="lm-models-engine-label" for="modelsEngineKindPick">Load with</label>
-              <select class="lm-select lm-models-engine-pick" id="modelsEngineKindPick" data-load-engine-pick title="Engine used when you click Load on a Hugging Face model">
-                <option value="dflash">DFlash / GGUF</option>
+              <select class="lm-select lm-models-type-filter" id="modelsTypeFilter" aria-label="Filter model type" title="Filter the library by model type or load engine">
+                <option value="all">All model types</option>
+                <option value="gguf">DFlash / GGUF</option>
                 <option value="vllm">vLLM</option>
                 <option value="transformers">Transformers</option>
-              </select>
-              <select class="lm-select lm-models-type-filter" id="modelsTypeFilter" aria-label="Filter model type" title="Filter the library by model type">
-                <option value="all">All model types</option>
                 <option value="llm">LLM / chat</option>
-                <option value="dflash">DFlash</option>
-                <option value="accelerators">Accelerators</option>
                 <option value="ocr">OCR</option>
                 <option value="translation">Translation</option>
                 <option value="speech-to-text">Speech-to-text</option>
@@ -508,7 +503,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.106</strong>
+                <strong id="dfAboutVersion">v0.3.114</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -709,6 +704,7 @@ try {
 
             <div class="lm-settings-nav-section">Engines</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-engines">Engine profiles</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="gw-llama">Llama.cpp</button>
 
             <div class="lm-settings-nav-section">Runtimes</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="rt-runtimes">Speech &amp; runtimes</button>
@@ -1047,7 +1043,7 @@ try {
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
                   <strong>Runtime</strong>
-                  <p class="lm-setting-desc">Default limits when this engine loads a model.</p>
+                  <p class="lm-setting-desc">Default limits when this engine loads a model. For GPU layers, threads, batch sizes, and sampling, see <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="gw-llama">Llama.cpp</button>.</p>
                 </div>
                 <div class="lm-setting-row">
                   <div><strong>Context window (API)</strong><p class="lm-setting-desc">Starting context on load — external API requests may grow it up to the limit below</p></div>
@@ -1091,6 +1087,91 @@ try {
                 </div>
                 <div id="settingsApiEndpointList" class="lm-api-endpoint-list"></div>
                 <p class="lm-setting-desc">Full guide: open <strong>Documentation</strong> in the sidebar, or <a href="/docs" target="_blank" rel="noopener">Swagger UI</a>.</p>
+              </section>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="gw-llama">
+              <div class="lm-settings-header"><h2>Llama.cpp</h2></div>
+              <p class="lm-setting-desc" data-settings-search="llama cpp gpu layers threads batch flash attention sampling">Default llama-server load and sampling settings for each engine profile. These map to <code>start_llama_server.ps1</code> flags (<code>-GpuLayers</code>, <code>-CpuThreads</code>, <code>-EvalBatch</code>, etc.). Reload a loaded model on the Engines tab to apply changes.</p>
+              <section class="lm-settings-section">
+                <div class="lm-setting-row">
+                  <div><strong>Engine profile</strong><p class="lm-setting-desc">Which configured engine these defaults apply to</p></div>
+                  <select class="lm-select full" id="llamaSettingsPick" aria-label="Engine profile for llama.cpp settings"></select>
+                </div>
+                <p class="lm-setting-desc">GPU strategy and KV-cache offload live under <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="hw-strategy">Hardware → Multi-GPU</button>.</p>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>GPU &amp; memory</strong>
+                  <p class="lm-setting-desc">Layer offload and attention backend (-ngl, -fa).</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>GPU layer count</strong><p class="lm-setting-desc">Layers on GPU (-ngl) · 99 = all layers</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsGpuLayers" value="99" min="0" max="999" step="1">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Flash attention</strong><p class="lm-setting-desc">Faster attention on supported models (-fa)</p></div>
+                  <label class="lm-toggle small"><input type="checkbox" id="llamaSettingsFlashAttention" checked><span class="lm-toggle-track"></span></label>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Parallel slots</strong><p class="lm-setting-desc">Concurrent request slots per model (-np)</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsParallelSlots" value="4" min="1" max="16" step="1">
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>CPU throughput</strong>
+                  <p class="lm-setting-desc">Thread pool and batch sizes for prompt processing.</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Thread pool</strong><p class="lm-setting-desc">CPU threads (-t)</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsCpuThreads" value="9" min="1" max="64" step="1">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Eval batch</strong><p class="lm-setting-desc">Logical batch size (-b)</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsEvalBatch" value="2048" min="32" max="8192" step="32">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Physical batch</strong><p class="lm-setting-desc">Ubatch size (-ub)</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsPhysicalBatch" value="512" min="32" max="8192" step="32">
+                </div>
+              </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Default sampling</strong>
+                  <p class="lm-setting-desc">OpenAI-compatible defaults when clients do not override sampling.</p>
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Temperature</strong></div>
+                  <input type="number" class="lm-num" id="llamaSettingsTemperature" value="0.7" min="0" max="2" step="0.05">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Top P</strong></div>
+                  <input type="number" class="lm-num" id="llamaSettingsTopP" value="0.9" min="0" max="1" step="0.05">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Top K</strong></div>
+                  <input type="number" class="lm-num" id="llamaSettingsTopK" value="40" min="0" max="200" step="1">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Repeat penalty</strong></div>
+                  <input type="number" class="lm-num" id="llamaSettingsRepeatPenalty" value="1.1" min="1" max="2" step="0.05">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Response limit</strong><p class="lm-setting-desc">Max output tokens per request</p></div>
+                  <input type="number" class="lm-num" id="llamaSettingsMaxTokens" value="4096" min="256" max="32768" step="256">
+                </div>
+                <div class="lm-setting-row">
+                  <div><strong>Reasoning effort</strong><p class="lm-setting-desc">Thinking budget for reasoning models</p></div>
+                  <select class="lm-select" id="llamaSettingsReasoningEffort" aria-label="Reasoning effort">
+                    <option value="auto">Auto</option>
+                    <option value="none">None</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="max">Max</option>
+                  </select>
+                </div>
               </section>
             </div>
 
@@ -1276,6 +1357,15 @@ try {
                   <span class="lm-hint lm-hint-inline" id="inspectorFlashHint"></span>
                 </div>
                 <label class="lm-toggle small"><input type="checkbox" id="inspectorFlashAttention" checked><span class="lm-toggle-track"></span></label>
+              </div>
+              <div class="lm-field">
+                <label>Parallel slots</label>
+                <span class="lm-hint" id="inspectorParallelSlotsHint">Concurrent request slots per model (-np).</span>
+                <div class="lm-stepper">
+                  <button type="button" class="lm-stepper-btn" data-step="-1" aria-label="Decrease parallel slots">−</button>
+                  <input type="number" value="4" min="1" max="16" class="lm-num lm-stepper-input" id="inspectorParallelSlots">
+                  <button type="button" class="lm-stepper-btn" data-step="1" aria-label="Increase parallel slots">+</button>
+                </div>
               </div>
               <div class="lm-field" id="inspectorSpeculativeGroup">
                 <p class="lm-hint" id="inspectorSpeculativeHint">Accelerator pairing is defined by the DFlash engine profile.</p>

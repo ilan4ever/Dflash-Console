@@ -768,7 +768,7 @@ def test_plain_gguf_catalog_entry_is_loadable(tmp_path: Path, monkeypatch):
             'model_types': ['gguf'],
         }],
     }
-    monkeypatch.setattr(lm, 'disk_scan_roots', lambda _cfg: [(root, 'library')])
+    monkeypatch.setattr(lm, 'disk_scan_roots', lambda _cfg: [(root, 'library', 'custom', 'Test')])
     monkeypatch.setattr(lm, '_profile_catalog', lambda _cfg: {})
     monkeypatch.setattr(lm, '_dflash_stack_supplement', lambda *args, **kwargs: [])
     monkeypatch.setattr(lm, '_scan_ollama_models', lambda: [])
@@ -980,4 +980,61 @@ def test_annotate_path_status_accepts_faster_whisper_dirs(tmp_path: Path):
     _annotate_path_status(row)
     assert row['path_missing'] is False
     assert row.get('loadable') is not False
+
+
+def test_collapse_logical_duplicates_faster_whisper_prefers_console_copy():
+    from core.local_models import _annotate_projector_row, _collapse_logical_duplicates
+
+    rows = [
+        {
+            'filename': 'faster-whisper-small.en',
+            'label': 'faster-whisper-small.en',
+            'path': r'C:\Users\me\AppData\Roaming\onevoice-speak\models\stt\huggingface\hub\snap',
+            'runtime_id': 'faster-whisper',
+            'kind': 'dir',
+            'source': 'library',
+            'loadable': True,
+        },
+        {
+            'filename': 'faster-whisper-small.en',
+            'label': 'faster-whisper-small.en',
+            'path': r'C:\dev\Dflash-Console\models\faster-whisper-small.en',
+            'runtime_id': 'faster-whisper',
+            'kind': 'dir',
+            'source': 'dflash',
+            'loadable': True,
+        },
+    ]
+    for row in rows:
+        _annotate_projector_row(row)
+    kept = _collapse_logical_duplicates(rows)
+    assert len(kept) == 1
+    assert kept[0]['path'].endswith('faster-whisper-small.en')
+    assert kept[0]['duplicate_count'] == 2
+
+
+def test_collapse_logical_duplicates_mmproj_by_filename():
+    from core.local_models import _annotate_projector_row, _collapse_logical_duplicates
+
+    rows = [
+        {'filename': 'mmproj-f32.gguf', 'path': r'C:\models\a\mmproj-f32.gguf', 'source': 'library'},
+        {'filename': 'mmproj-f32.gguf', 'path': r'C:\models\b\mmproj-f32.gguf', 'source': 'library'},
+    ]
+    for row in rows:
+        _annotate_projector_row(row)
+    kept = _collapse_logical_duplicates(rows)
+    assert len(kept) == 1
+    assert kept[0]['is_projector'] is True
+    assert kept[0]['duplicate_count'] == 2
+
+
+def test_collapse_logical_duplicates_keeps_distinct_engine_profiles():
+    from core.local_models import _collapse_logical_duplicates
+
+    rows = [
+        {'filename': 'gemma.gguf', 'server_id': 'profile-a', 'source': 'dflash-profile', 'path': r'C:\a\gemma.gguf'},
+        {'filename': 'gemma.gguf', 'server_id': 'profile-b', 'source': 'dflash-profile', 'path': r'C:\b\gemma.gguf'},
+    ]
+    kept = _collapse_logical_duplicates(rows)
+    assert len(kept) == 2
 

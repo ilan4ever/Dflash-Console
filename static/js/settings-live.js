@@ -20,7 +20,7 @@
     'ws-checkpoints': 'ws-checkpoints',
   };
   const HW_PANELS = new Set(['hw-system', 'hw-gpus', 'hw-strategy', 'hw-live']);
-  const GW_PANELS = new Set(['gw-engines']);
+  const GW_PANELS = new Set(['gw-engines', 'gw-llama']);
   const HARDWARE_PANELS = new Set(['ws-checkpoints', 'ws-locations', ...HW_PANELS]);
   const HARDWARE_TIMEOUT_MS = 30000;
   let hardwareLoadInFlight = null;
@@ -1965,7 +1965,11 @@
     document.getElementById('settingsImportPresets')?.addEventListener('click', () => void importPresetFiles());
 
     ['serverSettingsPort', 'serverSettingsHost', 'serverSettingsContext', 'serverSettingsContextMax', 'serverSettingsIdle',
-      'serverSettingsProfile', 'serverSettingsGpu'].forEach((id) => {
+      'serverSettingsProfile', 'serverSettingsGpu',
+      'llamaSettingsGpuLayers', 'llamaSettingsFlashAttention', 'llamaSettingsParallelSlots',
+      'llamaSettingsCpuThreads', 'llamaSettingsEvalBatch', 'llamaSettingsPhysicalBatch',
+      'llamaSettingsTemperature', 'llamaSettingsTopP', 'llamaSettingsTopK', 'llamaSettingsRepeatPenalty',
+      'llamaSettingsMaxTokens', 'llamaSettingsReasoningEffort'].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
       el.addEventListener('change', scheduleGatewaySave);
@@ -1987,6 +1991,9 @@
     });
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', () => {
+      renderGatewayPanel();
+    });
+    document.getElementById('llamaSettingsPick')?.addEventListener('change', () => {
       renderGatewayPanel();
     });
   }

@@ -2644,6 +2644,7 @@
         eval_batch_size: parseInt(document.getElementById('inspectorEvalBatch')?.value || '2048', 10),
         physical_batch_size: parseInt(document.getElementById('inspectorPhysicalBatch')?.value || '512', 10),
         flash_attention: !!document.getElementById('inspectorFlashAttention')?.checked,
+        parallel_slots: parseInt(document.getElementById('inspectorParallelSlots')?.value || '4', 10),
       },
       inference_settings: {
         temperature: parseFloat(document.getElementById('inspectorTemperature')?.value || '0.7'),
@@ -2680,6 +2681,8 @@
     document.getElementById('inspectorEvalBatch').value = load.eval_batch_size ?? 2048;
     document.getElementById('inspectorPhysicalBatch').value = load.physical_batch_size ?? 512;
     document.getElementById('inspectorFlashAttention').checked = load.flash_attention !== false;
+    const parallelEl = document.getElementById('inspectorParallelSlots');
+    if (parallelEl) parallelEl.value = load.parallel_slots ?? 4;
 
     const infer = server.inference_settings || {};
     const temperature = infer.temperature ?? 0.7;
@@ -2905,6 +2908,67 @@
     await flushInspectorSave();
   }
 
+  function readLlamaSettingsFromForm() {
+    return {
+      load_settings: {
+        gpu_layers: parseInt(document.getElementById('llamaSettingsGpuLayers')?.value || '99', 10),
+        cpu_threads: parseInt(document.getElementById('llamaSettingsCpuThreads')?.value || '9', 10),
+        eval_batch_size: parseInt(document.getElementById('llamaSettingsEvalBatch')?.value || '2048', 10),
+        physical_batch_size: parseInt(document.getElementById('llamaSettingsPhysicalBatch')?.value || '512', 10),
+        flash_attention: !!document.getElementById('llamaSettingsFlashAttention')?.checked,
+        parallel_slots: parseInt(document.getElementById('llamaSettingsParallelSlots')?.value || '4', 10),
+      },
+      inference_settings: {
+        temperature: parseFloat(document.getElementById('llamaSettingsTemperature')?.value || '0.7'),
+        top_p: parseFloat(document.getElementById('llamaSettingsTopP')?.value || '0.9'),
+        top_k: parseInt(document.getElementById('llamaSettingsTopK')?.value || '40', 10),
+        repeat_penalty: parseFloat(document.getElementById('llamaSettingsRepeatPenalty')?.value || '1.1'),
+        max_tokens: parseInt(document.getElementById('llamaSettingsMaxTokens')?.value || '4096', 10),
+        reasoning_effort: document.getElementById('llamaSettingsReasoningEffort')?.value || 'auto',
+      },
+    };
+  }
+
+  function fillLlamaSettingsForm(server) {
+    if (!server) return;
+    const pick = document.getElementById('llamaSettingsPick');
+    if (pick) {
+      pick.innerHTML = allServers.map((s) =>
+        `<option value="${escapeHtml(s.id)}"${s.id === (server.id || activeId) ? ' selected' : ''}>${escapeHtml(s.label || s.id)}</option>`,
+      ).join('');
+    }
+    const load = server.load_settings || {};
+    const infer = server.inference_settings || {};
+    const gpuEl = document.getElementById('llamaSettingsGpuLayers');
+    if (gpuEl) gpuEl.value = load.gpu_layers ?? 99;
+    const cpuEl = document.getElementById('llamaSettingsCpuThreads');
+    if (cpuEl) cpuEl.value = load.cpu_threads ?? 9;
+    const evalEl = document.getElementById('llamaSettingsEvalBatch');
+    if (evalEl) evalEl.value = load.eval_batch_size ?? 2048;
+    const physEl = document.getElementById('llamaSettingsPhysicalBatch');
+    if (physEl) physEl.value = load.physical_batch_size ?? 512;
+    const flashEl = document.getElementById('llamaSettingsFlashAttention');
+    if (flashEl) flashEl.checked = load.flash_attention !== false;
+    const parallelEl = document.getElementById('llamaSettingsParallelSlots');
+    if (parallelEl) parallelEl.value = load.parallel_slots ?? 4;
+    const tempEl = document.getElementById('llamaSettingsTemperature');
+    if (tempEl) tempEl.value = Number(infer.temperature ?? 0.7).toFixed(2);
+    const topPEl = document.getElementById('llamaSettingsTopP');
+    if (topPEl) topPEl.value = Number(infer.top_p ?? 0.9).toFixed(2);
+    const topKEl = document.getElementById('llamaSettingsTopK');
+    if (topKEl) topKEl.value = infer.top_k ?? 40;
+    const repeatEl = document.getElementById('llamaSettingsRepeatPenalty');
+    if (repeatEl) repeatEl.value = Number(infer.repeat_penalty ?? 1.1).toFixed(2);
+    const maxTokensEl = document.getElementById('llamaSettingsMaxTokens');
+    if (maxTokensEl) maxTokensEl.value = infer.max_tokens ?? 4096;
+    const reasoningEl = document.getElementById('llamaSettingsReasoningEffort');
+    if (reasoningEl) {
+      reasoningEl.value = ['auto', 'none', 'low', 'medium', 'high', 'max'].includes(infer.reasoning_effort)
+        ? infer.reasoning_effort
+        : 'auto';
+    }
+  }
+
   function fillSettingsForm(server) {
     if (!server) return;
     const pick = document.getElementById('serverSettingsPick');
@@ -2927,6 +2991,7 @@
       ).join('');
     }
     fillInspectorLoadSettings(server);
+    fillLlamaSettingsForm(server);
   }
 
   function renderAll() {
@@ -3550,6 +3615,7 @@
       idle_unload_minutes: parseInt(document.getElementById('serverSettingsIdle').value, 10),
       gpu_device: document.getElementById('serverSettingsGpu').value,
       profile: document.getElementById('serverSettingsProfile').value,
+      ...readLlamaSettingsFromForm(),
     };
     await api(`/api/servers/${encodeURIComponent(server.id)}`, {
       method: 'PATCH',
@@ -3587,7 +3653,7 @@
 
     const autoSaveIds = [
       'inspectorContext', 'inspectorContextMax', 'inspectorGpuLayers', 'inspectorCpuThreads', 'inspectorEvalBatch',
-      'inspectorPhysicalBatch', 'inspectorFlashAttention', 'inspectorTemperature', 'inspectorTopP',
+      'inspectorPhysicalBatch', 'inspectorFlashAttention', 'inspectorParallelSlots', 'inspectorTemperature', 'inspectorTopP',
       'inspectorTopK', 'inspectorRepeatPenalty', 'inspectorMaxTokens', 'inspectorReasoningEffort',
     ];
     autoSaveIds.forEach((id) => {
@@ -3645,7 +3711,20 @@
       renderInspectorEmptyState();
       activeId = e.target.value;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
-      fillSettingsForm(allServers.find((s) => s.id === activeId) || activeServer());
+      const server = allServers.find((s) => s.id === activeId) || activeServer();
+      fillSettingsForm(server);
+      const llamaPick = document.getElementById('llamaSettingsPick');
+      if (llamaPick) llamaPick.value = activeId;
+      void refresh();
+    });
+
+    document.getElementById('llamaSettingsPick')?.addEventListener('change', (e) => {
+      activeId = e.target.value;
+      localStorage.setItem('dflashConsole.activeServerId', activeId);
+      const server = allServers.find((s) => s.id === activeId) || activeServer();
+      fillSettingsForm(server);
+      const enginePick = document.getElementById('serverSettingsPick');
+      if (enginePick) enginePick.value = activeId;
       void refresh();
     });
 
@@ -3723,6 +3802,7 @@
     loadModelOnServer,
     checkLoadPlan: fetchLoadPlan,
     fillSettingsForm,
+    fillLlamaSettingsForm,
     saveGatewaySettings,
     fillInspectorLoadSettings,
     flushInspectorSave,

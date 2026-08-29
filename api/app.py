@@ -3166,7 +3166,7 @@ def _delete_allowed_roots(cfg: dict[str, Any]) -> list[Path]:
     """Library roots plus scanned folders that the Models tab can delete from."""
     roots: list[Path] = []
     seen: set[str] = set()
-    candidates = [*_allowed_model_roots(cfg), *(path for path, _source in disk_scan_roots(cfg))]
+    candidates = [*_allowed_model_roots(cfg), *(path for path, *_rest in disk_scan_roots(cfg))]
     for candidate in candidates:
         try:
             resolved = candidate.expanduser().resolve()
@@ -3202,7 +3202,7 @@ def _stack_model_roots(cfg: dict[str, Any]) -> list[Path]:
         scan_roots = disk_scan_roots(cfg)
     except OSError:
         scan_roots = []
-    candidates = [*_allowed_model_roots(cfg), *(path for path, _source in scan_roots)]
+    candidates = [*_allowed_model_roots(cfg), *(path for path, *_rest in scan_roots)]
     for candidate in candidates:
         try:
             resolved = candidate.expanduser().resolve()

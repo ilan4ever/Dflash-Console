@@ -34,8 +34,9 @@ def test_build_model_catalog_gemma_12b_q4():
         },
     ]
     catalog = build_model_catalog(server, stack)
-    assert catalog['display_name'] == 'Gemma 4 12B it qat dflash'
-    assert catalog['display_name_full'] == 'Gemma 4 12B it qat dflash Q4'
+    assert catalog['display_name'] == 'Gemma 4 12B it qat — DFlash 1'
+    assert catalog['display_name_full'] == 'Gemma 4 12B it qat — DFlash 1 Q4'
+    assert catalog['engine_mode'] == 'DFlash 1'
     assert 'display_name_ui' not in catalog
     assert catalog['source_suffix'] == 'it qat'
     assert catalog['lab'] == 'Google'
@@ -60,8 +61,9 @@ def test_build_model_catalog_qwen_27b():
         },
     ]
     catalog = build_model_catalog(server, stack)
-    assert catalog['display_name'] == 'Qwen 3.5 27B dflash'
-    assert catalog['display_name_full'] == 'Qwen 3.5 27B dflash Q4'
+    assert catalog['display_name'] == 'Qwen 3.5 27B — DFlash 1'
+    assert catalog['display_name_full'] == 'Qwen 3.5 27B — DFlash 1 Q4'
+    assert catalog['engine_mode'] == 'DFlash 1'
     assert catalog['source_suffix'] == ''
     assert catalog['lab'] == 'Qwen'
 
@@ -85,7 +87,43 @@ def test_build_model_catalog_uses_qwen38_target_name_over_api_alias():
 
     catalog = build_model_catalog(server, stack)
 
-    assert catalog['display_name'] == 'Qwen 3.8 27B dflash'
-    assert catalog['display_name_full'] == 'Qwen 3.8 27B dflash Q6'
+    assert catalog['display_name'] == 'Qwen 3.8 27B — DFlash 1'
+    assert catalog['display_name_full'] == 'Qwen 3.8 27B — DFlash 1 Q6'
+    assert catalog['engine_mode'] == 'DFlash 1'
     assert catalog['target_filename'] == 'Qwen3.8-27B-Q6_K_L.gguf'
     assert catalog['source_suffix'] == ''
+
+
+def test_build_model_catalog_ar_profile_distinct_from_dflash():
+    shared_target = r'C:\dev\Dflash\models\gemma-4-12B_q4_0-it.gguf'
+    ar_server = {
+        'id': 'gemma-12b-ar',
+        'label': 'Gemma 12B',
+        'profile': 'gemma-12-ar',
+        'model_id': 'gemma-4-12b-it-qat',
+    }
+    dflash_server = {
+        'id': 'gemma-12b-dflash',
+        'label': 'Gemma 12B',
+        'profile': 'gemma-12-dflash',
+        'model_id': 'gemma-4-12b-it-qat',
+    }
+    ar_stack = [
+        {'role': 'alias', 'id': 'gemma-4-12b-it-qat', 'source': 'api'},
+        {'role': 'target', 'id': 'gemma-4-12b-it-qat-q4-0', 'path': shared_target, 'source': 'lmstudio'},
+    ]
+    dflash_stack = [
+        {'role': 'alias', 'id': 'gemma-4-12b-it-qat', 'source': 'api'},
+        {'role': 'target', 'id': 'gemma-4-12b-it-qat-q4-0', 'path': shared_target, 'source': 'lmstudio'},
+        {
+            'role': 'draft-dflash',
+            'id': 'gemma-4-12b-it-dflash-q4-k-m',
+            'path': r'C:\dev\Dflash\models\gemma-draft\gemma-4-12B-it-DFlash-Q4_K_M.gguf',
+            'source': 'dflash',
+        },
+    ]
+    ar_catalog = build_model_catalog(ar_server, ar_stack)
+    dflash_catalog = build_model_catalog(dflash_server, dflash_stack)
+    assert ar_catalog['display_name'] == 'Gemma 4 12B it qat — AR'
+    assert dflash_catalog['display_name'] == 'Gemma 4 12B it qat — DFlash 1'
+    assert ar_catalog['display_name'] != dflash_catalog['display_name']

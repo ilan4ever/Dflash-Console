@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from core.gpu_devices import VRAM_HEADROOM_GB
-from core.memory_guardrails import _vram_budget
+from core.memory_guardrails import _gpu_snapshot
 
 _SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)(?:[-_])(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$',
@@ -129,13 +129,27 @@ def machine_fit_budget_gb(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         if _budget_cache and now - _budget_cache_at < _BUDGET_CACHE_SECONDS:
             return dict(_budget_cache)
 
-    free_gb, total_gb, gpu_count = _vram_budget(config)
-    usable = round(max(0.0, total_gb - VRAM_HEADROOM_GB - _KV_RESERVE_GB), 2)
+    devices = _gpu_snapshot(config)
+    per_gpu_usable: list[float] = []
+    total_gb = 0.0
+    free_gb = 0.0
+    for item in devices:
+        gpu_total = float(item.get('vram_gb') or 0.0)
+        if gpu_total <= 0:
+            continue
+        gpu_free = float(item.get('vram_free_gb') or 0.0)
+        total_gb += gpu_total
+        free_gb += gpu_free
+        per_gpu_usable.append(max(0.0, gpu_total - VRAM_HEADROOM_GB - _KV_RESERVE_GB))
+    best_single = round(max(per_gpu_usable), 2) if per_gpu_usable else 0.0
+    multi_usable = round(max(0.0, total_gb - VRAM_HEADROOM_GB - _KV_RESERVE_GB), 2)
     result = {
-        'vram_total_gb': total_gb,
-        'vram_free_gb': free_gb,
-        'fits_budget_gb': usable,
-        'gpu_count': gpu_count,
+        'vram_total_gb': round(total_gb, 2),
+        'vram_free_gb': round(free_gb, 2),
+        # Single-model loads usually need one GPU — use the largest card, not a sum.
+        'fits_budget_gb': best_single,
+        'fits_budget_multi_gpu_gb': multi_usable,
+        'gpu_count': len(per_gpu_usable),
         'headroom_gb': VRAM_HEADROOM_GB,
         'kv_reserve_gb': _KV_RESERVE_GB,
     }
@@ -154,6 +168,25 @@ def _shard_group_key(filename: str) -> str:
     folder = normalized.rsplit('/', 1)[0] if '/' in normalized else ''
     prefix = f'{folder}/' if folder else ''
     return f'{prefix}{match.group("prefix")}|{match.group("total")}'
+
+
+def preferred_gguf_fit_size_gb(
+    model: dict[str, Any],
+    gguf_files: list[dict[str, Any]] | None,
+) -> float | None:
+    """VRAM-oriented size for fit checks — matches the catalog card disk size."""
+    size_gb = model.get('size_gb')
+    if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+        return round(float(size_gb), 2)
+    if not gguf_files:
+        return None
+    from core.huggingface import _size_from_preferred_quant
+
+    preferred_gb, _label = _size_from_preferred_quant(gguf_files)
+    if preferred_gb:
+        return round(float(preferred_gb), 2)
+    sizes = quant_sizes_gb(gguf_files)
+    return sizes[0] if sizes else None
 
 
 def quant_sizes_gb(gguf_files: list[dict[str, Any]] | None) -> list[float]:
@@ -187,24 +220,39 @@ def assess_hf_model_fit(
     fit_budget = budget or machine_fit_budget_gb(cfg)
     budget_gb = float(fit_budget['fits_budget_gb'] or 0.0)
 
-    has_gguf = bool(model.get('has_gguf'))
-    sizes = quant_sizes_gb(gguf_files)
-    if not sizes:
-        files = download_files if isinstance(download_files, list) else model.get('download_files')
-        if isinstance(files, list) and files:
-            sizes = repo_weight_sizes_gb(files, has_gguf=has_gguf)
+    has_gguf = bool(model.get('has_gguf')) or bool(gguf_files)
     uncertain = False
-    if not sizes:
-        size_gb = model.get('size_gb')
-        try:
-            parsed = float(size_gb)
-        except (TypeError, ValueError):
-            parsed = 0.0
-        min_gb = _size_fallback_min_gb(model)
-        if parsed >= min_gb:
-            sizes = [round(parsed, 2)]
+    sizes: list[float] = []
+    if has_gguf:
+        fit_size = preferred_gguf_fit_size_gb(model, gguf_files)
+        if fit_size is not None:
+            sizes = [fit_size]
+        elif gguf_files:
+            all_sizes = quant_sizes_gb(gguf_files)
+            if all_sizes:
+                sizes = [all_sizes[0]]
+            else:
+                uncertain = True
         else:
             uncertain = True
+    else:
+        display_gb = model.get('size_gb')
+        try:
+            parsed_display = float(display_gb)
+        except (TypeError, ValueError):
+            parsed_display = 0.0
+        if parsed_display >= _size_fallback_min_gb(model):
+            sizes = [round(parsed_display, 2)]
+        else:
+            files = download_files if isinstance(download_files, list) else model.get('download_files')
+            if isinstance(files, list) and files:
+                sizes = repo_weight_sizes_gb(files, has_gguf=False)
+            if not sizes:
+                min_gb = _size_fallback_min_gb(model)
+                if parsed_display >= min_gb:
+                    sizes = [round(parsed_display, 2)]
+                else:
+                    uncertain = True
 
     fitting = [size for size in sizes if size <= budget_gb]
     return {

@@ -954,46 +954,78 @@ function pidListeningOnPort(port) {
   });
 }
 
+function raceTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    sleep(ms).then(() => undefined),
+  ]);
+}
+
 /**
- * Close the OTHER DFlash Console desktop app (developer <-> installed) so only
- * one desktop app runs at a time, per the two-apps-close-each-other
- * requirement. The other app's MAIN process is matched by name/command line
- * and force-killed together with its whole process tree (which also tears down
- * the server it owns on 8900; ensureBackend()/stopForeignConsole() then free
- * the port for us). Best effort — never blocks startup.
+ * Force-close the OTHER DFlash Console desktop shell (developer <-> installed).
+ * Targets each foreign app's root process (parent is not another process with
+ * the same image name). Installed main processes often have an empty WMI
+ * CommandLine, so we cannot rely on --type= filtering alone.
  */
-function closeOtherApp() {
+function closeOtherDesktopApp() {
   const selfPid = process.pid;
-  // Installed app: close any running developer Electron app for this repo.
-  // Developer app: close any running installed DFlash Console app.
   const script = app.isPackaged
     ? `
 $self = ${selfPid}
-Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -eq 'electron.exe' -and
-  $_.CommandLine -and
-  $_.CommandLine -notmatch '--type=' -and
-  $_.ProcessId -ne $self -and
-  $_.CommandLine.Contains('Dflash-Console')
-} | ForEach-Object { & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null }
+$targetName = 'electron.exe'
+Get-CimInstance Win32_Process -Filter "Name='$targetName'" | ForEach-Object {
+  if ($_.ProcessId -eq $self) { return }
+  $cmd = [string]$_.CommandLine
+  if ($cmd -and $cmd -match '--type=') { return }
+  if ($cmd -and $cmd -notmatch '(?i)dflash-console') { return }
+  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
+  if ($parent -and $parent.Name -eq $targetName) { return }
+  & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+}
 `
     : `
 $self = ${selfPid}
-Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -eq 'DFlash Console.exe' -and
-  $_.CommandLine -and
-  $_.CommandLine -notmatch '--type=' -and
-  $_.ProcessId -ne $self
-} | ForEach-Object { & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null }
+$targetName = 'DFlash Console.exe'
+Get-CimInstance Win32_Process -Filter "Name='$targetName'" | ForEach-Object {
+  if ($_.ProcessId -eq $self) { return }
+  $cmd = [string]$_.CommandLine
+  if ($cmd -and $cmd -match '--type=') { return }
+  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
+  if ($parent -and $parent.Name -eq $targetName) { return }
+  & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+}
 `;
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      child.on('close', () => resolve());
+      child.on('error', () => resolve());
+    } catch (_err) {
+      resolve();
+    }
+  });
+}
+
+/**
+ * Close the other desktop shell and release any orphan API server it left on
+ * our port. Never blocks startup indefinitely.
+ */
+async function closeOtherApp() {
+  await raceTimeout(closeOtherDesktopApp(), 5000);
   try {
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-      windowsHide: true,
-      stdio: 'ignore',
-    });
-    child.unref();
+    const root = repoRoot();
+    const port = configuredPort(root);
+    const existing = await fetchHealth(port);
+    if (!existing) return;
+    if (healthMatchesConsoleRoot(existing, root) && healthMatchesAppVersion(existing, root)) {
+      return;
+    }
+    await stopForeignConsole(port);
   } catch (_err) {
-    // best effort — the server takeover below still frees the port
+    // best effort — ensureBackend() still reconciles the port
   }
 }
 
@@ -1240,26 +1272,17 @@ async function focusOrBoot() {
 async function boot() {
   if (booting) return;
   booting = true;
-  buildMenu();
-  // Two separate apps (developer checkout and installed app): starting one
-  // closes the other so only one desktop app runs at a time.
-  closeOtherApp();
-  if (loadAppSettings().showSplashOnStartup) {
-    createSplashWindow();
-  }
-  applyTrayFromSettings();
   try {
+    buildMenu();
+    // Two separate apps (developer checkout and installed app): starting one
+    // closes the other so only one desktop app runs at a time.
+    await closeOtherApp();
+    if (loadAppSettings().showSplashOnStartup) {
+      createSplashWindow();
+    }
+    applyTrayFromSettings();
     await ensureBackend();
-  } catch (err) {
     closeSplashWindow();
-    dialog.showErrorBox('DFlash Console', String(err && err.message ? err.message : err));
-    quitApp();
-    return;
-  } finally {
-    booting = false;
-  }
-  closeSplashWindow();
-  try {
     if (!mainWindow) {
       await createWindow();
     } else if (shouldShowMainWindowOnReady()) {
@@ -1269,7 +1292,8 @@ async function boot() {
     closeSplashWindow();
     dialog.showErrorBox('DFlash Console', String(err && err.message ? err.message : err));
     quitApp();
-    return;
+  } finally {
+    booting = false;
   }
 }
 

@@ -66,7 +66,10 @@ def execute_catalog_load(
             (
                 m for m in models
                 if isinstance(m, dict) and (
-                    str(m.get('model_id') or '').lower() == mid
+                    str(m.get('server_id') or '').lower() == mid
+                    or str(m.get('catalog_id') or '').lower() == mid
+                    or str(m.get('model_id') or '').lower() == mid
+                    or str(m.get('api_model_id') or '').lower() == mid
                     or str(m.get('ollama_model') or '').lower() == mid
                     or str(m.get('id') or '').lower() == mid
                     or str(m.get('label') or '').lower() == mid

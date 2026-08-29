@@ -15,7 +15,9 @@ from typing import Any
 from core.config import EMBEDDING_PROFILES, ROOT, list_servers, load_config, normalize_server
 from core.model_paths import (
     allowed_model_roots,
+    annotate_discovered_from,
     disk_scan_roots,
+    library_context_for_path,
     get_download_dir,
     get_model_libraries,
     storage_presets,
@@ -137,8 +139,13 @@ def _catalog_cache_key(config: dict[str, Any]) -> str:
         'models_root': config.get('models_root'),
         'model_paths': config.get('model_paths'),
         'scan_roots': [
-            (str(path), source)
-            for path, source in disk_scan_roots(config)
+            {
+                'path': str(path),
+                'source': source,
+                'preset': preset,
+                'label': label,
+            }
+            for path, source, preset, label in disk_scan_roots(config)
         ],
         'model_libraries': get_model_libraries(config),
         'servers': servers,
@@ -964,7 +971,14 @@ def _scan_ollama_models() -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (row.get('label') or '').lower())
 
 
-def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[str, Any]]:
+def _scan_gguf(
+    root: Path,
+    *,
+    source: str,
+    library_preset: str = '',
+    library_label: str = '',
+    max_files: int = 800,
+) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     rows: list[dict[str, Any]] = []
@@ -994,6 +1008,12 @@ def _scan_gguf(root: Path, *, source: str, max_files: int = 800) -> list[dict[st
                 _append_reasoning_capability(caps, name)
             row['reasoning'] = 'reasoning' in caps
             _annotate_projector_row(row)
+            annotate_discovered_from(
+                row,
+                source=source,
+                library_preset=library_preset,
+                library_label=library_label,
+            )
             rows.append(row)
     except OSError:
         pass
@@ -1061,7 +1081,14 @@ def _faster_whisper_display_name(path: Path) -> tuple[str, str]:
     return _hf_hub_display_name(path)
 
 
-def _scan_faster_whisper(root: Path, *, source: str, max_dirs: int = 200) -> list[dict[str, Any]]:
+def _scan_faster_whisper(
+    root: Path,
+    *,
+    source: str,
+    library_preset: str = '',
+    library_label: str = '',
+    max_dirs: int = 200,
+) -> list[dict[str, Any]]:
     """Discover faster-whisper model directories (contain ``model.bin``).
 
     faster-whisper models are CTranslate2 whisper snapshots: a directory
@@ -1102,12 +1129,25 @@ def _scan_faster_whisper(root: Path, *, source: str, max_dirs: int = 200) -> lis
                 'runtime_id': 'faster-whisper',
                 'capabilities': ['instruct', 'stt'],
             })
+            annotate_discovered_from(
+                rows[-1],
+                source=source,
+                library_preset=library_preset,
+                library_label=library_label,
+            )
     except OSError:
         pass
     return rows
 
 
-def _scan_hf_llm(root: Path, *, source: str, max_dirs: int = 80) -> list[dict[str, Any]]:
+def _scan_hf_llm(
+    root: Path,
+    *,
+    source: str,
+    library_preset: str = '',
+    library_label: str = '',
+    max_dirs: int = 80,
+) -> list[dict[str, Any]]:
     """Discover Hugging Face SafeTensors LLM folders (vLLM or Transformers)."""
     if not root.is_dir():
         return []
@@ -1146,6 +1186,12 @@ def _scan_hf_llm(root: Path, *, source: str, max_dirs: int = 80) -> list[dict[st
             'hf_repo': f'{hub_publisher}/{display}' if hub_publisher and display else '',
         }
         annotate_hf_llm_row(row)
+        annotate_discovered_from(
+            row,
+            source=source,
+            library_preset=library_preset,
+            library_label=library_label,
+        )
         rows.append(row)
 
     try:
@@ -1172,7 +1218,14 @@ def _scan_hf_llm(root: Path, *, source: str, max_dirs: int = 80) -> list[dict[st
     return rows
 
 
-def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dict[str, Any]]:
+def _scan_vibevoice(
+    root: Path,
+    *,
+    source: str,
+    library_preset: str = '',
+    library_label: str = '',
+    max_dirs: int = 120,
+) -> list[dict[str, Any]]:
     """Discover Microsoft VibeVoice TTS model directories.
 
     VibeVoice models are Transformers safetensors directories (config.json +
@@ -1205,7 +1258,7 @@ def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dic
             display, hub_publisher = _hf_hub_display_name(parent)
             if _is_hash_label(display):
                 continue
-            rows.append({
+            row = {
                 'id': display.replace('_', '-').lower()[:120],
                 'path': str(parent),
                 'filename': display,
@@ -1220,7 +1273,14 @@ def _scan_vibevoice(root: Path, *, source: str, max_dirs: int = 120) -> list[dic
                 'kind': 'dir',
                 'runtime_id': 'vibevoice',
                 'capabilities': ['instruct', 'tts'],
-            })
+            }
+            annotate_discovered_from(
+                row,
+                source=source,
+                library_preset=library_preset,
+                library_label=library_label,
+            )
+            rows.append(row)
     except OSError:
         pass
     return rows
@@ -1271,7 +1331,15 @@ def _server_catalog_row(
     cfg: dict[str, Any],
     enabled: bool | None = None,
 ) -> dict[str, Any]:
+    from core.display_names import build_model_catalog
+    from core.model_stack import resolve_model_stack
+
     target, draft = _resolve_stack_pair(server, cfg=cfg)
+    try:
+        stack = resolve_model_stack(server, cfg=cfg)
+    except ValueError:
+        stack = []
+    catalog_meta = build_model_catalog(server, stack)
     path = Path(str(target.get('path') or '')) if target else None
     caps = ['instruct']
     profile = str(server.get('profile') or '')
@@ -1300,11 +1368,21 @@ def _server_catalog_row(
         loadable = is_enabled and target_ready and draft_ready
     else:
         loadable = is_enabled and target_ready
+    server_id = str(server.get('id') or '')
+    api_model_id = str(server.get('model_id') or server_id)
+    display_name = str(catalog_meta.get('display_name') or server.get('label') or api_model_id)
     return {
-        'id': str(server.get('model_id') or server.get('id')),
-        'server_id': str(server.get('id') or ''),
-        'label': str(server.get('label') or server.get('model_id') or ''),
-        'profile': str(server.get('profile') or ''),
+        'id': server_id or api_model_id,
+        'catalog_id': server_id or api_model_id,
+        'model_id': api_model_id,
+        'api_model_id': api_model_id,
+        'server_id': server_id,
+        'label': display_name,
+        'display_name': display_name,
+        'display_name_full': catalog_meta.get('display_name_full') or display_name,
+        'model_catalog': catalog_meta,
+        'engine_mode': catalog_meta.get('engine_mode') or '',
+        'profile': profile,
         'port': int(server.get('port') or 0),
         'loadable': loadable,
         'path': str(target.get('path') or '') if target else '',
@@ -1488,6 +1566,90 @@ def _is_stack_catalog_row(row: dict[str, Any]) -> bool:
     if row.get('stack_status') == 'unregistered':
         return True
     return bool(row.get('dflash_stack') and row.get('draft_path') and not row.get('server_id'))
+
+
+def _catalog_identity_key(row: dict[str, Any]) -> str:
+    """Stable key for logical duplicates (scanner leftovers with the same display name)."""
+    from core.vision_setup import _is_mmproj_name
+
+    filename = str(row.get('filename') or '').strip().lower()
+    path_text = str(row.get('path') or '').strip()
+    if not filename and path_text:
+        filename = Path(path_text).name.lower()
+    if not filename:
+        return ''
+    if row.get('is_projector') or _is_mmproj_name(filename):
+        return f'projector:{filename}'
+    runtime_id = str(row.get('runtime_id') or '').lower()
+    if runtime_id == 'faster-whisper':
+        return f'faster-whisper:{filename}'
+    if str(row.get('kind') or '').lower() == 'dir' and path_text:
+        try:
+            if Path(path_text).joinpath('model.bin').is_file():
+                return f'faster-whisper:{filename}'
+        except OSError:
+            pass
+    return filename
+
+
+def _catalog_row_rank(row: dict[str, Any]) -> tuple[int, int]:
+    """Higher is better when choosing one survivor from a duplicate group."""
+    source = str(row.get('source') or '').lower()
+    score = 0
+    if source == 'dflash-profile':
+        score += 200
+    elif source in {'dflash', 'dflash-stack'}:
+        score += 150
+    if row.get('server_id'):
+        score += 100
+    if row.get('loadable'):
+        score += 40
+    path = str(row.get('path') or '').replace('\\', '/').lower()
+    if '/dflash-console/' in path or '/dflash console/' in path:
+        score += 30
+    if row.get('library_file'):
+        score -= 25
+    depth = path.count('/')
+    return score, -depth
+
+
+def _collapse_logical_duplicates(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide scanner leftovers that repeat the same logical model under another path."""
+    groups: dict[str, list[int]] = defaultdict(list)
+    for index, row in enumerate(models):
+        if _is_stack_catalog_row(row):
+            continue
+        key = _catalog_identity_key(row)
+        if not key:
+            continue
+        groups[key].append(index)
+
+    hidden: set[int] = set()
+    for key, indices in groups.items():
+        if len(indices) < 2:
+            continue
+        profile_ids = {
+            str(models[index].get('server_id') or '').strip()
+            for index in indices
+            if str(models[index].get('server_id') or '').strip()
+        }
+        if len(profile_ids) > 1:
+            continue
+        ranked = sorted(indices, key=lambda index: _catalog_row_rank(models[index]), reverse=True)
+        survivor = ranked[0]
+        paths = list(dict.fromkeys(
+            str(models[index].get('path') or '').strip()
+            for index in indices
+            if str(models[index].get('path') or '').strip()
+        ))
+        label = key.split(':', 1)[-1]
+        models[survivor]['duplicate_group'] = f'dup:{label}'
+        models[survivor]['duplicate_count'] = len(indices)
+        models[survivor]['duplicate_paths'] = paths
+        models[survivor]['duplicate_identical'] = len(paths) > 1
+        hidden.update(ranked[1:])
+
+    return [row for index, row in enumerate(models) if index not in hidden]
 
 
 def _collapse_identical_files(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1876,9 +2038,21 @@ def _build_models_payload(
         _annotate_path_status(row)
     _mark_stack_path_access(models, config)
     for row in models:
+        if not row.get('discovered_from'):
+            scan_source, scan_preset, scan_label = library_context_for_path(
+                str(row.get('path') or ''),
+                config,
+            )
+            annotate_discovered_from(
+                row,
+                source=scan_source or str(row.get('source') or ''),
+                library_preset=scan_preset,
+                library_label=scan_label,
+            )
         _annotate_runtime_fields(row)
         _annotate_projector_row(row)
         _annotate_accelerator_only(row)
+    models = _collapse_logical_duplicates(models)
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))
@@ -2021,11 +2195,11 @@ def list_local_models(
         return partial
 
     scanned: list[dict[str, Any]] = []
-    for root, source in disk_scan_roots(config):
-        scanned.extend(_scan_gguf(root, source=source))
-        scanned.extend(_scan_faster_whisper(root, source=source))
-        scanned.extend(_scan_vibevoice(root, source=source))
-        scanned.extend(_scan_hf_llm(root, source=source))
+    for root, source, preset, label in disk_scan_roots(config):
+        scanned.extend(_scan_gguf(root, source=source, library_preset=preset, library_label=label))
+        scanned.extend(_scan_faster_whisper(root, source=source, library_preset=preset, library_label=label))
+        scanned.extend(_scan_vibevoice(root, source=source, library_preset=preset, library_label=label))
+        scanned.extend(_scan_hf_llm(root, source=source, library_preset=preset, library_label=label))
 
     extras: list[dict[str, Any]] = []
     known_paths = {str(row.get('path') or '').lower() for row in catalog.values()}
@@ -2042,6 +2216,9 @@ def list_local_models(
                 alias = _library_file_alias_row(row, bound)
                 if alias:
                     extras.append(alias)
+                for key in ('discovered_from', 'library_preset', 'library_label'):
+                    if row.get(key):
+                        bound[key] = row[key]
             continue
         row['server_id'] = ''
         row['label'] = row.get('filename') or row.get('id')

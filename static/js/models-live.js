@@ -517,7 +517,7 @@
     if (!canLoadInConsole(model) || needsDflashSetupActions(model) || isDflashAccelerator(model)) return '';
     const engine = getLoadEngine();
     const label = engine === 'vllm' ? 'vLLM' : engine === 'transformers' ? 'Transformers' : 'DFlash';
-    return `<span class="lm-engine-pick-label" title="Uses the Load with engine at the top of this page (${label})">${escapeHtml(label)}</span>`;
+    return `<span class="lm-engine-pick-label" title="Uses ${label} when you load this model">${escapeHtml(label)}</span>`;
   }
 
   function canLoadInConsole(model) {
@@ -789,20 +789,18 @@
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return true;
     if (model?.library_file) return true;
-    if (source === 'library' && !externalAppLabel(model)) return true;
+    if (source === 'library') {
+      const origin = String(model?.discovered_from || externalAppLabel(model) || '').trim();
+      return !origin || origin === 'External';
+    }
     return false;
   }
 
   function loadEngineFilterApplies() {
-    if (typeFilter === 'dflash' || typeFilter === 'loaded') return false;
-    if (modelTypeFilter !== 'all' && modelTypeFilter !== 'llm' && modelTypeFilter !== 'dflash') {
-      return false;
-    }
-    return true;
+    return ['gguf', 'vllm', 'transformers'].includes(modelTypeFilter);
   }
 
   function matchesLoadEngine(model, engine = getLoadEngine()) {
-    if (!loadEngineFilterApplies()) return true;
     const runtimeId = String(model?.runtime_id || '');
     const engines = Array.isArray(model?.engines) ? model.engines : [];
     const path = String(model?.path || '');
@@ -893,10 +891,15 @@
 
   // Best-effort name of the external app/folder a model was discovered in.
   function externalAppLabel(model) {
+    const discovered = String(model?.discovered_from || '').trim();
+    if (discovered && discovered !== 'External') return discovered;
+    const libLabel = String(model?.library_label || '').trim();
+    if (libLabel) return libLabel;
     const path = String(model?.path || '').replace(/\\/g, '/').toLowerCase();
     if (path.includes('onevoice')) return 'OneVoice';
-    if (path.includes('.lmstudio')) return 'LM Studio';
+    if (path.includes('.lmstudio') || path.includes('/lm studio/')) return 'LM Studio';
     if (path.includes('huggingface')) return 'Hugging Face hub';
+    if (path.includes('/ollama/') || path.includes('\\ollama\\')) return 'Ollama';
     return '';
   }
 
@@ -1314,9 +1317,10 @@
   const MODEL_TYPE_FILTER_KEY = 'dflashConsole.modelsModelTypeFilter';
   const MODEL_TYPE_FILTERS = new Set([
     'all',
+    'gguf',
+    'vllm',
+    'transformers',
     'llm',
-    'dflash',
-    'accelerators',
     'ocr',
     'translation',
     'speech-to-text',
@@ -1462,14 +1466,16 @@
 
   function matchesModelType(model) {
     if (modelTypeFilter === 'hf-accelerator') return isHfAcceleratorAvailable(model);
-    if (modelTypeFilter === 'accelerators') return isDflashAccelerator(model);
+    if (modelTypeFilter === 'gguf') return matchesLoadEngine(model, 'dflash');
+    if (modelTypeFilter === 'vllm') return matchesLoadEngine(model, 'vllm');
+    if (modelTypeFilter === 'transformers') return matchesLoadEngine(model, 'transformers');
     if (isProjectorModel(model)) return modelTypeFilter === 'projector';
     if (modelTypeFilter === 'projector') return false;
     return modelTypeFilter === 'all' || modelType(model) === modelTypeFilter;
   }
 
   function showingAcceleratorsOnly() {
-    return typeFilter === 'accelerators' || modelTypeFilter === 'accelerators';
+    return typeFilter === 'accelerators';
   }
 
   function shouldHideAcceleratorRow(model) {
@@ -1485,7 +1491,6 @@
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
-      if (!matchesLoadEngine(model)) return false;
       if (!needle) return true;
       const hay = normalizeSearchText([
         model.label, model.id, model.path, model.publisher, model.arch, model.quant,
@@ -1508,31 +1513,32 @@
       model.duplicate_group,
       model.match_score,
     ].join(':')).join('|');
-    return `${typeFilter}:${modelTypeFilter}:${getLoadEngine()}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
+    return `${typeFilter}:${modelTypeFilter}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
   }
 
-  // Provider source label for the Source column. Anything the Console does not
-  // manage is labeled External (LM Studio / Ollama keep their clear names).
+  // Provider source label for the Source column (LM Studio, OneVoice, HF hub, etc.).
   function modelSourceLabel(model) {
+    const discovered = String(model?.discovered_from || '').trim();
+    if (discovered) return discovered;
+    const libLabel = String(model?.library_label || '').trim();
+    if (libLabel) return libLabel;
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'lmstudio') return 'LM Studio';
     if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return 'DFlash';
     if (source === 'ollama') return 'Ollama';
-    // library / local / other / unknown / empty → discovered outside the Console.
+    const app = externalAppLabel(model);
+    if (app) return app;
     return 'External';
   }
 
-  // Source cell: provider label, with the external app and HF publisher kept as
-  // muted suffixes (e.g. "External · OneVoice · Systran").
+  // Source cell: origin label with HF publisher as a muted suffix when useful.
   function modelSourceCell(model) {
     const label = modelSourceLabel(model);
-    const app = externalAppLabel(model);
     const publisher = String(model?.publisher || '').trim();
-    const sub = [];
-    if (app && app.toLowerCase() !== label.toLowerCase()) sub.push(app);
-    if (publisher && publisher.toLowerCase() !== label.toLowerCase() && publisher.toLowerCase() !== app.toLowerCase()) sub.push(publisher);
-    if (!sub.length) return escapeHtml(label);
-    return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(sub.join(' · '))}</span>`;
+    if (!publisher || publisher.toLowerCase() === label.toLowerCase()) {
+      return escapeHtml(label);
+    }
+    return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(publisher)}</span>`;
   }
 
   function loadingRowHtml(message = 'Loading your model library…', note = 'Scanning configured folders. Your models will appear here shortly.') {
@@ -1560,7 +1566,6 @@
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (!matchesModelType(model)) return false;
-      if (!matchesLoadEngine(model)) return false;
       if (!needle) return true;
       const hay = normalizeSearchText([
         model.label, model.id, model.path, model.publisher, model.arch, model.quant,
@@ -1606,8 +1611,12 @@
             : 'No local target models have a matching accelerator listed on Hugging Face.'
         : modelTypeFilter === 'projector'
           ? 'No vision projectors found. Projectors are mmproj companion files next to multimodal GGUF models.'
-        : modelTypeFilter === 'accelerators'
-          ? 'No accelerator files found. They are small DFlash/DSpark draft checkpoints on disk.'
+        : modelTypeFilter === 'gguf'
+          ? 'No GGUF or DFlash-stack models match this filter.'
+        : modelTypeFilter === 'vllm'
+          ? 'No Hugging Face folders loadable on vLLM match this filter.'
+        : modelTypeFilter === 'transformers'
+          ? 'No Hugging Face folders loadable on Transformers match this filter.'
         : typeFilter === 'dflash'
         ? 'No DFlash stacks found. Use Create DFlash stack or check Settings → model folders.'
         : typeFilter === 'accelerators'
@@ -1615,25 +1624,6 @@
           : typeFilter === 'loaded'
             ? 'No models are loaded on the GPU right now. Use Load on a model row or the Engines tab.'
             : 'No models match this filter.';
-      const hiddenByEngine = models.length > 0
-        && loadEngineFilterApplies()
-        && typeFilter === 'all'
-        && modelTypeFilter === 'all'
-        && !needle;
-      if (hiddenByEngine) {
-        const best = bestLoadEngineForLibrary();
-        const labels = { dflash: 'DFlash / GGUF', vllm: 'vLLM', transformers: 'Transformers' };
-        if (best && best[1]) {
-          emptyLabel = `${models.length} models are on this PC, but none load with ${labels[getLoadEngine()] || getLoadEngine()}.`;
-          body.innerHTML = `<tr><td colspan="7" class="lm-models-empty">${escapeHtml(emptyLabel)} <button type="button" class="lm-btn tiny" id="modelsShowHiddenEngineBtn">Show ${escapeHtml(labels[best[0]] || best[0])} models</button></td></tr>`;
-          document.getElementById('modelsShowHiddenEngineBtn')?.addEventListener('click', () => {
-            setLoadEngine(best[0]);
-            renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
-            renderFooter(meta);
-          });
-          return;
-        }
-      }
       body.innerHTML = `<tr><td colspan="7" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
       return;
     }
@@ -2228,13 +2218,13 @@
           ? 'DFlash/DSpark draft files only (name contains DFlash or DSpark) — small checkpoints paired with a full target for speculative decoding. Full target GGUFs belong under All models.'
           : typeFilter === 'dflash'
             ? 'DFlash stacks with target + accelerator pairing. Gold label = speculative stack.'
-            : loadEngineFilterApplies()
-              ? ({
-                dflash: 'Showing GGUF and DFlash-stack models. Switch Load with to vLLM or Transformers for Hugging Face safetensors folders.',
-                vllm: 'Showing models loadable on vLLM (Hugging Face safetensors directories).',
-                transformers: 'Showing models loadable on Transformers (Hugging Face safetensors directories).',
-              }[getLoadEngine()] || 'All discovered models from Console libraries and scanned folders on this PC. Accelerators are hidden unless you choose the Accelerators filter.')
-              : 'All discovered models from Console libraries and scanned folders on this PC. Accelerators are hidden unless you choose the Accelerators filter.');
+            : modelTypeFilter === 'gguf'
+              ? 'Showing GGUF files and DFlash stacks only. Use All model types to see everything.'
+              : modelTypeFilter === 'vllm'
+                ? 'Showing Hugging Face folders loadable on vLLM.'
+                : modelTypeFilter === 'transformers'
+                  ? 'Showing Hugging Face folders loadable on Transformers.'
+                  : 'All discovered models from Console libraries and scanned folders on this PC. Accelerators are hidden unless you choose the Accelerators filter.');
     }
   }
 
@@ -2646,13 +2636,32 @@
     return ['all', 'dflash', 'accelerators', 'loaded'].includes(next) ? next : 'all';
   }
 
+  function normalizeModelTypeFilter(next) {
+    if (!MODEL_TYPE_FILTERS.has(next)) return 'all';
+    if (next === 'dflash' || next === 'accelerators') return 'all';
+    return next;
+  }
+
+  function applyModelTypeFilter(next) {
+    modelTypeFilter = normalizeModelTypeFilter(next);
+    const modelTypePick = document.getElementById('modelsTypeFilter');
+    if (modelTypePick && modelTypePick.value !== modelTypeFilter) {
+      modelTypePick.value = modelTypeFilter;
+    }
+    if (modelTypeFilter === 'gguf') setLoadEngine('dflash');
+    else if (modelTypeFilter === 'vllm' || modelTypeFilter === 'transformers') setLoadEngine(modelTypeFilter);
+    if (modelTypeFilter === 'hf-accelerator') void ensureHfAcceleratorCatalog();
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    renderFooter(meta);
+  }
+
   function setTypeFilter(next) {
     const previous = typeFilter;
     typeFilter = normalizeTypeFilter(next);
     if (typeFilter === 'accelerators' && modelTypeFilter !== 'all') {
       modelTypeFilter = 'all';
       const modelTypePick = document.getElementById('modelsTypeFilter');
-      if (modelTypePick) modelTypePick.value = modelTypeFilter;
+      if (modelTypePick) modelTypePick.value = 'all';
     }
     document.querySelectorAll('[data-models-filter]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.modelsFilter === typeFilter);
@@ -2686,9 +2695,8 @@
     const modelTypePick = document.getElementById('modelsTypeFilter');
     if (modelTypePick) {
       modelTypePick.addEventListener('change', (event) => {
-        const next = MODEL_TYPE_FILTERS.has(event.target.value) ? event.target.value : 'all';
-        modelTypeFilter = next;
-        if (next === 'hf-accelerator' || next === 'accelerators') {
+        const next = normalizeModelTypeFilter(event.target.value);
+        if (next === 'hf-accelerator' || ['gguf', 'vllm', 'transformers'].includes(next)) {
           if (typeFilter !== 'all') {
             typeFilter = 'all';
             document.querySelectorAll('[data-models-filter]').forEach((btn) => {
@@ -2696,11 +2704,11 @@
             });
           }
         }
-        renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
-        if (next === 'hf-accelerator') void ensureHfAcceleratorCatalog();
+        applyModelTypeFilter(next);
       });
     }
     document.querySelectorAll('[data-load-engine-pick]').forEach((el) => {
+      if (el.id === 'modelsEngineKindPick') return;
       el.addEventListener('change', () => {
         setLoadEngine(el.value);
         renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });

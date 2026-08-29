@@ -175,20 +175,40 @@ async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[st
 @gateway_app.get('/v1/models')
 async def list_models() -> dict[str, Any]:
     cfg = load_config()
+    from core.display_names import build_engine_client_metadata
+    from core.model_stack import resolve_model_stack
+
     data: list[dict[str, Any]] = []
     for server in list_servers(cfg):
         if server.get('enabled', True) is False:
             continue
         infer = normalize_inference_settings(server.get('inference_settings'))
+        try:
+            stack = resolve_model_stack(server, cfg=cfg)
+        except ValueError:
+            stack = []
+        client_meta = build_engine_client_metadata(server, stack)
+        display_name = str(
+            client_meta.get('display_name_full')
+            or client_meta.get('display_name')
+            or server.get('label')
+            or server.get('id')
+            or '',
+        ).strip()
+        api_model_id = str(server.get('model_id') or '')
         data.append({
             'id': str(server.get('id') or ''),
             'object': 'model',
             'created': 0,
             'owned_by': 'dflash-console',
+            'name': display_name,
             'meta': {
-                'engine': str(server.get('label') or server.get('id') or ''),
+                'engine': display_name,
+                'display_name': display_name,
+                'api_model_id': api_model_id,
                 'embedding': is_embedding_server(server),
-                'model_id': str(server.get('model_id') or ''),
+                'model_id': api_model_id,
+                'engine_mode': (client_meta.get('model_catalog') or {}).get('engine_mode') or '',
                 'api_url': str(server.get('api_url') or ''),
                 'reasoning': model_has_reasoning(server),
                 'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),

@@ -15,7 +15,7 @@ def test_quant_sizes_gb_sums_shards():
 
 
 def test_assess_hf_model_fit_true_when_quant_fits():
-    row = {'id': 'org/example', 'accelerator_only': False}
+    row = {'id': 'org/example', 'has_gguf': True, 'accelerator_only': False, 'size_gb': 3.73}
     files = [
         {'filename': 'tiny-q4.gguf', 'size_bytes': 4_000_000_000},
         {'filename': 'huge-q8.gguf', 'size_bytes': 120_000_000_000},
@@ -27,6 +27,38 @@ def test_assess_hf_model_fit_true_when_quant_fits():
         result = assess_hf_model_fit(row, gguf_files=files)
     assert result['fits_machine'] is True
     assert result['best_fit_quant_gb'] == 3.73
+
+
+def test_assess_hf_model_fit_false_when_displayed_quant_too_large():
+    row = {'id': 'org/example', 'has_gguf': True, 'size_gb': 120.0}
+    files = [
+        {'filename': 'tiny-q4.gguf', 'size_bytes': 4_000_000_000},
+        {'filename': 'huge-q8.gguf', 'size_bytes': 120_000_000_000},
+    ]
+    with __import__('unittest').mock.patch(
+        'core.hf_model_fit.machine_fit_budget_gb',
+        return_value={'fits_budget_gb': 10.0, 'vram_total_gb': 12.0, 'vram_free_gb': 8.0, 'gpu_count': 1},
+    ):
+        result = assess_hf_model_fit(row, gguf_files=files)
+    assert result['fits_machine'] is False
+    assert result['fits_machine_reason'] == 'too_large'
+
+
+def test_machine_fit_budget_uses_largest_single_gpu(monkeypatch):
+    from core.hf_model_fit import machine_fit_budget_gb
+
+    monkeypatch.setattr(
+        'core.hf_model_fit._gpu_snapshot',
+        lambda _cfg: [
+            {'index': 0, 'vram_gb': 24.0, 'vram_free_gb': 20.0},
+            {'index': 1, 'vram_gb': 24.0, 'vram_free_gb': 22.0},
+        ],
+    )
+    machine_fit_budget_gb.__globals__['_budget_cache'] = None
+    machine_fit_budget_gb.__globals__['_budget_cache_at'] = 0.0
+    budget = machine_fit_budget_gb()
+    assert budget['fits_budget_gb'] < 24.0
+    assert budget['fits_budget_multi_gpu_gb'] > budget['fits_budget_gb']
 
 
 def test_assess_hf_model_fit_true_for_small_accelerator_repo():

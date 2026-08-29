@@ -512,10 +512,10 @@
 
   function catalogFitsMachineBadge(model) {
     if (!catalogFitsMachine(model)) return '';
-    const best = model?.best_fit_quant_gb;
-    const title = best
-      ? `At least one GGUF quant fits your GPU VRAM (best fit ~${best} GB)`
-      : 'At least one GGUF quant in this repo should fit your GPU VRAM';
+    const shown = listSizeLabel(model);
+    const title = shown && shown !== '—'
+      ? `Recommended download (${shown}) fits your largest GPU VRAM`
+      : 'Recommended download size fits your largest GPU VRAM';
     return `<span class="lm-tag green" title="${escapeHtml(title)}">Fits PC</span>`;
   }
 
