@@ -42,12 +42,20 @@ def is_installed() -> bool:
 
 
 def install_status() -> dict[str, Any]:
+    if is_installed():
+        with _STATE_LOCK:
+            if _JOB:
+                _JOB.clear()
     with _STATE_LOCK:
         job = dict(_JOB)
+    installed = is_installed()
+    status = str(job.get('status') or ('installed' if installed else 'idle'))
+    if installed:
+        status = 'installed'
     return {
-        'installed': is_installed(),
-        'status': str(job.get('status') or ('installed' if is_installed() else 'idle')),
-        'error': str(job.get('error') or ''),
+        'installed': installed,
+        'status': status,
+        'error': '' if installed else str(job.get('error') or ''),
         'started_at': job.get('started_at'),
         'finished_at': job.get('finished_at'),
         'backend': str(job.get('backend') or ''),
@@ -123,12 +131,21 @@ def _install_worker(*, backend: str) -> None:
             _JOB['finished_at'] = time.time()
         return
     ok = is_installed()
+    verify_error = ''
+    if not ok:
+        try:
+            from core.runtimes.vllm import verify_vllm_installation
+
+            _ok, verify_error = verify_vllm_installation()
+            ok = _ok
+        except Exception as exc:
+            verify_error = str(exc)
     with _STATE_LOCK:
         _JOB.update({
             'status': 'installed' if ok else 'error',
             'progress': 100.0 if ok else float(_JOB.get('progress') or 90.0),
             'message': 'vLLM is ready' if ok else 'Install finished but vLLM is not importable yet',
-            'error': '' if ok else 'install finished but vLLM is not importable yet',
+            'error': '' if ok else (verify_error or 'install finished but vLLM is not importable yet'),
             'finished_at': time.time(),
         })
 

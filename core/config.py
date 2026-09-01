@@ -111,6 +111,27 @@ DEFAULT_DOWNLOAD_SETTINGS: dict[str, Any] = {
 
 MAX_DOWNLOAD_PARALLEL_CONNECTIONS = 8
 
+DEFAULT_FREETOKEN_SETTINGS: dict[str, Any] = {
+    'moe_backend': 'auto',
+    'moe_cache_auto': True,
+    'moe_cache_size': 0,
+    'moe_cache_rate': 0.0,
+    'memory_ratio': 0.9,
+    'max_running_requests': 4,
+    'max_output_tokens': 32768,
+    'max_prefill_length': 8192,
+    'cuda_graph_max_bs': 4,
+    'max_seq_len_override': 0,
+    'moe_cpu_threads': 0,
+    'moe_cpu_layers': '',
+    'moe_hybrid_max_fetch': 0,
+    'moe_prefill_hit_d2d': False,
+    'disable_moe_prefill_overlap': False,
+    'enable_cache_report': False,
+}
+
+FREETOKEN_MOE_BACKENDS = frozenset({'auto', 'fused', 'offload', 'cpu', 'hybrid'})
+
 DEFAULT_REMOTE_NODES: list[dict[str, Any]] = []
 
 # Auto-grow context: when a chat request needs a larger per-slot context than
@@ -304,6 +325,64 @@ def normalize_download_settings(raw: Any) -> dict[str, Any]:
     parallel = max(1, min(MAX_DOWNLOAD_PARALLEL_CONNECTIONS, parallel))
     return {
         'parallel_connections': parallel,
+    }
+
+
+def normalize_freetoken_settings(raw: Any) -> dict[str, Any]:
+    """Normalize the allow-listed FreeToken CLI settings.
+
+    FreeToken is launched with a fixed argument list.  Keeping its settings
+    explicit prevents config values from becoming arbitrary WSL commands while
+    still exposing the important cache and scheduling controls.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+    backend = str(raw.get('moe_backend') or DEFAULT_FREETOKEN_SETTINGS['moe_backend']).strip().lower()
+    if backend not in FREETOKEN_MOE_BACKENDS:
+        backend = DEFAULT_FREETOKEN_SETTINGS['moe_backend']
+    try:
+        memory_ratio = float(
+            raw.get('memory_ratio')
+            if raw.get('memory_ratio') is not None
+            else DEFAULT_FREETOKEN_SETTINGS['memory_ratio']
+        )
+    except (TypeError, ValueError):
+        memory_ratio = float(DEFAULT_FREETOKEN_SETTINGS['memory_ratio'])
+
+    def bounded_int(key: str, low: int, high: int) -> int:
+        try:
+            value = int(raw.get(key) if raw.get(key) is not None else DEFAULT_FREETOKEN_SETTINGS[key])
+        except (TypeError, ValueError):
+            value = int(DEFAULT_FREETOKEN_SETTINGS[key])
+        return max(low, min(high, value))
+
+    cache_rate_raw = raw.get('moe_cache_rate')
+    try:
+        cache_rate = float(
+            cache_rate_raw
+            if cache_rate_raw is not None
+            else DEFAULT_FREETOKEN_SETTINGS['moe_cache_rate']
+        )
+    except (TypeError, ValueError):
+        cache_rate = float(DEFAULT_FREETOKEN_SETTINGS['moe_cache_rate'])
+
+    return {
+        'moe_backend': backend,
+        'moe_cache_auto': raw.get('moe_cache_auto') is not False,
+        'moe_cache_size': bounded_int('moe_cache_size', 0, 100000),
+        'moe_cache_rate': max(0.0, min(1.0, cache_rate)),
+        'memory_ratio': max(0.1, min(0.99, memory_ratio)),
+        'max_running_requests': bounded_int('max_running_requests', 1, 64),
+        'max_output_tokens': bounded_int('max_output_tokens', 256, 131072),
+        'max_prefill_length': bounded_int('max_prefill_length', 256, 131072),
+        'cuda_graph_max_bs': bounded_int('cuda_graph_max_bs', 1, 64),
+        'max_seq_len_override': bounded_int('max_seq_len_override', 0, 1048576),
+        'moe_cpu_threads': bounded_int('moe_cpu_threads', 0, 256),
+        'moe_cpu_layers': str(raw.get('moe_cpu_layers') or '').strip()[:80],
+        'moe_hybrid_max_fetch': bounded_int('moe_hybrid_max_fetch', -1, 4096),
+        'moe_prefill_hit_d2d': raw.get('moe_prefill_hit_d2d') is True,
+        'disable_moe_prefill_overlap': raw.get('disable_moe_prefill_overlap') is True,
+        'enable_cache_report': raw.get('enable_cache_report') is True,
     }
 
 
@@ -776,6 +855,7 @@ def normalize_runtime(entry: dict[str, Any]) -> dict[str, Any]:
         'port': port,
         'host': host,
         'api_url': api_url,
+        'gpu_device': _normalize_runtime_gpu_device(entry.get('gpu_device')),
         'device_policy': device_policy,
         'default_voice': str(entry.get('default_voice') or '').strip(),
         'default_model': str(entry.get('default_model') or '').strip(),
@@ -791,7 +871,22 @@ def normalize_runtime(entry: dict[str, Any]) -> dict[str, Any]:
         'temperature': max(0.0, min(2.0, float(entry.get('temperature') if entry.get('temperature') is not None else 0.0))),
         'cpu_threads': max(0, int(entry.get('cpu_threads') or 0)),
         'num_workers': max(0, int(entry.get('num_workers') or 0)),
+        'freetoken_settings': (
+            normalize_freetoken_settings(entry.get('freetoken_settings'))
+            if str(entry.get('runtime_id') or '').strip().lower() == 'freetoken'
+            else {}
+        ),
     }
+
+
+def _normalize_runtime_gpu_device(raw: Any) -> str:
+    value = str(raw or 'auto').strip().lower()
+    if value in {'', 'auto', 'default'}:
+        return 'auto'
+    try:
+        return str(max(0, min(128, int(value))))
+    except (TypeError, ValueError):
+        return 'auto'
 
 
 def list_runtimes(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:

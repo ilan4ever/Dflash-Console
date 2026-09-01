@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from core.gpu_devices import format_gpu_display_name
+from core.net_listeners import listening_ports_map, loopback_listening_ports, pid_listening_on_port
 from core.runtime import (
     _loaded_model_ids,
     api_base_url,
@@ -482,44 +483,7 @@ def _query_compute_apps() -> list[dict[str, Any]]:
 
 
 def _pid_listening_on_port(port: int, host: str = '127.0.0.1') -> int | None:
-    if port <= 0:
-        return None
-    try:
-        if sys.platform == 'win32':
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                **_subprocess_no_window_kwargs(),
-            )
-            needle = f':{int(port)}'
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if len(parts) < 5 or 'LISTENING' not in parts[3]:
-                    continue
-                local_addr = parts[1]
-                if not local_addr.endswith(needle):
-                    continue
-                if local_addr.startswith('127.0.0.1') or local_addr.startswith('0.0.0.0') or local_addr.startswith('[::]'):
-                    try:
-                        return int(parts[4])
-                    except (ValueError, IndexError):
-                        return None
-        else:
-            result = subprocess.run(
-                ['lsof', '-ti', f'tcp:{int(port)}'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.stdout.strip():
-                return int(result.stdout.strip().split('\n')[0])
-    except Exception:
-        return None
-    return None
+    return pid_listening_on_port(port, host)
 
 
 def _managed_listener_pids(servers: list[dict[str, Any]]) -> set[int]:
@@ -540,67 +504,7 @@ def _managed_listener_pids(servers: list[dict[str, Any]]) -> set[int]:
 
 
 def _listening_ports_map() -> dict[int, list[int]]:
-    global _LISTEN_PORTS_CACHE
-    now = time.time()
-    cached_at, cached = _LISTEN_PORTS_CACHE
-    if cached and (now - cached_at) < _LISTEN_PORTS_TTL_SECONDS:
-        return cached
-
-    mapping: dict[int, list[int]] = {}
-    try:
-        if sys.platform == 'win32':
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-                **_subprocess_no_window_kwargs(),
-            )
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if len(parts) < 5 or 'LISTENING' not in parts[3]:
-                    continue
-                local_addr = parts[1]
-                if ':' not in local_addr:
-                    continue
-                if not (
-                    local_addr.startswith('127.0.0.1')
-                    or local_addr.startswith('0.0.0.0')
-                    or local_addr.startswith('[::]')
-                ):
-                    continue
-                try:
-                    pid = int(parts[4])
-                    port = int(local_addr.rsplit(':', 1)[-1])
-                except (TypeError, ValueError):
-                    continue
-                mapping.setdefault(pid, []).append(port)
-        else:
-            result = subprocess.run(
-                ['lsof', '-Pan', '-iTCP', '-sTCP:LISTEN'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            for line in result.stdout.splitlines()[1:]:
-                match = re.search(r'^(\S+)\s+(\d+)\s+.*:(\d+)\s+\(LISTEN\)', line)
-                if not match:
-                    continue
-                try:
-                    pid = int(match.group(2))
-                    port = int(match.group(3))
-                except (TypeError, ValueError):
-                    continue
-                mapping.setdefault(pid, []).append(port)
-    except Exception:
-        return cached or {}
-
-    for pid, ports in list(mapping.items()):
-        mapping[pid] = sorted(set(ports))
-    _LISTEN_PORTS_CACHE = (now, mapping)
-    return mapping
+    return listening_ports_map()
 
 
 def _listening_ports_for_pid(pid: int) -> list[int]:

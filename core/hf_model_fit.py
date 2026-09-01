@@ -12,7 +12,7 @@ from core.gpu_devices import VRAM_HEADROOM_GB
 from core.memory_guardrails import _gpu_snapshot
 
 _SHARD_RE = re.compile(
-    r'^(?P<prefix>.+?)(?:[-_])(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$',
+    r'^(?P<prefix>.+?)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.(?:gguf|safetensors|bin))$',
     re.IGNORECASE,
 )
 _KV_RESERVE_GB = 0.4

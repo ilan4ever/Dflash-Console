@@ -3161,8 +3161,11 @@ body.lm-resizing-logs {
 }
 
 .lm-components-divider span {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   padding: 0 4px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: center;
 }
 
 .lm-components-list {
@@ -3241,6 +3244,15 @@ body.lm-resizing-logs {
   color: var(--text-muted);
   padding-top: 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.lm-component-card.is-error .lm-component-card-status {
+  max-height: 5.5em;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .lm-component-card-actions {

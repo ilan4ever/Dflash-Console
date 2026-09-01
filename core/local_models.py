@@ -44,6 +44,10 @@ _HF_REPO_SIZE_CACHE_TTL = 24 * 60 * 60
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
 _PARAM_RE = re.compile(r'(?<![0-9A-Fa-f])(\d+(?:\.\d+)?)\s*[Bb](?![0-9A-Fa-f])')
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
+_WEIGHT_SHARD_RE = re.compile(
+    r'^(?P<prefix>.+?)-(?P<part>\d{5})-of-(?P<total>\d{5})\.(?:safetensors|bin|gguf)$',
+    re.I,
+)
 _PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
 _GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)
 _FW_WHISPER_RE = re.compile(r'whisper', re.I)
@@ -508,6 +512,69 @@ def _estimate_hf_weight_size_gb(display: str, quant: str = 'f16') -> float | Non
     else:
         bytes_per = 2.0
     return round(billions * 1_000_000_000 * bytes_per / (1024 ** 3), 2)
+
+
+def _weight_shard_status(path: Path) -> dict[str, Any]:
+    """Inspect sharded weight files under a model folder."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return {'incomplete': False, 'shard_present': 0, 'shard_total': 0, 'shard_files': []}
+    if not target.is_dir():
+        return {'incomplete': False, 'shard_present': 0, 'shard_total': 0, 'shard_files': []}
+
+    groups: dict[tuple[str, int], list[Path]] = defaultdict(list)
+    for entry in target.iterdir():
+        if not entry.is_file():
+            continue
+        match = _WEIGHT_SHARD_RE.match(entry.name)
+        if not match:
+            continue
+        key = (match.group('prefix').lower(), int(match.group('total')))
+        groups[key].append(entry)
+
+    if not groups:
+        return {'incomplete': False, 'shard_present': 0, 'shard_total': 0, 'shard_files': []}
+
+    # Prefer the largest declared shard group (main weights, not tiny side files).
+    prefix, total = max(groups.keys(), key=lambda item: (item[1], len(groups[item])))
+    files = sorted(groups[(prefix, total)], key=lambda item: item.name.lower())
+    present = len(files)
+    incomplete = total > 1 and present < total
+    return {
+        'incomplete': incomplete,
+        'shard_present': present,
+        'shard_total': total,
+        'shard_files': [str(item) for item in files],
+        'shard_prefix': prefix,
+    }
+
+
+def _annotate_hf_dir_completeness(row: dict[str, Any], path: Path) -> None:
+    """Mark incomplete SafeTensors/GGUF shard folders and fill expected size."""
+    status = _weight_shard_status(path)
+    if not status.get('shard_total'):
+        return
+    row['shard_present'] = int(status.get('shard_present') or 0)
+    row['shard_total'] = int(status.get('shard_total') or 0)
+    incomplete = bool(status.get('incomplete'))
+    row['incomplete'] = incomplete
+    if not incomplete:
+        return
+    row['loadable'] = False
+    disk_gb = row.get('size_gb')
+    display, publisher = _path_model_display_name(path)
+    repo_id = f'{publisher}/{display}' if publisher and display else display
+    expected = _safetensors_index_size_gb(path)
+    if expected is None:
+        expected = _catalog_repo_size_gb(repo_id)
+    if expected is None:
+        expected = _lookup_hf_repo_size_gb(repo_id, allow_fetch=False)
+    if isinstance(expected, (int, float)) and float(expected) > 0:
+        row['expected_size_gb'] = float(expected)
+        # Keep size_gb as on-disk bytes; UI shows both when incomplete.
+        if not isinstance(disk_gb, (int, float)) or float(disk_gb) <= 0:
+            row['size_gb'] = float(expected)
 
 
 def _model_dir_size_gb(path: Path) -> float | None:
@@ -1192,6 +1259,7 @@ def _scan_hf_llm(
             library_preset=library_preset,
             library_label=library_label,
         )
+        _annotate_hf_dir_completeness(row, parent)
         rows.append(row)
 
     try:
@@ -2232,7 +2300,7 @@ def list_local_models(
             if 'llm' not in caps:
                 caps.append('llm')
             row['capabilities'] = caps
-            row['loadable'] = True
+            row['loadable'] = not bool(row.get('incomplete'))
         row['context_max'] = 131072
         row['context_size'] = 8192
         row['load_settings'] = {}

@@ -57,3 +57,60 @@ def test_install_status_idle_when_missing():
     status = install_status()
     assert 'installed' in status
     assert status['status'] in {'idle', 'installed', 'installing', 'error'}
+
+
+def test_is_installed_reads_wsl_manifest_with_utf8_bom(monkeypatch, tmp_path: Path):
+    import core.runtimes.vllm as vllm_mod
+
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_bytes(
+        b'\xef\xbb\xbf'
+        + json.dumps({
+            'backend': 'wsl',
+            'wsl_distro': 'Ubuntu',
+            'wsl_python': '/root/.dflash-console/vllm-venv/bin/python',
+        }).encode('utf-8')
+    )
+    monkeypatch.setattr(vllm_mod, 'VLLM_MANIFEST', manifest)
+    monkeypatch.setattr(
+        vllm_mod,
+        'verify_vllm_installation',
+        lambda: (True, ''),
+    )
+    assert VllmRuntimeAdapter.is_installed() is True
+
+
+def test_write_manifest_preserves_wsl_install_fields(monkeypatch, tmp_path: Path):
+    import core.runtimes.vllm as vllm_mod
+
+    bundle = tmp_path / 'vllm'
+    bundle.mkdir()
+    manifest = bundle / 'manifest.json'
+    manifest.write_text(
+        json.dumps({
+            'version': 1,
+            'bundle_revision': 1,
+            'runtime_id': 'vllm',
+            'execution_mode': 'server',
+            'backend': 'wsl',
+            'wsl_distro': 'Ubuntu',
+            'wsl_python': '/root/.dflash-console/vllm-venv/bin/python',
+            'generated_by': 'scripts/install-vllm-runtime.ps1',
+        }),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(vllm_mod, 'VLLM_BUNDLE', bundle)
+    monkeypatch.setattr(vllm_mod, 'VLLM_MANIFEST', manifest)
+    monkeypatch.setattr(vllm_mod, 'VLLM_VENV_PY', bundle / 'venv' / 'Scripts' / 'python.exe')
+    monkeypatch.setattr(
+        vllm_mod.VllmRuntimeAdapter,
+        'python',
+        lambda self: '/root/.dflash-console/vllm-venv/bin/python',
+    )
+    adapter = VllmRuntimeAdapter()
+    adapter.write_manifest()
+    saved = json.loads(manifest.read_text(encoding='utf-8'))
+    assert saved['backend'] == 'wsl'
+    assert saved['wsl_distro'] == 'Ubuntu'
+    assert saved['wsl_python'] == '/root/.dflash-console/vllm-venv/bin/python'
+    assert saved.get('installed') is None

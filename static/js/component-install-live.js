@@ -2,7 +2,7 @@
 (function () {
   const { api, toast } = window.ConsoleApi;
 
-  const ON_DEMAND = new Set(['vllm', 'transformers']);
+  const ON_DEMAND = new Set(['vllm', 'transformers', 'freetoken']);
 
   const META = {
     vllm: {
@@ -18,6 +18,13 @@
       blurb: 'Transformers loads SafeTensors models on CPU or GPU. PyTorch and dependencies download on first use.',
       note: 'Installation can take several minutes.',
       progress: 'Installing PyTorch and Transformers…',
+    },
+    freetoken: {
+      label: 'FreeToken WSL engine',
+      short: 'FreeToken',
+      blurb: 'FreeToken runs supported MoE Hugging Face models through WSL2 with NVIDIA CUDA. It is not included in the installer.',
+      note: 'Requires WSL2 Ubuntu and an NVIDIA driver with CUDA support. Large Linux packages — can take 15 minutes or more.',
+      progress: 'Installing FreeToken in WSL…',
     },
   };
 
@@ -80,6 +87,8 @@
     let pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
     if (pct > 0 && pct < 8 && elapsed > 20) {
       pct = Math.min(88, 8 + elapsed / 12);
+    } else if (pct >= 85 && row.status === 'installing' && elapsed > 30) {
+      pct = Math.min(98.5, pct + Math.floor(elapsed / 8) * 0.35);
     }
     const bar = document.getElementById('componentInstallProgressBar');
     const pctEl = document.getElementById('componentInstallProgressPct');
@@ -90,7 +99,10 @@
       bar.classList.toggle('is-indeterminate', pct < 8 && elapsed < 20);
     }
     if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
-    const step = String(row.message || '').trim();
+    let step = String(row.message || '').trim();
+    if (pct >= 90 && row.status === 'installing' && !/verifying|ready|finishing/i.test(step)) {
+      step = 'Installing large packages in WSL — can take 10+ minutes';
+    }
     setProgressText(step || info.progress);
     if (subEl) {
       subEl.textContent = elapsed
@@ -124,6 +136,9 @@
     }
     if (runtimeId === 'transformers') {
       body.torch_variant = document.getElementById('componentInstallTorch')?.value || 'auto';
+    }
+    if (runtimeId === 'freetoken') {
+      body.backend = 'wsl';
     }
     await api(`/api/runtimes/${encodeURIComponent(runtimeId)}/install`, {
       method: 'POST',

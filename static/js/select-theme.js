@@ -174,6 +174,7 @@
       btn.setAttribute('role', 'option');
       btn.textContent = opt.textContent;
       btn.dataset.value = opt.value;
+      if (opt.title) btn.title = opt.title;
       if (opt.selected) {
         btn.classList.add('active');
         btn.setAttribute('aria-selected', 'true');

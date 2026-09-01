@@ -102,47 +102,24 @@ def _force_stop_console_listener(port: int, host: str = '127.0.0.1') -> bool:
 
 
 def _listener_pid(port: int, host: str = '127.0.0.1') -> int | None:
-    if sys.platform == 'win32':
-        try:
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except Exception:
-            return None
-        needle = f':{int(port)}'
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            if len(parts) < 5 or 'LISTENING' not in parts:
-                continue
-            local_addr = parts[1]
-            if not local_addr.endswith(needle):
-                continue
-            if local_addr.startswith('127.0.0.1') or local_addr.startswith('0.0.0.0') or local_addr.startswith('[::]'):
-                try:
-                    return int(parts[-1])
-                except ValueError:
-                    return None
-        return None
-    try:
-        result = subprocess.run(
-            ['lsof', '-ti', f'tcp:{int(port)}'],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.stdout.strip():
-            return int(result.stdout.strip().split('\n')[0])
-    except Exception:
-        return None
-    return None
+    from core.net_listeners import pid_listening_on_port
+
+    return pid_listening_on_port(int(port), host)
 
 
 def _is_console_listener(pid: int) -> bool:
+    command_line = _process_command_line(pid)
+    if command_line:
+        lowered = command_line.lower()
+        return 'uvicorn' in lowered and 'api.app:app' in lowered
+    # Hidden pwsh workers often leave CommandLine blank in WMI; the listener on
+    # the Console UI port is still our uvicorn process.
+    if sys.platform == 'win32':
+        return _process_name(pid) in {'python.exe', 'pythonw.exe'}
+    return False
+
+
+def _process_command_line(pid: int) -> str:
     if sys.platform == 'win32':
         try:
             result = subprocess.run(
@@ -157,13 +134,36 @@ def _is_console_listener(pid: int) -> bool:
                 timeout=5,
                 check=False,
             )
-            command_line = result.stdout.strip().lower()
+            return result.stdout.strip()
         except Exception:
-            return False
-        return 'uvicorn' in command_line and 'api.app:app' in command_line
+            return ''
     try:
         with open(f'/proc/{int(pid)}/cmdline', 'rb') as handle:
-            command_line = handle.read().decode('utf-8', errors='ignore').lower()
-        return 'uvicorn' in command_line and 'api.app:app' in command_line
+            return handle.read().decode('utf-8', errors='ignore')
     except Exception:
-        return False
+        return ''
+
+
+def _process_name(pid: int) -> str:
+    if sys.platform == 'win32':
+        try:
+            result = subprocess.run(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-Command',
+                    f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\").Name",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return result.stdout.strip().lower()
+        except Exception:
+            return ''
+    try:
+        with open(f'/proc/{int(pid)}/comm', 'rb') as handle:
+            return handle.read().decode('utf-8', errors='ignore').strip().lower()
+    except Exception:
+        return ''

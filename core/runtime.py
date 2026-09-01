@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from core.net_listeners import pid_listening_on_port
+
 _SERVER_STATUS_CACHE: dict[str, dict[str, Any]] = {}
 _STATUS_PAYLOAD_CACHE: dict[str, Any] = {
     'payload': None,
@@ -65,38 +67,7 @@ def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
 
     pid = None
     try:
-        if sys.platform == 'win32':
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            needle = f':{int(port)}'
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if len(parts) < 5 or 'LISTENING' not in parts[3]:
-                    continue
-                local_addr = parts[1]
-                if not local_addr.endswith(needle):
-                    continue
-                if local_addr.startswith('127.0.0.1') or local_addr.startswith('0.0.0.0') or local_addr.startswith('[::]'):
-                    try:
-                        pid = int(parts[4])
-                    except (ValueError, IndexError):
-                        pid = None
-                    break
-        else:
-            result = subprocess.run(
-                ['lsof', '-ti', f'tcp:{int(port)}'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.stdout.strip():
-                pid = int(result.stdout.strip().split('\n')[0])
+        pid = pid_listening_on_port(int(port), host)
     except Exception:
         pid = None
 
@@ -120,14 +91,48 @@ def _kill_listener_on_port(port: int, host: str = '127.0.0.1') -> bool:
         return False
 
 
-def tcp_port_open(host: str, port: int) -> bool:
+def tcp_port_open(host: str, port: int, *, timeout: float = 0.25) -> bool:
     import socket
 
     try:
-        with socket.create_connection((host, int(port)), timeout=1.0):
+        with socket.create_connection((host, int(port)), timeout=timeout):
             return True
     except OSError:
         return False
+
+
+def _append_status_trace(
+    trace: list[dict[str, Any]] | None,
+    *,
+    step: str,
+    started_at: float,
+    detail: str,
+) -> None:
+    if trace is None:
+        return
+    trace.append({
+        'step': step,
+        'ms': max(0, int((time.time() - started_at) * 1000)),
+        'detail': detail,
+    })
+
+
+def _write_engine_status_log(trace: list[dict[str, Any]], build_ms: int) -> None:
+    try:
+        from core.config import ROOT
+
+        log_path = ROOT / 'logs' / 'engine-status.log'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        lines = [f'[{stamp}] engine status build {build_ms} ms']
+        for row in trace:
+            lines.append(
+                f"  - {row.get('step')}: {int(row.get('ms') or 0)} ms — {row.get('detail')}"
+            )
+        with log_path.open('a', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n')
+    except OSError:
+        pass
 
 
 def _fetch_models_payload(api_url: str) -> list[dict[str, Any]]:
@@ -904,6 +909,7 @@ def build_server_status(
     cfg: dict[str, Any] | None = None,
     gpus: list[dict[str, Any]] | None = None,
     vram_map: dict[int, float] | None = None,
+    open_ports: set[int] | None = None,
 ) -> dict[str, Any]:
     from core.config import is_embedding_server
 
@@ -938,7 +944,10 @@ def build_server_status(
         context_size=server.get('context_size'),
     )
     engine_on = server.get('engine_on') is True
-    port_open = tcp_port_open(host, port) if port > 0 else False
+    if open_ports is not None:
+        port_open = port > 0 and port in open_ports
+    else:
+        port_open = tcp_port_open(host, port) if port > 0 else False
     running = port_open
     if running and not get_started_launch(port) and engine_on:
         adopt_running_engine(server, cfg=cfg)
@@ -1202,8 +1211,10 @@ def get_status_payload(
     include_external: bool = True,
     allow_stale: bool = True,
     max_stale_seconds: float = 0.75,
+    fast_external: bool = False,
+    status_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
+    from core.gpu_processes import get_external_gpu_loads, loopback_listening_ports, query_compute_vram_map
 
     enabled = [s for s in servers if s.get('enabled', True)]
     primary_id = enabled[0]['id'] if enabled else (servers[0]['id'] if servers else '')
@@ -1270,17 +1281,68 @@ def get_status_payload(
         return out
 
     resolved_gpus = gpus if gpus is not None else query_gpu_devices()
+    if gpus is None:
+        _append_status_trace(
+            status_trace,
+            step='gpus',
+            started_at=time.time() - 0.001,
+            detail=f'{len(resolved_gpus)} GPU(s) detected',
+        )
+    else:
+        _append_status_trace(
+            status_trace,
+            step='gpus',
+            started_at=time.time(),
+            detail=f'{len(resolved_gpus)} GPU(s) supplied',
+        )
 
     # Skip expensive VRAM process scans while any engine is generating.
+    vram_started = time.time()
     if _any_proxy_generating(servers):
         vram_map = {}
+        _append_status_trace(
+            status_trace,
+            step='vram_map',
+            started_at=vram_started,
+            detail='skipped while an engine is generating',
+        )
     else:
         vram_map = query_compute_vram_map()
+        _append_status_trace(
+            status_trace,
+            step='vram_map',
+            started_at=vram_started,
+            detail=f'{len(vram_map)} GPU process(es) from nvidia-smi',
+        )
+
+    listen_started = time.time()
+    open_ports = loopback_listening_ports()
+    running_ports = sum(
+        1 for server in servers
+        if int(server.get('port') or 0) in open_ports
+    )
+    _append_status_trace(
+        status_trace,
+        step='listen_ports',
+        started_at=listen_started,
+        detail=(
+            f'{len(servers)} engine profile(s); {running_ports} listener(s) up '
+            f'(loopback listener snapshot, not per-port TCP probes)'
+        ),
+    )
+
+    servers_started = time.time()
 
     def _build_one(entry: dict[str, Any]) -> dict[str, Any]:
         sid = str(entry.get('id') or '')
         try:
-            return build_server_status(entry, cfg=cfg, gpus=resolved_gpus, vram_map=vram_map)
+            return build_server_status(
+                entry,
+                cfg=cfg,
+                gpus=resolved_gpus,
+                vram_map=vram_map,
+                open_ports=open_ports,
+            )
         except Exception:
             cached = _SERVER_STATUS_CACHE.get(sid)
             if isinstance(cached, dict):
@@ -1292,8 +1354,19 @@ def get_status_payload(
     else:
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=min(4, len(servers))) as pool:
+        with ThreadPoolExecutor(max_workers=min(8, len(servers))) as pool:
             built = list(pool.map(_build_one, servers))
+
+    loaded_count = sum(1 for row in built if str(row.get('status') or '') == 'loaded')
+    _append_status_trace(
+        status_trace,
+        step='server_status',
+        started_at=servers_started,
+        detail=(
+            f'{len(built)} profile(s) checked; {running_ports} listening; '
+            f'{loaded_count} loaded'
+        ),
+    )
 
     payload = {
         'success': True,
@@ -1303,16 +1376,39 @@ def get_status_payload(
         'stale': False,
     }
     if include_external:
+        external_started = time.time()
         try:
             payload['external_gpu_loads'] = get_external_gpu_loads(
                 servers=servers,
                 gpus=resolved_gpus,
                 cfg=cfg,
-                fast=_any_proxy_generating(servers),
+                fast=fast_external or _any_proxy_generating(servers),
             )
-        except Exception:
+            _append_status_trace(
+                status_trace,
+                step='external_scan',
+                started_at=external_started,
+                detail=(
+                    f'{len(payload["external_gpu_loads"])} external GPU card(s)'
+                    + (' (fast scan)' if fast_external else '')
+                ),
+            )
+        except Exception as exc:
             payload['external_gpu_loads'] = _cached_external_gpu_loads()
+            payload['external_scan_error'] = str(exc)[:240]
+            _append_status_trace(
+                status_trace,
+                step='external_scan',
+                started_at=external_started,
+                detail=f'external scan failed — using cached cards ({exc})',
+            )
     else:
         payload['external_gpu_loads'] = []
+        _append_status_trace(
+            status_trace,
+            step='external_scan',
+            started_at=time.time(),
+            detail='skipped (include_external=0)',
+        )
     _store_status_payload(payload, include_external=include_external)
     return payload

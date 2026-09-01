@@ -952,6 +952,7 @@
             runtime_id: row.runtime_id,
             label: row.label || row.runtime_id,
             port: row.port || 0,
+            gpu_device: row.gpu_device || 'auto',
             device_policy: row.device_policy || 'auto',
             default_voice: row.default_voice || '',
             default_model: row.default_model || '',
@@ -973,6 +974,7 @@
             active_compute_type: row.active_compute_type || '',
             cfg_scale: Number(row.cfg_scale ?? 1.5),
             ddpm_steps: Number(row.ddpm_steps) || 5,
+            freetoken_settings: { ...(row.freetoken_settings || {}) },
           };
           rt._voices = (rt.runtime_id === 'piper' || rt.runtime_id === 'vibevoice') ? await loadRuntimeVoices(rt.runtime_id) : [];
           rt._models = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper') ? await loadRuntimeSttModels() : [];
@@ -1047,13 +1049,15 @@
                 <input type="number" class="lm-num" min="0" data-rt-field="cpu_threads" data-rt-index="${index}" value="${rt.cpu_threads}">
               </div>`
               : '';
-            const sttControls = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper' || rt.runtime_id === 'vibevoice' || rt.runtime_id === 'transformers' || rt.runtime_id === 'vllm')
+            const sttControls = (rt.runtime_id === 'stt' || rt.runtime_id === 'faster-whisper' || rt.runtime_id === 'vibevoice' || rt.runtime_id === 'transformers' || rt.runtime_id === 'vllm' || rt.runtime_id === 'freetoken')
               ? `<div class="lm-setting-row">
                   <div>
                     <strong>Status</strong>
                     <p class="lm-setting-desc">${rt.running
                       ? `Running · ${escapeHtml(String(rt.active_model).split(/[\\/]/).pop() || 'model')} · ${escapeHtml(rt.active_device || '')}${rt.active_compute_type ? ` ${escapeHtml(rt.active_compute_type)}` : ''}`
-                      : 'Not running — load a model to start it'}</p>
+                      : (rt.runtime_id === 'freetoken'
+                        ? 'Not running — requires WSL2/NVIDIA and a supported model'
+                        : 'Not running — load a model to start it')}</p>
                   </div>
                   <div class="lm-setting-actions">
                     <button class="lm-btn ghost small" type="button" data-action="stt-unload" data-rt-index="${index}" ${rt.running ? '' : 'disabled'}>Unload</button>
@@ -1069,6 +1073,40 @@
               <div class="lm-setting-row">
                 <div><strong>DDPM steps</strong><p class="lm-setting-desc">Diffusion inference steps — higher is better quality, slower (1–20)</p></div>
                 <input type="number" class="lm-num" min="1" max="20" data-rt-field="ddpm_steps" data-rt-index="${index}" value="${rt.ddpm_steps}">
+              </div>`
+              : '';
+            const ft = rt.freetoken_settings || {};
+            const freetokenRows = rt.runtime_id === 'freetoken'
+              ? `<div class="lm-setting-desc lm-settings-inline-note">FreeToken runs in WSL2 Linux with NVIDIA/CUDA. Only models supported by FreeToken can load.</div>
+              <div class="lm-setting-row">
+                <div><strong>GPU index</strong><p class="lm-setting-desc">auto or a WSL-visible NVIDIA GPU number</p></div>
+                <input type="text" class="lm-input" data-rt-field="gpu_device" data-rt-index="${index}" value="${escapeHtml(rt.gpu_device || 'auto')}" placeholder="auto">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>MoE backend</strong><p class="lm-setting-desc">Select the FreeToken expert execution strategy</p></div>
+                <select class="lm-select" data-rt-ft-field="moe_backend" data-rt-index="${index}">
+                  ${['auto', 'fused', 'offload', 'cpu', 'hybrid'].map((v) => `<option value="${v}" ${String(ft.moe_backend || 'auto') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                </select>
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Memory ratio</strong><p class="lm-setting-desc">Fraction of available GPU memory (0.1–0.99)</p></div>
+                <input type="number" class="lm-num" min="0.1" max="0.99" step="0.05" data-rt-ft-field="memory_ratio" data-rt-index="${index}" value="${Number(ft.memory_ratio ?? 0.9)}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Max running requests</strong><p class="lm-setting-desc">Concurrent requests allowed by the server</p></div>
+                <input type="number" class="lm-num" min="1" max="64" data-rt-ft-field="max_running_requests" data-rt-index="${index}" value="${Number(ft.max_running_requests ?? 4)}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Max prefill length</strong><p class="lm-setting-desc">Prompt tokens processed in one prefill step</p></div>
+                <input type="number" class="lm-num" min="256" max="131072" step="256" data-rt-ft-field="max_prefill_length" data-rt-index="${index}" value="${Number(ft.max_prefill_length ?? 8192)}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>CPU threads</strong><p class="lm-setting-desc">0 lets FreeToken choose; used by CPU/hybrid MoE backends</p></div>
+                <input type="number" class="lm-num" min="0" max="256" data-rt-ft-field="moe_cpu_threads" data-rt-index="${index}" value="${Number(ft.moe_cpu_threads ?? 0)}">
+              </div>
+              <div class="lm-setting-row">
+                <div><strong>Automatic MoE cache</strong><p class="lm-setting-desc">Allow FreeToken to size its semantic expert cache</p></div>
+                <label class="lm-toggle"><input type="checkbox" data-rt-ft-field="moe_cache_auto" data-rt-index="${index}" ${ft.moe_cache_auto !== false ? 'checked' : ''}><span class="lm-toggle-track"></span></label>
               </div>`
               : '';
             return `
@@ -1087,6 +1125,7 @@
                   <option value="cpu" ${rt.device_policy === 'cpu' ? 'selected' : ''}>CPU</option>
                 </select>
               </div>
+              ${freetokenRows}
               ${defaultVoiceRow}
               ${defaultModelRow}
               ${sttSettingsRows}
@@ -1168,6 +1207,18 @@
     return '<span class="lm-tag">—</span>';
   }
 
+  function formatInstallError(raw) {
+    const text = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!text) return 'Install failed — try again.';
+    const noise = /CategoryInfo|FullyQualifiedErrorId|NativeCommandError|At C:\\|char:\d+/i;
+    const parts = String(raw || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const useful = parts.filter((line) => !noise.test(line));
+    const pick = useful.length ? useful[useful.length - 1] : text;
+    const cleaned = pick.replace(/\s+/g, ' ').trim();
+    if (cleaned.length <= 220) return cleaned;
+    return `${cleaned.slice(0, 217)}…`;
+  }
+
   function componentStatusLine(row) {
     const status = String(row?.status || '');
     if (row?.install_mode === 'bundled') {
@@ -1180,7 +1231,7 @@
       return `Downloading and installing…${pct}`;
     }
     if (status === 'update_available') return 'A newer download is available — click Update / repair.';
-    if (status === 'error') return row?.install_error || 'Install failed — try again.';
+    if (status === 'error') return formatInstallError(row?.install_error);
     if (status === 'not_installed') return 'Not on this PC yet — click Install to download.';
     return '—';
   }
@@ -1203,7 +1254,7 @@
           ${componentUninstallRow(row)}
         </div>`
       : '';
-    return `<article class="lm-component-card ${isExternal ? 'is-external' : 'is-bundled'}" data-component-id="${escapeHtml(row.id)}">
+    return `<article class="lm-component-card ${isExternal ? 'is-external' : 'is-bundled'}${row?.status === 'error' ? ' is-error' : ''}" data-component-id="${escapeHtml(row.id)}">
       <div class="lm-component-card-head">
         <div class="lm-component-card-identity">
           <span class="lm-component-card-kind">${escapeHtml(kind)}</span>
@@ -1248,7 +1299,7 @@
     });
     const externalHtml = renderComponentsSection(
       'Extra downloads',
-      'Large engines you download after install (vLLM, Transformers). Install and uninstall here.',
+      'Large engines you download after install (vLLM, Transformers, FreeToken). Install and uninstall here.',
       external,
     );
     const bundledHtml = renderComponentsSection(
@@ -1288,7 +1339,9 @@
         <button class="lm-btn primary small" type="button" data-action="component-install" data-component-id="${escapeHtml(rid)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>
       </div>`;
     }
-    return '';
+    return `<div class="lm-setting-actions">
+      <button class="lm-btn primary small" type="button" data-action="component-install" data-component-id="${escapeHtml(rid)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>
+    </div>`;
   }
 
   function componentUninstallRow(row) {
@@ -1406,6 +1459,9 @@
       if (rid === 'transformers') {
         const pick = document.querySelector(`[data-component-option="torch_variant"][data-component-id="${rid}"]`);
         body.torch_variant = pick?.value || 'auto';
+      }
+      if (rid === 'freetoken') {
+        body.backend = 'wsl';
       }
       await api(`/api/runtimes/${encodeURIComponent(rid)}/install`, {
         method: 'POST',
@@ -1625,7 +1681,8 @@
       const field = el.dataset.rtField;
       const row = runtimeDraft[index];
       if (!row) return;
-      if (field === 'device_policy') row.device_policy = el.value;
+      if (field === 'gpu_device') row.gpu_device = el.value.trim() || 'auto';
+      else if (field === 'device_policy') row.device_policy = el.value;
       else if (field === 'default_voice') row.default_voice = el.value;
       else if (field === 'default_model') row.default_model = el.value;
       else if (field === 'allow_cpu_fallback') row.allow_cpu_fallback = el.checked;
@@ -1639,11 +1696,25 @@
       else if (field === 'cfg_scale') row.cfg_scale = Math.max(0.5, Math.min(10, Number(el.value) || 1.5));
       else if (field === 'ddpm_steps') row.ddpm_steps = Math.max(1, Math.min(20, Number(el.value) || 5));
     });
+    document.querySelectorAll('[data-rt-ft-field]').forEach((el) => {
+      const index = Number(el.dataset.rtIndex);
+      const field = el.dataset.rtFtField;
+      const row = runtimeDraft[index];
+      if (!row || row.runtime_id !== 'freetoken') return;
+      row.freetoken_settings = row.freetoken_settings || {};
+      if (field === 'moe_backend') row.freetoken_settings.moe_backend = el.value;
+      else if (field === 'moe_cache_auto') row.freetoken_settings.moe_cache_auto = el.checked;
+      else if (field === 'memory_ratio') row.freetoken_settings.memory_ratio = Number(el.value) || 0.9;
+      else if (field === 'max_running_requests') row.freetoken_settings.max_running_requests = Number(el.value) || 4;
+      else if (field === 'max_prefill_length') row.freetoken_settings.max_prefill_length = Number(el.value) || 8192;
+      else if (field === 'moe_cpu_threads') row.freetoken_settings.moe_cpu_threads = Math.max(0, Number(el.value) || 0);
+    });
     const payload = runtimeDraft.map((row) => ({
       id: row.id,
       runtime_id: row.runtime_id,
       label: row.label,
       port: row.port,
+      gpu_device: row.gpu_device,
       device_policy: row.device_policy,
       default_voice: row.default_voice,
       default_model: row.default_model,
@@ -1659,6 +1730,7 @@
       num_workers: row.num_workers,
       cfg_scale: row.cfg_scale,
       ddpm_steps: row.ddpm_steps,
+      freetoken_settings: row.runtime_id === 'freetoken' ? row.freetoken_settings : undefined,
     }));
     const body = { runtimes: payload };
     const stopToggle = document.getElementById('runtimeStopOthersToggle');

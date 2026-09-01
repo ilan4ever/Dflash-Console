@@ -42,6 +42,7 @@ RUNTIME_FASTER_WHISPER = 'faster-whisper'  # faster-whisper / CTranslate2 STT ad
 RUNTIME_VIBEVOICE = 'vibevoice'  # Microsoft VibeVoice realtime TTS adapter
 RUNTIME_TRANSFORMERS = 'transformers'  # Hugging Face Transformers / PyTorch LLM adapter
 RUNTIME_VLLM = 'vllm'  # vLLM high-throughput OpenAI server (installed on demand)
+RUNTIME_FREETOKEN = 'freetoken'  # FreeToken edge-native MoE server (WSL/Linux)
 RUNTIME_OLLAMA = 'ollama'  # Ollama local model library (native HTTP API)
 
 # execution_mode values

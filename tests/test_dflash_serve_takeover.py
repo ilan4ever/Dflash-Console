@@ -44,6 +44,24 @@ def test_cmd_serve_skips_when_same_root_and_version(monkeypatch):
     assert called['stop'] is False
 
 
+def test_is_console_listener_accepts_python_when_command_line_blank(monkeypatch):
+    from dflash_cli.server_takeover import _is_console_listener
+
+    monkeypatch.setattr('dflash_cli.server_takeover._process_command_line', lambda pid: '')
+    monkeypatch.setattr('dflash_cli.server_takeover._process_name', lambda pid: 'python.exe')
+    monkeypatch.setattr('dflash_cli.server_takeover.sys.platform', 'win32')
+    assert _is_console_listener(44668) is True
+
+
+def test_is_console_listener_rejects_non_python_without_uvicorn(monkeypatch):
+    from dflash_cli.server_takeover import _is_console_listener
+
+    monkeypatch.setattr('dflash_cli.server_takeover._process_command_line', lambda pid: '')
+    monkeypatch.setattr('dflash_cli.server_takeover._process_name', lambda pid: 'node.exe')
+    monkeypatch.setattr('dflash_cli.server_takeover.sys.platform', 'win32')
+    assert _is_console_listener(1234) is False
+
+
 def test_cmd_serve_stops_foreign_console(monkeypatch):
     from dflash_cli.commands import cmd_serve
 

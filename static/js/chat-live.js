@@ -1164,19 +1164,28 @@
     const text = document.getElementById('chatLoadModalText');
     const hint = document.getElementById('chatLoadModalHint');
     const bar = document.getElementById('chatLoadModalBar');
-    const progress = Number(server?.load_progress);
-    const label = server?.label || server?.active_model_id || 'model';
+    const norm = window.DFlashLoadProgress?.normalize?.(server?.load_progress) || {
+      pct: Number.isFinite(Number(server?.load_progress)) ? Number(server.load_progress) : null,
+      detail: '',
+    };
+    const progress = norm.pct;
+    const label = server?.model_id || server?.label || server?.active_model_id || 'model';
+    const warming = server?.warming || server?.runtime_id === 'freetoken';
     if (Number.isFinite(progress) && progress > 0) {
       if (bar) bar.style.width = `${Math.min(100, Math.max(8, progress))}%`;
-      if (text) text.textContent = `Loading ${label}… ${Math.round(progress)}%`;
-      if (hint) hint.textContent = progress >= 90
-        ? 'Finishing GPU setup…'
-        : 'Reading weights into GPU.';
+      const verb = warming ? 'Warming' : 'Loading';
+      if (text) text.textContent = `${verb} ${label}… ${Math.round(progress)}%`;
+      if (hint) {
+        hint.textContent = warming
+          ? (norm.detail || 'Building expert banks in WSL. Chat stays disabled until warmup finishes.')
+          : (progress >= 90 ? 'Finishing GPU setup…' : 'Reading weights into GPU.');
+      }
       return;
     }
     if (text && !text.textContent.includes('%')) {
-      text.textContent = `Loading ${label}…`;
+      text.textContent = `${warming ? 'Warming' : 'Loading'} ${label}…`;
     }
+    if (hint && warming && norm.detail) hint.textContent = norm.detail;
   }
 
   function hideLoadModal() {

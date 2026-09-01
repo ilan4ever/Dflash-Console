@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-HF_LLM_ENGINES = ('vllm', 'transformers')
+HF_LLM_ENGINES = ('vllm', 'transformers', 'freetoken')
 
 
 def preferred_hf_runtime() -> str:

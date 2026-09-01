@@ -20,5 +20,17 @@ def test_parse_successfully_installed():
     assert 'Finishing' in message
 
 
+def test_parse_successfully_installed_dependency_not_final():
+    pct, message = parse_install_line('Successfully installed setuptools-84.0.0')
+    assert pct == 88.0
+    assert 'Installing Python packages' in message
+
+
+def test_parse_existing_installation():
+    pct, message = parse_install_line('Found existing installation: setuptools 84.0.0')
+    assert pct == 87.0
+    assert 'dependencies' in message.lower()
+
+
 def test_parse_empty_line():
     assert parse_install_line('   ') == (None, '')

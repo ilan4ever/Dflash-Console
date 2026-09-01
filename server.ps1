@@ -41,6 +41,34 @@ function Write-StartupLine {
     Add-Content -Path $script:StartupLog -Value $line
 }
 
+function Test-ConsoleTrustedPort {
+    param([int]$TargetPort)
+    if ($TargetPort -eq $script:ConsoleUiPort) { return $true }
+    if ($script:ConsoleGatewayPort -gt 0 -and $TargetPort -eq $script:ConsoleGatewayPort) { return $true }
+    return $false
+}
+
+function Wait-PortFree {
+    param(
+        [int]$TargetPort,
+        [double]$TimeoutSeconds = 15.0
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    return -not (Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)
+}
+
+function Stop-ProcessTree {
+    param([int]$ProcId)
+    if ($ProcId -le 0) { return }
+    & taskkill.exe /F /T /PID $ProcId 2>$null | Out-Null
+}
+
 function Stop-ListenersOnPort {
     param(
         [int]$TargetPort,
@@ -64,7 +92,8 @@ function Stop-ListenersOnPort {
             $ManagedPatterns = @(
                 '(?i)llama-server',
                 '(?i)start_llama_server\.ps1',
-                '(?i)uvicorn\s+api\.app:app'
+                '(?i)uvicorn\s+api\.app:app',
+                '(?i)-m\s+uvicorn\s+api\.app:app'
             )
             # Registered runtime tokens (e.g. Piper) written by the Console to
             # runtimes\process-tokens.json at boot. These are literal substrings,
@@ -87,18 +116,23 @@ function Stop-ListenersOnPort {
                     break
                 }
             }
+            # WMI often returns an empty CommandLine for python listeners started
+            # from a hidden pwsh worker. On Console UI/gateway ports, treat those
+            # python processes as managed so ApiRestart can actually free 8900.
+            if (
+                -not $managed -and
+                (Test-ConsoleTrustedPort -TargetPort $TargetPort) -and
+                $name -match '^(python|pythonw)(\.exe)?$'
+            ) {
+                $managed = $true
+            }
             if (-not $managed) {
                 $freed += "skipped $name ($procId)"
                 continue
             }
-            Stop-Process -Id $procId -Force -ErrorAction Stop
+            Stop-ProcessTree -ProcId $procId
             if (-not $SkipWait) {
-                for ($attempt = 0; $attempt -lt 30; $attempt++) {
-                    if (-not (Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue)) {
-                        break
-                    }
-                    Start-Sleep -Milliseconds 100
-                }
+                [void](Wait-PortFree -TargetPort $TargetPort -TimeoutSeconds 8)
             }
             $freed += "$name ($procId)"
         } catch {
@@ -140,20 +174,28 @@ function Stop-ForeignConsoleApi {
     still listens on the port.
     #>
     param([int]$TargetPort)
+    return (Stop-ConsoleApiOnPort -TargetPort $TargetPort)
+}
+
+function Stop-ConsoleApiOnPort {
+    <#
+    Gracefully stop the Console API on a port, wait until the listener is gone,
+    then force-stop any stale python listener that WMI cannot identify.
+    #>
+    param([int]$TargetPort)
     try {
         Invoke-WebRequest -Uri "http://127.0.0.1:$TargetPort/api/shutdown" -Method Post -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue | Out-Null
     } catch {
         # best-effort graceful shutdown; fall through to force stop
     }
-    for ($i = 0; $i -lt 24; $i++) {
-        Start-Sleep -Milliseconds 500
-        if (-not (Get-ConsoleApiHealth -TargetPort $TargetPort)) {
-            return $true
-        }
+    if (Wait-PortFree -TargetPort $TargetPort -TimeoutSeconds 20) {
+        return $true
     }
     $stopped = Stop-StaleConsoleApi -TargetPort $TargetPort
-    Start-Sleep -Milliseconds 500
-    return -not (Get-ConsoleApiHealth -TargetPort $TargetPort)
+    if ($stopped.Count -gt 0) {
+        Write-StartupLine ("  Force-stopped Console API listener on port {0} - {1}" -f $TargetPort, ($stopped -join ', ')) 'DarkYellow'
+    }
+    return (Wait-PortFree -TargetPort $TargetPort -TimeoutSeconds 10)
 }
 
 function Wait-ConsoleApiHealthy {
@@ -202,6 +244,8 @@ if (Test-Path $cfgPath) {
 if ($Port -le 0) {
     $Port = if ($cfg -and $cfg.ui_port) { [int]$cfg.ui_port } else { 8900 }
 }
+$script:ConsoleUiPort = [int]$Port
+$script:ConsoleGatewayPort = if ($cfg -and $cfg.gateway_port) { [int]$cfg.gateway_port } else { 8001 }
 
 if ($cfg -and $cfg.dflash_root) {
     $env:DFLASH_ROOT = [string]$cfg.dflash_root
@@ -335,11 +379,20 @@ if ($Restart) {
 }
 
 if (-not $orchestratedStart) {
-    $stale = Stop-StaleConsoleApi -TargetPort $Port
-    if ($stale.Count -gt 0) {
-        Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
+    if ($ApiRestart -or $Restart) {
+        $released = Stop-ConsoleApiOnPort -TargetPort $Port
+        if ($released) {
+            Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+        } else {
+            Write-StartupLine "  WARNING: port $Port is still in use after stop attempt" 'Red'
+        }
     } else {
-        Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+        $stale = Stop-StaleConsoleApi -TargetPort $Port
+        if ($stale.Count -gt 0) {
+            Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
+        } else {
+            Write-StartupLine '  Console API port ready for launch' 'DarkGray'
+        }
     }
     $gatewayPort = if ($cfg -and $cfg.gateway_port) { [int]$cfg.gateway_port } else { 8001 }
     if ($gatewayPort -gt 0 -and $gatewayPort -ne $Port) {
@@ -469,5 +522,5 @@ if (-not $orchestratedStart) {
     Write-Host 'Use .\server.ps1 -Foreground to attach this terminal.' -ForegroundColor DarkGray
     Write-Host ''
 } else {
-    Write-StartupLine ('Console API ready at {0} (orchestrated; UI not opened)' -f $url) 'Green'
+    Write-StartupLine ('Console API ready at {0} (orchestrated, UI not opened)' -f $url) 'Green'
 }

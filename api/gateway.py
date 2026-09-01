@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from core.chat_proxy import wants_stream
-from core.config import is_embedding_server, list_servers, load_config, normalize_inference_settings
+from core.config import is_embedding_server, list_runtimes, list_servers, load_config, normalize_inference_settings
 from core.local_models import model_has_reasoning
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,24 @@ def _console_base(cfg: dict[str, Any]) -> str:
 
 
 def _enabled_chat_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    return [s for s in list_servers(cfg) if s.get('enabled', True) and not is_embedding_server(s)]
+    servers = [s for s in list_servers(cfg) if s.get('enabled', True) and not is_embedding_server(s)]
+    known = {str(row.get('id') or '') for row in servers}
+    # Adapter engines use the same stable gateway namespace as llama servers.
+    # They remain selectable while stopped so the API can return a useful
+    # "load a model first" response instead of silently falling back to GGUF.
+    for runtime in list_runtimes(cfg):
+        runtime_id = str(runtime.get('runtime_id') or '').strip()
+        if runtime.get('enabled', True) is False or runtime_id not in {'vllm', 'transformers', 'freetoken'}:
+            continue
+        if runtime_id in known:
+            continue
+        servers.append({
+            **runtime,
+            'id': runtime_id,
+            'runtime_id': runtime_id,
+            'model_id': str(runtime.get('default_model') or ''),
+        })
+    return servers
 
 
 def _chat_server(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +229,32 @@ async def list_models() -> dict[str, Any]:
                 'api_url': str(server.get('api_url') or ''),
                 'reasoning': model_has_reasoning(server),
                 'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
+            },
+        })
+    from core.runtimes import get_runtime_adapter
+
+    for runtime in list_runtimes(cfg):
+        runtime_id = str(runtime.get('runtime_id') or '').strip()
+        if runtime.get('enabled', True) is False or runtime_id not in {'vllm', 'transformers', 'freetoken'}:
+            continue
+        adapter = get_runtime_adapter(runtime_id)
+        health = adapter.health() if adapter is not None else {}
+        active = str(health.get('active_model') or runtime.get('default_model') or '').strip()
+        if not active:
+            continue
+        data.append({
+            'id': runtime_id,
+            'object': 'model',
+            'created': 0,
+            'owned_by': 'dflash-console',
+            'name': active.rsplit('/', 1)[-1].rsplit('\\', 1)[-1],
+            'meta': {
+                'engine': str(runtime.get('label') or runtime_id),
+                'display_name': str(runtime.get('label') or runtime_id),
+                'api_model_id': active,
+                'runtime_id': runtime_id,
+                'api_url': str(health.get('api_url') or ''),
+                'running': health.get('running') is True,
             },
         })
     return {'object': 'list', 'data': data}

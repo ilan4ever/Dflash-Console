@@ -115,10 +115,16 @@
     if (window.DFlashModelGroups?.isAcceleratorOnlyModel) {
       return window.DFlashModelGroups.isAcceleratorOnlyModel(model);
     }
+    const leaf = (value) => {
+      const raw = String(value || '').trim().replace(/[\\/]+$/, '');
+      if (!raw) return '';
+      const parts = raw.split(/[\\/]/);
+      return parts[parts.length - 1] || '';
+    };
     const name = [
-      model?.filename,
-      model?.path,
-      model?.model_path,
+      leaf(model?.filename) || model?.filename,
+      leaf(model?.path),
+      leaf(model?.model_path),
     ].filter(Boolean).join(' ').toLowerCase();
     if (!name.trim()) return false;
     return /(?:^|[^a-z])draft(?:[^a-z]|$)/.test(name) || /dflash|dspark/.test(name);

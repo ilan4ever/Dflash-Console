@@ -58,11 +58,43 @@ def test_supported_repo_query_uses_fast_path():
         'has_files': True,
     }
     with patch('core.huggingface._lookup_hf_repo_models', return_value=[sample]) as lookup:
-        with patch('core.huggingface._is_console_supported_model', return_value=True):
-            payload = _search_supported_models('Kwaipilot/KAT-Coder-V2.5-Dev', limit=5)
+        with patch('core.huggingface._fetch_repo_summary_light', return_value=None):
+            with patch('core.huggingface._is_console_supported_model', return_value=True):
+                payload = _search_supported_models('Kwaipilot/KAT-Coder-V2.5-Dev', limit=5)
     lookup.assert_called_once()
     assert payload['success'] is True
     assert payload['models'][0]['id'] == 'Kwaipilot/KAT-Coder-V2.5-Dev'
+
+
+def test_supported_repo_query_prefers_light_summary():
+    sample = {
+        'id': 'Kwaipilot/KAT-Coder-V2.5-Dev',
+        'has_gguf': True,
+        'modality': 'llm',
+        'runnable': True,
+    }
+    with patch('core.huggingface._fetch_repo_summary_light', return_value=sample) as light:
+        with patch('core.huggingface._lookup_hf_repo_models') as lookup:
+            with patch('core.huggingface._is_console_supported_model', return_value=True):
+                payload = _search_supported_models('Kwaipilot/KAT-Coder-V2.5-Dev', limit=5)
+    light.assert_called_once()
+    lookup.assert_not_called()
+    assert payload['models'][0]['id'] == sample['id']
+
+
+def test_search_models_repo_id_uses_direct_lookup(monkeypatch):
+    from core.huggingface import search_models
+
+    sample = {'id': 'nvidia/Qwen3.6-35B-A3B-NVFP4', 'downloads': 1000, 'has_files': True}
+    monkeypatch.setattr('core.huggingface._fetch_repo_summary_light', lambda *a, **k: sample)
+    monkeypatch.setattr(
+        'core.huggingface._lookup_hf_repo_models',
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError('lookup should be skipped')),
+    )
+    monkeypatch.setattr('core.huggingface._finalize_search_models', lambda models, **k: models)
+    payload = search_models('nvidia/Qwen3.6-35B-A3B-NVFP4', category='all', enrich_sizes=False)
+    assert payload['success'] is True
+    assert payload['models'][0]['id'] == sample['id']
 
 
 def test_supported_repo_query_skips_size_enrich_when_files_present(monkeypatch):

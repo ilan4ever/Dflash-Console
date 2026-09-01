@@ -28,6 +28,9 @@ LOG_DIR = ROOT / 'logs' / 'runtimes'
 VLLM_LOG = LOG_DIR / 'vllm.log'
 VLLM_PROCESS_TOKEN = f'runtimes{os.sep}vllm{os.sep}venv'
 
+_VLLM_INSTALLED_CACHE: tuple[float, bool] = (0.0, False)
+_VLLM_INSTALLED_CACHE_TTL = 300.0
+
 PRESETS: dict[str, dict[str, Any]] = {
     'fast': {'gpu_memory_utilization': 0.70, 'max_model_len': 4096},
     'balanced': {'gpu_memory_utilization': 0.85, 'max_model_len': 8192},
@@ -67,6 +70,73 @@ def is_vllm_model_dir(path: str | Path) -> bool:
     return is_transformers_model_dir(path)
 
 
+def _read_manifest_file() -> dict[str, Any]:
+    if not VLLM_MANIFEST.is_file():
+        return {}
+    try:
+        data = json.loads(VLLM_MANIFEST.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def verify_vllm_installation() -> tuple[bool, str]:
+    """Return (installed, detail). Detail is empty when installed."""
+    manifest = _read_manifest_file()
+    if not manifest:
+        if VLLM_MANIFEST.is_file():
+            return False, 'vLLM manifest exists but could not be read (invalid JSON).'
+        return False, 'vLLM manifest is missing — install did not finish writing runtimes/vllm/manifest.json.'
+
+    backend = str(manifest.get('backend') or '').strip().lower()
+    if not backend:
+        python_hint = str(manifest.get('wsl_python') or manifest.get('python') or '').strip()
+        if python_hint.startswith('/'):
+            backend = 'wsl'
+    if backend == 'wsl':
+        distro = str(manifest.get('wsl_distro') or '').strip()
+        python = str(manifest.get('wsl_python') or '').strip()
+        if not distro or not python:
+            return False, 'vLLM WSL manifest is incomplete (missing distro or python path).'
+        try:
+            proc = subprocess.run(
+                ['wsl', '-d', distro, '--', python, '-c', 'import vllm'],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, 'Timed out verifying vLLM import in WSL (first import can take up to a minute).'
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f'Could not run WSL verification: {exc}'
+        if proc.returncode == 0:
+            return True, ''
+        detail = (proc.stderr or proc.stdout or '').strip()
+        return False, detail or 'vLLM import failed inside WSL.'
+
+    python = str(manifest.get('python') or '').strip()
+    native_py = python if python and Path(python).is_file() else str(VLLM_VENV_PY)
+    if not Path(native_py).is_file():
+        return False, 'Native vLLM Python environment is missing.'
+    try:
+        proc = subprocess.run(
+            [native_py, '-c', 'import vllm'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, 'Timed out verifying vLLM import on Windows.'
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f'Could not verify native vLLM import: {exc}'
+    if proc.returncode == 0:
+        return True, ''
+    detail = (proc.stderr or proc.stdout or '').strip()
+    return False, detail or 'vLLM import failed in the Windows environment.'
+
+
 class VllmRuntimeAdapter:
     runtime_id = RUNTIME_VLLM
     modalities = (MODALITY_LLM,)
@@ -82,48 +152,20 @@ class VllmRuntimeAdapter:
         return str(VLLM_VENV_PY) if VLLM_VENV_PY.is_file() else sys.executable
 
     def _read_manifest(self) -> dict[str, Any]:
-        if not VLLM_MANIFEST.is_file():
-            return {}
-        try:
-            data = json.loads(VLLM_MANIFEST.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        return _read_manifest_file()
 
     @staticmethod
     def is_installed() -> bool:
         if VLLM_MANIFEST.is_file():
-            try:
-                data = json.loads(VLLM_MANIFEST.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                data = {}
-            if isinstance(data, dict) and str(data.get('backend') or '') == 'wsl':
-                distro = str(data.get('wsl_distro') or '').strip()
-                python = str(data.get('wsl_python') or '').strip()
-                if not distro or not python:
-                    return False
-                try:
-                    proc = subprocess.run(
-                        ['wsl', '-d', distro, '--', python, '-c', 'import vllm'],
-                        capture_output=True,
-                        timeout=40,
-                        check=False,
-                    )
-                    return proc.returncode == 0
-                except (OSError, subprocess.SubprocessError):
-                    return False
-        if not VLLM_VENV_PY.is_file():
-            return False
-        try:
-            proc = subprocess.run(
-                [str(VLLM_VENV_PY), '-c', 'import vllm'],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-            return proc.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
+            return True
+        global _VLLM_INSTALLED_CACHE
+        now = time.time()
+        cached_at, cached_ok = _VLLM_INSTALLED_CACHE
+        if (now - cached_at) < _VLLM_INSTALLED_CACHE_TTL:
+            return cached_ok
+        ok, _detail = verify_vllm_installation()
+        _VLLM_INSTALLED_CACHE = (now, ok)
+        return ok
 
     def health(self) -> dict[str, Any]:
         with _STATE_LOCK:
@@ -228,11 +270,7 @@ class VllmRuntimeAdapter:
 
     def write_manifest(self) -> Path:
         VLLM_BUNDLE.mkdir(parents=True, exist_ok=True)
-        existing: dict[str, Any] = {}
-        try:
-            existing = json.loads(VLLM_MANIFEST.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            existing = {}
+        existing = _read_manifest_file()
         revision = existing.get('bundle_revision')
         if not revision:
             try:
@@ -241,14 +279,26 @@ class VllmRuntimeAdapter:
                 revision = int(BUNDLE_REVISIONS.get(self.runtime_id, 0) or 0)
             except Exception:
                 revision = 0
-        payload = {
-            'runtime_id': self.runtime_id,
+        backend = str(existing.get('backend') or '').strip().lower()
+        if not backend and str(existing.get('wsl_python') or existing.get('python') or '').startswith('/'):
+            backend = 'wsl'
+        payload: dict[str, Any] = {
+            'version': int(existing.get('version') or 1),
             'bundle_revision': int(revision or 0),
+            'runtime_id': self.runtime_id,
             'execution_mode': self.execution_mode,
-            'python': self.python(),
-            'installed': self.is_installed(),
+            'backend': backend or ('native' if VLLM_VENV_PY.is_file() else ''),
+            'generated_by': str(existing.get('generated_by') or 'core.runtimes.vllm'),
         }
-        VLLM_MANIFEST.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+        if payload['backend'] == 'wsl':
+            payload['wsl_distro'] = str(existing.get('wsl_distro') or 'Ubuntu')
+            payload['wsl_python'] = str(existing.get('wsl_python') or existing.get('python') or self.python())
+            payload['python'] = ''
+        else:
+            payload['python'] = str(existing.get('python') or self.python())
+            payload['wsl_distro'] = str(existing.get('wsl_distro') or '')
+            payload['wsl_python'] = str(existing.get('wsl_python') or '')
+        VLLM_MANIFEST.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
         return VLLM_MANIFEST
 
     def _windows_to_wsl_path(self, path: Path) -> str:

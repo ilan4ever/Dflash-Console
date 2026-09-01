@@ -28,6 +28,7 @@ from core.model_presets import (
     write_server_preset,
 )
 from core.runtimes import runtime_process_identity_tokens
+from core.net_listeners import pid_listening_on_port
 
 _started_launch: dict[int, dict[str, Any]] = {}
 _started_processes: dict[int, subprocess.Popen] = {}
@@ -238,43 +239,7 @@ def _tcp_port_open(host: str, port: int) -> bool:
 
 
 def listener_pid(host: str, port: int) -> int | None:
-    if port <= 0:
-        return None
-    try:
-        if sys.platform == 'win32':
-            result = subprocess.run(
-                ['netstat', '-ano', '-p', 'tcp'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            needle = f':{int(port)}'
-            for line in result.stdout.splitlines():
-                parts = line.strip().split()
-                if len(parts) < 5 or 'LISTENING' not in parts[3]:
-                    continue
-                local_addr = parts[1]
-                if not local_addr.endswith(needle):
-                    continue
-                if local_addr.startswith(('127.0.0.1', '0.0.0.0', '[::]')):
-                    try:
-                        return int(parts[4])
-                    except (ValueError, IndexError):
-                        return None
-        else:
-            result = subprocess.run(
-                ['lsof', '-ti', f'tcp:{int(port)}'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.stdout.strip():
-                return int(result.stdout.strip().splitlines()[0])
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return None
-    return None
+    return pid_listening_on_port(int(port), host)
 
 
 def _launch_signature(

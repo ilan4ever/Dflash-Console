@@ -29,7 +29,7 @@
   const suppressedLibrary = { keys: new Set(), paths: new Set() };
 
   const LOAD_ENGINE_KEY = 'dflashConsole.loadEngine';
-  const HF_LOAD_ENGINES = ['transformers', 'vllm'];
+  const HF_LOAD_ENGINES = ['transformers', 'vllm', 'freetoken'];
   const LOAD_ENGINE_PREFERENCE = ['transformers', 'vllm', 'dflash'];
   const PINNED_KEY = 'dflashConsole.pinnedModels';
   const LOCAL_CATALOG_CACHE_KEY = 'dflashConsole.modelLibraryCache';
@@ -143,10 +143,25 @@
   }
 
   function splitShardBadge(model) {
+    if (model?.incomplete && Number(model?.shard_total || 0) > 1) {
+      const present = Number(model.shard_present || 0);
+      const total = Number(model.shard_total || 0);
+      return `<span class="lm-tag yellow" title="Only ${present} of ${total} weight files are on disk — download is incomplete">Incomplete ${present}/${total}</span>`;
+    }
     const count = Number(model?.split_count || 0);
     return count > 1
       ? `<span class="lm-tag purple" title="This GGUF model is stored across ${count} shard files">${count} shards</span>`
       : '';
+  }
+
+  function formatModelDiskSize(model) {
+    const onDisk = formatSizeGb(model?.size_gb);
+    if (model?.incomplete) {
+      const expected = formatSizeGb(model?.expected_size_gb);
+      if (onDisk !== '—' && expected !== '—') return `${onDisk} / ${expected}`;
+      if (onDisk !== '—') return `${onDisk} (incomplete)`;
+    }
+    return onDisk;
   }
 
   function dflashCompatibilityBadge() {
@@ -352,6 +367,7 @@
   function isModelReadyToLoad(model) {
     return !!(
       model?.loadable
+      && !model?.incomplete
       && !modelFileMissing(model)
       && !isDflashAccelerator(model)
       && model.stack_status !== 'unregistered'
@@ -382,7 +398,18 @@
   }
 
   function isStackBooting(model) {
-    return isModelPendingLoad(model) || !!(model.server_id && bootingServers[model.server_id]);
+    return isModelPendingLoad(model)
+      || !!(model.server_id && bootingServers[model.server_id])
+      || isFreeTokenWarmingModel(model);
+  }
+
+  function isFreeTokenWarmingModel(model) {
+    const boot = bootingServers.freetoken;
+    if (!boot) return false;
+    const path = normalizeModelPath(model?.path);
+    const bootPath = normalizeModelPath(boot.path);
+    if (path && bootPath) return path === bootPath;
+    return Boolean(path || bootPath);
   }
 
   function isStackUnloading(model) {
@@ -464,13 +491,13 @@
 
   function getLoadEngine() {
     const saved = String(localStorage.getItem(LOAD_ENGINE_KEY) || '').toLowerCase();
-    if (['dflash', 'vllm', 'transformers'].includes(saved)) return saved;
+    if (['dflash', 'vllm', 'transformers', 'freetoken'].includes(saved)) return saved;
     if (autoPickedLoadEngine) return autoPickedLoadEngine;
     return 'dflash';
   }
 
   function setLoadEngine(id) {
-    const next = ['dflash', 'vllm', 'transformers'].includes(id) ? id : 'dflash';
+    const next = ['dflash', 'vllm', 'transformers', 'freetoken'].includes(id) ? id : 'dflash';
     localStorage.setItem(LOAD_ENGINE_KEY, next);
     document.querySelectorAll('[data-load-engine-pick]').forEach((el) => {
       el.value = next;
@@ -482,8 +509,8 @@
     if (!model) return false;
     const engines = Array.isArray(model.engines) ? model.engines : [];
     const runtimeId = String(model.runtime_id || '');
-    if (engines.includes('vllm') || engines.includes('transformers')) return true;
-    if (runtimeId === 'vllm' || runtimeId === 'transformers') return true;
+    if (engines.includes('vllm') || engines.includes('transformers') || engines.includes('freetoken')) return true;
+    if (runtimeId === 'vllm' || runtimeId === 'transformers' || runtimeId === 'freetoken') return true;
     return model.kind === 'dir' && String(model.modality || 'llm') === 'llm';
   }
 
@@ -505,7 +532,13 @@
     const global = getLoadEngine();
     const current = engines.includes(global) ? global : preferred;
     const opts = engines.map((id) => {
-      const label = id === 'vllm' ? 'vLLM' : id === 'transformers' ? 'Transformers' : id;
+      const label = id === 'vllm'
+        ? 'vLLM'
+        : id === 'transformers'
+          ? 'Transformers'
+          : id === 'freetoken'
+            ? 'FreeToken (WSL)'
+            : id;
       return `<option value="${escapeHtml(id)}" ${id === current ? 'selected' : ''}>${escapeHtml(label)}</option>`;
     }).join('');
     return `<select class="lm-select small lm-engine-pick" data-engine-pick="${escapeHtml(modelKey(model))}" title="Engine to load this model">${opts}</select>`;
@@ -516,7 +549,13 @@
     if (picker) return picker;
     if (!canLoadInConsole(model) || needsDflashSetupActions(model) || isDflashAccelerator(model)) return '';
     const engine = getLoadEngine();
-    const label = engine === 'vllm' ? 'vLLM' : engine === 'transformers' ? 'Transformers' : 'DFlash';
+    const label = engine === 'vllm'
+      ? 'vLLM'
+      : engine === 'transformers'
+        ? 'Transformers'
+        : engine === 'freetoken'
+          ? 'FreeToken (WSL)'
+          : 'DFlash';
     return `<span class="lm-engine-pick-label" title="Uses ${label} when you load this model">${escapeHtml(label)}</span>`;
   }
 
@@ -544,11 +583,15 @@
       return '<span class="lm-tag orange lm-model-load-pill" title="Unloading model from GPU">Unloading…</span>';
     }
     if (isStackBooting(model)) {
-      const progress = bootingServers[model.server_id]?.progress;
+      const boot = bootingServers[model.server_id] || (isFreeTokenWarmingModel(model) ? bootingServers.freetoken : null);
+      const progress = boot?.progress;
       const pct = progress != null && Number.isFinite(Number(progress))
         ? ` ${Math.round(Number(progress))}%`
         : '';
-      return `<span class="lm-tag blue lm-model-load-pill" title="Loading model onto GPU">Loading${pct}…</span>`;
+      const warming = Boolean(bootingServers.freetoken && isFreeTokenWarmingModel(model));
+      const label = warming ? 'Warming' : 'Loading';
+      const title = escapeHtml(boot?.detail || `${label} model onto GPU`);
+      return `<span class="lm-tag blue lm-model-load-pill" title="${title}">${label}${pct}…</span>`;
     }
     if (isStackLoadedOnGpu(model)) {
       return actionButton('unload-model', 'Unload', 'Remove model from GPU', 'lm-btn-unload-active');
@@ -797,7 +840,7 @@
   }
 
   function loadEngineFilterApplies() {
-    return ['gguf', 'vllm', 'transformers'].includes(modelTypeFilter);
+    return ['gguf', 'vllm', 'transformers', 'freetoken'].includes(modelTypeFilter);
   }
 
   function matchesLoadEngine(model, engine = getLoadEngine()) {
@@ -812,25 +855,28 @@
     if (engine === 'transformers') {
       return engines.includes('transformers') || runtimeId === 'transformers';
     }
+    if (engine === 'freetoken') {
+      return engines.includes('freetoken') || runtimeId === 'freetoken';
+    }
 
     // DFlash / GGUF — hide HF safetensors dirs and non-GGUF adapter models.
     if (isHfEngineModel(model) && String(model?.kind || '') === 'dir' && !isGgufFile) {
       return false;
     }
-    if (engines.includes('vllm') || engines.includes('transformers')) {
+    if (engines.includes('vllm') || engines.includes('transformers') || engines.includes('freetoken')) {
       if (!isGgufFile && String(model?.kind || '') === 'dir') return false;
     }
-    const nonGgufRuntimes = new Set(['faster-whisper', 'stt', 'piper', 'vibevoice', 'transformers', 'vllm']);
+    const nonGgufRuntimes = new Set(['faster-whisper', 'stt', 'piper', 'vibevoice', 'transformers', 'vllm', 'freetoken']);
     if (!isGgufFile && nonGgufRuntimes.has(runtimeId)) return false;
     if (String(model?.kind || '') === 'dir' && !model?.server_id && !model?.dflash_stack && !isGgufFile) {
       if (runtimeId === 'faster-whisper') return false;
-      if (engines.includes('vllm') || engines.includes('transformers')) return false;
+      if (engines.includes('vllm') || engines.includes('transformers') || engines.includes('freetoken')) return false;
     }
     return true;
   }
 
   function loadEngineCounts() {
-    const counts = { dflash: 0, vllm: 0, transformers: 0 };
+    const counts = { dflash: 0, vllm: 0, transformers: 0, freetoken: 0 };
     for (const model of models) {
       for (const engine of Object.keys(counts)) {
         if (matchesLoadEngine(model, engine)) counts[engine] += 1;
@@ -961,8 +1007,19 @@
       if (Number.isFinite(portNum) && portNum > 0) serverPortById[server.id] = portNum;
       if (server.status === 'booting') {
         bootingServers[server.id] = {
-          progress: server.load_progress,
+          progress: server.load_progress?.expert_pct ?? server.load_progress ?? null,
           label: server.label || server.id,
+          detail: server.load_progress?.detail || 'Loading model onto GPU…',
+          path: server.model_path || server.target_path || '',
+        };
+      }
+      if (server.id === 'freetoken' && (server.warming || server.booting || server.status === 'booting')) {
+        const progress = server.load_progress || {};
+        bootingServers.freetoken = {
+          progress: progress.expert_pct ?? null,
+          label: server.model_path ? String(server.model_path).split(/[\\/]/).pop() : 'FreeToken',
+          detail: progress.detail || 'Warming up FreeToken experts…',
+          path: server.model_path || '',
         };
       }
     }
@@ -1200,7 +1257,7 @@
 
   function getActiveDownloadJobs() {
     return (window.DFlashDownloadQueue?.getActiveJobs?.() || [])
-      .filter((job) => job.status === 'downloading');
+      .filter((job) => job.status === 'downloading' || job.status === 'incomplete');
   }
 
   function downloadProgressWidth(job) {
@@ -1227,7 +1284,7 @@
     const parts = [name];
     const nameHasQuant = /\b(?:Q\d|IQ\d|F16|F32|BF16)\b/i.test(name);
     if (!isStack && model.quant && model.quant !== '—' && !nameHasQuant) parts.push(model.quant);
-    const sizeLabel = formatSizeGb(model.size_gb);
+    const sizeLabel = formatModelDiskSize(model);
     if (sizeLabel !== '—') parts.push(sizeLabel);
     return parts.join(' · ');
   }
@@ -1273,28 +1330,43 @@
     const repo = job.repo_id || 'Hugging Face';
     const filename = job.filename || '—';
     const title = downloadJobTitle(job);
-    const stats = [bytes !== '—' ? bytes : '', speed, eta].filter(Boolean).join(' · ');
+    const incomplete = job.status === 'incomplete';
+    const shardLabel = incomplete && job.shard_total
+      ? `${job.shard_present || 0}/${job.shard_total} shards`
+      : '';
+    const stats = incomplete
+      ? [bytes !== '—' ? bytes : '', shardLabel, 'Needs resume'].filter(Boolean).join(' · ')
+      : [bytes !== '—' ? bytes : '', speed, eta].filter(Boolean).join(' · ');
     const sizeCell = bytes !== '—' ? bytes : (speed || '—');
+    const statusTag = incomplete
+      ? '<span class="lm-tag yellow">incomplete</span>'
+      : '<span class="lm-tag green">downloading</span>';
+    const action = incomplete
+      ? `<button class="lm-btn ghost tiny lm-action-btn" type="button" data-action="resume-download" data-download-job-id="${escapeHtml(job.id)}" title="Resume downloading remaining files">Resume</button>`
+      : '<span class="lm-tag dim">in progress</span>';
+    const bar = incomplete && job.bytes_total && job.bytes_read
+      ? `<div class="lm-model-download-bar" aria-hidden="true"><div class="lm-model-download-fill" style="width:${Math.max(1, Math.min(99, Math.round((Number(job.bytes_read) / Number(job.bytes_total)) * 100)))}%"></div></div>`
+      : (incomplete
+        ? ''
+        : `<div class="lm-model-download-bar" aria-hidden="true"><div class="lm-model-download-fill${fillClass}"${fillStyle}></div></div>`);
     return `
-      <tr class="lm-model-row downloading-model" data-download-job-id="${escapeHtml(job.id)}">
+      <tr class="lm-model-row downloading-model${incomplete ? ' incomplete-download' : ''}" data-download-job-id="${escapeHtml(job.id)}">
         <td class="lm-col-model">
           <div class="lm-model-title-line">
-            <span class="lm-tag green">downloading</span>
+            ${statusTag}
             <span class="lm-model-title-text">${escapeHtml(title)}</span>
-            <span class="lm-model-download-pct">${escapeHtml(pctLabel)}</span>
+            ${incomplete ? '' : `<span class="lm-model-download-pct">${escapeHtml(pctLabel)}</span>`}
           </div>
-          <div class="lm-model-download-bar" aria-hidden="true">
-            <div class="lm-model-download-fill${fillClass}"${fillStyle}></div>
-          </div>
-          <div class="lm-model-download-stats">${escapeHtml(stats || 'Starting…')}</div>
+          ${bar}
+          <div class="lm-model-download-stats">${escapeHtml(stats || (incomplete ? 'Incomplete download' : 'Starting…'))}</div>
           <div class="lm-model-meta-line lm-model-download-meta">${escapeHtml(repo)} · ${escapeHtml(filename)}</div>
         </td>
         <td class="lm-col-meta">—</td>
         <td class="lm-col-meta">—</td>
         <td class="lm-col-meta">${escapeHtml(repo.split('/')[0] || 'HF')}</td>
         <td class="lm-col-meta">${escapeHtml(sizeCell)}</td>
-        <td class="lm-col-meta">Now</td>
-        <td class="lm-col-action"><span class="lm-tag dim">in progress</span></td>
+        <td class="lm-col-meta">${incomplete ? 'Paused' : 'Now'}</td>
+        <td class="lm-col-action">${action}</td>
       </tr>`;
   }
 
@@ -1320,6 +1392,7 @@
     'gguf',
     'vllm',
     'transformers',
+    'freetoken',
     'llm',
     'ocr',
     'translation',
@@ -1469,9 +1542,32 @@
     if (modelTypeFilter === 'gguf') return matchesLoadEngine(model, 'dflash');
     if (modelTypeFilter === 'vllm') return matchesLoadEngine(model, 'vllm');
     if (modelTypeFilter === 'transformers') return matchesLoadEngine(model, 'transformers');
+    if (modelTypeFilter === 'freetoken') return matchesLoadEngine(model, 'freetoken');
     if (isProjectorModel(model)) return modelTypeFilter === 'projector';
     if (modelTypeFilter === 'projector') return false;
     return modelTypeFilter === 'all' || modelType(model) === modelTypeFilter;
+  }
+
+  function modelSearchHaystack(model) {
+    return normalizeSearchText([
+      model?.label,
+      model?.id,
+      model?.path,
+      model?.publisher,
+      model?.hf_repo,
+      model?.arch,
+      model?.quant,
+      model?.draft_label,
+      model?.draft_filename,
+      model?.draft_path,
+      model?.stack_status,
+      model?.filename,
+    ].join(' '));
+  }
+
+  function modelMatchesSearch(model, needle) {
+    if (!needle) return true;
+    return modelSearchHaystack(model).includes(needle);
   }
 
   function showingAcceleratorsOnly() {
@@ -1490,13 +1586,11 @@
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
-      if (!matchesModelType(model)) return false;
-      if (!needle) return true;
-      const hay = normalizeSearchText([
-        model.label, model.id, model.path, model.publisher, model.arch, model.quant,
-        model.draft_label, model.draft_filename, model.draft_path, model.stack_status,
-      ].join(' '));
-      return hay.includes(needle);
+      if (model?.incomplete) return false;
+      // Text search must still find HF SafeTensors folders even when the type
+      // filter is DFlash/GGUF — otherwise installed FreeToken/vLLM models vanish.
+      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, needle))) return false;
+      return modelMatchesSearch(model, needle);
     }).map((model) => [
       modelKey(model),
       model.label,
@@ -1565,13 +1659,12 @@
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
-      if (!matchesModelType(model)) return false;
-      if (!needle) return true;
-      const hay = normalizeSearchText([
-        model.label, model.id, model.path, model.publisher, model.arch, model.quant,
-        model.draft_label, model.draft_filename, model.draft_path, model.stack_status,
-      ].join(' '));
-      return hay.includes(needle);
+      // Incomplete shard folders belong in Downloading now with Resume.
+      if (model?.incomplete) return false;
+      // Text search must still find HF SafeTensors folders even when the type
+      // filter is DFlash/GGUF — otherwise installed FreeToken/vLLM models vanish.
+      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, needle))) return false;
+      return modelMatchesSearch(model, needle);
     }).sort((a, b) => {
       const aPin = pinned.has(modelKey(a)) ? 0 : 1;
       const bPin = pinned.has(modelKey(b)) ? 0 : 1;
@@ -1638,7 +1731,7 @@
       const loadBtn = stackActionButton(model);
       const actionStack = loadBtn.includes('lm-action-stack');
       const actionStackSetup = loadBtn.includes('is-setup-row');
-      const size = formatSizeGb(model.size_gb);
+      const size = formatModelDiskSize(model);
       const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
       return `
         <tr class="${modelRowClassName(model, { selected, pinned: pinned.has(key) })}${isExternalModel(model) ? ' external-model' : ''}" data-model-key="${escapeHtml(key)}" data-model-id="${escapeHtml(model.id || '')}" data-server-id="${escapeHtml(model.server_id || '')}">
@@ -1695,6 +1788,13 @@
         if (model) void loadModel(model);
       });
     });
+    body.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const jobId = btn.dataset.downloadJobId || btn.closest('[data-download-job-id]')?.dataset.downloadJobId;
+        if (jobId) void window.DFlashDownloadQueue?.resumeDownloadJob?.(jobId);
+      });
+    });
     body.querySelectorAll('[data-action="load-llm"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -1741,7 +1841,7 @@
 
   async function unloadModel(model) {
     const runtimeId = String(model?.runtime_id || '');
-    const runtimeUnloadIds = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice', 'vllm']);
+    const runtimeUnloadIds = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice', 'vllm', 'freetoken']);
     const serverId = model?.server_id || '';
     markModelUnloadPending(model, serverId);
     window.DFlashStatusFeed?.setTransient(`Unloading ${model.label || model.id || serverId}…`, {
@@ -2310,6 +2410,28 @@
     }
   }
 
+  async function waitForFreeTokenReady(model, { timeoutMs = 900000 } = {}) {
+    const label = model?.label || model?.id || 'model';
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const data = await api('/api/runtimes/freetoken');
+      const progress = data?.load_progress || {};
+      const pct = progress.expert_pct;
+      const secondary = progress.detail
+        || (pct != null ? `Warming up experts… ${pct}%` : 'Warming up FreeToken experts in WSL…');
+      window.DFlashStatusFeed?.setTransient(`Loading ${label}…`, { secondary, ttlMs: timeoutMs });
+      if (data?.inference_ready) {
+        window.DFlashStatusFeed?.note(`${label} ready`, 'FreeToken is ready for chat');
+        return data;
+      }
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+      window.DFlashDownloadsLive?.render?.();
+      await refreshRuntimeState({ silent: true });
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+    }
+    throw new Error('FreeToken did not finish warming up in time');
+  }
+
   async function loadModel(model, { llmOnly = false } = {}) {
     if (isDflashAccelerator(model)) {
       toast('Choose the full target model; accelerators are stack-only.', false);
@@ -2324,7 +2446,7 @@
       return;
     }
     const runtimeId = String(model.runtime_id || '');
-    const adapterRuntimes = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice', 'vllm']);
+    const adapterRuntimes = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice', 'vllm', 'freetoken']);
     const pick = document.querySelector(`[data-engine-pick="${CSS.escape(modelKey(model))}"]`);
     const chosenRuntime = String(pick?.value || (isHfEngineModel(model) ? getLoadEngine() : '') || runtimeId || '');
     if (adapterRuntimes.has(chosenRuntime) || adapterRuntimes.has(runtimeId)) {
@@ -2336,11 +2458,14 @@
       const isFw = loadRuntime === 'faster-whisper';
       const isTf = loadRuntime === 'transformers';
       const isVllm = loadRuntime === 'vllm';
-      if ((isVllm || isTf) && !isHfEngineModel(model)) {
+      const isFreeToken = loadRuntime === 'freetoken';
+      if ((isVllm || isTf || isFreeToken) && !isHfEngineModel(model)) {
         toast(
-          isVllm
-            ? 'vLLM needs a Hugging Face SafeTensors folder. Pick DFlash / GGUF for GGUF files.'
-            : 'Transformers needs a Hugging Face model folder. Pick DFlash / GGUF for GGUF files.',
+          isFreeToken
+            ? 'FreeToken needs a Hugging Face SafeTensors folder and WSL2/NVIDIA support.'
+            : (isVllm
+              ? 'vLLM needs a Hugging Face SafeTensors folder. Pick DFlash / GGUF for GGUF files.'
+              : 'Transformers needs a Hugging Face model folder. Pick DFlash / GGUF for GGUF files.'),
           false,
         );
         return;
@@ -2354,9 +2479,11 @@
           return;
         }
       }
-      markModelLoadPending(model, '');
+      markModelLoadPending(model, isFreeToken ? 'freetoken' : '');
       window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
-        secondary: isVllm
+        secondary: isFreeToken
+          ? 'Starting FreeToken through WSL2 — expert banks warm up after the server port opens'
+          : isVllm
           ? 'Starting vLLM — first load can take several minutes'
           : (isTf
             ? 'Loading Transformers model into GPU/CPU'
@@ -2375,7 +2502,10 @@
           }),
           timeoutMs: 0,
         });
-        if (data?.loaded) {
+        if (isFreeToken && (data?.warming || !data?.loaded)) {
+          await waitForFreeTokenReady(model);
+          toast(`${model.label || model.id} loaded`);
+        } else if (data?.loaded) {
           toast(`${model.label || model.id} loaded`);
           window.DFlashStatusFeed?.note(
             `${model.label || model.id} ready`,
@@ -2486,9 +2616,10 @@
   function startRuntimePoll() {
     stopRuntimePoll();
     runtimePollTimer = window.setInterval(() => {
-      if (document.body.dataset.activeView !== 'models') return;
+      if (document.body.dataset.activeView !== 'models' && document.body.dataset.activeView !== 'downloads') return;
       if (!pendingModelLoads.size && !pendingServerLoads.size
-        && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+        && !pendingModelUnloads.size && !pendingServerUnloads.size
+        && !bootingServers.freetoken) {
         stopRuntimePoll();
         return;
       }
@@ -2649,7 +2780,9 @@
       modelTypePick.value = modelTypeFilter;
     }
     if (modelTypeFilter === 'gguf') setLoadEngine('dflash');
-    else if (modelTypeFilter === 'vllm' || modelTypeFilter === 'transformers') setLoadEngine(modelTypeFilter);
+    else if (modelTypeFilter === 'vllm' || modelTypeFilter === 'transformers' || modelTypeFilter === 'freetoken') {
+      setLoadEngine(modelTypeFilter);
+    }
     if (modelTypeFilter === 'hf-accelerator') void ensureHfAcceleratorCatalog();
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     renderFooter(meta);
@@ -2696,7 +2829,7 @@
     if (modelTypePick) {
       modelTypePick.addEventListener('change', (event) => {
         const next = normalizeModelTypeFilter(event.target.value);
-        if (next === 'hf-accelerator' || ['gguf', 'vllm', 'transformers'].includes(next)) {
+        if (next === 'hf-accelerator' || ['gguf', 'vllm', 'transformers', 'freetoken'].includes(next)) {
           if (typeFilter !== 'all') {
             typeFilter = 'all';
             document.querySelectorAll('[data-models-filter]').forEach((btn) => {
@@ -2780,19 +2913,11 @@
     if (!models.length) {
       try { await refresh(); } catch (_err) { /* catalog may be empty */ }
     }
-    const norm = (v) => String(v || '').replace(/\\/g, '/').toLowerCase();
-    const pathKey = norm(path);
-    const serverKey = norm(serverId);
-    const idKey = norm(modelId);
-    const labelKey = norm(label);
-    const found = models.find((m) => {
-      if (pathKey && m.path && norm(m.path) === pathKey) return true;
-      if (serverKey && m.server_id && norm(m.server_id) === serverKey) return true;
-      if (idKey && m.id && norm(m.id) === idKey) return true;
-      if (idKey && m.model_id && norm(m.model_id) === idKey) return true;
-      if (labelKey && m.label && norm(m.label) === labelKey) return true;
-      return false;
-    });
+    let found = findModelForDownload({ path, serverId, modelId, label });
+    if (!found) {
+      try { await refreshCatalogQuiet(); } catch (_err) { /* ignore */ }
+      found = findModelForDownload({ path, serverId, modelId, label });
+    }
     if (!found) return false;
     // Make sure the row is visible regardless of the current filters.
     if (typeFilter !== 'all') setTypeFilter('all');
@@ -2807,6 +2932,71 @@
       row?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
     });
     return true;
+  }
+
+  function findModelForDownload({ path = '', serverId = '', modelId = '', label = '' } = {}) {
+    const norm = (v) => String(v || '').replace(/\\/g, '/').toLowerCase();
+    const pathKey = norm(path);
+    const serverKey = norm(serverId);
+    const idKey = norm(modelId);
+    const labelKey = norm(label);
+    return models.find((m) => {
+      if (pathKey && m.path) {
+        const modelPath = norm(m.path);
+        if (modelPath === pathKey) return true;
+        if (pathKey.startsWith(`${modelPath}/`) || modelPath.startsWith(`${pathKey}/`)) return true;
+      }
+      if (serverKey && m.server_id && norm(m.server_id) === serverKey) return true;
+      if (idKey && m.id && norm(m.id) === idKey) return true;
+      if (idKey && m.model_id && norm(m.model_id) === idKey) return true;
+      if (idKey && m.repo_id && norm(m.repo_id) === idKey) return true;
+      if (labelKey && m.label && norm(m.label) === labelKey) return true;
+      return false;
+    }) || null;
+  }
+
+  function syntheticModelFromDownload(job, meta = {}) {
+    const path = String(job?.path || '').trim();
+    if (!path) return null;
+    const repoId = String(job?.repo_id || '').trim();
+    const filename = String(job?.filename || '').trim();
+    const kind = (!filename || String(job?.kind || '').toLowerCase() === 'repo') ? 'dir' : 'file';
+    const label = repoId.split('/').pop() || filename || path.split(/[\\/]/).pop() || 'Model';
+    const totalBytes = Number(job?.bytes_total || job?.disk_bytes || 0);
+    const model = {
+      path,
+      kind,
+      modality: String(meta?.modality || 'llm'),
+      label,
+      repo_id: repoId,
+      filename,
+      loadable: true,
+      id: repoId ? `hf:${repoId.toLowerCase()}` : `library-file:${normalizeModelPath(path)}`,
+      size_gb: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes / (1024 ** 3) : undefined,
+    };
+    if (kind === 'dir' && model.modality === 'llm') {
+      model.engines = HF_LOAD_ENGINES.slice();
+      model.runtime_id = 'transformers';
+    }
+    return model;
+  }
+
+  async function ensureModelForDownload(job, meta = {}) {
+    if (!job) return null;
+    const path = String(job.path || '').trim();
+    const repoId = String(job.repo_id || '').trim();
+    const label = String(job.filename || repoId || '').trim();
+    let found = findModelForDownload({ path, modelId: repoId, label });
+    if (!found && path) {
+      try {
+        await refreshCatalogQuiet();
+      } catch {
+        /* catalog may be empty */
+      }
+      found = findModelForDownload({ path, modelId: repoId, label });
+    }
+    if (found) return found;
+    return syntheticModelFromDownload(job, meta);
   }
 
   // Wizard for importing an external model file into the Console library —
@@ -3136,12 +3326,18 @@
     refresh,
     selectModel,
     loadModel,
+    waitForFreeTokenReady,
     getLoadEngine,
     setLoadEngine,
     isHfEngineModel,
     setTypeFilter,
     modelHasReasoning,
     revealModelFromEngineCard,
+    findModelForDownload,
+    ensureModelForDownload,
+    renderLoadActions: stackActionButton,
+    modelKey,
+    unloadModel,
     openImportToConsoleWizard,
     importModelWithWizard,
     isModelAlreadyImported,

@@ -169,15 +169,27 @@
 
   const ACCELERATOR_MAX_SIZE_GB = 8;
 
+  function pathLeafName(value) {
+    const raw = String(value || '').trim().replace(/[\\/]+$/, '');
+    if (!raw) return '';
+    const parts = raw.split(/[\\/]/);
+    return parts[parts.length - 1] || '';
+  }
+
   function acceleratorFileHaystack(model) {
     const parts = [];
     const filename = String(model?.filename || '').trim();
     const looksLikeFile = /\.gguf$/i.test(filename)
       || /[/\\]/.test(filename)
       || String(model?.kind || '').toLowerCase() === 'dir';
-    if (filename && looksLikeFile) parts.push(filename);
-    if (model?.path) parts.push(model.path);
-    if (model?.model_path) parts.push(model.model_path);
+    if (filename && looksLikeFile) parts.push(pathLeafName(filename) || filename);
+    // Only the model folder/file name — never the full absolute path.
+    // Paths under ".../Dflash-Console/models/..." contain "dflash" and
+    // otherwise falsely mark every local model as an accelerator.
+    const leafPath = pathLeafName(model?.path);
+    if (leafPath) parts.push(leafPath);
+    const leafModelPath = pathLeafName(model?.model_path);
+    if (leafModelPath) parts.push(leafModelPath);
     return parts.join(' ').toLowerCase();
   }
 
@@ -431,6 +443,7 @@
     familyIdFor,
     familyLabelFor,
     isConsoleRegisteredModel,
+    isConsoleDiskPath,
     sourceIdFor,
     sourceLabelFor,
     sourceOptions,

@@ -552,12 +552,150 @@ def _size_from_preferred_quant(files: list[dict[str, Any]]) -> tuple[float | Non
     return _size_from_preferred_file(preferred)
 
 
+def _catalog_file_size_bytes(row: dict[str, Any]) -> int:
+    try:
+        size_bytes = int(row.get('size_bytes') or 0)
+    except (TypeError, ValueError):
+        size_bytes = 0
+    if size_bytes > 0:
+        return size_bytes
+    size_gb = row.get('size_gb')
+    if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+        return int(float(size_gb) * (1024 ** 3))
+    return 0
+
+
+def build_download_options(files: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Collapse shard groups into download rows with summed on-disk totals."""
+    from collections import defaultdict
+
+    from core.hf_model_fit import _SHARD_RE, _shard_group_key, bytes_to_size_gb
+
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    singles: list[dict[str, Any]] = []
+    for row in files or []:
+        if not isinstance(row, dict):
+            continue
+        filename = str(row.get('filename') or '').strip()
+        if not filename:
+            continue
+        base = filename.replace('\\', '/').split('/')[-1]
+        if _SHARD_RE.match(base):
+            groups[_shard_group_key(filename)].append(row)
+        else:
+            singles.append(row)
+
+    options: list[dict[str, Any]] = []
+
+    def _append_option(
+        *,
+        filename: str,
+        files_in_group: list[str],
+        label: str,
+        kind: str,
+        shard_count: int,
+        file_count: int,
+        total_bytes: int,
+        fmt: str,
+        incomplete: bool,
+    ) -> None:
+        options.append({
+            'filename': filename,
+            'files': files_in_group,
+            'label': label,
+            'kind': kind,
+            'shard_count': shard_count,
+            'file_count': file_count,
+            'size_bytes': total_bytes if total_bytes > 0 else None,
+            'size_gb': bytes_to_size_gb(total_bytes) if total_bytes > 0 else None,
+            'format': fmt,
+            'incomplete': incomplete,
+        })
+
+    for rows in groups.values():
+        rows = sorted(rows, key=lambda row: str(row.get('filename') or ''))
+        first = rows[0]
+        filename = str(first.get('filename') or '')
+        base = filename.replace('\\', '/').split('/')[-1]
+        match = _SHARD_RE.match(base)
+        if not match:
+            singles.extend(rows)
+            continue
+        expected = int(match.group('total'))
+        listed = len(rows)
+        total_bytes = sum(_catalog_file_size_bytes(row) for row in rows)
+        prefix = str(match.group('prefix') or '').replace('\\', '/').split('/')[-1]
+        ext = str(match.group('suffix') or '').lstrip('.').lower()
+        is_gguf = ext == 'gguf'
+        if expected > 1:
+            if is_gguf:
+                label = prefix or base
+                title = f'{label} ({expected} files)'
+                kind = 'quant'
+            else:
+                title = f'Full model ({expected} files)'
+                kind = 'sharded'
+        else:
+            title = prefix or base
+            kind = 'quant' if is_gguf else 'file'
+        _append_option(
+            filename=filename,
+            files_in_group=[str(row.get('filename') or '') for row in rows],
+            label=title,
+            kind=kind,
+            shard_count=expected,
+            file_count=listed,
+            total_bytes=total_bytes,
+            fmt=ext or 'file',
+            incomplete=listed < expected,
+        )
+
+    for row in singles:
+        filename = str(row.get('filename') or '')
+        total_bytes = _catalog_file_size_bytes(row)
+        ext = Path(filename).suffix.lower().lstrip('.') or 'file'
+        _append_option(
+            filename=filename,
+            files_in_group=[filename],
+            label=filename.replace('\\', '/').split('/')[-1],
+            kind='quant' if ext == 'gguf' else 'file',
+            shard_count=1,
+            file_count=1,
+            total_bytes=total_bytes,
+            fmt=ext,
+            incomplete=False,
+        )
+
+    options.sort(key=lambda row: (
+        0 if row.get('kind') == 'quant' else 1,
+        str(row.get('label') or '').lower(),
+        str(row.get('filename') or '').lower(),
+    ))
+    return options
+
+
 def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
     return _size_from_preferred_quant(_gguf_files(siblings))
 
 
 def _preferred_download_size(siblings: list[Any] | None) -> tuple[float | None, str]:
-    return _size_from_preferred_quant(_model_files(siblings, gguf_only=False))
+    files = _model_files(siblings, gguf_only=False)
+    if not files:
+        return None, '—'
+    has_gguf = any(str(row.get('filename') or '').lower().endswith('.gguf') for row in files)
+    if has_gguf:
+        return _size_from_preferred_quant(files)
+    options = build_download_options(files)
+    if options:
+        size_gb = options[0].get('size_gb')
+        if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+            return float(size_gb), f'{float(size_gb):g} GB'
+    from core.hf_model_fit import repo_disk_size_gb
+
+    disk_gb = repo_disk_size_gb(files, has_gguf=False)
+    if disk_gb and disk_gb > 0:
+        return float(disk_gb), f'{float(disk_gb):g} GB'
+    return None, '—'
 
 
 _ACCELERATOR_MAX_SIZE_GB = 8.0
@@ -948,6 +1086,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
     has_gguf = any(name.endswith('.gguf') for name in tags) or bool(_gguf_files(siblings))
     gguf_files = _gguf_files(siblings)
+    download_options = build_download_options(downloadable)
     if not size_gb or float(size_gb) <= 0:
         from core.hf_model_fit import repo_disk_size_gb
 
@@ -995,6 +1134,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'has_files': bool(downloadable),
         'gguf_files': gguf_files,
         'download_files': downloadable,
+        'download_options': download_options,
         'size_bytes': int(size_gb * (1024 ** 3)) if isinstance(size_gb, (int, float)) and size_gb > 0 else None,
         **modality_fields,
     }
@@ -1019,6 +1159,7 @@ _SIZE_MERGE_FIELDS = (
     'size_bytes',
     'gguf_files',
     'download_files',
+    'download_options',
     'gguf_count',
     'file_count',
     'has_gguf',
@@ -1207,6 +1348,8 @@ def _lookup_hf_repo_models_uncached(query: str, *, category: str = 'all') -> lis
     light = _fetch_repo_summary_light(query, category=category)
     if light:
         add_model(light)
+        if str(light.get('id') or '').strip().lower() == normalized:
+            return list(found.values())
 
     search_terms = []
     if '/' in query:
@@ -1282,9 +1425,15 @@ def _search_supported_repo_query(
 ) -> dict[str, Any]:
     """Fast path for org/repo searches — one lookup instead of six modality fan-out."""
     needle = str(query or '').strip()
+    normalized = needle.strip().strip('/').lower()
     response_limit = max(1, min(int(limit), 50))
+    summary = _fetch_repo_summary_light(needle, category='supported')
+    if isinstance(summary, dict) and str(summary.get('id') or '').strip().lower() == normalized:
+        candidates = [summary]
+    else:
+        candidates = list(_lookup_hf_repo_models(needle, category='supported'))
     matches = [
-        row for row in _lookup_hf_repo_models(needle, category='supported')
+        row for row in candidates
         if _is_console_supported_model(row)
     ]
     matches.sort(key=_supported_sort_key)
@@ -1301,6 +1450,105 @@ def _search_supported_repo_query(
         'query': needle,
         'category': 'supported',
         'sort': sort,
+    }
+
+
+def _finalize_search_models(
+    models: list[dict[str, Any]],
+    *,
+    needle: str,
+    cat_key: str,
+    response_limit: int,
+) -> list[dict[str, Any]]:
+    from core.config import load_config
+    from core.hf_catalog_cache import get_cached_detail
+    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
+    from core.hf_model_fit import annotate_hf_models_fit
+
+    config = load_config()
+    for row in models:
+        label = str(row.get('size_label') or '').strip()
+        if label and label not in ('—', '0 GB', '0.0 GB'):
+            continue
+        size_gb = row.get('size_gb')
+        if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
+            continue
+        repo_id = str(row.get('id') or '')
+        if not repo_id:
+            continue
+        cached = get_cached_detail(repo_id=repo_id, category=cat_key)
+        cached_model = (cached or {}).get('payload', {}).get('model')
+        if not isinstance(cached_model, dict):
+            continue
+        cached_label = str(cached_model.get('size_label') or '').strip()
+        if cached_label and cached_label != '—':
+            row['size_label'] = cached_label
+            if isinstance(cached_model.get('size_gb'), (int, float)):
+                row['size_gb'] = float(cached_model['size_gb'])
+            if isinstance(cached_model.get('size_bytes'), int):
+                row['size_bytes'] = cached_model['size_bytes']
+    for row in models:
+        repo_id = str(row.get('id') or '')
+        tags = list(row.get('tags') or [])
+        installs = find_repo_local_installs(repo_id, cfg=config)
+        loadable = [item for item in installs if item.get('loadable')]
+        row['local_ready'] = bool(installs)
+        row['local_loadable'] = bool(loadable)
+        row['catalog_ready_to_load'] = is_catalog_ready_to_load(
+            repo_id,
+            title=str(row.get('title') or row.get('label') or repo_id),
+            tags=tags,
+            cfg=config,
+        )
+    if cat_key == 'dflash':
+        models = [
+            row for row in models
+            if row.get('accelerator_only')
+            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) != 'dflash2'
+        ]
+    elif cat_key == 'dflash2':
+        models = [
+            row for row in models
+            if row.get('accelerator_only')
+            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) == 'dflash2'
+        ]
+    models = models[:response_limit]
+    annotate_hf_models_fit(models, cfg=config, category=cat_key)
+    return models
+
+
+def _search_models_by_repo_id(
+    needle: str,
+    *,
+    limit: int = 25,
+    sort: str = 'downloads',
+    category: str = 'all',
+    enrich_sizes: bool = True,
+) -> dict[str, Any]:
+    """Resolve org/repo directly on Hugging Face without slow text search."""
+    cat_key = str(category or 'all').strip().lower()
+    normalized = needle.strip().strip('/').lower()
+    response_limit = max(1, min(int(limit), 50))
+    summary = _fetch_repo_summary_light(needle, category=cat_key)
+    if isinstance(summary, dict) and str(summary.get('id') or '').strip().lower() == normalized:
+        models = [summary]
+    else:
+        models = _lookup_hf_repo_models(needle, category=cat_key)
+    if enrich_sizes and any(_row_needs_size_enrich(row) for row in models):
+        models = _enrich_summaries_sizes(models, max_fetches=min(2, len(models)))
+    models = _finalize_search_models(
+        models,
+        needle=needle,
+        cat_key=cat_key,
+        response_limit=response_limit,
+    )
+    return {
+        'success': True,
+        'models': models,
+        'query': needle,
+        'category': cat_key,
+        'sort': sort,
+        'limit': response_limit,
     }
 
 
@@ -1436,6 +1684,14 @@ def search_models(
     response_limit = max(1, min(int(limit), 50))
     if cat_key == 'supported':
         return _search_supported_models(query=needle, limit=response_limit, sort=sort)
+    if _is_repo_id_query(needle):
+        return _search_models_by_repo_id(
+            needle,
+            limit=response_limit,
+            sort=sort,
+            category=cat_key,
+            enrich_sizes=enrich_sizes,
+        )
     cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
     use_gguf_only = cat.get('gguf_only', True) if gguf_only is None else gguf_only
     hf_limit = 50 if cat_key == 'dflash' and not needle else response_limit
@@ -1468,7 +1724,16 @@ def search_models(
         return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
-    models = _summaries_from_models(payload, enrich_sizes=enrich_sizes)
+    # Category ``all`` returns mixed Safetensors/GGUF repos. Fully enriching every
+    # row walks Hub trees (can hang the catalog UI for 60s+). Cap Hub size fetches.
+    size_fetch_cap = 2 if cat_key == 'all' else None
+    models = _summaries_from_models(payload, enrich_sizes=False)
+    if enrich_sizes:
+        models = _enrich_summaries_sizes(
+            models,
+            payload,
+            max_fetches=size_fetch_cap if size_fetch_cap is not None else len(models),
+        )
     if use_gguf_only:
         models = [
             row for row in models
@@ -1493,10 +1758,13 @@ def search_models(
         try:
             fallback_payload = _request_json(f'{HF_API}/models?{urllib.parse.urlencode(fallback_params)}')
             if isinstance(fallback_payload, list):
-                models = _summaries_from_models(
-                    fallback_payload,
-                    enrich_sizes=enrich_sizes,
-                )
+                models = _summaries_from_models(fallback_payload, enrich_sizes=False)
+                if enrich_sizes:
+                    models = _enrich_summaries_sizes(
+                        models,
+                        fallback_payload,
+                        max_fetches=size_fetch_cap if size_fetch_cap is not None else len(models),
+                    )
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
             pass
     # Exact repo-id lookup: when the user types a full "org/repo" id (e.g.
@@ -1509,61 +1777,12 @@ def search_models(
             -int(row.get('downloads') or 0),
         ),
     )
-    from core.config import load_config
-    from core.hf_catalog_cache import get_cached_detail
-    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
-
-    config = load_config()
-    for row in models:
-        label = str(row.get('size_label') or '').strip()
-        if label and label not in ('—', '0 GB', '0.0 GB'):
-            continue
-        size_gb = row.get('size_gb')
-        if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
-            continue
-        repo_id = str(row.get('id') or '')
-        if not repo_id:
-            continue
-        cached = get_cached_detail(repo_id=repo_id, category=cat_key)
-        cached_model = (cached or {}).get('payload', {}).get('model')
-        if not isinstance(cached_model, dict):
-            continue
-        cached_label = str(cached_model.get('size_label') or '').strip()
-        if cached_label and cached_label != '—':
-            row['size_label'] = cached_label
-            if isinstance(cached_model.get('size_gb'), (int, float)):
-                row['size_gb'] = float(cached_model['size_gb'])
-            if isinstance(cached_model.get('size_bytes'), int):
-                row['size_bytes'] = cached_model['size_bytes']
-    for row in models:
-        repo_id = str(row.get('id') or '')
-        tags = list(row.get('tags') or [])
-        installs = find_repo_local_installs(repo_id, cfg=config)
-        loadable = [item for item in installs if item.get('loadable')]
-        row['local_ready'] = bool(installs)
-        row['local_loadable'] = bool(loadable)
-        row['catalog_ready_to_load'] = is_catalog_ready_to_load(
-            repo_id,
-            title=str(row.get('title') or row.get('label') or repo_id),
-            tags=tags,
-            cfg=config,
-        )
-    if cat_key == 'dflash':
-        models = [
-            row for row in models
-            if row.get('accelerator_only')
-            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) != 'dflash2'
-        ]
-    elif cat_key == 'dflash2':
-        models = [
-            row for row in models
-            if row.get('accelerator_only')
-            and str(row.get('dflash_generation') or repo_dflash_generation(str(row.get('id') or ''))) == 'dflash2'
-        ]
-    models = models[:response_limit]
-    from core.hf_model_fit import annotate_hf_models_fit
-
-    annotate_hf_models_fit(models, cfg=config, category=cat_key)
+    models = _finalize_search_models(
+        models,
+        needle=needle,
+        cat_key=cat_key,
+        response_limit=response_limit,
+    )
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
@@ -1604,14 +1823,24 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
     gguf_files = _gguf_files(siblings)
     downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)
     files = gguf_files if use_gguf_only else downloadable_files
-    preferred = _preferred_gguf_file(files)
+    download_options = build_download_options(files)
+    preferred = _preferred_gguf_file(files) if use_gguf_only or gguf_files else None
+    if not preferred and download_options:
+        preferred = {'filename': download_options[0].get('filename')}
     enriched_raw = dict(raw)
     enriched_raw['siblings'] = siblings
     summary = _summary_from_model(enriched_raw)
-    # Prefer the recommended quant size for the detail summary when siblings omit them.
-    if preferred and isinstance(preferred.get('size_gb'), (int, float)) and float(preferred['size_gb']) > 0:
-        summary['size_gb'] = float(preferred['size_gb'])
-        summary['size_label'] = f"{float(preferred['size_gb']):g} GB"
+    default_option = download_options[0] if download_options else None
+    if default_option and isinstance(default_option.get('size_gb'), (int, float)) and float(default_option['size_gb']) > 0:
+        summary['size_gb'] = float(default_option['size_gb'])
+        summary['size_label'] = f"{float(default_option['size_gb']):g} GB"
+    elif not use_gguf_only and not gguf_files:
+        from core.hf_model_fit import repo_disk_size_gb
+
+        disk_gb = repo_disk_size_gb(files, has_gguf=False)
+        if disk_gb and disk_gb > 0:
+            summary['size_gb'] = float(disk_gb)
+            summary['size_label'] = f'{float(disk_gb):g} GB'
     description = _truncate_text(_card_description(card) or summary.get('description') or '')
     title = str(summary.get('title') or summary.get('label') or repo).strip()
     if readme:
@@ -1636,6 +1865,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
         'tags': tags,
         'gguf_files': gguf_files,
         'download_files': files,
+        'download_options': download_options,
         'default_download': preferred.get('filename') if preferred else '',
         'accelerator_only': _is_accelerator_only_repo(
             siblings,
@@ -1667,7 +1897,12 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
 
 
 def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: str = '') -> None:
-    """Fetch config/tokenizer files when only weights were downloaded as a single file."""
+    """Finish a SafeTensors repo after one weight file lands.
+
+    Early versions only fetched config/tokenizer companions and skipped when
+    those already existed — leaving sharded models (1-of-N) marked done.
+    Always pull remaining weight shards when the local set is incomplete.
+    """
     try:
         target = dest_dir.expanduser().resolve()
     except OSError:
@@ -1677,7 +1912,14 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
     has_weights = (target / 'model.safetensors').is_file() or any(target.glob('model-*.safetensors'))
     if not has_weights:
         return
-    if (target / 'config.json').is_file() and (target / 'tokenizer.json').is_file():
+
+    from core.local_models import _weight_shard_status
+
+    shard_status = _weight_shard_status(target)
+    incomplete_shards = bool(shard_status.get('incomplete'))
+    has_config = (target / 'config.json').is_file()
+    has_tokenizer = (target / 'tokenizer.json').is_file() or (target / 'tokenizer.model').is_file()
+    if has_config and has_tokenizer and not incomplete_shards:
         return
     try:
         from huggingface_hub import snapshot_download
@@ -1690,6 +1932,10 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
             job['status'] = 'downloading'
             job['progress'] = max(float(job.get('progress') or 0), 95.0)
             job['kind'] = 'repo-complete'
+            if incomplete_shards:
+                present = int(shard_status.get('shard_present') or 0)
+                total = int(shard_status.get('shard_total') or 0)
+                job['detail'] = f'Fetching remaining weight shards ({present}/{total})…'
     try:
         snapshot_download(
             repo_id=str(repo_id),
@@ -1702,13 +1948,23 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
             job = _download_jobs.get(job_id)
             if job:
                 job['post_action_error'] = f'companion files: {exc}'
+                if incomplete_shards:
+                    job['incomplete'] = True
         return
+    final_status = _weight_shard_status(target)
     with _jobs_lock:
         job = _download_jobs.get(job_id)
         if job:
             job['path'] = str(target)
-            job['progress'] = 100.0
-
+            if final_status.get('incomplete'):
+                job['incomplete'] = True
+                present = int(final_status.get('shard_present') or 0)
+                total = int(final_status.get('shard_total') or 0)
+                job['error'] = f'Incomplete model: {present}/{total} weight shards on disk'
+                job['progress'] = max(float(job.get('progress') or 0), 99.0)
+            else:
+                job['progress'] = 100.0
+                job.pop('incomplete', None)
 
 _DOWNLOAD_CHUNK = 8 * 1024 * 1024
 _MIN_PARALLEL_BYTES = 32 * 1024 * 1024
@@ -2060,6 +2316,197 @@ def _has_resumable_part(dest: Path, *, total: int | None = None) -> bool:
     return bool(inspect.get('part_exists')) and not inspect.get('complete')
 
 
+def _directory_download_bytes(path: Path) -> int:
+    """Sum downloaded payload bytes for a repo folder.
+
+    Counts finished weight/config files in the repo root and in-progress
+    Hugging Face ``*.incomplete`` blobs under ``.cache``. Skips metadata and
+    non-model assets so progress stays aligned with ``bytes_total``.
+    """
+    total = 0
+    try:
+        if not path.is_dir():
+            return 0
+        weight_ext = {
+            '.safetensors', '.bin', '.pt', '.pth', '.gguf', '.onnx',
+            '.msgpack', '.h5', '.ot', '.pkl',
+        }
+        for file_path in path.rglob('*'):
+            if not file_path.is_file():
+                continue
+            name = file_path.name.lower()
+            rel = str(file_path.relative_to(path)).replace('\\', '/').lower()
+            if name.endswith('.progress.json') or name.endswith('.metadata'):
+                continue
+            if name in {'.gitattributes', '.gitignore'}:
+                continue
+            try:
+                size = int(file_path.stat().st_size)
+            except OSError:
+                continue
+            # In-progress HF hub blobs.
+            if name.endswith('.incomplete') or '/.cache/huggingface/download/' in f'/{rel}':
+                if name.endswith('.incomplete'):
+                    total += size
+                continue
+            # Finished model/config files only (ignore README/images/etc.).
+            suffix = file_path.suffix.lower()
+            if suffix in weight_ext or name in {
+                'config.json', 'tokenizer.json', 'tokenizer.model',
+                'tokenizer_config.json', 'special_tokens_map.json',
+                'generation_config.json', 'preprocessor_config.json',
+                'model.safetensors.index.json', 'pytorch_model.bin.index.json',
+            }:
+                total += size
+    except OSError:
+        return total
+    return total
+
+
+def _repo_expected_bytes(repo_id: str, *, fallback: int | None = None) -> int | None:
+    """Best-effort full-repo byte total for progress denominators."""
+    repo = str(repo_id or '').strip()
+    if not repo:
+        return int(fallback) if fallback else None
+    try:
+        from core.local_models import _lookup_hf_repo_size_gb
+
+        gb = _lookup_hf_repo_size_gb(repo, allow_fetch=True)
+        if isinstance(gb, (int, float)) and float(gb) > 0:
+            return int(float(gb) * (1024 ** 3))
+    except Exception:
+        pass
+    try:
+        from core.local_models import _catalog_repo_size_gb
+
+        gb = _catalog_repo_size_gb(repo)
+        if isinstance(gb, (int, float)) and float(gb) > 0:
+            return int(float(gb) * (1024 ** 3))
+    except Exception:
+        pass
+    return int(fallback) if fallback else None
+
+
+def _missing_weight_shard_filenames(dest: Path) -> list[str]:
+    """Return missing sharded weight filenames for a partial HF repo folder."""
+    from core.local_models import _weight_shard_status
+
+    status = _weight_shard_status(dest)
+    if not status.get('incomplete'):
+        return []
+    prefix = str(status.get('shard_prefix') or 'model').strip() or 'model'
+    total = int(status.get('shard_total') or 0)
+    if total <= 1:
+        return []
+    present = {
+        path.name
+        for path in dest.glob(f'{prefix}-*-of-*.safetensors')
+        if path.is_file()
+    }
+    missing: list[str] = []
+    for index in range(1, total + 1):
+        name = f'{prefix}-{index:05d}-of-{total:05d}.safetensors'
+        if name not in present:
+            missing.append(name)
+    return missing
+
+
+def _apply_shard_status_to_job(job: dict[str, Any], status: dict[str, Any]) -> None:
+    """Update shard counters on an in-memory job dict (caller must hold _jobs_lock)."""
+    job['shard_present'] = int(status.get('shard_present') or 0)
+    job['shard_total'] = int(status.get('shard_total') or 0)
+    job['incomplete'] = bool(status.get('incomplete'))
+
+
+def _sync_repo_shard_fields(job_id: str, dest: Path) -> dict[str, Any]:
+    """Refresh shard_present/total on a repo download job from disk."""
+    from core.local_models import _weight_shard_status
+
+    status = _weight_shard_status(dest)
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if job:
+            _apply_shard_status_to_job(job, status)
+    return status
+
+
+def _download_missing_repo_shards(repo_id: str, dest: Path, *, job_id: str = '') -> None:
+    """Fetch any missing weight shards after snapshot_download stops early."""
+    missing = _missing_weight_shard_filenames(dest)
+    if not missing:
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        return
+    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    total_missing = len(missing)
+    for index, filename in enumerate(missing, start=1):
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if not job or str(job.get('status') or '') != 'downloading':
+                return
+            job['detail'] = f'Downloading shard {index}/{total_missing}: {filename}'
+        try:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=str(dest),
+                local_dir_use_symlinks=False,
+                token=token.strip() if token else None,
+            )
+        except Exception as exc:
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if job:
+                    job['error'] = str(exc)
+            raise
+        _sync_repo_shard_fields(job_id, dest)
+        disk_bytes = _directory_download_bytes(dest)
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if not job or str(job.get('status') or '') != 'downloading':
+                return
+            job['bytes_read'] = disk_bytes
+            job['disk_bytes'] = disk_bytes
+            total = int(job.get('bytes_total') or 0)
+            if total > 0 and disk_bytes > 0:
+                job['progress'] = round(min(99.0, (disk_bytes / total) * 100), 1)
+            _refresh_job_speed(job)
+
+
+def _incomplete_repo_job_id(repo_id: str) -> str:
+    """Stable job id without '/' so path routes and encodeURIComponent stay valid."""
+    repo = str(repo_id or '').strip().strip('/').lower()
+    return f'incomplete::{repo.replace("/", "--")}'
+
+
+def _incomplete_repo_job_id_candidates(job_id: str | None = None, repo_id: str | None = None) -> list[str]:
+    """Return current + legacy incomplete job ids for lookup/migration."""
+    ids: list[str] = []
+    raw = str(job_id or '').strip()
+    if raw:
+        ids.append(raw)
+        if raw.startswith('incomplete::') and '/' in raw:
+            ids.append(_incomplete_repo_job_id(raw[len('incomplete::'):]))
+        elif raw.startswith('incomplete::') and '--' in raw[len('incomplete::'):]:
+            legacy = 'incomplete::' + raw[len('incomplete::'):].replace('--', '/', 1)
+            ids.append(legacy)
+    repo = str(repo_id or '').strip().strip('/')
+    if repo:
+        ids.append(_incomplete_repo_job_id(repo))
+        ids.append(f'incomplete::{repo.lower()}')
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in ids:
+        key = str(item or '').strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
 def _enrich_download_job(job: dict[str, Any]) -> dict[str, Any]:
     row = _public_download_job(job)
     path_text = str(job.get('path') or '').strip()
@@ -2070,12 +2517,61 @@ def _enrich_download_job(job: dict[str, Any]) -> dict[str, Any]:
     except OSError:
         return row
     total = int(row.get('bytes_total') or 0)
+    status = str(row.get('status') or '')
+    kind = str(row.get('kind') or '').strip().lower()
+
+    # Repo / shard-folder downloads are directories — measure folder size directly.
+    if dest.is_dir() and (kind in {'repo', 'repo-complete'} or not str(row.get('filename') or '').strip()):
+        from core.local_models import _weight_shard_status
+
+        disk_bytes = _directory_download_bytes(dest) if status == 'downloading' else int(row.get('bytes_read') or row.get('disk_bytes') or 0)
+        if status != 'downloading' and disk_bytes <= 0:
+            try:
+                disk_bytes = sum(
+                    int(path.stat().st_size)
+                    for path in dest.glob('model-*-of-*.safetensors')
+                    if path.is_file()
+                )
+            except OSError:
+                disk_bytes = 0
+        shard_status = _weight_shard_status(dest)
+        row['disk_bytes'] = disk_bytes
+        row['shard_present'] = int(shard_status.get('shard_present') or row.get('shard_present') or 0)
+        row['shard_total'] = int(shard_status.get('shard_total') or row.get('shard_total') or 0)
+        row['disk_complete'] = False
+        row['has_part_file'] = False
+        row['needs_finalize'] = False
+        # Repair stale/underestimated totals (cached sizes only — no Hub fetch while listing).
+        if total <= 0 or (disk_bytes > 0 and disk_bytes > total):
+            try:
+                from core.local_models import _catalog_repo_size_gb
+
+                cached_gb = _catalog_repo_size_gb(str(row.get('repo_id') or ''))
+                refreshed = int(float(cached_gb) * (1024 ** 3)) if isinstance(cached_gb, (int, float)) and cached_gb > 0 else None
+            except Exception:
+                refreshed = None
+            if refreshed and refreshed > total:
+                total = refreshed
+                row['bytes_total'] = total
+        if status == 'downloading':
+            row['bytes_read'] = disk_bytes
+            if total > 0 and disk_bytes > 0:
+                row['progress'] = round(min(99.0, (disk_bytes / total) * 100), 1)
+        elif status == 'incomplete' and disk_bytes > 0:
+            row['bytes_read'] = disk_bytes
+            if total > 0:
+                row['progress'] = round(min(99.0, (disk_bytes / total) * 100), 1)
+        elif status == 'done' and disk_bytes > 0:
+            row['bytes_read'] = disk_bytes if total <= 0 else min(disk_bytes, total)
+            if total > 0:
+                row['progress'] = 100.0
+        return row
+
     inspect = _inspect_download_files(dest, total=total or None)
     row['disk_bytes'] = int(inspect.get('disk_bytes') or 0)
     row['disk_complete'] = bool(inspect.get('complete'))
     row['has_part_file'] = bool(inspect.get('part_exists'))
     row['needs_finalize'] = bool(inspect.get('needs_finalize'))
-    status = str(row.get('status') or '')
     disk_bytes = int(row.get('disk_bytes') or 0)
     if status in {'done', 'error', 'incomplete'} and not inspect.get('complete') and inspect.get('part_exists'):
         row['status'] = 'incomplete'
@@ -2643,6 +3139,23 @@ def _cleanup_incomplete_download(dest: Path, *, total: int | None = None) -> boo
     return removed
 
 
+def _finish_safetensors_download_job(job_id: str, dest: Path, **extra: Any) -> None:
+    """Mark a SafeTensors download done, or incomplete when shards are missing."""
+    payload = dict(extra)
+    with _jobs_lock:
+        job = _download_jobs.get(job_id) or {}
+        incomplete = bool(job.get('incomplete'))
+        error = str(job.get('error') or '').strip()
+    if incomplete:
+        payload.setdefault('error', error or 'Incomplete model: missing weight shards')
+        payload.setdefault('path', str(dest.parent if dest.suffix.lower() == '.safetensors' else dest))
+        _mark_job_finished(job_id, 'incomplete', **payload)
+    else:
+        _mark_job_finished(job_id, 'done', **payload)
+    from core.local_models import invalidate_model_catalog_cache
+    invalidate_model_catalog_cache()
+
+
 def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, *, resume: bool = False) -> None:
     url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
     headers = _hf_download_headers()
@@ -2702,9 +3215,12 @@ def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, 
                 wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
             except Exception as exc:
                 extra['post_action_error'] = str(exc)
-        _mark_job_finished(job_id, 'done', **extra)
-        from core.local_models import invalidate_model_catalog_cache
-        invalidate_model_catalog_cache()
+        if dest.suffix.lower() == '.safetensors':
+            _finish_safetensors_download_job(job_id, dest, **extra)
+        else:
+            _mark_job_finished(job_id, 'done', **extra)
+            from core.local_models import invalidate_model_catalog_cache
+            invalidate_model_catalog_cache()
         return
 
     connections = _connection_count(total, ranged=ranged, parallel_connections=get_download_parallel_connections())
@@ -2770,9 +3286,12 @@ def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, 
             wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
         except Exception as exc:
             extra['post_action_error'] = str(exc)
-    _mark_job_finished(job_id, 'done', **extra)
-    from core.local_models import invalidate_model_catalog_cache
-    invalidate_model_catalog_cache()
+    if dest.suffix.lower() == '.safetensors':
+        _finish_safetensors_download_job(job_id, dest, **extra)
+    else:
+        _mark_job_finished(job_id, 'done', **extra)
+        from core.local_models import invalidate_model_catalog_cache
+        invalidate_model_catalog_cache()
 
 
 def _download_worker(job_id: str, repo_id: str, filename: str, dest: Path, *, resume: bool = False) -> None:
@@ -2934,22 +3453,114 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
         _mark_job_finished(job_id, 'error', error=f'huggingface_hub is not installed: {exc}')
         return
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    stop_poll = threading.Event()
+
+    def _poll_repo_progress() -> None:
+        from core.local_models import _weight_shard_status
+
+        while not stop_poll.wait(1.0):
+            try:
+                disk_bytes = _directory_download_bytes(dest)
+                shard_status = _weight_shard_status(dest)
+            except OSError:
+                continue
+            refreshed_total: int | None = None
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if not job or str(job.get('status') or '') != 'downloading':
+                    continue
+                total = int(job.get('bytes_total') or 0)
+                need_total_refresh = total <= 0 or disk_bytes > total
+            if need_total_refresh:
+                refreshed_total = _repo_expected_bytes(repo_id, fallback=total or None)
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if not job or str(job.get('status') or '') != 'downloading':
+                    continue
+                total = int(job.get('bytes_total') or 0)
+                if refreshed_total and refreshed_total > total:
+                    total = refreshed_total
+                    job['bytes_total'] = total
+                previous = int(job.get('bytes_read') or 0)
+                if disk_bytes >= previous:
+                    job['bytes_read'] = disk_bytes
+                    job['disk_bytes'] = disk_bytes
+                    if total > 0 and disk_bytes > 0:
+                        job['progress'] = round(min(99.0, (disk_bytes / total) * 100), 1)
+                    elif job.get('progress') is None or float(job.get('progress') or 0) < 5.0:
+                        job['progress'] = 5.0
+                    job['detail'] = 'Fetching repository files…'
+                    _apply_shard_status_to_job(job, shard_status)
+                    _refresh_job_speed(job)
+
     try:
         dest.mkdir(parents=True, exist_ok=True)
         with _jobs_lock:
             job = _download_jobs.get(job_id)
             if job:
-                job['progress'] = 5.0
-        local_dir = snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(dest),
-            local_dir_use_symlinks=False,
-            token=token.strip() if token else None,
+                seeded = _directory_download_bytes(dest)
+                if seeded > int(job.get('bytes_read') or 0):
+                    job['bytes_read'] = seeded
+                    job['disk_bytes'] = seeded
+                total = int(job.get('bytes_total') or 0)
+                if total > 0 and int(job.get('bytes_read') or 0) > 0:
+                    job['progress'] = round(min(99.0, (int(job['bytes_read']) / total) * 100), 1)
+                else:
+                    job['progress'] = max(float(job.get('progress') or 0), 5.0)
+                job['detail'] = 'Fetching remaining repository files…'
+                job['_speed_at'] = time.time()
+                job['_speed_bytes'] = int(job.get('bytes_read') or 0)
+        poller = threading.Thread(
+            target=_poll_repo_progress,
+            name=f'hf-repo-progress-{job_id[:24]}',
+            daemon=True,
         )
-        _mark_job_finished(job_id, 'done', path=str(local_dir))
-        from core.local_models import invalidate_model_catalog_cache
+        poller.start()
+        try:
+            local_dir = snapshot_download(
+                repo_id=repo_id,
+                local_dir=str(dest),
+                local_dir_use_symlinks=False,
+                token=token.strip() if token else None,
+            )
+            target = Path(str(local_dir))
+            # snapshot_download can return while shard files are still missing.
+            _download_missing_repo_shards(repo_id, target, job_id=job_id)
+        finally:
+            stop_poll.set()
+            poller.join(timeout=2.0)
+        from core.local_models import _weight_shard_status, invalidate_model_catalog_cache
+
+        target = Path(str(local_dir))
+        status = _weight_shard_status(target)
+        if status.get('incomplete'):
+            present = int(status.get('shard_present') or 0)
+            total = int(status.get('shard_total') or 0)
+            disk_bytes = _directory_download_bytes(target)
+            _mark_job_finished(
+                job_id,
+                'incomplete',
+                path=str(target),
+                incomplete=True,
+                resumable=True,
+                shard_present=present,
+                shard_total=total,
+                bytes_read=disk_bytes or None,
+                error=f'Incomplete model: {present}/{total} weight shards on disk',
+            )
+        else:
+            disk_bytes = _directory_download_bytes(target)
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if job and disk_bytes > 0:
+                    job['bytes_read'] = disk_bytes
+                    job['disk_bytes'] = disk_bytes
+                    if not job.get('bytes_total'):
+                        job['bytes_total'] = disk_bytes
+            _mark_job_finished(job_id, 'done', path=str(target))
         invalidate_model_catalog_cache()
     except Exception as exc:
+        stop_poll.set()
         _mark_job_finished(job_id, 'error', error=str(exc))
 
 
@@ -2959,6 +3570,7 @@ def start_repo_download(
     library_id: str | None = None,
     dest_path: str | None = None,
     cfg: dict[str, Any] | None = None,
+    allow_incomplete_resume: bool = False,
 ) -> dict[str, Any]:
     """Download a full Hugging Face model repository into the models library."""
     config = cfg or load_config()
@@ -2974,7 +3586,14 @@ def start_repo_download(
         root = Path(str((library or {}).get('path') or get_download_dir(config))).expanduser().resolve()
         author, repo_name = repo.split('/', 1)
         dest = root / author / repo_name
-    if dest.is_dir() and any(dest.iterdir()):
+
+    # Resume incomplete shard folders instead of treating them as fully installed.
+    incomplete_local = False
+    if dest.is_dir():
+        from core.local_models import _weight_shard_status
+
+        incomplete_local = bool(_weight_shard_status(dest).get('incomplete'))
+    if dest.is_dir() and any(dest.iterdir()) and not (allow_incomplete_resume or incomplete_local):
         from core.hf_local_match import find_repo_local_installs
         existing = find_repo_local_installs(repo, cfg=config)
         if existing:
@@ -2985,17 +3604,62 @@ def start_repo_download(
                 'matches': existing,
                 'path': existing[0].get('path'),
             }
-    suffix = abs(hash(repo + str(dest))) % 1_000_000
-    job_id = f'{int(time.time())}-{suffix:06d}'
+
+    # Reuse an existing incomplete job id when resuming the same folder/repo.
+    resume_job_id = ''
+    prior: dict[str, Any] = {}
+    with _jobs_lock:
+        for job_id, job in _download_jobs.items():
+            if str(job.get('status') or '') != 'incomplete':
+                continue
+            same_repo = str(job.get('repo_id') or '').strip().lower() == repo.lower()
+            same_path = str(Path(str(job.get('path') or '')).expanduser()) == str(dest)
+            if same_repo or same_path:
+                resume_job_id = str(job_id)
+                prior = dict(job)
+                break
+        for job in _download_jobs.values():
+            if (
+                str(job.get('status') or '') == 'downloading'
+                and str(job.get('repo_id') or '').strip().lower() == repo.lower()
+            ):
+                return {
+                    'success': True,
+                    'job_id': str(job.get('id') or ''),
+                    'path': str(job.get('path') or dest),
+                    'kind': 'repo',
+                    'already_running': True,
+                }
+
+    # Prefer slash-free incomplete ids so UI resume URLs stay valid.
+    preferred_incomplete_id = _incomplete_repo_job_id(repo)
+    if resume_job_id and resume_job_id != preferred_incomplete_id and resume_job_id.startswith('incomplete::'):
+        with _jobs_lock:
+            old = _download_jobs.pop(resume_job_id, None)
+            if old is not None:
+                old['id'] = preferred_incomplete_id
+                _download_jobs[preferred_incomplete_id] = old
+                resume_job_id = preferred_incomplete_id
+                prior = dict(old)
+
+    job_id = resume_job_id or f'{int(time.time())}-{abs(hash(repo + str(dest))) % 1_000_000:06d}'
+    seeded_read = int(prior.get('bytes_read') or prior.get('disk_bytes') or 0)
+    if seeded_read <= 0 and dest.is_dir():
+        seeded_read = _directory_download_bytes(dest)
+    seeded_total = prior.get('bytes_total')
+    expected = _repo_expected_bytes(repo, fallback=int(seeded_total) if seeded_total else None)
+    if expected and (not seeded_total or int(seeded_total) < expected):
+        seeded_total = expected
     with _jobs_lock:
         _download_jobs[job_id] = {
             'id': job_id,
             'repo_id': repo,
             'filename': '',
             'status': 'downloading',
-            'progress': None,
-            'bytes_read': 0,
-            'bytes_total': None,
+            'progress': round((seeded_read / int(seeded_total)) * 100, 1) if seeded_total and seeded_read else None,
+            'bytes_read': seeded_read or 0,
+            'bytes_total': int(seeded_total) if seeded_total else None,
+            'disk_bytes': seeded_read or None,
             'speed_bps': 0.0,
             'eta_seconds': None,
             'path': str(dest),
@@ -3004,7 +3668,17 @@ def start_repo_download(
             'finished_at': None,
             'post_action': None,
             'kind': 'repo',
+            'resumable': True,
+            'incomplete': False,
+            'error': None,
+            'shard_present': prior.get('shard_present'),
+            'shard_total': prior.get('shard_total'),
+            'detail': 'Starting repository download…',
         }
+    try:
+        _save_pending_downloads()
+    except OSError:
+        pass
     thread = threading.Thread(target=_repo_download_worker, args=(job_id, repo, dest), daemon=True)
     thread.start()
     return {
@@ -3093,7 +3767,7 @@ def repair_stale_download_jobs(cfg: dict[str, Any] | None = None) -> dict[str, A
 
 
 def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Restart Hugging Face file downloads that were active when the server last stopped."""
+    """Restart Hugging Face downloads that were active when the server last stopped."""
     config = cfg or load_config()
     _ensure_download_history_loaded()
     pending = _load_pending_downloads()
@@ -3104,7 +3778,8 @@ def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str,
         repo = str(row.get('repo_id') or '').strip()
         name = str(row.get('filename') or '').strip()
         path_text = str(row.get('path') or '').strip()
-        if not job_id or not repo or not name or not path_text:
+        kind = str(row.get('kind') or '').strip().lower()
+        if not job_id or not repo or not path_text:
             skipped.append(job_id or 'invalid')
             continue
         try:
@@ -3113,6 +3788,34 @@ def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str,
             skipped.append(job_id)
             continue
         if not _is_under_allowed_model_root(dest, config):
+            skipped.append(job_id)
+            continue
+
+        # Full-repo / shard-folder downloads (no single filename).
+        if kind in {'repo', 'repo-complete'} or (dest.is_dir() and not name):
+            with _jobs_lock:
+                already = any(
+                    str(job.get('status') or '') == 'downloading'
+                    and str(job.get('repo_id') or '').strip().lower() == repo.lower()
+                    for job in _download_jobs.values()
+                )
+            if already:
+                skipped.append(job_id)
+                continue
+            result = start_repo_download(
+                repo,
+                dest_path=str(dest),
+                library_id=str(row.get('library_id') or '') or None,
+                cfg=config,
+                allow_incomplete_resume=True,
+            )
+            if result.get('success'):
+                resumed.append(str(result.get('job_id') or job_id))
+            else:
+                skipped.append(job_id)
+            continue
+
+        if not name:
             skipped.append(job_id)
             continue
         if dest.is_file() and _inspect_download_files(dest, total=int(row.get('bytes_total') or 0) or None).get('complete'):
@@ -3186,6 +3889,195 @@ def _is_console_download_job(job: dict[str, Any]) -> bool:
     return True
 
 
+def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Find local HF folders with missing weight shards and expose them as resumable jobs."""
+    config = cfg or load_config()
+    from core.local_models import (
+        _bytes_to_size_gb,
+        _catalog_repo_size_gb,
+        _path_model_display_name,
+        _weight_shard_status,
+    )
+    from core.model_paths import disk_scan_roots
+
+    found: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for root, _source, _preset, _label in disk_scan_roots(config):
+        try:
+            if not root.is_dir():
+                continue
+            shard_files = list(root.rglob('model-*-of-*.safetensors'))
+        except OSError:
+            continue
+        parents = {path.parent for path in shard_files if path.is_file()}
+        for parent in parents:
+            key = str(parent).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            status = _weight_shard_status(parent)
+            if not status.get('incomplete'):
+                continue
+            display, publisher = _path_model_display_name(parent)
+            repo_id = f'{publisher}/{display}' if publisher and display else display
+            if '/' not in str(repo_id):
+                continue
+            present = int(status.get('shard_present') or 0)
+            total = int(status.get('shard_total') or 0)
+            disk_bytes = 0
+            try:
+                disk_bytes = sum(int(path.stat().st_size) for path in parent.glob('model-*-of-*.safetensors') if path.is_file())
+            except OSError:
+                disk_bytes = 0
+            expected_bytes = _repo_expected_bytes(repo_id)
+            if expected_bytes is None and present > 0 and total > present and disk_bytes > 0:
+                expected_bytes = int(disk_bytes * (total / present))
+            expected_gb = round(expected_bytes / (1024 ** 3), 2) if expected_bytes else None
+            job_id = _incomplete_repo_job_id(repo_id)
+            found.append({
+                'id': job_id,
+                'repo_id': repo_id,
+                'filename': '',
+                'status': 'incomplete',
+                'progress': round((present / total) * 100, 1) if total else None,
+                'bytes_read': disk_bytes or None,
+                'bytes_total': expected_bytes,
+                'disk_bytes': disk_bytes or None,
+                'speed_bps': 0.0,
+                'eta_seconds': None,
+                'path': str(parent),
+                'library_id': '',
+                'started_at': parent.stat().st_mtime if parent.exists() else time.time(),
+                'finished_at': None,
+                'post_action': None,
+                'kind': 'repo',
+                'incomplete': True,
+                'resumable': True,
+                'shard_present': present,
+                'shard_total': total,
+                'error': f'Incomplete model: {present}/{total} weight shards on disk',
+                'size_gb': _bytes_to_size_gb(disk_bytes),
+                'expected_size_gb': expected_gb,
+            })
+    return found
+
+
+def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> None:
+    """Persist discovered incomplete shard folders into the download job table."""
+    discovered = _discover_incomplete_repo_jobs(cfg)
+    if not discovered:
+        return
+    with _jobs_lock:
+        active_repos = {
+            str(job.get('repo_id') or '').strip().lower()
+            for job in _download_jobs.values()
+            if str(job.get('status') or '') == 'downloading'
+        }
+        for row in discovered:
+            repo = str(row.get('repo_id') or '').strip().lower()
+            if not repo or repo in active_repos:
+                continue
+            job_id = str(row.get('id') or '')
+            # Migrate legacy slash-containing incomplete ids.
+            for legacy_id in _incomplete_repo_job_id_candidates(job_id=job_id, repo_id=repo):
+                if legacy_id == job_id:
+                    continue
+                old = _download_jobs.get(legacy_id)
+                if old and str(old.get('status') or '') == 'incomplete':
+                    migrated = dict(old)
+                    migrated['id'] = job_id
+                    _download_jobs.pop(legacy_id, None)
+                    _download_jobs[job_id] = migrated
+                    break
+            existing = _download_jobs.get(job_id)
+            if existing and str(existing.get('status') or '') == 'downloading':
+                continue
+            # Keep user-dismissed incomplete jobs out of the queue.
+            cleared_hit = any(cid in _cleared_ids for cid in _incomplete_repo_job_id_candidates(job_id=job_id, repo_id=repo))
+            if cleared_hit and not (existing and str(existing.get('status') or '') == 'incomplete'):
+                continue
+            if existing and str(existing.get('status') or '') == 'incomplete':
+                existing.update({
+                    'bytes_read': row.get('bytes_read'),
+                    'bytes_total': row.get('bytes_total'),
+                    'disk_bytes': row.get('disk_bytes'),
+                    'progress': row.get('progress'),
+                    'shard_present': row.get('shard_present'),
+                    'shard_total': row.get('shard_total'),
+                    'error': row.get('error'),
+                    'path': row.get('path'),
+                    'resumable': True,
+                    'incomplete': True,
+                })
+                continue
+            if existing and str(existing.get('status') or '') not in {'error', 'done'}:
+                continue
+            _download_jobs[job_id] = dict(row)
+            _cleared_ids.discard(job_id)
+
+
+def resume_download_job(job_id: str, *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resume an incomplete or failed download."""
+    _ensure_download_history_loaded()
+    _merge_incomplete_repo_jobs(cfg)
+    key = str(job_id or '').strip()
+    if not key:
+        return {'success': False, 'error': 'job_id is required'}
+    with _jobs_lock:
+        job = {}
+        resolved_key = ''
+        for candidate in _incomplete_repo_job_id_candidates(job_id=key):
+            found = _download_jobs.get(candidate)
+            if found:
+                job = dict(found)
+                resolved_key = candidate
+                break
+        if not job:
+            # Also allow resume by exact id for normal file downloads.
+            found = _download_jobs.get(key)
+            if found:
+                job = dict(found)
+                resolved_key = key
+    if not job:
+        return {'success': False, 'error': 'unknown job'}
+    key = resolved_key or key
+    status = str(job.get('status') or '')
+    if status == 'downloading':
+        return {'success': True, 'job_id': key, 'already_running': True, 'path': job.get('path')}
+    if status not in {'incomplete', 'error'}:
+        return {'success': False, 'error': f'cannot resume job with status {status or "unknown"}'}
+
+    repo = str(job.get('repo_id') or '').strip()
+    path_text = str(job.get('path') or '').strip()
+    kind = str(job.get('kind') or '').strip().lower()
+    filename = str(job.get('filename') or '').strip()
+
+    # Prefer full-repo resume for incomplete shard folders.
+    if kind == 'repo' or (path_text and Path(path_text).is_dir()) or (filename.lower().endswith('.safetensors') and '-of-' in filename.lower()):
+        dest = path_text
+        if dest and Path(dest).is_file():
+            dest = str(Path(dest).parent)
+        if not repo:
+            return {'success': False, 'error': 'repo_id missing for incomplete download'}
+        return start_repo_download(
+            repo,
+            dest_path=dest or None,
+            library_id=str(job.get('library_id') or '') or None,
+            cfg=cfg,
+            allow_incomplete_resume=True,
+        )
+
+    if not repo or not filename:
+        return {'success': False, 'error': 'repo_id and filename required to resume file download'}
+    return start_download(
+        repo,
+        filename,
+        library_id=str(job.get('library_id') or '') or None,
+        dest_path=path_text or None,
+        cfg=cfg,
+    )
+
+
 def list_download_jobs(
     *,
     active_only: bool = False,
@@ -3195,17 +4087,27 @@ def list_download_jobs(
     _ensure_download_history_loaded()
     if not console_only:
         _merge_disk_download_history(force=discover)
+    # Scanning disk for incomplete shard folders is expensive — only on discover.
+    if discover:
+        _merge_incomplete_repo_jobs()
     with _jobs_lock:
-        jobs = [_enrich_download_job(job) for job in _download_jobs.values()]
+        raw_jobs = [dict(job) for job in _download_jobs.values()]
+    jobs = [_enrich_download_job(job) for job in raw_jobs]
     if console_only:
         jobs = [job for job in jobs if _is_console_download_job(job)]
     if active_only:
-        jobs = [job for job in jobs if str(job.get('status') or '') == 'downloading']
+        jobs = [
+            job for job in jobs
+            if str(job.get('status') or '') in {'downloading', 'incomplete'}
+        ]
     jobs.sort(
         key=lambda row: float(row.get('finished_at') or row.get('started_at') or 0),
         reverse=True,
     )
-    active_count = sum(1 for job in jobs if str(job.get('status') or '') == 'downloading')
+    active_count = sum(
+        1 for job in jobs
+        if str(job.get('status') or '') in {'downloading', 'incomplete'}
+    )
     return {
         'success': True,
         'jobs': jobs,

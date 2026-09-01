@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.114</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.116</span>
           </div>
         </div>
       </div>
@@ -153,6 +153,7 @@ try {
                       <option value="dflash">DFlash / GGUF</option>
                       <option value="vllm">vLLM</option>
                       <option value="transformers">Transformers</option>
+                      <option value="freetoken">FreeToken (WSL / NVIDIA)</option>
                     </select>
                     <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
                     <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by source" disabled>
@@ -376,6 +377,7 @@ try {
                 <option value="gguf">DFlash / GGUF</option>
                 <option value="vllm">vLLM</option>
                 <option value="transformers">Transformers</option>
+                <option value="freetoken">FreeToken (WSL)</option>
                 <option value="llm">LLM / chat</option>
                 <option value="ocr">OCR</option>
                 <option value="translation">Translation</option>
@@ -387,7 +389,7 @@ try {
                 <option value="other">Other</option>
                 <option value="hf-accelerator">HF accelerators available</option>
               </select>
-              <input type="search" class="lm-search-input lm-models-search" id="modelsFilterInput" placeholder="Filter models… (Ctrl + F)">
+              <input type="search" class="lm-search-input lm-models-search" id="modelsFilterInput" placeholder="Filter models… org/repo or name (Ctrl + F)">
               <button type="button" class="lm-btn df-btn-accent small lm-models-create-btn" id="stackWizardOpenBtn" title="Create a new DFlash stack — pick a target model, pair it with a DFlash accelerator, and register a runnable engine profile.">+ Create DFlash stack</button>
             </div>
           </div>
@@ -443,7 +445,7 @@ try {
               </label>
               <button type="button" class="lm-btn ghost small hidden" id="dfDownloadsClearAll" title="Remove every finished download from this list">Clear history</button>
             </div>
-            <p class="df-downloads-page-hint" id="dfDownloadsPageHint">Models downloading from Hugging Face appear here with live progress.</p>
+            <p class="df-downloads-page-hint" id="dfDownloadsPageHint">Downloaded models can be loaded here — select a card to tune runtime settings in the panel on the right.</p>
             <div class="df-downloads-page-list" id="dfDownloadsPageList"></div>
           </div>
         </div>
@@ -503,7 +505,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.114</strong>
+                <strong id="dfAboutVersion">v0.3.116</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1207,12 +1209,12 @@ try {
 
             <div class="lm-settings-panel" data-settings-panel="rt-runtimes">
               <div class="lm-settings-header"><h2>Speech &amp; runtimes</h2></div>
-              <p class="lm-setting-desc">Device policy, CPU fallback, and memory budget for Piper, Whisper, and other non-llama runtimes. To install vLLM or Transformers, use Downloads &amp; engines.</p>
+              <p class="lm-setting-desc">Device policy, CPU fallback, and memory budget for Piper, Whisper, and other non-llama runtimes. FreeToken runs through WSL2/Linux with NVIDIA/CUDA. Install vLLM, Transformers, or FreeToken from Downloads &amp; engines.</p>
 
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
                   <strong>Install engines</strong>
-                  <p class="lm-setting-desc">vLLM and Transformers downloads are in one place — not here.</p>
+                  <p class="lm-setting-desc">Large engine downloads stay outside the Electron installer and are managed in one place.</p>
                 </div>
                 <button class="lm-btn ghost small" type="button" data-action="open-settings-panel" data-settings-panel="dl-components">Open Downloads &amp; engines</button>
               </section>

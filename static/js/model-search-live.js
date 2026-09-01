@@ -255,20 +255,161 @@
     return '';
   }
 
-  function selectedCatalogFile(files) {
-    const list = Array.isArray(files) ? files : [];
+  function catalogFileOptionLabel(file) {
+    const name = String(file?.filename || file?.label || '').trim();
+    const size = formatCatalogFileSize(file);
+    return size ? `${name} [${size}]` : name;
+  }
+
+  function catalogFileSizeBytes(file) {
+    const bytes = Number(file?.size_bytes);
+    if (Number.isFinite(bytes) && bytes > 0) return bytes;
+    const gb = Number(file?.size_gb);
+    if (Number.isFinite(gb) && gb > 0) return Math.round(gb * (1024 ** 3));
+    return 0;
+  }
+
+  const CATALOG_SHARD_RE = /^(?<prefix>.+?)-(?<part>\d{5})-of-(?<total>\d{5})\.(?:gguf|safetensors|bin)$/i;
+
+  function groupCatalogDownloadFiles(files) {
+    const list = Array.isArray(files) ? files.filter((file) => file?.filename) : [];
+    const groups = new Map();
+    const singles = [];
+    list.forEach((file) => {
+      const filename = String(file.filename || '');
+      const base = filename.replace(/^.*[\\/]/, '');
+      const match = base.match(CATALOG_SHARD_RE);
+      if (!match?.groups) {
+        singles.push(file);
+        return;
+      }
+      const key = `${match.groups.prefix}|${match.groups.total}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(file);
+    });
+
+    const options = [];
+    groups.forEach((rows) => {
+      rows.sort((a, b) => String(a.filename).localeCompare(String(b.filename)));
+      const first = rows[0];
+      const base = String(first.filename || '').replace(/^.*[\\/]/, '');
+      const match = base.match(CATALOG_SHARD_RE);
+      if (!match?.groups) {
+        singles.push(...rows);
+        return;
+      }
+      const expected = Number(match.groups.total) || rows.length;
+      const totalBytes = rows.reduce((sum, row) => sum + catalogFileSizeBytes(row), 0);
+      const ext = base.split('.').pop().toLowerCase();
+      const isGguf = ext === 'gguf';
+      const prefix = match.groups.prefix;
+      options.push({
+        filename: first.filename,
+        label: expected > 1
+          ? (isGguf ? `${prefix} (${expected} files)` : `Full model (${expected} files)`)
+          : base,
+        files: rows.map((row) => row.filename),
+        kind: expected > 1 ? (isGguf ? 'quant' : 'sharded') : (isGguf ? 'quant' : 'file'),
+        shard_count: expected,
+        file_count: rows.length,
+        size_bytes: totalBytes > 0 ? totalBytes : null,
+        size_gb: totalBytes > 0 ? Math.round((totalBytes / (1024 ** 3)) * 100) / 100 : null,
+        incomplete: rows.length < expected,
+      });
+    });
+
+    singles.forEach((file) => {
+      const filename = String(file.filename || '');
+      const totalBytes = catalogFileSizeBytes(file);
+      const ext = filename.split('.').pop().toLowerCase();
+      options.push({
+        filename,
+        label: filename.replace(/^.*[\\/]/, ''),
+        files: [filename],
+        kind: ext === 'gguf' ? 'quant' : 'file',
+        shard_count: 1,
+        file_count: 1,
+        size_bytes: totalBytes > 0 ? totalBytes : null,
+        size_gb: totalBytes > 0 ? Math.round((totalBytes / (1024 ** 3)) * 100) / 100 : file.size_gb,
+        incomplete: false,
+      });
+    });
+
+    options.sort((a, b) => {
+      const kindRank = (row) => (row.kind === 'quant' ? 0 : 1);
+      return kindRank(a) - kindRank(b)
+        || String(a.label).localeCompare(String(b.label))
+        || String(a.filename).localeCompare(String(b.filename));
+    });
+    return options;
+  }
+
+  function catalogModelTotalSize(model) {
+    const files = model?.download_files || model?.gguf_files || [];
+    const bytes = files.reduce((sum, file) => sum + catalogFileSizeBytes(file), 0);
+    return bytes > 0 ? formatCatalogFileSize({ size_bytes: bytes }) : '';
+  }
+
+  function catalogDownloadOptions(model) {
+    const files = model?.download_files || model?.gguf_files || [];
+    return groupCatalogDownloadFiles(files);
+  }
+
+  function catalogDownloadFieldLabel(options) {
+    if (!options.length) return 'Download';
+    if (options.length === 1 && options[0].kind === 'sharded') return 'Download';
+    if (options.every((opt) => opt.kind === 'quant')) return 'Quantization';
+    return 'Download';
+  }
+
+  function catalogDownloadOptionLabel(opt) {
+    const label = String(opt?.label || opt?.filename || '').trim();
+    const size = formatCatalogFileSize(opt);
+    if (!size) return label;
+    if (opt?.kind === 'sharded' || (opt?.kind === 'quant' && (opt?.shard_count || 0) > 1)) {
+      return `${label} — ${size} total`;
+    }
+    return `${label} — ${size}`;
+  }
+
+  function catalogDownloadHint(model, options) {
+    const rows = Array.isArray(options) ? options : catalogDownloadOptions(model);
+    const sharded = rows.find((opt) => opt.kind === 'sharded' && (opt.shard_count || 0) > 1);
+    if (sharded) {
+      const size = formatCatalogFileSize(sharded);
+      return size
+        ? `One download — Console fetches all ${sharded.shard_count} files (${size} on disk).`
+        : `One download — Console fetches all ${sharded.shard_count} files.`;
+    }
+    const total = catalogModelTotalSize(model);
+    return total ? `Total download size: ${total}` : '';
+  }
+
+  function selectedDownloadOption(model) {
+    const options = catalogDownloadOptions(model);
+    const filename = getSelectedFilename();
+    if (!filename) return options[0] || null;
+    return options.find((opt) => opt.filename === filename) || options[0] || null;
+  }
+
+  function selectedCatalogFile(model) {
+    const opt = selectedDownloadOption(model);
+    if (opt) return opt;
+    const list = Array.isArray(model?.download_files) ? model.download_files
+      : (Array.isArray(model?.gguf_files) ? model.gguf_files : []);
     const filename = getSelectedFilename();
     if (!filename) return list[0] || null;
     return list.find((file) => file.filename === filename) || list[0] || null;
   }
 
-  function updateSelectedFileSize(files) {
+  function updateSelectedFileSize(model) {
     const el = document.getElementById('hfSelectedFileSize');
     if (!el) return;
-    const size = formatCatalogFileSize(selectedCatalogFile(files));
+    const selected = selectedDownloadOption(model) || selectedCatalogFile(model);
+    const size = formatCatalogFileSize(selected);
     el.textContent = size || '';
     el.classList.toggle('hidden', !size);
-    el.title = size ? `File size on disk: ${size}` : '';
+    el.title = size ? `Total download size: ${size}` : '';
   }
 
   function currentCategory() {
@@ -974,6 +1115,7 @@
       'catalog_ready_to_load',
       'runnable',
       'download_files',
+      'download_options',
       'gguf_files',
       'tags',
       'fits_machine',
@@ -1415,32 +1557,38 @@
   function renderDetail(model) {
     const pane = detailPane();
     if (!pane || !model) return;
-    const files = Array.isArray(model.download_files) ? model.download_files
-      : (Array.isArray(model.gguf_files) ? model.gguf_files : []);
-    const fileOptions = files.map((file, idx) =>
-      `<option value="${escapeHtml(file.filename)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(file.label)}</option>`,
-    ).join('');
-    const initialSize = formatCatalogFileSize(files[0]);
-    const fileSizeEl = files.length
-      ? `<span class="df-catalog-file-size${initialSize ? '' : ' hidden'}" id="hfSelectedFileSize" title="${initialSize ? `File size on disk: ${escapeHtml(initialSize)}` : ''}">${escapeHtml(initialSize)}</span>`
+    const downloadOptions = catalogDownloadOptions(model);
+    const fileOptions = downloadOptions.map((opt, idx) => {
+      const name = String(opt.filename || '').trim();
+      const label = catalogDownloadOptionLabel(opt);
+      return `<option value="${escapeHtml(name)}" title="${escapeHtml(label)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+    const defaultOpt = downloadOptions[0];
+    const initialSize = formatCatalogFileSize(defaultOpt);
+    const fieldLabel = catalogDownloadFieldLabel(downloadOptions);
+    const downloadHint = catalogDownloadHint(model, downloadOptions);
+    const fileSizeEl = downloadOptions.length
+      ? `<span class="df-catalog-file-size${initialSize ? '' : ' hidden'}" id="hfSelectedFileSize" title="${initialSize ? `Total download size: ${escapeHtml(initialSize)}` : ''}">${escapeHtml(initialSize)}</span>`
       : '';
-    const filePick = files.length > 1
+    const filePick = downloadOptions.length
       ? `<div class="df-catalog-file-row">
-          <label class="df-catalog-field-label" for="hfFilePick">Quantization</label>
-          <select class="lm-select small" id="hfFilePick">${fileOptions}</select>
+          <label class="df-catalog-field-label" for="hfFilePick">${escapeHtml(fieldLabel)}</label>
+          <select class="lm-select small df-catalog-file-select" id="hfFilePick">${fileOptions}</select>
         </div>`
-      : (files.length === 1
-        ? `<input type="hidden" id="hfFilePick" value="${escapeHtml(files[0].filename)}">`
-        : '');
-    const downloadBtn = files.length
-      ? '<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download the selected GGUF file from Hugging Face">↓ Download GGUF</button>'
+      : '';
+    const shardedHint = downloadHint
+      ? `<p class="lm-setting-desc df-catalog-download-hint">${escapeHtml(downloadHint)}</p>`
+      : '';
+    const downloadBtnLabel = initialSize ? `↓ Download (${initialSize})` : '↓ Download';
+    const downloadBtn = downloadOptions.length
+      ? `<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download from Hugging Face">${escapeHtml(downloadBtnLabel)}</button>`
       : '';
     const savePath = downloadTargetLabel(downloadLibraryId);
-    const downloadNote = files.length
-      ? `<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
+    const downloadNote = downloadOptions.length
+      ? `${shardedHint}<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
          <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
       : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>';
-    const downloadStatus = files.length
+    const downloadStatus = downloadOptions.length
       ? '<p class="lm-search-download-status hidden" id="hfDownloadStatus"></p>'
       : '';
 
@@ -1521,7 +1669,11 @@
       });
     });
     document.getElementById('hfFilePick')?.addEventListener('change', () => {
-      updateSelectedFileSize(files);
+      updateSelectedFileSize(model);
+      const opt = selectedDownloadOption(model);
+      const btn = document.getElementById('hfDownloadBtn');
+      const size = formatCatalogFileSize(opt);
+      if (btn && size) btn.textContent = `↓ Download (${size})`;
       void refreshInstallUI(model);
     });
     document.getElementById('hfDownloadBtn')?.addEventListener('click', async (event) => {
@@ -1538,8 +1690,9 @@
       const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
       void startDownload(model.id, filename, libraryId, model);
     });
-    updateSelectedFileSize(files);
+    updateSelectedFileSize(model);
     void refreshInstallUI(model);
+    window.DFlashSelectTheme?.enhanceAll?.(document.getElementById('hfSearchDetail'));
   }
 
   function renderDetailPlaceholder(message) {
@@ -1555,6 +1708,7 @@
     const copy = loadingCopy(category, query);
     const cached = getCachedSearch(query, sort, category);
     const canShowCached = !!(cached?.models?.length);
+    const gen = ++searchRefreshGen;
 
     if (canShowCached && !background) {
       models = cached.models;
@@ -1566,13 +1720,23 @@
     } else if (!background) {
       renderCatalogLoading('both', copy);
       if (isRepoIdQuery(query)) {
-        void requestDetail(query, category).catch(() => {});
+        void requestDetail(query, category)
+          .then((model) => {
+            if (gen !== searchRefreshGen || !model) return;
+            models = [model];
+            selectedId = query;
+            selectedDetail = model;
+            putCachedSearch(query, sort, category, models);
+            populateCatalogFilters();
+            renderList();
+            renderDetail(model);
+          })
+          .catch(() => {});
       }
     }
 
     if (background) setListRefreshIndicator(true);
 
-    const gen = ++searchRefreshGen;
     try {
       const data = await searchCatalog(query, sort, category);
       if (gen !== searchRefreshGen) return;

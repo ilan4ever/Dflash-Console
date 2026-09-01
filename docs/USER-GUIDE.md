@@ -35,7 +35,7 @@ or version) before starting. If you use pip, the default data folder is
 
 1. Start the server (`dflash serve`, `.\run.ps1`, or the desktop app).
 2. Open **http://127.0.0.1:8900/** if you started the API without Electron.
-3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM** or **Transformers** there, or later in **Settings → Speech & runtimes**. Those engines download after install so the Windows setup stays small.
+3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM**, **Transformers**, or optional **FreeToken** there, or later in **Settings → Downloads & engines**. Those engines download after install so the Windows setup stays small.
 4. Open **About** to confirm the release, developer, license, and repository links.
 
 The browser and Electron window use the same sidebar and backend. The main areas
@@ -133,6 +133,20 @@ dflash list --lmstudio
 dflash list --dflash
 dflash delete <name>
 ```
+
+### FreeToken engine (Windows + WSL2)
+
+FreeToken is a separate Linux/CUDA engine, not a native Windows engine. Install
+it from **Settings → Downloads & engines**. The installer uses an existing
+Ubuntu/Debian WSL2 distribution, creates its virtual environment inside WSL,
+and keeps the large dependencies out of the Console installer.
+
+You need WSL2 GPU passthrough, a compatible NVIDIA Windows driver with CUDA 13
+support, and a model family supported by FreeToken. Select **FreeToken (WSL)**
+in the Engines or Models picker, then load a local Hugging Face SafeTensors
+folder. Multimodal checkpoints are currently served text-only. If model files
+are on a Windows drive, the Console maps them to `/mnt/<drive>/...`; moving
+large files into WSL can improve performance.
 
 Right-click a row to delete a local file or Hugging Face folder. The terminal
 command `dflash delete <name>` does the same thing and asks before removing
@@ -326,6 +340,24 @@ curl -X POST http://127.0.0.1:8900/api/servers/gemma-12b-ar/v1/chat/completions 
   -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
+#### 1a. LLM / chat (FreeToken through WSL2)
+
+```bash
+# FreeToken must be installed from Settings → Downloads & engines first.
+curl -X POST http://127.0.0.1:8900/api/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\Qwen3.6-35B-A3B-NVFP4", "runtime_id": "freetoken"}'
+
+# FreeToken serves an OpenAI-compatible chat API through the Console.
+curl -X POST http://127.0.0.1:8900/api/servers/freetoken/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "Qwen3.6-35B-A3B-NVFP4", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+FreeToken requires WSL2 GPU passthrough, an NVIDIA/CUDA-capable Windows driver,
+and a supported model. It binds to loopback inside WSL; the Console remains the
+only Windows-facing API.
+
 #### 2. Text to speech (Piper)
 
 ```bash
@@ -374,6 +406,7 @@ curl "http://127.0.0.1:8900/api/models/vision/plan?path=C%3A%5Cmodels%5Cgemma-4-
 POST /api/runtimes/stt/start
 POST /api/runtimes/stt/stop
 POST /api/runtimes/stt/unload    # free GPU memory
+POST /api/runtimes/freetoken/unload
 GET  /api/runtimes               # list runtimes + adapters + process tokens
 GET  /api/gpu/contention         # who holds VRAM right now
 ```

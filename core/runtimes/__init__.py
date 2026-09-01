@@ -24,6 +24,7 @@ from core.runtimes.base import (
     MODALITY_TEXT_TO_SPEECH,
     MODALITY_VISION,
     RUNTIME_FASTER_WHISPER,
+    RUNTIME_FREETOKEN,
     RUNTIME_LLAMA_SERVER,
     RUNTIME_PIPER,
     RUNTIME_STT,
@@ -33,6 +34,7 @@ from core.runtimes.base import (
     RuntimeAdapter,
 )
 from core.runtimes.faster_whisper import FasterWhisperRuntimeAdapter
+from core.runtimes.freetoken import FreeTokenRuntimeAdapter
 from core.runtimes.noop import NoopRuntimeAdapter
 from core.runtimes.piper import PiperRuntimeAdapter
 from core.runtimes.registry import (
@@ -70,6 +72,9 @@ register_runtime_adapter(TransformersRuntimeAdapter())
 # vLLM OpenAI server adapter (server mode). Registered always; reports
 # installed=false until the on-demand bundle under runtimes/vllm/ exists.
 register_runtime_adapter(VllmRuntimeAdapter())
+# FreeToken edge-native MoE server adapter (WSL/Linux server mode). Registered
+# always; reports installed=false until the optional WSL bundle is installed.
+register_runtime_adapter(FreeTokenRuntimeAdapter())
 
 __all__ = [
     'EXECUTION_MODE_CLI',
@@ -83,6 +88,7 @@ __all__ = [
     'MODALITY_TEXT_TO_SPEECH',
     'MODALITY_VISION',
     RUNTIME_FASTER_WHISPER,
+    RUNTIME_FREETOKEN,
     RUNTIME_LLAMA_SERVER,
     RUNTIME_PIPER,
     RUNTIME_STT,
@@ -97,6 +103,7 @@ __all__ = [
     'TransformersRuntimeAdapter',
     'VibeVoiceRuntimeAdapter',
     'VllmRuntimeAdapter',
+    'FreeTokenRuntimeAdapter',
     'get_runtime_adapter',
     'list_runtime_adapters',
     'register_runtime_adapter',

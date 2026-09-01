@@ -4,7 +4,7 @@
 
 > **Status:** Public preview. This project is intended for local, single-user Windows deployments.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.114
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.116
 
 ## Download (Windows)
 
@@ -26,7 +26,7 @@ DFlash Console is a standalone FastAPI + vanilla JavaScript app that sits beside
 | Area | Highlights |
 |------|------------|
 | **Engines** | Start/stop llama-server routers, load & eject models in parallel, live boot progress, token stats on cards, developer logs with clear button |
-| **Runtimes** | Unified multi-modal layer: Piper TTS, whisper.cpp STT, embeddings — Console-proxied OpenAI routes, adapter registry, shared ports, process identity |
+| **Runtimes** | Unified multi-modal layer: FreeToken WSL, Piper TTS, whisper.cpp STT, embeddings — Console-proxied OpenAI routes, adapter registry, shared ports, process identity |
 | **Models** | Full PC library: DFlash, GGUF, Ollama, LM Studio, Piper, Whisper, OCR, and embeddings |
 | **Model catalog** | Browse and download Hugging Face models into configured library locations |
 | **Settings** | GPU strategy, model storage, engine network/API, MCP client preview, **Locations** panel with config/preset import-export |
@@ -49,7 +49,7 @@ load, monitor, and proxy OpenAI-shaped APIs for many model families, while
 | Modality | Runtime | Engine | Mode |
 |----------|---------|--------|------|
 | LLM chat / instruct | `llama-server` | GGUF (existing) | server |
-| LLM chat (SafeTensors) | **vLLM** or **Transformers** | Hugging Face folders (`runtimes/vllm/`, `runtimes/transformers/`) | server |
+| LLM chat (SafeTensors) | **vLLM**, **Transformers**, or **FreeToken** | Hugging Face folders; FreeToken uses WSL2/Linux | server |
 | Embeddings | `llama-server` embedding profile | GGUF (existing) | server |
 | Text-to-speech | **Piper** | ONNX voices (`runtimes/piper/`) | CLI |
 | Speech-to-text | **whisper.cpp `whisper-server`** | GGUF-whisper (`runtimes/stt/`) | server |
@@ -66,13 +66,16 @@ runtimes/
 │   └── manifest.json
 ├── stt/                   # whisper-server.exe + ggml-cuda.dll + ...
 │   └── manifest.json
+├── freetoken/             # WSL manifest + managed process state (Linux venv stays in WSL)
+│   └── manifest.json
 └── process-tokens.json    # shared managed-process identity (read by server.ps1)
 ```
 
 Each adapter writes a `manifest.json` at boot, exposed read-only at
 `GET /api/runtimes/manifests`. Piper and Whisper ship as native bundles.
-**vLLM** and **Transformers** download on demand from Settings or the first-run
-wizard so the Windows installer stays small.
+**vLLM**, **Transformers**, and **FreeToken** download on demand from Settings or
+the first-run wizard so the Windows installer stays small. FreeToken's Python
+and CUDA environment remains inside WSL.
 
 ### Playground modes
 
@@ -80,7 +83,7 @@ The Playground has four modes:
 
 | Mode | What it does |
 |------|--------------|
-| **Chat** | Chat completions against llama-server / DFlash, or vLLM / Transformers when that engine is loaded |
+| **Chat** | Chat completions against llama-server / DFlash, vLLM, Transformers, or FreeToken when that engine is loaded |
 | **Speak** | Text → Piper WAV (voice picker, speed, download) |
 | **Transcribe** | Pick a Whisper model → upload audio → transcript |
 | **Embed** | One item per line → vectors; **Export .jsonl** |
@@ -92,6 +95,7 @@ Children stay on internal loopback ports; clients only talk to the Console:
 | Route | Upstream |
 |-------|----------|
 | `/api/servers/{id}/v1/chat/completions` | llama-server (existing) |
+| `/api/servers/freetoken/v1/chat/completions` | FreeToken through WSL2 (OpenAI-compatible) |
 | `/api/runtimes/piper/v1/audio/speech` | Piper (CLI) |
 | `/api/runtimes/stt/v1/audio/transcriptions` | whisper-server (multipart → `/inference`) |
 | `/api/servers/{id}/v1/embeddings` | llama-server embedding profile |
@@ -130,6 +134,18 @@ Non-llama runtimes are configured in `config.json` under `runtimes[]`; the
 `GET /api/runtimes` merges `servers[]` (synthesised `runtime_id: llama-server`)
 with `runtimes[]`. Ports are unique across ui/servers/runtimes (shared
 registry); CLI runtimes use `port: 0`.
+
+### FreeToken on Windows
+
+FreeToken is optional and is not a native Windows engine. Install it from
+**Settings → Downloads & engines**. The installer detects an Ubuntu/Debian WSL2
+distribution, creates a Linux virtual environment there, installs the CUDA
+package, and records its distro and `ft` path in `runtimes/freetoken/manifest.json`.
+WSL2 GPU passthrough, a compatible NVIDIA Windows driver, and CUDA 13 support
+are required. FreeToken supports only the model families and formats listed in
+its upstream documentation; multimodal checkpoints are served text-only.
+Windows model folders are translated to `/mnt/<drive>/...`. For large models,
+storing the files inside WSL may perform better.
 
 ---
 

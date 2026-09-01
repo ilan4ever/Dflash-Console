@@ -33,7 +33,7 @@
     about: 'About DFlash Console',
   };
 
-  const inspectorFor = new Set(['server', 'models']);
+  const inspectorFor = new Set(['server', 'models', 'downloads']);
   const validTabs = new Set(['chat', 'server', 'models', 'devices', 'docs', 'catalog', 'downloads', 'settings', 'about']);
 
   const ROUTE_TO_TAB = {

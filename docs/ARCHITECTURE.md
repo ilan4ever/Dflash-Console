@@ -20,8 +20,8 @@ Browser or Electron shell
                     |
         runtime supervisor (adapters)
             |         |        |
-      llama-server  Piper    whisper-server
-      (existing)   (CLI)     (STT)
+      llama-server  Piper    whisper-server   FreeToken
+      (existing)   (CLI)     (STT)            (WSL2)
 ```
 
 - `api/` exposes health, configuration, model, download, runtime, and proxy
@@ -76,6 +76,8 @@ modalities alongside llama-server:
 - `noop.py` — no-op adapter so the UI can list adapters before any runtime ships.
 - `piper.py` — Piper TTS (CLI: text → WAV via the native binary).
 - `stt.py` — whisper.cpp `whisper-server` (server mode: multipart `/inference`).
+- `freetoken.py` — FreeToken `ft serve` through WSL2 (server mode, loopback
+  OpenAI API, Windows-to-WSL model-path conversion).
 - `contention.py` — GPU contention / stop-others scaffold (external apps are
   warned by name; the Console only claims to kill its own children).
 
@@ -91,6 +93,7 @@ OpenAI-shaped client requests to each child's native API:
 | Route | Child |
 |-------|-------|
 | `/api/servers/{id}/v1/chat/completions` | llama-server |
+| `/api/servers/freetoken/v1/chat/completions` | FreeToken `ft serve` in WSL2 |
 | `/api/runtimes/piper/v1/audio/speech` | Piper CLI (stdin → WAV stdout) |
 | `/api/runtimes/stt/v1/audio/transcriptions` | whisper-server `/inference` |
 | `/api/servers/{id}/v1/embeddings` | llama-server embedding profile |
@@ -101,22 +104,25 @@ OpenAI-shaped client requests to each child's native API:
 Each adapter contributes path-specific identity tokens to the shared registry.
 `managed_process_identity()` (server_boot), the port kill-listener, restart
 adoption, and `server.ps1` `Stop-ListenersOnPort` all use the same token set, so
-cleanup recognises Console-managed children (Piper, whisper-server) without
+cleanup recognises Console-managed children (Piper, whisper-server, and the
+FreeToken WSL launcher) without
 adopting foreign processes from other applications.
 
 ### Runtime bundles & manifests
 
 Engines and voices live outside the installer under the Console data root
-(`runtimes/piper/`, `runtimes/stt/`). Each adapter writes a `manifest.json` at
-boot; `GET /api/runtimes/manifests` aggregates them for diagnostics and the
-Settings/Repair UI.
+(`runtimes/piper/`, `runtimes/stt/`, `runtimes/freetoken/`). Each adapter writes
+a `manifest.json` at boot; `GET /api/runtimes/manifests` aggregates them for
+diagnostics and the Settings/Repair UI. FreeToken's large Linux environment
+is installed inside WSL and its manifest records the distro and `ft` executable.
 
 ## Security model
 
 The default trust boundary is one user on one machine. The Console binds to
 loopback and validates model/projector paths against configured model roots.
 It is not a multi-user service. Authentication and CSRF protection are
-required before exposing it beyond loopback.
+required before exposing it beyond loopback. FreeToken child processes are
+started with a loopback bind even though WSL2 provides the Linux process.
 
 ## Validation
 

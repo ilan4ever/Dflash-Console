@@ -926,7 +926,12 @@ function requestShutdown(port) {
 function pidListeningOnPort(port) {
   return new Promise((resolve) => {
     try {
-      const child = spawn('netstat.exe', ['-ano'], {
+      const script = [
+        'Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue',
+        `| Where-Object { $_.LocalPort -eq ${Number(port)} -and $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::','::1') }`,
+        '| Select-Object -First 1 -ExpandProperty OwningProcess',
+      ].join(' ');
+      const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore'],
       });
@@ -936,17 +941,8 @@ function pidListeningOnPort(port) {
       });
       child.on('error', () => resolve(null));
       child.on('close', () => {
-        const needle = `:${port}`;
-        const line = String(out)
-          .split(/\r?\n/)
-          .find((entry) => entry.includes(needle) && entry.includes('LISTENING'));
-        if (!line) {
-          resolve(null);
-          return;
-        }
-        const parts = line.trim().split(/\s+/);
-        const pid = parts[parts.length - 1];
-        resolve(pid && /^\d+$/.test(pid) ? Number(pid) : null);
+        const pid = String(out || '').trim().split(/\r?\n/).find((entry) => /^\d+$/.test(entry));
+        resolve(pid ? Number(pid) : null);
       });
     } catch (_err) {
       resolve(null);

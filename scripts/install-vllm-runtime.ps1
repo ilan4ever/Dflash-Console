@@ -8,6 +8,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'wsl-path.ps1')
+. (Join-Path $PSScriptRoot 'json-file.ps1')
 $bundleDest = Join-Path $Root 'runtimes\vllm'
 $venv = Join-Path $bundleDest 'venv'
 $venvPy = Join-Path $venv 'Scripts\python.exe'
@@ -34,7 +36,7 @@ function Write-VllmManifest {
         wsl_python = $WslPython
         generated_by = 'scripts/install-vllm-runtime.ps1'
     } | ConvertTo-Json -Depth 4
-    Set-Content -LiteralPath $manifestPath -Value $manifest -Encoding utf8
+    Write-Utf8JsonFile -Path $manifestPath -Content $manifest
 }
 
 function Test-NativeVllm {
@@ -120,17 +122,16 @@ function Install-WslVllm {
     if (-not (Test-Path -LiteralPath $sh)) {
         throw 'WSL vLLM install script is missing (scripts/install-vllm-wsl.sh).'
     }
-    $wslSh = (& wsl -d $distro -- wslpath -a $sh 2>$null | Select-Object -Last 1)
+    $wslSh = Convert-WindowsPathForWsl -Path $sh
     if (-not $wslSh) {
         throw 'Could not map the WSL path for the vLLM install script.'
     }
     $output = New-Object System.Collections.Generic.List[string]
-    & wsl -d $distro -- bash ($wslSh.Trim()) 2>&1 | ForEach-Object {
-        $line = "$_"
-        [void]$output.Add($line)
-        Write-Host $line
+    $result = Invoke-WslBashScript -Distro $distro -WslScriptPath $wslSh
+    foreach ($line in @($result.Output)) {
+        [void]$output.Add([string]$line)
     }
-    if ($LASTEXITCODE -ne 0) {
+    if ($result.ExitCode -ne 0) {
         throw "WSL vLLM install failed. An NVIDIA GPU and a working Ubuntu/WSL Python 3 install are required.`n$($output -join "`n")"
     }
     $wslPython = (@($output) | Where-Object { $_ -match 'vllm-venv/bin/python' } | Select-Object -Last 1)

@@ -64,16 +64,26 @@
     }
     const total = Number(job?.bytes_total);
     const read = Number(job?.bytes_read);
+    const shardTotal = Number(job?.shard_total);
+    const shardPresent = Number(job?.shard_present);
+    const done = job?.status === 'done';
     let main = 'Starting…';
-    if (total > 0 && read > 0) {
-      main = `${Math.round((read / total) * 100)}%`;
+    if (shardTotal > 1 && shardPresent >= 0) {
+      const shardPct = Math.max(0, Math.min(done ? 100 : 99, Math.round((shardPresent / shardTotal) * 100)));
+      main = `${shardPresent}/${shardTotal} shards (${shardPct}%)`;
+    } else if (total > 0 && read > 0) {
+      const raw = (read / total) * 100;
+      const pct = done ? Math.min(100, Math.round(raw)) : Math.max(0, Math.min(99, Math.round(raw)));
+      main = `${pct}%`;
     } else if (read > 0) {
       main = formatBytes(read);
     } else if (total > 0) {
       main = 'Starting…';
     } else {
       const pct = Number(job?.progress);
-      if (Number.isFinite(pct) && pct > 0) main = `${Math.round(pct)}%`;
+      if (Number.isFinite(pct) && pct > 0) {
+        main = `${done ? Math.min(100, Math.round(pct)) : Math.min(99, Math.round(pct))}%`;
+      }
     }
     return elapsed ? `${main} · ${elapsed}` : main;
   }
@@ -81,11 +91,18 @@
   function progressWidth(job) {
     const total = Number(job?.bytes_total);
     const read = Number(job?.bytes_read);
+    const shardTotal = Number(job?.shard_total);
+    const shardPresent = Number(job?.shard_present);
+    const done = job?.status === 'done';
+    if (shardTotal > 1 && shardPresent >= 0) {
+      return Math.max(2, Math.min(done ? 100 : 99, (shardPresent / shardTotal) * 100));
+    }
     if (total > 0 && read > 0) {
-      return Math.max(2, Math.min(100, (read / total) * 100));
+      const raw = (read / total) * 100;
+      return Math.max(2, Math.min(done ? 100 : 99, raw));
     }
     const pct = Number(job?.progress);
-    if (Number.isFinite(pct) && pct > 0) return Math.max(2, Math.min(100, pct));
+    if (Number.isFinite(pct) && pct > 0) return Math.max(2, Math.min(done ? 100 : 99, pct));
     return null;
   }
 
@@ -165,6 +182,50 @@
     }
   }
 
+  async function resumeDownloadJob(jobId) {
+    const id = String(jobId || '').trim();
+    if (!id) return;
+    const existing = jobs.get(id);
+    if (existing) {
+      jobs.set(id, {
+        ...existing,
+        status: 'downloading',
+        speed_bps: 0,
+        eta_seconds: null,
+        error: null,
+        detail: 'Resuming…',
+        finished_at: null,
+      });
+      emit();
+      window.DFlashDownloadsLive?.render?.();
+    }
+    try {
+      toast('Resuming download…');
+      const data = await api('/api/hf/downloads/resume', {
+        method: 'POST',
+        body: JSON.stringify({ job_id: id }),
+      });
+      if (data?.job_id && data.job_id !== id) {
+        const old = jobs.get(id);
+        if (old) {
+          labels.set(data.job_id, labels.get(id) || old.repo_id || old.filename || 'Model');
+        }
+      }
+      await refresh({ discover: true });
+      ensurePolling();
+      window.DFlashDownloadsLive?.showPane?.('active');
+      window.DFlashDownloadsLive?.render?.();
+      toast(data?.already_running ? 'Download already running' : 'Download resumed');
+    } catch (err) {
+      if (existing) {
+        jobs.set(id, existing);
+        emit();
+        window.DFlashDownloadsLive?.render?.();
+      }
+      toast(err.message || 'Could not resume download', false);
+    }
+  }
+
   async function runDownloadContextCommand(cmd, job) {
     if (!job) return;
     const repoId = String(job.repo_id || '').trim();
@@ -173,6 +234,10 @@
     const hfUrl = hfRepoUrl(repoId);
     const identifier = jobIdentifier(job);
 
+    if (cmd === 'resume') {
+      void resumeDownloadJob(job.id);
+      return;
+    }
     if (cmd === 'copy-id') {
       if (!identifier) return;
       await navigator.clipboard.writeText(identifier);
@@ -239,6 +304,15 @@
       if (!found) toast('This model is not in the Model library', false);
       return;
     }
+    if (cmd === 'load-model') {
+      if (job.status !== 'done') {
+        toast('Finish the download before loading this model.', false);
+        return;
+      }
+      window.DFlashShell?.setView?.('downloads');
+      await window.DFlashDownloadsLive?.loadDownloadJob?.(job.id);
+      return;
+    }
     if (cmd === 'open-downloads') {
       window.DFlashDownloadsLive?.showPane?.(job.status === 'downloading' ? 'active' : 'history');
       window.DFlashShell?.setView?.('downloads');
@@ -260,8 +334,12 @@
     const hfUrl = hfRepoUrl(repoId);
     const identifier = jobIdentifier(job);
     const isActive = job.status === 'downloading';
+    const canResume = job.status === 'incomplete' || (job.status === 'error' && job.resumable);
 
+    const canLoad = job.status === 'done' && !!path;
     menu.innerHTML = `
+      <button type="button" data-cmd="resume"${canResume ? '' : ' disabled'}>Resume download</button>
+      <button type="button" data-cmd="load-model"${canLoad ? '' : ' disabled'}>Load model</button>
       <button type="button" data-cmd="copy-id"${identifier ? '' : ' disabled'}>Copy identifier</button>
       <button type="button" data-cmd="copy-url"${hfUrl ? '' : ' disabled'}>Copy Hugging Face URL</button>
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy file path</button>
@@ -308,7 +386,8 @@
 
   function lmTag(label, tone = 'blue', title = '') {
     const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
-    return `<span class="lm-tag ${tone}"${titleAttr}>${escapeHtml(label)}</span>`;
+    // Match model-card modality badges so Downloads and Models look the same.
+    return `<span class="lm-badge ${tone}"${titleAttr}>${escapeHtml(label)}</span>`;
   }
 
   function dflashLogoLabel(label = 'DFlash 1') {
@@ -337,13 +416,21 @@
   }
 
   function jobModelShape(job, meta) {
+    const totalBytes = Number(job?.bytes_total);
+    const sizeGb = Number.isFinite(totalBytes) && totalBytes > 0
+      ? totalBytes / (1024 ** 3)
+      : (Number(meta?.size_gb) || Number(job?.size_gb) || undefined);
     return {
       filename: job?.filename || '',
       label: job?.repo_id || labels.get(job?.id) || '',
       repo_id: job?.repo_id || '',
       path: job?.path || '',
+      size_gb: sizeGb,
       modality: inferJobModality(job, meta),
-      accelerator_only: meta?.accelerator_only ?? job?.accelerator_only,
+      // Full HF repos in Downloads are target models unless explicitly marked.
+      accelerator_only: meta?.accelerator_only ?? job?.accelerator_only ?? (
+        String(job?.kind || '').toLowerCase() === 'repo' ? false : undefined
+      ),
       reasoning: meta?.reasoning ?? job?.reasoning,
       capabilities: meta?.capabilities || job?.capabilities || [],
       pipeline_tag: meta?.pipeline_tag || job?.pipeline_tag || '',
@@ -358,25 +445,45 @@
     return window.DFlashModelGroups?.isAcceleratorOnlyModel?.(model) === true;
   }
 
+  function isConsoleLibraryJob(job, model) {
+    if (window.DFlashModelGroups?.isConsoleDiskPath?.(model)) return true;
+    const path = String(job?.path || model?.path || '').replace(/\\/g, '/').toLowerCase();
+    return path.includes('/dflash-console/') || path.includes('/dflash console/');
+  }
+
   function downloadJobTagsHtml(job, meta) {
     const model = jobModelShape(job, meta);
-    if (window.DFlashModelCard?.classificationTags) {
-      return window.DFlashModelCard.classificationTags(model);
-    }
     const tags = [];
     const modality = String(model.modality || '').trim().toLowerCase();
-    const modEntry = MODALITY_BADGES[modality];
+    const modEntry = MODALITY_BADGES[modality]
+      || window.DFlashModelCard?.MODALITY_BADGES?.[modality];
     if (modEntry) {
-      tags.push(lmTag(modEntry[0], modEntry[1], `Modality: ${modality}`));
+      const label = Array.isArray(modEntry) ? modEntry[0] : modEntry;
+      const tone = Array.isArray(modEntry) ? modEntry[1] : 'blue';
+      tags.push(lmTag(label, tone, `Modality: ${modality}`));
+    } else if (window.DFlashModelCard?.classificationTags) {
+      // Fall back for unknown modalities, but strip false accelerator tags below.
+      const raw = window.DFlashModelCard.classificationTags(model);
+      if (raw) tags.push(raw);
     }
+
+    // Console library destination badge — independent of Accelerator.
+    if (isConsoleLibraryJob(job, model)) {
+      tags.push(dflashLogoLabel('DFlash Console library'));
+    }
+
     if (isDownloadAccelerator(job, meta)) {
       const gen = model.dflash_generation_label
         || window.DFlashModelGroups?.acceleratorGenerationLabel?.(model)
         || 'DFlash 1';
-      tags.push(dflashLogoLabel(`${gen} accelerator`));
+      if (!tags.some((html) => html.includes('dflash-logo-label'))) {
+        tags.push(dflashLogoLabel(`${gen} accelerator`));
+      }
       tags.push(lmTag('Accelerator', 'orange', `${gen} draft accelerator; not a target model`));
     }
-    return tags.join('');
+
+    // Deduplicate if classificationTags already injected the same markup.
+    return [...new Set(tags.filter(Boolean))].join('');
   }
 
   function getJobMeta(job) {
@@ -406,7 +513,7 @@
     };
   }
 
-  function renderDownloadCardHtml(job, { variant = 'panel', removeButtonHtml = '' } = {}) {
+  function renderDownloadCardHtml(job, { variant = 'panel', removeButtonHtml = '', loadActionsHtml = '', selectedClass = '' } = {}) {
     const meta = getJobMeta(job);
     const diskBytes = Number(job?.disk_bytes);
     const hasDiskBytes = Number.isFinite(diskBytes) && diskBytes > 0;
@@ -436,15 +543,23 @@
     const statusPrimary = job.status === 'downloading'
       ? progressLabel(job)
       : (job.status === 'incomplete'
-        ? (totalBytes && readBytes > 0 ? `${Math.round((readBytes / totalBytes) * 100)}% on disk` : 'Incomplete')
+        ? (job.shard_total
+          ? `Incomplete ${job.shard_present || 0}/${job.shard_total}`
+          : (totalBytes && readBytes > 0
+            ? `${Math.min(99, Math.round((readBytes / Math.max(totalBytes, readBytes)) * 100))}% on disk`
+            : 'Incomplete — Resume'))
         : (job.status === 'done' ? 'Complete' : 'Failed'));
     const statusClass = job.status === 'downloading'
       ? ''
       : (job.status === 'incomplete'
         ? ' is-error'
         : (job.status === 'done' ? ' is-done' : ' is-error'));
+    const asideBytesTotal = totalBytes > 0 && readBytes > totalBytes ? Math.max(totalBytes, readBytes) : totalBytes;
+    const asideBytes = asideBytesTotal
+      ? `${formatBytes(readBytes)} / ${formatBytes(asideBytesTotal)}`
+      : bytes;
     const asideSecondary = job.status === 'downloading'
-      ? [bytes, [speed, eta].filter(Boolean).join(' · ')].filter(Boolean)
+      ? [asideBytes, [speed, eta].filter(Boolean).join(' · ')].filter(Boolean)
       : [
         sizeStat || (totalBytes ? formatBytes(readBytes || totalBytes) : ''),
         variant === 'page' && job.finished_at
@@ -455,9 +570,18 @@
       ? shortPath(job.path)
       : (job.status === 'error'
         ? String(job.error || job.path || '')
-        : shortPath(job.path || job.repo_id || ''));
+        : (job.status === 'incomplete'
+          ? String(job.error || shortPath(job.path || job.repo_id || ''))
+          : shortPath(job.path || job.repo_id || '')));
     const bar = job.status === 'downloading'
       ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill${fillClass}"${fillStyle}></div></div>`
+      : (job.status === 'incomplete' && (job.shard_total || (totalBytes && readBytes > 0))
+        ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill" style="width:${Math.max(1, Math.min(99, job.shard_total
+          ? Math.round(((Number(job.shard_present) || 0) / Number(job.shard_total)) * 100)
+          : Math.round((readBytes / totalBytes) * 100)))}%"></div></div>`
+        : '');
+    const resumeBtn = job.status === 'incomplete'
+      ? `<button type="button" class="lm-btn ghost tiny df-downloads-resume" data-resume-job="${escapeHtml(job.id)}" title="Resume downloading remaining files">Resume</button>`
       : '';
     const tagsHtml = downloadJobTagsHtml(job, meta);
     const tags = tagsHtml
@@ -472,20 +596,23 @@
       ? `<span class="df-downloads-card-avatar" aria-hidden="true">${escapeHtml(meta.author.charAt(0).toUpperCase())}</span>`
       : '';
     const wrapperClass = variant === 'page' ? 'df-downloads-page-item' : 'df-downloads-item';
+    const pageSelectedClass = variant === 'page' ? String(selectedClass || '') : '';
     return `
-      <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}" data-download-job-id="${escapeHtml(job.id)}">
+      <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
         ${removeButtonHtml}
         <div class="df-downloads-card-body">
           ${avatar}
           <div class="df-downloads-card-main">
             <div class="df-downloads-card-title-row">
               <span class="df-downloads-card-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+              ${resumeBtn}
             </div>
             ${showRepo ? `<div class="df-downloads-card-repo">${escapeHtml(job.repo_id)}</div>` : ''}
             ${job.filename ? `<div class="df-downloads-card-file">${escapeHtml(job.filename)}</div>` : ''}
             ${descLine ? `<div class="df-downloads-card-desc">${escapeHtml(descLine)}</div>` : ''}
             ${footLine ? `<div class="df-downloads-card-foot">${escapeHtml(footLine)}</div>` : ''}
             ${cardDetails}
+            ${variant === 'page' ? loadActionsHtml : ''}
           </div>
           ${tags}
           <div class="df-downloads-card-aside">
@@ -526,7 +653,7 @@
   }
 
   function activeJobs() {
-    return sortedJobs().filter((job) => job.status === 'downloading');
+    return sortedJobs().filter((job) => job.status === 'downloading' || job.status === 'incomplete');
   }
 
   function emit() {
@@ -745,11 +872,18 @@
       }
     });
     document.addEventListener('click', (event) => {
+      const resumeBtn = event.target.closest('[data-resume-job]');
+      if (resumeBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        void resumeDownloadJob(resumeBtn.dataset.resumeJob);
+        return;
+      }
       if (!panelOpen) return;
       if (trayEl()?.contains(event.target)) return;
       closePanel();
     });
-    void refresh();
+    void refresh({ discover: true });
   }
 
   document.addEventListener('DOMContentLoaded', bind);
@@ -764,6 +898,7 @@
     getJobLabel(job) {
       return labels.get(job?.id) || job?.filename || job?.repo_id || 'Model';
     },
+    resumeDownloadJob,
     openPanel,
     closePanel,
     progressLabel,

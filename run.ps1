@@ -38,8 +38,7 @@ function Stop-DflashApps {
 }
 
 # Stop whatever Console server is listening on the port: graceful /api/shutdown
-# first, then force-kill the listener quickly. The graceful endpoint may be
-# releasing a busy engine, but a full restart also clears engine listeners below.
+# first, then force-kill the listener. Wait until the port is actually free.
 function Stop-ConsoleServer {
     param([int]$Port)
     Write-Host "Stopping the Console server on port $Port..." -ForegroundColor Cyan
@@ -48,16 +47,22 @@ function Stop-ConsoleServer {
     } catch {
         # not running or already gone
     }
-    $deadline = (Get-Date).AddSeconds(3)
+    $deadline = (Get-Date).AddSeconds(20)
     while ((Get-Date) -lt $deadline) {
         if (-not (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { return }
         Start-Sleep -Milliseconds 300
     }
-    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($listener) {
-        Write-Host "  force-stopping listener PID $($listener.OwningProcess)" -ForegroundColor DarkGray
-        & taskkill.exe /F /T /PID $listener.OwningProcess 2>$null | Out-Null
-        Start-Sleep -Seconds 2
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    foreach ($listener in $listeners) {
+        $procId = [int]$listener.OwningProcess
+        if ($procId -le 0) { continue }
+        Write-Host "  force-stopping listener PID $procId" -ForegroundColor DarkGray
+        & taskkill.exe /F /T /PID $procId 2>$null | Out-Null
+    }
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 300
     }
 }
 

@@ -12,6 +12,7 @@ from core.config import ROOT
 BUNDLE_REVISIONS: dict[str, int] = {
     'vllm': 1,
     'transformers': 1,
+    'freetoken': 1,
     'piper': 1,
     'stt': 1,
     'faster-whisper': 1,
@@ -48,6 +49,16 @@ CATALOG: list[dict[str, Any]] = [
         'description': 'Works on more PCs (CPU or GPU). Slower than vLLM. Installs torch + transformers on demand.',
         'install_mode': 'on_demand',
         'keywords': ['transformers', 'pytorch', 'safetensors', 'huggingface', 'cpu'],
+    },
+    {
+        'id': 'freetoken',
+        'runtime_id': 'freetoken',
+        'category': 'llm_engine',
+        'label': 'FreeToken WSL engine',
+        'short_label': 'FreeToken',
+        'description': 'Optional Linux/CUDA MoE engine for supported Hugging Face models. Requires WSL2 Ubuntu and an NVIDIA driver with CUDA support; large dependencies stay inside WSL.',
+        'install_mode': 'on_demand',
+        'keywords': ['freetoken', 'moe', 'wsl', 'cuda', 'nvidia', 'safetensors'],
     },
     {
         'id': 'piper',
@@ -102,7 +113,7 @@ def _read_manifest(runtime_id: str) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -135,6 +146,10 @@ def _on_demand_status(runtime_id: str) -> dict[str, Any]:
         return install_status()
     if runtime_id == 'transformers':
         from core.transformers_runtime_install import install_status
+
+        return install_status()
+    if runtime_id == 'freetoken':
+        from core.freetoken_runtime_install import install_status
 
         return install_status()
     return {}
@@ -171,6 +186,9 @@ def _component_row(entry: dict[str, Any]) -> dict[str, Any]:
     status = 'installed'
     if installing:
         status = 'installing'
+    elif installed:
+        status = 'update_available' if update_available else 'installed'
+        install_error = ''
     elif install_state == 'error':
         status = 'error'
     elif update_available:

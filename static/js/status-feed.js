@@ -11,6 +11,34 @@
   /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
   let pendingLoadsSnapshot = {};
 
+  function normalizeLoadProgress(raw) {
+    if (raw == null) return { pct: null, detail: '', phase: '' };
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      const pctRaw = raw.expert_pct ?? raw.pct ?? raw.progress ?? null;
+      const pct = pctRaw != null && Number.isFinite(Number(pctRaw)) ? Number(pctRaw) : null;
+      return {
+        pct,
+        detail: String(raw.detail || '').trim(),
+        phase: String(raw.phase || '').trim(),
+      };
+    }
+    const num = Number(raw);
+    return {
+      pct: Number.isFinite(num) && num > 0 ? num : null,
+      detail: '',
+      phase: '',
+    };
+  }
+
+  function loadProgressSuffix(raw) {
+    const { pct } = normalizeLoadProgress(raw);
+    return pct != null ? ` · ${Math.round(pct)}%` : '';
+  }
+
+  function serverIsWarming(server) {
+    return !!(server?.warming || server?.booting || server?.status === 'booting');
+  }
+
   function primaryEl() {
     return document.getElementById('statusFeedPrimary');
   }
@@ -40,7 +68,15 @@
     const cards = Array.isArray(server.visible_cards) ? server.visible_cards : [];
     const loadingCard = cards.find((row) => row.card_state === 'loading');
     if (loadingCard?.title) return loadingCard.title;
+    if (server.model_id && serverIsWarming(server)) {
+      return String(server.model_id).replace(/-/g, ' ');
+    }
     if (server.active_model_id) return String(server.active_model_id).replace(/-/g, ' ');
+    const modelPath = String(server.model_path || '').replace(/\\/g, '/');
+    if (modelPath && serverIsWarming(server)) {
+      const base = modelPath.split('/').pop();
+      if (base) return base;
+    }
     return server.label || server.id || 'Model';
   }
 
@@ -74,16 +110,18 @@
     for (const [serverId, meta] of Object.entries(pendingLoadsSnapshot)) {
       const server = servers.find((row) => row.id === serverId);
       const label = meta?.label || server?.label || serverId;
-      const pct = server?.load_progress != null ? ` · ${Math.round(server.load_progress)}%` : '';
+      const pct = loadProgressSuffix(server?.load_progress);
       loading.push(`Loading ${label}${pct}`);
     }
 
     for (const server of servers) {
       if (pendingIds.has(server.id)) continue;
       const label = loadingModelLabel(server);
-      if (server.status === 'booting' || server.booting) {
-        const pct = server.load_progress != null ? ` · ${Math.round(server.load_progress)}%` : '';
-        loading.push(`Loading ${label}${pct}`);
+      if (serverIsWarming(server)) {
+        const verb = server.warming || server.runtime_id === 'freetoken' ? 'Warming' : 'Loading';
+        const pct = loadProgressSuffix(server.load_progress);
+        const detail = normalizeLoadProgress(server.load_progress).detail;
+        loading.push(detail && !pct ? `${verb} ${label} · ${detail}` : `${verb} ${label}${pct}`);
       } else if (server.status === 'loaded') {
         loadedModelLabels(server).forEach((readyLabel) => {
           loaded.push(`${readyLabel} ready on :${server.port || '—'}`);
@@ -187,6 +225,12 @@
     pendingLoadsSnapshot = map && typeof map === 'object' ? { ...map } : {};
     refreshDisplay();
   }
+
+  window.DFlashLoadProgress = {
+    normalize: normalizeLoadProgress,
+    suffix: loadProgressSuffix,
+    isWarming: serverIsWarming,
+  };
 
   window.DFlashStatusFeed = {
     setTransient,

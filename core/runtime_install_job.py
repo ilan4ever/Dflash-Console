@@ -40,14 +40,28 @@ def parse_install_line(line: str) -> tuple[float | None, str]:
         return 22.0, 'Checking for a Windows package'
     if 'installing pytorch' in lower:
         return 35.0, 'Downloading PyTorch'
+    if 'freetoken' in lower:
+        return 55.0, 'Installing FreeToken in WSL'
     if 'trying official' in lower or 'pip install vllm' in lower or 'downloading vllm' in lower:
         return 32.0, 'Downloading vLLM'
-    if 'wsl' in lower and 'install' in lower:
+    if 'wsl' in lower and 'vllm' in lower and 'install' in lower:
         return 40.0, 'Installing vLLM in WSL'
     if 'installing collected' in lower:
         return 86.0, 'Installing packages'
+    if 'dependency conflict' in lower or 'pip\'s dependency resolver' in lower:
+        return 88.0, 'Resolving Python package dependencies'
     if 'successfully installed' in lower:
-        return 94.0, 'Finishing install'
+        # Pip prints this for every wheel (setuptools, numpy, …). Only treat
+        # the final vLLM / runtime package as near-complete.
+        if any(token in lower for token in ('vllm', 'freetoken', 'torch', 'transformers')):
+            return 94.0, 'Finishing install'
+        return 88.0, 'Installing Python packages'
+    if 'found existing installation' in lower or 'requirement already satisfied' in lower:
+        return 87.0, 'Resolving Python package dependencies'
+    if 'checking vllm import' in lower:
+        return 96.0, 'Verifying vLLM import in WSL'
+    if 'vllm runtime installed' in lower:
+        return 99.0, 'vLLM is ready'
     if 'no official windows wheel' in lower or 'switching to wsl' in lower:
         return 38.0, 'No Windows package — switching to WSL'
     return None, text[:200]
@@ -155,8 +169,16 @@ def start_progress_heartbeat(
     def beat() -> None:
         while not stop.wait(2.0):
             elapsed = max(0.0, time.time() - started_at)
+            current = float(job.get('progress') or 0.0)
             creep = min(88.0, 8.0 + elapsed / 12.0)
-            apply_job_progress(lock, job, progress=creep)
+            if current >= 85.0:
+                # Large WSL wheels can sit at "successfully installed" for minutes
+                # while import verification runs — keep the bar moving slowly.
+                creep = max(creep, min(98.5, current + 0.35))
+            msg = ''
+            if current >= 90.0 and creep > current:
+                msg = 'Installing large packages in WSL — can take 10+ minutes'
+            apply_job_progress(lock, job, progress=creep, message=msg)
 
     thread = threading.Thread(target=beat, daemon=True, name='runtime-install-heartbeat')
     thread.start()

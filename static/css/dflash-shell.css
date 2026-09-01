@@ -928,6 +928,66 @@ body.lm-resizing-sidenav {
   padding-right: 22px;
 }
 
+.df-shell .df-downloads-page-item.is-selected {
+  border-color: rgba(110, 196, 184, 0.45);
+  box-shadow: inset 3px 0 0 rgba(110, 196, 184, 0.75);
+  background: rgba(5, 48, 40, 0.22);
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions {
+  margin-top: 10px;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-action-stack {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-engine-pick {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 108px;
+  max-width: 148px;
+  padding: 5px 28px 5px 8px;
+  appearance: none;
+  background-color: var(--bg-input);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-engine-pick-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 148px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-btn,
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-action-btn {
+  flex: 0 0 auto;
+}
+
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-model-load-pill,
+.df-shell .df-downloads-page-item .df-downloads-card-actions .lm-tag {
+  flex: 0 0 auto;
+}
+
 .df-shell .lm-models-toolbar {
   justify-content: flex-start;
   margin-bottom: 10px;
@@ -950,10 +1010,10 @@ body.lm-resizing-sidenav {
 }
 
 .df-shell .lm-view[data-view="models"] .lm-models-search {
-  flex: 0 0 27ch;
-  width: 27ch;
-  min-width: 27ch;
-  max-width: 27ch;
+  flex: 1 1 42ch;
+  width: auto;
+  min-width: 36ch;
+  max-width: min(72ch, 100%);
   box-sizing: border-box;
   height: 27px;
   padding: 0 10px;
@@ -3968,11 +4028,52 @@ body.lm-resizing-table-col {
   gap: 6px 8px;
   align-items: center;
   margin-top: 10px;
-  max-width: 420px;
+  max-width: min(100%, 720px);
 }
 
 .df-shell .df-catalog-file-row .df-select-wrap {
   width: 100%;
+  min-width: 260px;
+  max-width: min(100%, 640px);
+}
+
+.df-shell .df-catalog-file-row .df-select-menu {
+  width: max-content;
+  min-width: 100%;
+  max-width: min(96vw, 920px);
+}
+
+.df-shell .df-catalog-file-row .df-select-option {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.df-shell .df-catalog-single-download {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.df-shell .df-catalog-single-download-label {
+  color: var(--lm-text, #d8e6df);
+  font-family: var(--lm-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.df-shell .df-catalog-download-hint {
+  margin: 0 0 8px;
+  max-width: min(100%, 720px);
+}
+
+.df-shell .df-catalog-file-row .df-select-trigger {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
 }
 
 .df-shell .df-catalog-installed-note {

@@ -43,6 +43,26 @@
       }
     }
   ],
+  "runtimes": [
+    {
+      "id": "runtime-freetoken",
+      "runtime_id": "freetoken",
+      "label": "FreeToken (WSL)",
+      "port": 0,
+      "gpu_device": "auto",
+      "device_policy": "gpu",
+      "enabled": true,
+      "freetoken_settings": {
+        "moe_backend": "auto",
+        "moe_cache_auto": true,
+        "memory_ratio": 0.9,
+        "max_running_requests": 4,
+        "max_output_tokens": 32768,
+        "max_prefill_length": 8192,
+        "cuda_graph_max_bs": 4
+      }
+    }
+  ],
   "model_libraries": [
     {
       "id": "dflash-checkpoints",

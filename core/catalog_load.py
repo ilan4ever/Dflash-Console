@@ -24,7 +24,7 @@ from core.server_boot import load_server_checkpoint
 def _release_peer_llm_engines(keep: str) -> None:
     from core.runtimes import get_runtime_adapter
 
-    for runtime_id in ('vllm', 'transformers'):
+    for runtime_id in ('vllm', 'transformers', 'freetoken'):
         if runtime_id == keep:
             continue
         adapter = get_runtime_adapter(runtime_id)
@@ -89,9 +89,9 @@ def execute_catalog_load(
     requested_runtime = str(requested_runtime_id or '').strip()
     if not requested_runtime:
         requested_runtime = str((load_settings or {}).get('runtime_id') or '').strip()
-    if not requested_runtime and str(server_id or '') in {'vllm', 'transformers'}:
+    if not requested_runtime and str(server_id or '') in {'vllm', 'transformers', 'freetoken'}:
         requested_runtime = str(server_id)
-    if requested_runtime in {'vllm', 'transformers'}:
+    if requested_runtime in {'vllm', 'transformers', 'freetoken'}:
         runtime_id = requested_runtime
 
     from core.ocr_setup import resolve_glmocr_load
@@ -168,7 +168,7 @@ def execute_catalog_load(
             'how_to_use': 'POST /api/runtimes/vibevoice/v1/audio/speech {"input": "...", "voice": "en-Carter_man"}',
             **result,
         }
-    if runtime_id in {'transformers', 'vllm'}:
+    if runtime_id in {'transformers', 'vllm', 'freetoken'}:
         _release_peer_llm_engines(runtime_id)
         adapter = get_runtime_adapter(runtime_id)
         if adapter is None:
@@ -181,11 +181,15 @@ def execute_catalog_load(
         result = adapter.load(model_payload)
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or f'{runtime_id} load failed')
+        loaded = bool(result.get('loaded'))
+        warming = bool(result.get('warming'))
         return {
             'success': True,
             'modality': modality,
             'runtime_id': runtime_id,
-            'loaded': True,
+            'loaded': loaded,
+            'warming': warming,
+            'load_progress': result.get('load_progress') or {},
             'path': resolved_path,
             'how_to_use': f'POST /api/servers/{runtime_id}/v1/chat/completions',
             **result,

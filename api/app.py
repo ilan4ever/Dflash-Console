@@ -39,6 +39,8 @@ ASSETS_DIR = PACKAGE_ROOT / 'assets' if (PACKAGE_ROOT / 'assets').is_dir() else 
 _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
 _SERVERS_STATUS_LOCK = asyncio.Lock()
+_ADAPTER_ENGINE_ROWS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_ADAPTER_ENGINE_ROWS_CACHE_TTL = 2.0
 _SYSTEM_STATS_LOCK = asyncio.Lock()
 _SYSTEM_STATS_CACHE: dict[str, Any] | None = None
 _SYSTEM_STATS_CACHE_AT = 0.0
@@ -153,7 +155,7 @@ def _stop_hf_engine_workers() -> None:
     try:
         from core.runtimes import get_runtime_adapter
 
-        for runtime_id in ('transformers',):
+        for runtime_id in ('transformers', 'vllm', 'freetoken'):
             adapter = get_runtime_adapter(runtime_id)
             stop_fn = getattr(adapter, 'stop', None) if adapter is not None else None
             if callable(stop_fn):
@@ -531,6 +533,10 @@ class HardwarePatch(BaseModel):
     offload_kv_cache_to_gpu: bool | None = None
 
 
+class HfResumeDownloadRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
+
+
 class HfDownloadRequest(BaseModel):
     repo_id: str = Field(..., min_length=3)
     filename: str = Field(..., min_length=4)
@@ -673,7 +679,7 @@ def _require_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any]:
 def _hf_engine_adapter(server_id: str) -> Any:
     """Runtime adapter behind a synthetic Engines row (vllm / transformers)."""
     sid = str(server_id or '').strip().lower()
-    if sid not in ('vllm', 'transformers'):
+    if sid not in ('vllm', 'transformers', 'freetoken'):
         return None
     from core.runtimes import get_runtime_adapter
 
@@ -1332,7 +1338,28 @@ def hf_downloads(
     return list_download_jobs(active_only=active, discover=discover, console_only=console_only)
 
 
-@app.delete('/api/hf/downloads/{job_id}')
+@app.post('/api/hf/downloads/resume')
+def hf_download_resume_body(body: HfResumeDownloadRequest) -> dict[str, Any]:
+    """Resume by JSON body — job ids can contain '/' (e.g. incomplete::org/name)."""
+    from core.huggingface import resume_download_job
+
+    result = resume_download_job(body.job_id, cfg=load_config())
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'resume failed')
+    return result
+
+
+@app.post('/api/hf/downloads/{job_id:path}/resume')
+def hf_download_resume(job_id: str) -> dict[str, Any]:
+    from core.huggingface import resume_download_job
+
+    result = resume_download_job(job_id, cfg=load_config())
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'resume failed')
+    return result
+
+
+@app.delete('/api/hf/downloads/{job_id:path}')
 def hf_download_clear_one(job_id: str) -> dict[str, Any]:
     from core.huggingface import clear_download_job
 
@@ -1429,7 +1456,7 @@ def _model_load_route(row: dict[str, Any]) -> dict[str, Any]:
             'embedding': 'then POST /api/servers/{server_id}/v1/embeddings {"input": [...]}',
             'llm': (
                 f'then POST /api/servers/{runtime_id}/v1/chat/completions'
-                if runtime_id in {'vllm', 'transformers'}
+                if runtime_id in {'vllm', 'transformers', 'freetoken'}
                 else 'then POST /api/servers/{server_id}/v1/chat/completions'
             ),
         }.get(modality, ''),
@@ -1558,7 +1585,11 @@ def _adapter_engine_rows() -> list[dict[str, Any]]:
     from core.runtimes import get_runtime_adapter
 
     rows: list[dict[str, Any]] = []
-    for runtime_id, label in (('vllm', 'vLLM'), ('transformers', 'Transformers')):
+    for runtime_id, label in (
+        ('vllm', 'vLLM'),
+        ('transformers', 'Transformers'),
+        ('freetoken', 'FreeToken (WSL)'),
+    ):
         adapter = get_runtime_adapter(runtime_id)
         if adapter is None or not callable(getattr(adapter, 'health', None)):
             continue
@@ -1566,23 +1597,67 @@ def _adapter_engine_rows() -> list[dict[str, Any]]:
         model = str(health.get('active_model') or '')
         name = _Path(model).name if model else ''
         running = health.get('running') is True
+        warming = health.get('warming') is True
+        inference_ready = health.get('inference_ready') is True
+        if warming:
+            status = 'booting'
+        elif running and inference_ready and name:
+            status = 'loaded'
+        elif running:
+            status = 'running'
+        else:
+            status = 'stopped'
         rows.append({
             'id': runtime_id,
             'label': label,
-            'status': 'loaded' if running and name else ('running' if running else 'stopped'),
+            'status': status,
             'runtime_id': runtime_id,
             'enabled': True,
             'engine_on': True,
             'running': running,
+            'booting': warming,
+            'warming': warming,
+            'inference_ready': inference_ready,
+            'load_progress': health.get('load_progress') or None,
             'port': int(health.get('port') or 0),
             'host': str(health.get('host') or '127.0.0.1'),
             'api_url': str(health.get('api_url') or ''),
-            'loaded_models': [name] if name else [],
-            'active_model_id': name,
+            'loaded_models': [name] if name and inference_ready else [],
+            'active_model_id': name if inference_ready else '',
             'model_id': name,
-            'loaded': bool(running and name),
+            'loaded': bool(inference_ready and name),
+            'ready_for_chat': inference_ready,
+            'model_path': model,
         })
     return rows
+
+
+def _adapter_engine_rows_cached() -> list[dict[str, Any]]:
+    global _ADAPTER_ENGINE_ROWS_CACHE
+    now = time.time()
+    cached_at, cached_rows = _ADAPTER_ENGINE_ROWS_CACHE
+    if cached_rows and (now - cached_at) <= _ADAPTER_ENGINE_ROWS_CACHE_TTL:
+        return [dict(row) for row in cached_rows]
+    rows = _adapter_engine_rows()
+    _ADAPTER_ENGINE_ROWS_CACHE = (now, [dict(row) for row in rows])
+    return [dict(row) for row in rows]
+
+
+def _merge_adapter_engine_rows(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach live vLLM / Transformers / FreeToken rows to a status snapshot."""
+    merged = dict(payload)
+    adapter_rows = _adapter_engine_rows_cached()
+    if not adapter_rows:
+        return merged
+    existing = {
+        str(row.get('id') or '')
+        for row in (merged.get('servers') or [])
+        if isinstance(row, dict)
+    }
+    extra = [row for row in adapter_rows if str(row.get('id') or '') not in existing]
+    merged['servers'] = list(merged.get('servers') or []) + extra
+    merged['all_servers'] = list(merged.get('all_servers') or []) + extra
+    return merged
 
 
 @app.get('/api/servers/profiles')
@@ -1604,7 +1679,7 @@ async def servers_status(
     include_external: bool = Query(default=True),
     fresh: bool = Query(default=False),
 ) -> dict[str, Any]:
-    from core.runtime import _cached_status_payload
+    from core.runtime import _cached_status_payload, _store_status_payload
 
     # External GPU discovery can legitimately take several seconds. Once a
     # snapshot exists, status refreshes should remain responsive while that
@@ -1612,6 +1687,7 @@ async def servers_status(
     if _SERVERS_STATUS_LOCK.locked() and not fresh:
         cached = _cached_status_payload(include_external)
         if cached is not None:
+            cached = _merge_adapter_engine_rows(dict(cached))
             cached['stale'] = True
             snapshot_at = float(cached.get('updated_at') or 0.0)
             if snapshot_at:
@@ -1622,22 +1698,28 @@ async def servers_status(
         cfg = load_config()
         enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
         gpus = get_gpu_devices_payload().get('gpus') or []
+        trace: list[dict[str, Any]] = []
+        build_started = time.time()
         payload = get_status_payload(
             enabled,
             cfg=cfg,
             gpus=gpus,
             include_external=include_external,
             allow_stale=not fresh,
+            fast_external=not fresh,
+            status_trace=trace,
         )
+        build_ms = max(0, int((time.time() - build_started) * 1000))
         payload['gpus'] = gpus
         payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
         payload['external_scan_skipped'] = not include_external
-        adapter_rows = _adapter_engine_rows()
-        if adapter_rows:
-            existing = {str(row.get('id') or '') for row in (payload.get('servers') or []) if isinstance(row, dict)}
-            extra = [row for row in adapter_rows if str(row.get('id') or '') not in existing]
-            payload['servers'] = list(payload.get('servers') or []) + extra
-            payload['all_servers'] = list(payload.get('all_servers') or []) + extra
+        payload['status_trace'] = trace
+        payload['status_build_ms'] = build_ms
+        from core.runtime import _write_engine_status_log
+
+        _write_engine_status_log(trace, build_ms)
+        payload = _merge_adapter_engine_rows(payload)
+        _store_status_payload(payload, include_external=include_external)
         return payload
 
     # Several UI surfaces consume the same status snapshot. Only one expensive
@@ -1687,16 +1769,17 @@ def runtimes_status() -> dict[str, Any]:
             'kind': 'runtime',
             'runtime_id': runtime_id,
             'label': str(runtime.get('label') or runtime.get('id') or ''),
-            'port': int(runtime.get('port') or 0),
-            'host': str(runtime.get('host') or '127.0.0.1'),
-            'api_url': str(runtime.get('api_url') or ''),
+            'port': int(health.get('port') or runtime.get('port') or 0),
+            'host': str(health.get('host') or runtime.get('host') or '127.0.0.1'),
+            'api_url': str(health.get('api_url') or runtime.get('api_url') or ''),
+            'gpu_device': str(runtime.get('gpu_device') or 'auto'),
             'device_policy': str(runtime.get('device_policy') or 'auto'),
             'default_voice': str(runtime.get('default_voice') or ''),
             'default_model': str(runtime.get('default_model') or ''),
             'vram_budget_mb': runtime.get('vram_budget_mb'),
             'allow_cpu_fallback': runtime.get('allow_cpu_fallback'),
             'enabled': runtime.get('enabled', True) is not False,
-            'adapter_installed': adapter is not None,
+            'adapter_installed': health.get('installed') is True,
             # STT-specific settings (faster-whisper + whisper.cpp)
             'compute_type': runtime.get('compute_type') or 'auto',
             'language': runtime.get('language') or '',
@@ -1711,6 +1794,9 @@ def runtimes_status() -> dict[str, Any]:
             'active_model': health.get('active_model') or '',
             'active_device': health.get('device') or '',
             'active_compute_type': health.get('compute_type') or '',
+            'freetoken_settings': runtime.get('freetoken_settings') or {},
+            'wsl_distro': health.get('wsl_distro') or '',
+            'wsl_python': health.get('wsl_python') or '',
         })
     adapters = [{
         'runtime_id': adapter.runtime_id,
@@ -1763,6 +1849,10 @@ def runtime_install_status(runtime_id: str) -> dict[str, Any]:
         from core.vllm_runtime_install import install_status
 
         return {'success': True, 'runtime_id': rid, **install_status()}
+    if rid == 'freetoken':
+        from core.freetoken_runtime_install import install_status
+
+        return {'success': True, 'runtime_id': rid, **install_status()}
     raise HTTPException(status_code=404, detail=f'no on-demand installer for runtime: {runtime_id}')
 
 
@@ -1780,6 +1870,11 @@ def runtime_install_start(runtime_id: str, body: RuntimeInstallRequest | None = 
 
         result = start_install(backend=payload.backend or 'auto')
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    if rid == 'freetoken':
+        from core.freetoken_runtime_install import start_install
+
+        result = start_install(backend=payload.backend or 'wsl')
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
     raise HTTPException(status_code=404, detail=f'no on-demand installer for runtime: {runtime_id}')
 
 
@@ -1793,6 +1888,11 @@ def runtime_uninstall(runtime_id: str) -> dict[str, Any]:
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
     if rid == 'vllm':
         from core.vllm_runtime_install import uninstall
+
+        result = uninstall()
+        return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
+    if rid == 'freetoken':
+        from core.freetoken_runtime_install import uninstall
 
         result = uninstall()
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
@@ -2597,7 +2697,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
 
     cfg = load_config()
     adapter_id = str(server_id or '').strip().lower()
-    if adapter_id in {'vllm', 'transformers'}:
+    if adapter_id in {'vllm', 'transformers', 'freetoken'}:
         adapter = _require_runtime_adapter(adapter_id)
         health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
         if not health.get('running') or not health.get('api_url'):
