@@ -16,7 +16,7 @@ const {
   signedManifestPayload,
   verifyManifestSignature,
 } = require('../electron/update-integrity');
-const { safeArtifactName } = require('../electron/update-service');
+const { UpdateService, safeArtifactName } = require('../electron/update-service');
 const packageJson = require('../package.json');
 
 function manifest() {
@@ -50,16 +50,37 @@ test('uses the branded setup UI instead of the Windows NSIS wizard', () => {
   assert.equal(packageJson.scripts?.dist, 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fast-installer.ps1');
   const builder = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-fast-installer.ps1'), 'utf8');
   assert.match(builder, /dflash-setup-ui\.exe/);
-  assert.match(builder, /GUIMode="2"/);
+  assert.match(builder, /7zS2\.sfx/);
 });
 
-test('requires authenticated HTTPS update configuration', () => {
-  assert.throws(() => normalizeUpdateConfig({ manifestUrl: 'https://updates.example.test' }));
+test('supports public and authenticated HTTPS update configurations', () => {
+  const publicConfig = normalizeUpdateConfig({
+    manifestUrl: 'https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json',
+  });
+  assert.equal(publicConfig.token, '');
   const config = normalizeUpdateConfig({
     manifestUrl: 'https://updates.example.test/manifest.json',
     token: 'test-token',
   });
   assert.equal(config.token, 'test-token');
+});
+
+test('does not attach authentication headers to public update requests', () => {
+  const publicService = new UpdateService({
+    manifestUrl: 'https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json',
+  });
+  assert.deepEqual(publicService.requestHeaders('application/json'), {
+    Accept: 'application/json',
+  });
+
+  const authenticatedService = new UpdateService({
+    manifestUrl: 'https://updates.example.test/manifest.json',
+    token: 'test-token',
+  });
+  assert.deepEqual(authenticatedService.requestHeaders('application/json'), {
+    Accept: 'application/json',
+    Authorization: 'Bearer test-token',
+  });
 });
 
 test('verifies RSA-SHA256 signatures over canonical unsigned manifests', () => {

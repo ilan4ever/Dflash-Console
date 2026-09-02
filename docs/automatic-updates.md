@@ -1,10 +1,10 @@
 # DFlash Console automatic updates
 
-The Windows desktop shell checks the signed feed at:
+The Windows desktop shell checks the signed GitHub Release manifest at:
 
-`https://onevoiceai.in/?dflash-console-update=latest`
+`https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json`
 
-The feed and installer are protected by a token and stored outside the website's public directory. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest. The setup artifact is a branded DFlash 7-Zip SFX wrapper that launches the native dark setup UI; it is not an NSIS or Windows wizard.
+The manifest is publicly downloadable after the repository is made public. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest. The setup artifact is a branded DFlash 7-Zip SFX wrapper that launches the native dark setup UI; it is not an NSIS or Windows wizard.
 
 ## Release prerequisites
 
@@ -25,4 +25,4 @@ node tools/sign-update-manifest.js `
   -Token "<the feed token>"
 ```
 
-GitHub releases use `DFLASH_UPDATE_TOKEN`, `DFLASH_UPDATE_PRIVATE_KEY`, `HOSTINGER_UPDATE_ROOT`, and the Hostinger SSH secrets. Windows code-signing secrets `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` are required for the official GitHub Release. The detached helper waits for the running app and its child processes to quit, then opens the verified branded DFlash setup UI. The installer provides the per-user/per-machine choice, shows custom progress, and relaunches the app after installation.
+GitHub releases use `DFLASH_UPDATE_PRIVATE_KEY` to sign `latest.json`. The legacy Hostinger feed can still be published with `DFLASH_UPDATE_TOKEN`, `HOSTINGER_UPDATE_ROOT`, and the Hostinger SSH secrets, but it is not required by the GitHub updater. Windows code-signing secrets `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` are optional. The detached helper waits for the running app and its child processes to quit, then opens the verified branded DFlash setup UI. The installer provides the per-user/per-machine choice, shows custom progress, and relaunches the app after installation.

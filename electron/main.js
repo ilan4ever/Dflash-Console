@@ -17,6 +17,7 @@ const { registerContextMenus } = require('./context-menu');
 const DEFAULT_PORT = 8900;
 const UI_HOST = '127.0.0.1';
 const HEALTH_PATH = '/api/health';
+const DEFAULT_UPDATE_MANIFEST_URL = 'https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json';
 const READY_TIMEOUT_MS = 180000;
 const POLL_MS = 500;
 
@@ -309,6 +310,7 @@ function createUpdateService() {
   const manifestUrl = String(
     process.env.DFLASH_UPDATE_MANIFEST_URL
       || config.manifestUrl
+      || DEFAULT_UPDATE_MANIFEST_URL
       || '',
   ).trim();
   const token = String(

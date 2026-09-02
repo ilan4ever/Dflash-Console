@@ -91,10 +91,16 @@ class UpdateService {
     return url.toString();
   }
 
+  requestHeaders(accept) {
+    const headers = { Accept: accept };
+    if (this.config.token) headers.Authorization = `Bearer ${this.config.token}`;
+    return headers;
+  }
+
   async fetchManifest() {
     this.status(STATUS.CHECKING);
     const response = await this.fetch(this.authorizedUrl(this.config.manifestUrl), {
-      headers: { Accept: 'application/json', Authorization: `Bearer ${this.config.token}` },
+      headers: this.requestHeaders('application/json'),
     });
     if (!response.ok) throw new Error(`Update manifest request failed (${response.status})`);
     const manifest = await response.json();
@@ -133,7 +139,7 @@ class UpdateService {
     const tempPath = path.join(this.stagingDir, `.${manifest.fileName}.part`);
     const stagedPath = path.join(this.stagingDir, manifest.fileName);
     const response = await this.fetch(this.authorizedUrl(manifest.downloadUrl), {
-      headers: { Accept: 'application/octet-stream', Authorization: `Bearer ${this.config.token}` },
+      headers: this.requestHeaders('application/octet-stream'),
     });
     if (!response.ok || !response.body) throw new Error(`Update download failed (${response.status})`);
     this.status(STATUS.DOWNLOADING, { manifest, receivedBytes: 0, totalBytes: manifest.sizeBytes });

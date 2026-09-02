@@ -1,4 +1,4 @@
 {
-  "manifestUrl": "https://example.com/?dflash-console-update=latest",
+  "manifestUrl": "https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json",
   "token": ""
 }

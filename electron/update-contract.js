@@ -101,7 +101,6 @@ function normalizeUpdateConfig(config = {}) {
   const manifestUrl = String(config.manifestUrl || process.env.DFLASH_UPDATE_MANIFEST_URL || '').trim();
   const token = String(config.token || process.env.DFLASH_UPDATE_TOKEN || '').trim();
   if (!manifestUrl) throw new Error('DFlash update manifest URL is required');
-  if (!token) throw new Error('DFlash update authentication token is required');
   const parsed = new URL(manifestUrl);
   if (!['https:', ...(config.allowHttp ? ['http:'] : [])].includes(parsed.protocol)) {
     throw new Error('DFlash update manifest URL must use HTTPS');

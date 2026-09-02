@@ -60,14 +60,13 @@ release source, corresponding-source instructions, copyright notices, and
 third-party notices are included. Do not commit
 `config.json`, model weights, logs, `node_modules`, or `dist-electron`.
 
-The Windows release workflow requires these repository secrets before it will
+The Windows release workflow requires this repository secret before it will
 publish production artifacts:
 
-- `DFLASH_UPDATE_TOKEN`
 - `DFLASH_UPDATE_PRIVATE_KEY`
-- `WINDOWS_CSC_LINK` — base64/data URL or path for the production signing PFX
-- `WINDOWS_CSC_KEY_PASSWORD`
-- Hostinger SSH secrets when publishing the protected update feed
+- `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` are optional and enable
+  Authenticode signing.
+- Hostinger SSH secrets are optional and only publish the legacy protected feed.
 
 ## 3. Publish the Windows EXE
 
@@ -87,7 +86,7 @@ The **Windows release** workflow then:
 4. Builds the branded dark setup EXE and portable EXE.
 5. Generates update metadata and `SHA256SUMS.txt` for those artifacts.
 6. Creates a GitHub Release and uploads the branded installer, portable EXE,
-   update metadata, and checksums.
+   signed `latest.json`, update metadata, and checksums.
 
 Use the branded setup installer for normal installation:
 
@@ -97,8 +96,8 @@ Use the portable package for a no-install run:
 
 `DFlash-Console-Portable-<version>-x64.exe`
 
-Local builds may be unsigned, but the Windows release workflow rejects
-unsigned installer and portable artifacts.
+Local builds may be unsigned. The Windows release workflow publishes unsigned
+artifacts when no Authenticode certificate is configured.
 
 ## 4. Announce and support the release
 
