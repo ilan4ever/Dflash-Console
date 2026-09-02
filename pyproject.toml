@@ -44,6 +44,7 @@ dflash-console = "dflash_cli.cli:main"
 dev = [
   "pytest==9.1.1",
   "httpx==0.28.1",
+  "psutil>=6.0",
   "build>=1.2",
   "twine>=6.0",
 ]

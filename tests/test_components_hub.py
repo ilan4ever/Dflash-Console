@@ -12,10 +12,15 @@ def test_component_row_prefers_installed_over_stale_error(monkeypatch):
             'error': 'stale PowerShell noise from an old install attempt',
         },
     )
+    monkeypatch.setattr(
+        'core.components_hub._read_manifest',
+        lambda runtime_id: {'bundle_revision': BUNDLE_REVISIONS.get(runtime_id, 0)},
+    )
     row = next(entry for entry in list_components_payload()['components'] if entry['id'] == 'freetoken')
     assert row['installed'] is True
     assert row['status'] == 'installed'
     assert row['install_error'] == ''
+    assert row['update_available'] is False
 
 def test_list_components_payload_shape():
     payload = list_components_payload()

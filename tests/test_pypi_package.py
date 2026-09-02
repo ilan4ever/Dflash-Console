@@ -11,13 +11,13 @@ from pathlib import Path
 def test_built_wheel_imports_core_version(tmp_path: Path):
     root = Path(__file__).resolve().parents[1]
     out = tmp_path / 'dist'
-    subprocess.run(
+    built = subprocess.run(
         [sys.executable, '-m', 'build', '--outdir', str(out)],
         cwd=root,
-        check=True,
         capture_output=True,
         text=True,
     )
+    assert built.returncode == 0, built.stderr or built.stdout
     wheels = list(out.glob('dflash_console-*.whl'))
     assert wheels, 'expected a built wheel'
     wheel = wheels[0]
