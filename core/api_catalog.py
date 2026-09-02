@@ -94,10 +94,10 @@ def _overview_html(base: str) -> str:
 <div class="df-docs-hero">
   <div class="df-docs-hero-inner">
     <span class="df-docs-hero-badge">DFlash Console · v{APP_VERSION}</span>
-    <h2 class="df-docs-hero-title">Local control panel for DFlash engines</h2>
+    <h2 class="df-docs-hero-title">Local control panel for DFlash, vLLM, Transformers, and FreeToken</h2>
     <p class="df-docs-hero-lead">
-      Manage llama-server routers, checkpoint libraries, GPU settings, and live inference stats
-      from one LM Studio–style workbench beside your DFlash install.
+      Load GGUF and Hugging Face models, attach DFlash 1 or DFlash 2 drafts, and talk to
+      every engine from one loopback workbench.
     </p>
     <div class="df-docs-hero-actions">
       <a class="df-docs-pill primary" href="{base}/" target="_blank" rel="noopener">Open console</a>
@@ -111,12 +111,12 @@ def _overview_html(base: str) -> str:
   <article class="df-docs-feature-card">
     <span class="df-docs-feature-icon" aria-hidden="true">⚡</span>
     <h3>Engines</h3>
-    <p>Start routers, load checkpoints in parallel, eject without stopping the listener, and watch live token stats on each card.</p>
+    <p>DFlash / llama-server, vLLM, Transformers, and FreeToken. Load in parallel and watch live token stats on each card.</p>
   </article>
   <article class="df-docs-feature-card">
     <span class="df-docs-feature-icon" aria-hidden="true">▤</span>
-    <h3>Checkpoints</h3>
-    <p>Scan GGUF and other model folders across library roots. Load loadable profiles straight from the catalog.</p>
+    <h3>DFlash stacks</h3>
+    <p>DFlash 1 and DFlash 2 drafts. Right-click a target and find a compatible accelerator automatically.</p>
   </article>
   <article class="df-docs-feature-card">
     <span class="df-docs-feature-icon" aria-hidden="true">⌕</span>
@@ -146,13 +146,12 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
-    <li><strong>Public preview</strong> — Windows installer on <a href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and <strong>pip install dflash-console</strong> on PyPI</li>
-    <li><strong>dflash serve</strong> stops another Console on port 8900 (dev checkout, desktop app, or older pip) before starting — only one server at a time</li>
-    <li>Gemma/Qwen vision projectors, split-GGUF import, and accelerator filtering on the Models tab</li>
-    <li>Live <strong>Generating</strong> timer, token speed, and parallel engine loading</li>
-    <li><strong>Terminal CLI</strong> — <code>dflash list</code>, <code>embed</code>, <code>delete</code>, <code>nodes</code>, <code>settings</code>, load, chat, search, and pull</li>
-    <li>Dedicated Downloads page, Hugging Face catalog, and Locations panel for config and libraries</li>
-    <li><strong>Multi-modal runtimes</strong> — Piper TTS, Whisper STT, and embeddings with unified <code>POST /api/models/load</code></li>
+    <li><strong>Four LLM engines</strong> — DFlash / llama-server, vLLM, Transformers, and FreeToken</li>
+    <li><strong>DFlash 1 and DFlash 2</strong> — architecture-aware draft search, validation, and attach</li>
+    <li><strong>Public preview</strong> — Windows installer on <a href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and <strong>pip install dflash-console</strong></li>
+    <li>Installed apps update from the latest GitHub Release (<code>latest.json</code> + setup EXE)</li>
+    <li><strong>dflash serve</strong> keeps one Console on port 8900 — it stops a foreign instance first</li>
+    <li>Playground <strong>Chat · Speak · Transcribe · Embed</strong> plus the OpenAI gateway on port 8001</li>
   </ul>
 </section>
 
@@ -186,8 +185,9 @@ def _overview_html(base: str) -> str:
   <ol class="df-docs-steps">
     <li>Install with the Windows setup EXE, <code>pip install dflash-console</code>, or a git checkout.</li>
     <li>Start the server (<code>dflash serve</code>, <code>.\\run.ps1</code>, or the desktop app) and open <a href="{base}/">{base}/</a>.</li>
-    <li>On <strong>Engines</strong>, turn on a profile and load a checkpoint.</li>
-    <li>Point your app at the card URL or the console chat proxy.</li>
+    <li>On <strong>Engines</strong>, pick DFlash, vLLM, Transformers, or FreeToken, then load a model.</li>
+    <li>For a DFlash GGUF, right-click <strong>Find and attach draft</strong> if you want speculative decoding.</li>
+    <li>Point your app at <code>http://127.0.0.1:8001/v1</code> or the console chat proxy.</li>
   </ol>
 </section>
 
@@ -293,14 +293,16 @@ def _multimodal_guide_md() -> str:
     return (
         '**Load any model with one call** — `POST /api/models/load` with `{"path": "<catalog path>"}`. '
         'The console looks the model up in the catalog, detects its modality, and dispatches to the '
-        'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, vLLM or '
-        'Transformers for SafeTensors LLMs, llama-server for GGUF llm/embedding/vision/ocr — pass '
-        '`runtime_id` or `server_id` to choose the engine).\n\n'
+        'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, vLLM, '
+        'Transformers, or FreeToken for SafeTensors LLMs, llama-server for GGUF llm/embedding/vision/ocr '
+        'and DFlash 1 / DFlash 2 stacks — pass `runtime_id` or `server_id` to choose the engine).\n\n'
         'Every row of `GET /api/models` now carries a `load_route` field with the exact call to use '
         '(method + path + body).\n\n'
         '### By model type\n'
-        '- **LLM / chat** — `POST /api/models/load {"path": "…"}` (or `POST /api/servers/{id}/load {"model_path": "…"}`), '
-        'then `POST /api/servers/{id}/v1/chat/completions`.\n'
+        '- **LLM / chat** — `POST /api/models/load {"path": "…", "runtime_id": "vllm|transformers|freetoken"}` '
+        '(GGUF uses llama-server / DFlash). Then chat on `/api/servers/{id}/v1/chat/completions`.\n'
+        '- **DFlash draft** — `POST /api/stacks/find-and-attach-draft {"path": "<target.gguf>"}` finds a compatible '
+        'DFlash 1 or DFlash 2 accelerator, registers it, and attaches it.\n'
         '- **Text to speech (Piper)** — `POST /api/models/load {"path": "<voice .onnx>"}` then '
         '`POST /api/runtimes/piper/v1/audio/speech {"input": "hello", "voice": "en_US-lessac-medium"}` → WAV bytes.\n'
         '- **Speech to text (Whisper)** — `POST /api/models/load {"path": "<whisper .gguf>"}` then '
@@ -319,17 +321,19 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
     rid = '{runtime_id}'
     sid = '{server_id}'
     return [
-        {'method': 'GET', 'path': '/api/components', 'summary': 'Install hub: vLLM, Transformers, speech runtimes, update reminders, active HF downloads.'},
-        {'method': 'GET', 'path': '/api/runtimes', 'summary': 'List non-llama runtimes + adapters (piper, stt) and every runtime_id, modality, execution mode.'},
+        {'method': 'GET', 'path': '/api/components', 'summary': 'Install hub: vLLM, Transformers, FreeToken, speech runtimes, update reminders, active HF downloads.'},
+        {'method': 'GET', 'path': '/api/runtimes', 'summary': 'List runtimes + adapters (piper, stt, vllm, transformers, freetoken) and every runtime_id, modality, execution mode.'},
         {'method': 'GET', 'path': '/api/runtimes/manifests', 'summary': 'Aggregated bundle manifests + process identity tokens.'},
         {'method': 'GET', 'path': f'/api/runtimes/{rid}', 'summary': 'Runtime health: running, port, active model.'},
         {'method': 'GET', 'path': f'/api/runtimes/{rid}/voices', 'summary': 'Available Piper voices (id + label).'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/start', 'summary': 'Start a server-mode runtime (whisper). CLI runtimes (piper) report started:false (always ready).'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/stop', 'summary': 'Stop a server-mode runtime process.'},
-        {'method': 'GET', 'path': f'/api/runtimes/{rid}/install', 'summary': 'On-demand install status for vLLM or Transformers.'},
-        {'method': 'POST', 'path': f'/api/runtimes/{rid}/install', 'summary': 'Start an on-demand vLLM or Transformers download.', 'body': {'backend': 'auto', 'torch_variant': 'auto'}},
-        {'method': 'POST', 'path': f'/api/runtimes/{rid}/uninstall', 'summary': 'Remove an on-demand vLLM or Transformers install (venv + manifest).'},
-        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice, vLLM/Transformers folder).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
+        {'method': 'GET', 'path': f'/api/runtimes/{rid}/install', 'summary': 'On-demand install status for vLLM, Transformers, or FreeToken.'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/install', 'summary': 'Start an on-demand vLLM, Transformers, or FreeToken download.', 'body': {'backend': 'auto', 'torch_variant': 'auto'}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/uninstall', 'summary': 'Remove an on-demand vLLM, Transformers, or FreeToken install.'},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice, vLLM/Transformers/FreeToken folder).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
+        {'method': 'POST', 'path': '/api/stacks/find-draft', 'summary': 'Search local libraries and Hugging Face for a compatible DFlash 1 or DFlash 2 draft.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
+        {'method': 'POST', 'path': '/api/stacks/find-and-attach-draft', 'summary': 'Find, register, and attach a compatible DFlash draft to the target model.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/unload', 'summary': 'Unload the active model and free GPU memory.'},
         {'method': 'POST', 'path': f'/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},

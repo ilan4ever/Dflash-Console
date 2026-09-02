@@ -1,8 +1,9 @@
 # DFlash Console support
 
 Install with `pip install dflash-console` then `dflash serve`, or use the
-Windows installer. The terminal command is `dflash` (list, chat, embed,
-delete, nodes, settings). Docs:
+Windows installer. Engines: DFlash 1 / DFlash 2, vLLM, Transformers, and
+FreeToken. The terminal command is `dflash` (list, chat, embed, delete, nodes,
+settings). Docs:
 [User guide](https://onevoiceai.in/dflash-console/docs/USER-GUIDE.md) and
 [CLI](https://onevoiceai.in/dflash-console/docs/CLI.md).
 

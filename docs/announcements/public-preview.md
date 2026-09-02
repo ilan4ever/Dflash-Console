@@ -4,7 +4,10 @@ We're opening DFlash Console for early testing on real Windows machines.
 
 ## What it is
 
-A local control panel for **DFlash speculative-decoding stacks** and a unified model runtime — engines, models, Hugging Face downloads, Piper TTS, Whisper STT, embeddings, and a `dflash` terminal CLI.
+A local control panel for **DFlash 1 and DFlash 2** speculative-decoding stacks
+and a unified model runtime — **DFlash / llama-server**, **vLLM**,
+**Transformers**, **FreeToken**, models, Hugging Face downloads, Piper TTS,
+Whisper STT, embeddings, and a `dflash` terminal CLI.
 
 ## Install (Windows)
 

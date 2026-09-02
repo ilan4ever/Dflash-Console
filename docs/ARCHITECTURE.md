@@ -19,9 +19,9 @@ Browser or Electron shell
  config   catalog   runtime
                     |
         runtime supervisor (adapters)
-            |         |        |
-      llama-server  Piper    whisper-server   FreeToken
-      (existing)   (CLI)     (STT)            (WSL2)
+            |         |        |         |          |
+      llama-server  vLLM   Transformers  FreeToken  Piper / whisper
+      DFlash 1/2    HF      HF           WSL2       TTS / STT
 ```
 
 - `api/` exposes health, configuration, model, download, runtime, and proxy
@@ -78,6 +78,9 @@ modalities alongside llama-server:
 - `stt.py` — whisper.cpp `whisper-server` (server mode: multipart `/inference`).
 - `freetoken.py` — FreeToken `ft serve` through WSL2 (server mode, loopback
   OpenAI API, Windows-to-WSL model-path conversion).
+- `vllm.py` / `transformers_hf.py` — on-demand Hugging Face SafeTensors engines.
+- `core/stack_match.py` and `core/dflash_generation.py` — DFlash 1 vs DFlash 2
+  draft discovery, architecture preflight, and attach.
 - `contention.py` — GPU contention / stop-others scaffold (external apps are
   warned by name; the Console only claims to kill its own children).
 
@@ -92,7 +95,9 @@ OpenAI-shaped client requests to each child's native API:
 
 | Route | Child |
 |-------|-------|
-| `/api/servers/{id}/v1/chat/completions` | llama-server |
+| `/api/servers/{id}/v1/chat/completions` | llama-server / DFlash 1 / DFlash 2 |
+| `/api/servers/vllm/v1/chat/completions` | vLLM (when installed and loaded) |
+| `/api/servers/transformers/v1/chat/completions` | Transformers (when installed and loaded) |
 | `/api/servers/freetoken/v1/chat/completions` | FreeToken `ft serve` in WSL2 |
 | `/api/runtimes/piper/v1/audio/speech` | Piper CLI (stdin → WAV stdout) |
 | `/api/runtimes/stt/v1/audio/transcriptions` | whisper-server `/inference` |

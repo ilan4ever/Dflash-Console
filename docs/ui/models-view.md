@@ -19,7 +19,7 @@
 ## Filters
 
 - **All models** — every discovered local model, including Ollama and LM Studio.
-- **DFlash stacks** — runnable target-plus-accelerator pairs.
+- **DFlash stacks** — runnable target-plus-accelerator pairs (DFlash 1 and DFlash 2).
 - **Accelerators** — draft checkpoint files.
 - **Loaded** — models currently loaded on an engine.
 

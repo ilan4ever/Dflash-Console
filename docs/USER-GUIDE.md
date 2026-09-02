@@ -35,7 +35,7 @@ or version) before starting. If you use pip, the default data folder is
 
 1. Start the server (`dflash serve`, `.\run.ps1`, or the desktop app).
 2. Open **http://127.0.0.1:8900/** if you started the API without Electron.
-3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM**, **Transformers**, or optional **FreeToken** there, or later in **Settings → Downloads & engines**. Those engines download after install so the Windows setup stays small.
+3. The first-run wizard can scan for model folders or skip if this PC has none yet. You can install **vLLM**, **Transformers**, or **FreeToken** there, or later in **Settings → Downloads & engines**. Those three engines download after install so the Windows setup stays small. **DFlash / llama-server** is already included for GGUF and DFlash 1 / DFlash 2 stacks.
 4. Open **About** to confirm the release, developer, license, and repository links.
 
 The browser and Electron window use the same sidebar and backend. The main areas
@@ -58,21 +58,54 @@ the desktop installation.
 
 ## 2. Engines tab
 
-The **Engines** view is your control center for llama-server profiles defined in `config.json`.
+The **Engines** view is the control center for every local LLM engine.
+
+| Engine | What it loads | How it is installed |
+|--------|---------------|---------------------|
+| **DFlash / llama-server** | GGUF chat, vision, OCR, embeddings, **DFlash 1** and **DFlash 2** stacks | Included with the Console |
+| **vLLM** | Hugging Face SafeTensors folders | **Settings → Downloads & engines** (on demand) |
+| **Transformers** | Hugging Face SafeTensors folders | **Settings → Downloads & engines** (on demand) |
+| **FreeToken** | Large HF MoE folders through WSL2 | **Settings → Downloads & engines** (on demand, needs WSL2 + CUDA) |
+
+Pick the engine in the toolbar **before** you load. The same picker is on
+**Models** and **Playground**. Loaded cards stay visible; the active card is
+highlighted. Loading one model does not automatically unload the others unless
+you turn that on in Settings.
 
 ### Start an engine
 
-- Use the **power toggle** in the top bar to start or stop the selected engine process.
-- Or click **Load** after picking a model from the dropdown — the router starts automatically if needed.
+- Use the **power toggle** in the top bar to start or stop a llama-server profile.
+- Or click **Load** after picking a model — the engine starts if it is not already up.
 
 ### Load a model
 
-1. Choose a model from **Model to load**
-2. Click **Load**
-3. A loading card appears with a progress bar while weights load.
-4. When ready, the card shows **Loaded** and live token stats on top.
+1. Choose the engine (DFlash, vLLM, Transformers, or FreeToken).
+2. Choose a model from **Model to load**.
+3. Click **Load**.
+4. A loading card appears with a progress bar (FreeToken also shows expert-build progress).
+5. When ready, the card shows **Loaded** and live token stats.
 
 You can load **multiple engines in parallel** — each profile tracks its own progress independently.
+
+### DFlash 1 and DFlash 2 drafts
+
+A DFlash stack is a **target** GGUF plus a smaller **draft / accelerator**.
+
+- **DFlash 1** — original draft family; works with the bundled llama-server.
+- **DFlash 2** — newer drafts for models such as Gemma 4 and Qwen 3.8. Needs a
+  llama.cpp build with DFlash 2 support. The app will say so if the pair is
+  incompatible.
+
+To attach a draft automatically:
+
+1. Open **Models**.
+2. Right-click the target GGUF.
+3. Choose **Find and attach draft**.
+4. The Console searches this PC and Hugging Face, checks architecture
+   compatibility, then registers and attaches the matching DFlash 1 or
+   DFlash 2 file.
+
+The catalog also has separate **DFlash** and **DFlash 2** filters.
 
 ### Loaded engine card
 
@@ -112,12 +145,14 @@ Scroll to **Developer logs** at the bottom. Logs stream from the active engine. 
 
 ## 3. Models tab
 
-The Models tab is the full local library for this PC: DFlash stacks, GGUF files,
-Ollama models, LM Studio folders, speech, OCR, and embeddings.
+The Models tab is the full local library for this PC: DFlash 1 / DFlash 2
+stacks, GGUF files, Hugging Face folders, Ollama models, LM Studio folders,
+speech, OCR, and embeddings.
 
 - **All models** shows every discovered local model.
-- **DFlash stacks** shows runnable target-plus-accelerator pairs.
+- **DFlash stacks** shows runnable target-plus-accelerator pairs (DFlash 1 and DFlash 2).
 - **Accelerators** and **Loaded** provide focused views.
+- Hugging Face rows show an engine picker: **vLLM**, **Transformers**, or **FreeToken**.
 - Current Hugging Face transfers live on the **Downloads** page, not in this table.
 - Click **Load** on a row to load that model on its matching engine.
 - Use the inspector on the right for file details and runtime settings before loading.
@@ -340,7 +375,26 @@ curl -X POST http://127.0.0.1:8900/api/servers/gemma-12b-ar/v1/chat/completions 
   -d '{"messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-#### 1a. LLM / chat (FreeToken through WSL2)
+#### 1a. LLM / chat (vLLM or Transformers)
+
+```bash
+# install the engine first: Settings → Downloads & engines
+curl -X POST http://127.0.0.1:8900/api/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\org\\model", "runtime_id": "vllm"}'
+
+# use "transformers" the same way
+curl -X POST http://127.0.0.1:8900/api/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\org\\model", "runtime_id": "transformers"}'
+
+# then chat
+curl -X POST http://127.0.0.1:8900/api/servers/vllm/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+#### 1b. LLM / chat (FreeToken through WSL2)
 
 ```bash
 # FreeToken must be installed from Settings → Downloads & engines first.
@@ -398,6 +452,17 @@ curl -X POST http://127.0.0.1:8900/api/servers/nomic-embed/v1/embeddings \
 # plan mmproj wiring for a multimodal model, then chat with an image
 curl "http://127.0.0.1:8900/api/models/vision/plan?path=C%3A%5Cmodels%5Cgemma-4-12b-it-qat-q4_0.gguf&server_id=gemma-12b-ar"
 ```
+
+#### Find a DFlash draft
+
+```bash
+curl -X POST http://127.0.0.1:8900/api/stacks/find-and-attach-draft \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:\\models\\google\\gemma-4-12b-it\\model.gguf"}'
+```
+
+The response names the chosen DFlash 1 or DFlash 2 draft and whether it was
+registered on the target.
 
 #### Runtime lifecycle
 
@@ -485,12 +550,12 @@ the interactive Swagger UI at `http://127.0.0.1:8900/docs`.
 
 Open **Documentation** in the sidebar for:
 
-- **Overview** — product summary and quick links
+- **Overview** — product summary and the four LLM engines
 - **User guide** — this document
 - **Terminal CLI** — every `dflash` command (`list`, `embed`, `delete`, `nodes`, `settings`, …)
 - **Engine control** — REST endpoints for load/unload/stop
 - **Runtime JSON shapes** — load and inference settings fields
-- **Multi-modal runtimes (TTS · STT · Embed)** — Piper / Whisper / embeddings API + the unified `/api/models/load`
+- **Multi-modal runtimes** — Piper, Whisper, embeddings, vLLM, Transformers, FreeToken, DFlash drafts
 - **Engine OpenAI API** — direct llama-server routes
 - **Console — models, hardware, libraries** — catalog and hardware APIs
 
@@ -510,7 +575,7 @@ Open **About** in either the browser or Electron app for:
 - Attribution guidance: retain the AGPL copyright/license notices, provide
   corresponding source when required by the AGPL, and link the source
   repository in your README, About page, or project documentation
-- A summary of the FastAPI + llama-server runtime
+- A summary of the FastAPI runtime (DFlash / llama-server, vLLM, Transformers, FreeToken)
 - The local-only security boundary and external Electron data-root behavior
 
 The DFlash name and logo are separate trademarks or protected branding; see

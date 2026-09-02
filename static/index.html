@@ -175,8 +175,8 @@ try {
                 <div class="df-chat-welcome" id="chatWelcome">
                   <div class="df-chat-welcome-icon" aria-hidden="true">▷</div>
                   <h2>Playground</h2>
-                  <p>Pick an <strong>Engine</strong> (DFlash, vLLM, or Transformers), then a model, then <strong>Load</strong>.</p>
-                  <p class="lm-hint">Use vLLM for Hugging Face SafeTensors models. GGUF files stay on DFlash.</p>
+                  <p>Pick an <strong>Engine</strong> (DFlash, vLLM, Transformers, or FreeToken), then a model, then <strong>Load</strong>.</p>
+                  <p class="lm-hint">GGUF and DFlash 1 / DFlash 2 stacks stay on DFlash. Hugging Face folders use vLLM, Transformers, or FreeToken.</p>
                 </div>
               </div>
               <footer class="df-chat-composer">
@@ -718,7 +718,7 @@ try {
           <div class="lm-settings-content">
             <div class="lm-settings-panel" data-settings-panel="dl-components">
               <div class="lm-settings-header"><h2>Downloads &amp; engines</h2></div>
-              <p class="lm-setting-desc" data-settings-search="vllm transformers piper whisper downloads install engine modules">Everything you download after setup: LLM engines (vLLM, Transformers), speech runtimes, and Hugging Face model downloads. Install an engine here, then pick it on the Engines, Playground, or Models tab and load a model.</p>
+              <p class="lm-setting-desc" data-settings-search="vllm transformers freetoken piper whisper downloads install engine modules">Everything you download after setup: LLM engines (vLLM, Transformers, FreeToken), speech runtimes, and Hugging Face model downloads. Install an engine here, then pick it on the Engines, Playground, or Models tab and load a model.</p>
 
               <div id="componentsAttentionBanner" class="lm-components-banner hidden" role="status"></div>
 
@@ -1498,7 +1498,7 @@ try {
         <div class="lm-scan-header">
           <div>
             <h2 id="setupWizardTitle">Welcome to DFlash Console</h2>
-            <p class="lm-setting-desc" id="setupWizardSubtitle">We will find model folders on this PC. DFlash / GGUF uses the bundled llama.cpp engine; Transformers and vLLM are optional engines for Hugging Face SafeTensors models.</p>
+            <p class="lm-setting-desc" id="setupWizardSubtitle">We will find model folders on this PC. DFlash / GGUF (including DFlash 1 and DFlash 2) uses the bundled llama.cpp engine; vLLM, Transformers, and FreeToken are optional engines for Hugging Face models.</p>
           </div>
         </div>
         <div class="lm-setup-step active" data-setup-step="welcome">
@@ -1526,7 +1526,7 @@ try {
           </div>
         </div>
         <div class="lm-setup-step" data-setup-step="engines">
-          <p class="lm-setting-desc">DFlash / GGUF and llama.cpp are bundled. Transformers is required for Hugging Face models and installs automatically now. vLLM is optional for NVIDIA GPUs.</p>
+          <p class="lm-setting-desc">DFlash / GGUF and llama.cpp are bundled. vLLM, Transformers, and FreeToken are optional engines for Hugging Face models.</p>
           <div class="lm-setup-engine-card lm-setup-engine-card-required">
             <strong>Transformers</strong>
             <p class="lm-setting-desc">Required on new PCs. Installs PyTorch and the Transformers runtime so you can load models without extra prompts later.</p>

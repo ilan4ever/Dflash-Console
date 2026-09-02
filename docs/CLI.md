@@ -133,7 +133,8 @@ dflash status
 dflash list
 ```
 
-This is the full Console library: DFlash stacks, GGUF files, Ollama models,
+This is the full Console library: DFlash 1 / DFlash 2 stacks, GGUF files,
+Hugging Face folders (vLLM, Transformers, FreeToken), Ollama models,
 LM Studio folders, speech, OCR, and embeddings.
 
 | Flag | Result |
@@ -171,6 +172,8 @@ dflash ps
 ```powershell
 dflash load qwen
 dflash load qwen --engine qwen3-8-27b
+dflash list --vllm
+dflash list --transformers
 dflash unload qwen
 dflash start nomic-embed
 dflash stop nomic-embed
