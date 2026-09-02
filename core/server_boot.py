@@ -129,14 +129,19 @@ def _cleanup_failed_process(port: int, host: str, process: subprocess.Popen | No
     wait_for_port_closed(host, port)
 
 
-def managed_process_identity(pid: int) -> bool:
-    """Return whether a Windows process looks like a Console-managed engine.
+def _windows_process_details(pid: int) -> tuple[str, str] | None:
+    try:
+        import psutil
 
-    Matches the shared runtime process-identity token set (llama-server by
-    default, plus tokens contributed by registered adapters such as Piper).
-    """
-    if sys.platform != 'win32':
-        return True
+        proc = psutil.Process(int(pid))
+        name = str(proc.name() or '')
+        try:
+            command = ' '.join(str(part) for part in (proc.cmdline() or []))
+        except (psutil.Error, OSError):
+            command = ''
+        return name, command
+    except Exception:
+        pass
     query = (
         f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
         "| Select-Object Name,CommandLine | ConvertTo-Json -Compress)"
@@ -151,16 +156,99 @@ def managed_process_identity(pid: int) -> bool:
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         if result.returncode != 0 or not result.stdout.strip():
-            return False
+            return None
         import json
 
         details = json.loads(result.stdout)
-        command = str(details.get('CommandLine') or '').lower()
-        name = str(details.get('Name') or '').lower()
-        tokens = tuple(str(token).lower() for token in runtime_process_identity_tokens())
-        return any(token in name or token in command for token in tokens)
+        if not isinstance(details, dict):
+            return None
+        return str(details.get('Name') or ''), str(details.get('CommandLine') or '')
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return None
+
+
+def managed_process_identity(pid: int) -> bool:
+    """Return whether a Windows process looks like a Console-managed engine.
+
+    Matches the shared runtime process-identity token set (llama-server by
+    default, plus tokens contributed by registered adapters such as Piper).
+    """
+    if sys.platform != 'win32':
+        return True
+    details = _windows_process_details(pid)
+    if details is None:
         return False
+    name, command = details
+    hay = f'{name} {command}'.lower()
+    tokens = tuple(str(token).lower() for token in runtime_process_identity_tokens())
+    return any(token in hay for token in tokens)
+
+
+def listener_is_managed_engine(host: str, port: int) -> bool:
+    """True when the process listening on ``port`` is a Console llama/runtime engine."""
+    if int(port or 0) <= 0:
+        return False
+    if not _tcp_port_open(host, port):
+        return False
+    pid = listener_pid(host, port)
+    return pid is not None and managed_process_identity(pid)
+
+
+def _sync_server_listen_port(server: dict[str, Any], port: int, host: str) -> None:
+    server['port'] = int(port)
+    server['api_url'] = f'http://{host}:{int(port)}/v1'
+
+
+def ensure_managed_listen_port(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep this engine on a port we can actually bind.
+
+    A live port is not enough — Wondershare (and similar apps) often sit on
+    8090. If a foreign process owns the configured port, move the profile to a
+    free port and persist the change so chat can start llama-server.
+    """
+    from core.config import apply_server_listen_port, load_config, suggest_server_port
+
+    entry = normalize_server(server)
+    server_id = str(entry.get('id') or '').strip()
+    host = str(entry.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+    port = int(entry.get('port') or 0)
+    if not server_id or port <= 0:
+        return {'success': False, 'error': 'invalid server', 'port': port}
+
+    if not _tcp_port_open(host, port):
+        return {'success': True, 'port': port, 'reason': 'free'}
+    if listener_is_managed_engine(host, port):
+        return {'success': True, 'port': port, 'reason': 'ours'}
+
+    config = cfg if cfg is not None else load_config()
+    new_port = int(suggest_server_port(cfg=config))
+    if new_port <= 0 or new_port == port:
+        return {
+            'success': False,
+            'error': f'port {port} is in use by an unmanaged process',
+            'port': port,
+            'reason': 'foreign',
+        }
+
+    persist = False
+    try:
+        applied = apply_server_listen_port(server_id, new_port, cfg=config, persist=True)
+        persist = bool(applied.get('success'))
+    except ValueError:
+        apply_server_listen_port(server_id, new_port, cfg=config, persist=False)
+    _sync_server_listen_port(server, new_port, host)
+    return {
+        'success': True,
+        'port': new_port,
+        'previous_port': port,
+        'reason': 'rebound',
+        'persisted': persist,
+        'api_url': str(server.get('api_url') or ''),
+    }
 
 
 def get_started_launch(port: int) -> dict[str, Any]:
@@ -414,6 +502,9 @@ def start_router_listener(
     skip_preset_write: bool = False,
 ) -> dict[str, Any]:
     """Start one router listener at a time for each configured port."""
+    port_info = ensure_managed_listen_port(server, cfg=cfg)
+    if not port_info.get('success'):
+        return port_info
     entry = normalize_server(server)
     port = int(entry.get('port') or 0)
     if port <= 0 or not entry.get('id'):
@@ -679,6 +770,71 @@ def checkpoint_already_loaded(
     }
 
 
+def _draft_load_error(detail: Any) -> bool:
+    text = str(detail or '').lower()
+    return any(
+        token in text
+        for token in (
+            'draft model',
+            'model-draft',
+            'failed to load draft',
+            'wrong number of tensors',
+            'invalid vector subscript',
+        )
+    )
+
+
+def _explain_draft_load_error(detail: Any, draft_path: str | None = None) -> str:
+    message = str(detail or 'model load failed')
+    if _draft_load_error(message) and draft_path:
+        from core.dflash_generation import infer_dflash_generation
+
+        if infer_dflash_generation(draft_path) == 'dflash2':
+            return (
+                f'{message}. Qwen/Gemma DFlash 2 requires a llama.cpp build with '
+                'DFlash2 support (PR #27342); update the bundled llama-server and retry.'
+            )
+    return message
+
+
+def _wait_for_checkpoint_load(
+    *,
+    api_url: str,
+    load_id: str,
+    host: str,
+    port: int,
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
+    from core.runtime import _fetch_models_payload, _model_state
+
+    deadline = time.time() + timeout_seconds
+    load_id = str(load_id or '').strip()
+    while time.time() < deadline:
+        rows = _fetch_models_payload(api_url)
+        match = None
+        for row in rows:
+            row_id = str(row.get('id') or row.get('model') or '').strip()
+            if row_id == load_id:
+                match = row
+                break
+        if match is None and rows:
+            match = rows[0]
+        if not match:
+            time.sleep(1.0)
+            continue
+        status = _model_state(match)
+        status_info = match.get('status') if isinstance(match.get('status'), dict) else {}
+        if status == 'loaded':
+            return {'status': 'loaded'}
+        if status == 'unloaded' and status_info.get('failed'):
+            return {
+                'status': 'failed',
+                'error': ' '.join(str(part) for part in (status_info.get('args') or [])[-3:]),
+            }
+        time.sleep(1.0)
+    return {'status': 'timeout', 'error': f'timed out waiting for {load_id} on {host}:{port}'}
+
+
 def load_server_checkpoint(
     server: dict[str, Any],
     *,
@@ -694,6 +850,27 @@ def load_server_checkpoint(
     entry = normalize_server(server)
     if is_embedding_server(entry):
         return start_embedding_server(entry, cfg=cfg)
+    if entry.get('draft_path') and not skip_draft:
+        from core.stack_match import preflight_dflash_pair
+
+        draft_check = preflight_dflash_pair(
+            entry.get('target_path') or resolve_load_target_path(entry, cfg=cfg),
+            entry.get('draft_path'),
+        )
+        if not draft_check.get('compatible'):
+            return {
+                'success': False,
+                'error': str(draft_check.get('reason') or 'configured DFlash draft is incompatible'),
+                'reason_code': draft_check.get('reason_code'),
+                'preflight': draft_check,
+            }
+        if draft_check.get('reason_code') != 'metadata-unavailable' and not draft_check.get('validated'):
+            return {
+                'success': False,
+                'error': 'Configured DFlash target and draft failed GGUF compatibility preflight.',
+                'reason_code': 'preflight-unavailable',
+                'preflight': draft_check,
+            }
 
     custom_path = str(model_path or '').strip()
     elsewhere = find_target_loaded_elsewhere(
@@ -808,6 +985,10 @@ def load_server_checkpoint(
     }
     registered_ids.discard('')
 
+    from core.chat_vision import router_registration_stale
+
+    preset_stale = router_registration_stale(entry, load_id=load_id)
+
     if _tcp_port_open(host, port):
         adopted = adopt_running_engine(entry, cfg=cfg)
         if not adopted.get('success'):
@@ -815,7 +996,7 @@ def load_server_checkpoint(
         already = checkpoint_already_loaded(entry, cfg=cfg, model_path=model_path, model_id=load_id)
         if already:
             return already
-        if load_id not in registered_ids:
+        if load_id not in registered_ids or preset_stale:
             stop_server(port=port, host=host, api_url=api_url)
     else:
         listen = start_router_listener(entry, cfg=cfg)
@@ -827,18 +1008,42 @@ def load_server_checkpoint(
         if not listen.get('success'):
             return listen
 
-    load_result = load_model(api_url=api_url, model_id=load_id)
+    def _attempt_load() -> dict[str, Any]:
+        return load_model(api_url=api_url, model_id=load_id)
+
+    load_result = _attempt_load()
     if load_result.get('success'):
-        note_boot_cycle_end(port)
-        return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': bool(custom_path)}
+        settled = _wait_for_checkpoint_load(
+            api_url=api_url,
+            load_id=load_id,
+            host=host,
+            port=port,
+        )
+        if settled.get('status') == 'loaded':
+            note_boot_cycle_end(port)
+            return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': bool(custom_path)}
+        return {
+            'success': False,
+            'error': _explain_draft_load_error(
+                settled.get('error') or load_result.get('error') or 'model load failed',
+                entry.get('draft_path'),
+            ),
+            'port': port,
+        }
     return {
         'success': False,
-        'error': load_result.get('error') or 'model load failed',
+        'error': _explain_draft_load_error(
+            load_result.get('error') or 'model load failed',
+            entry.get('draft_path'),
+        ),
         'port': port,
     }
 
 
 def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    port_info = ensure_managed_listen_port(server, cfg=cfg)
+    if not port_info.get('success'):
+        return port_info
     entry = normalize_server(server)
     port = int(entry.get('port') or 0)
     if port <= 0 or not entry.get('id'):
@@ -881,6 +1086,15 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         context_size=entry.get('context_size'),
     )
     signature = _launch_signature(entry, launch, cfg=cfg)
+    port_info = ensure_managed_listen_port(entry, cfg=cfg)
+    if not port_info.get('success'):
+        return port_info
+    if port_info.get('reason') == 'rebound':
+        entry = normalize_server(entry)
+        port = int(entry.get('port') or 0)
+        api_url = str(entry.get('api_url') or '')
+        signature = _launch_signature(entry, launch, cfg=cfg)
+        _sync_server_listen_port(server, port, host)
     port_open = _tcp_port_open(host, port)
     if port_open:
         pid = listener_pid(host, port)

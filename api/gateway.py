@@ -33,6 +33,12 @@ from fastapi.responses import StreamingResponse
 
 from core.chat_proxy import wants_stream
 from core.config import is_embedding_server, list_runtimes, list_servers, load_config, normalize_inference_settings
+from core.gateway_routing import (
+    catalog_model_id,
+    enabled_chat_servers,
+    gateway_model_aliases,
+    resolve_chat_server,
+)
 from core.local_models import model_has_reasoning
 
 logger = logging.getLogger(__name__)
@@ -52,24 +58,7 @@ def _console_base(cfg: dict[str, Any]) -> str:
 
 
 def _enabled_chat_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    servers = [s for s in list_servers(cfg) if s.get('enabled', True) and not is_embedding_server(s)]
-    known = {str(row.get('id') or '') for row in servers}
-    # Adapter engines use the same stable gateway namespace as llama servers.
-    # They remain selectable while stopped so the API can return a useful
-    # "load a model first" response instead of silently falling back to GGUF.
-    for runtime in list_runtimes(cfg):
-        runtime_id = str(runtime.get('runtime_id') or '').strip()
-        if runtime.get('enabled', True) is False or runtime_id not in {'vllm', 'transformers', 'freetoken'}:
-            continue
-        if runtime_id in known:
-            continue
-        servers.append({
-            **runtime,
-            'id': runtime_id,
-            'runtime_id': runtime_id,
-            'model_id': str(runtime.get('default_model') or ''),
-        })
-    return servers
+    return enabled_chat_servers(cfg)
 
 
 def _chat_server(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -147,33 +136,8 @@ async def _console_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[str, Any], str]:
-    """Pick the chat engine for an arbitrary client ``model`` name and return the
-    upstream model id the engine will accept (LM-Studio-style tolerance: the
-    caller may send the server id, the real model id, or any alias)."""
-    servers = _enabled_chat_servers(cfg)
-    if not servers:
-        raise HTTPException(status_code=503, detail='no enabled chat engine available')
-    model = (model or '').strip()
-    target: dict[str, Any] | None = None
-    if model:
-        for server in servers:
-            if str(server.get('id') or '') == model:
-                target = server
-                break
-    if target is None and model:
-        for server in servers:
-            if str(server.get('model_id') or '') == model:
-                target = server
-                break
-    if target is None:
-        wanted = str(cfg.get('gateway_server_id') or '')
-        if wanted:
-            for server in servers:
-                if str(server.get('id') or '') == wanted:
-                    target = server
-                    break
-        if target is None:
-            target = servers[0]
+    """Pick the chat engine for an arbitrary client ``model`` name."""
+    target = resolve_chat_server(cfg, model)
     live: dict[str, Any] = {}
     sid = str(target.get('id') or '')
     for entry in await _console_servers(cfg):
@@ -213,8 +177,15 @@ async def list_models() -> dict[str, Any]:
             or '',
         ).strip()
         api_model_id = str(server.get('model_id') or '')
+        from pathlib import Path as _Path
+
+        from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
+
+        mmproj_path = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
+        supports_vision = server_supports_vision_chat(server, cfg=cfg)
+        client_id = catalog_model_id(server)
         data.append({
-            'id': str(server.get('id') or ''),
+            'id': client_id,
             'object': 'model',
             'created': 0,
             'owned_by': 'dflash-console',
@@ -222,13 +193,18 @@ async def list_models() -> dict[str, Any]:
             'meta': {
                 'engine': display_name,
                 'display_name': display_name,
+                'server_id': str(server.get('id') or ''),
                 'api_model_id': api_model_id,
+                'aliases': sorted(gateway_model_aliases(server, cfg=cfg)),
                 'embedding': is_embedding_server(server),
                 'model_id': api_model_id,
                 'engine_mode': (client_meta.get('model_catalog') or {}).get('engine_mode') or '',
                 'api_url': str(server.get('api_url') or ''),
                 'reasoning': model_has_reasoning(server),
                 'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
+                'supports_vision': supports_vision,
+                'imageInput': supports_vision,
+                'mmproj_path': mmproj_path if supports_vision else '',
             },
         })
     from core.runtimes import get_runtime_adapter
@@ -343,10 +319,11 @@ async def chat_completions(request: Request) -> Response:
 
         body = apply_reasoning_policy(body, reasoning=model_has_reasoning(server))
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
-    # Hide reasoning-only SSE chunks only when the client opts in. Agent
-    # clients (Hermes, tool loops) need reasoning_content by default.
     filter_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
-    return await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
+    response = await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
+    if isinstance(response, Response):
+        response.headers['X-DFlash-Server-Id'] = sid
+    return response
 
 
 @gateway_app.post('/v1/embeddings')

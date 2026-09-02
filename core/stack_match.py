@@ -17,6 +17,7 @@ from core.dflash_generation import (
 )
 from core.local_models import list_local_models
 from core.model_presets import infer_profile_from_path, model_id_from_path
+from core.gguf_meta import read_gguf_metadata
 
 _PARAM_RE = re.compile(r'(\d+(?:\.\d+)?)\s*[Bb]', re.I)
 _QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+|F16|BF16|IQ\d_[A-Z0-9]+', re.I)
@@ -30,6 +31,140 @@ _POPULAR_MIRROR_AUTHORS = {'z-lab'}
 _MIN_DFLASH2_RECOMMEND_SCORE = 8.0
 _DFLASH2_SCORE_MARGIN = 0.75
 _MIN_VIABLE_GENERATION_SCORE = 5.5
+_QWEN_VERSION_RE = re.compile(r'\bqwen\s*3(?:[\s._-]*(\d+))?', re.I)
+
+
+def _model_identity(path: str | Path, metadata: dict[str, object]) -> str:
+    """Return a normalized family/version identity from filename or GGUF KVs."""
+    values = [
+        Path(path).stem,
+        str(metadata.get('general.name') or ''),
+        str(metadata.get('general.basename') or ''),
+        str(metadata.get('general.base_model.0.name') or ''),
+    ]
+    return ' '.join(values).lower().replace('_', ' ')
+
+
+def _qwen_version(identity: str) -> str | None:
+    match = _QWEN_VERSION_RE.search(identity)
+    if not match:
+        return None
+    return f"3.{match.group(1)}" if match.group(1) else '3'
+
+
+def preflight_dflash_pair(
+    target_path: str | Path,
+    accelerator_path: str | Path,
+    *,
+    score: float | None = None,
+) -> dict[str, Any]:
+    """Validate a target/drafter pair using GGUF header metadata.
+
+    Filename scores are useful for discovery, but they cannot distinguish
+    Qwen3.8 DFlash2 from a Qwen3.5 drafter.  This gate checks the actual GGUF
+    architecture, base-model identity, dimensions, and DFlash generation.
+    Missing/invalid metadata is reported as ``metadata-unavailable`` so
+    catalog mocks and legacy non-GGUF test fixtures retain their old scoring
+    behavior; all real GGUF files must pass this gate before persistence.
+    """
+    target = Path(str(target_path or '')).expanduser()
+    draft = Path(str(accelerator_path or '')).expanduser()
+    result: dict[str, Any] = {
+        'compatible': False,
+        'validated': False,
+        'target_path': str(target),
+        'draft_path': str(draft),
+        'reason_code': 'invalid-pair',
+        'reason': 'Choose a full target GGUF and a DFlash accelerator.',
+    }
+    if not target.is_file() or not draft.is_file():
+        result.update({
+            'reason_code': 'missing-file',
+            'reason': 'The target or DFlash accelerator file is missing.',
+        })
+        return result
+    target_meta = read_gguf_metadata(target)
+    draft_meta = read_gguf_metadata(draft)
+    if not target_meta or not draft_meta:
+        result.update({
+            'compatible': True,
+            'reason_code': 'metadata-unavailable',
+            'reason': 'GGUF metadata was unavailable; filename matching is provisional.',
+        })
+        if score is not None:
+            result['score'] = round(float(score), 2)
+        return result
+
+    target_identity = _model_identity(target, target_meta)
+    draft_identity = _model_identity(draft, draft_meta)
+    target_arch = str(target_meta.get('general.architecture') or '').lower()
+    draft_arch = str(draft_meta.get('general.architecture') or '').lower()
+    generation_text = ' '.join([
+        draft_identity,
+        str(draft_meta.get('general.finetune') or ''),
+        str(draft_meta.get('general.source.url') or ''),
+    ]).lower()
+    generation = 'dflash2' if 'dflash2' in generation_text else 'dflash1'
+    result.update({
+        'target_architecture': target_arch,
+        'draft_architecture': draft_arch,
+        'dflash_generation': generation,
+        'target_identity': target_identity,
+        'draft_identity': draft_identity,
+    })
+    if draft_arch not in {'dflash', 'dspark'}:
+        result.update({
+            'reason_code': 'draft-architecture',
+            'reason': f'The accelerator is not a DFlash/DSpark GGUF (architecture: {draft_arch or "unknown"}).',
+        })
+        return result
+    if target_arch in {'dflash', 'dspark'}:
+        result.update({
+            'reason_code': 'target-architecture',
+            'reason': 'A DFlash/DSpark GGUF cannot be used as the full target model.',
+        })
+        return result
+
+    target_qwen = 'qwen' in target_identity
+    draft_qwen = 'qwen' in draft_identity
+    if target_qwen:
+        target_version = _qwen_version(target_identity)
+        draft_version = _qwen_version(draft_identity)
+        if not draft_qwen or (target_version and draft_version and target_version != draft_version):
+            result.update({
+                'reason_code': 'model-family-version',
+                'reason': 'This DFlash accelerator was trained for a different Qwen family or version.',
+            })
+            return result
+    elif 'gemma' in target_identity and 'gemma' not in draft_identity:
+        result.update({
+            'reason_code': 'model-family',
+            'reason': 'This DFlash accelerator was not trained for the target Gemma family.',
+        })
+        return result
+
+    target_embedding = target_meta.get(f'{target_arch}.embedding_length')
+    draft_embedding = draft_meta.get(f'{draft_arch}.embedding_length')
+    if target_embedding and draft_embedding and int(target_embedding) != int(draft_embedding):
+        result.update({
+            'reason_code': 'embedding-dimension',
+            'reason': 'Target and accelerator embedding dimensions do not match.',
+        })
+        return result
+
+    result.update({
+        'compatible': True,
+        'validated': True,
+        'reason_code': 'validated',
+        'reason': 'GGUF metadata confirms the target and DFlash accelerator are compatible.',
+    })
+    if generation == 'dflash2':
+        result['engine_requirement'] = (
+            'llama.cpp with DFlash2 support (PR #27342 or a newer release)'
+        )
+    if score is not None:
+        result['score'] = round(float(score), 2)
+    return result
 
 
 def is_accelerator_path(path: str | Path) -> bool:
@@ -84,6 +219,13 @@ def is_viable_stack_pair(
     if not is_target_candidate(target_path):
         return False
     if score < min_score:
+        return False
+    preflight = preflight_dflash_pair(
+        target_path,
+        accelerator_path,
+        score=score,
+    )
+    if preflight.get('validated') and not preflight.get('compatible'):
         return False
     family_match = (
         ('qwen' in target_name and 'qwen' in accel_name)
@@ -212,7 +354,13 @@ def _hf_accelerator_matches_target(target_path: str | Path, row: dict[str, Any])
         return False
     target_param = _param_token(target_name)
     candidate_param = _param_token(candidate_name)
-    return not (target_param and candidate_param and target_param != candidate_param)
+    if target_param and candidate_param and target_param != candidate_param:
+        return False
+    target_version = _qwen_version(target_name)
+    candidate_version = _qwen_version(candidate_name)
+    if target_version and candidate_version and target_version != candidate_version:
+        return False
+    return True
 
 
 def suggest_stack_label(target_path: str | Path) -> str:
@@ -454,6 +602,9 @@ def find_local_accelerators(
         score = score_accelerator_pair(target, path)
         if score <= 0:
             continue
+        preflight = preflight_dflash_pair(target, path, score=score)
+        if not preflight.get('compatible'):
+            continue
         rows.append({
             'path': str(path.resolve()),
             'filename': path.name,
@@ -464,6 +615,8 @@ def find_local_accelerators(
             'source': model.get('source') or 'library',
             'dflash_generation': accel_gen,
             'dflash_generation_label': dflash_generation_label(accel_gen),
+            'preflight': preflight,
+            'validated': bool(preflight.get('validated')),
         })
     rows.sort(key=lambda row: (-float(row.get('score') or 0), row.get('filename') or ''))
     return rows[:limit]
@@ -634,6 +787,10 @@ def _summarize_hf_suggestion(row: dict[str, Any]) -> dict[str, Any]:
         'match_score': row.get('match_score'),
         'recommendation_reasons': row.get('recommendation_reasons') or [],
         'is_recommended': bool(row.get('is_recommended')),
+        'download_files': row.get('download_files') or row.get('gguf_files') or [],
+        'default_download': row.get('default_download') or '',
+        'validated': bool(row.get('validated')),
+        'preflight': row.get('preflight') or {},
     }
 
 
@@ -670,6 +827,13 @@ def _fetch_hf_suggestion_rows(
                 **row,
                 'dflash_generation': row_gen,
                 'dflash_generation_label': dflash_generation_label(row_gen),
+                'preflight': {
+                    'compatible': True,
+                    'validated': False,
+                    'reason_code': 'download-required',
+                    'reason': 'Download this candidate to run the local GGUF compatibility preflight.',
+                },
+                'validated': False,
             })
     except Exception:
         return []
@@ -907,6 +1071,14 @@ def replace_stack_draft(
             'error': 'accelerator does not match this target strongly enough',
             'score': round(pair_score, 2),
         }
+    preflight = preflight_dflash_pair(target, draft, score=pair_score)
+    if preflight.get('reason_code') != 'metadata-unavailable' and not preflight.get('validated'):
+        return {
+            'success': False,
+            'error': 'Both GGUF files must pass compatibility preflight before changing this stack.',
+            'reason_code': 'preflight-unavailable',
+            'preflight': preflight,
+        }
 
     if _resolved_path_key(current_draft) == _resolved_path_key(draft):
         return {
@@ -941,5 +1113,6 @@ def replace_stack_draft(
         'success': True,
         'server': merged,
         'score': round(pair_score, 2),
+        'preflight': preflight,
         'previous_draft_path': current_draft,
     }

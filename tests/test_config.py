@@ -472,13 +472,13 @@ class ConfigTests(unittest.TestCase):
             'ui_port': 8900,
             'gateway_port': 8001,
             'servers': [
-                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B'},
+                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B', 'model_id': 'gemma-4-12b-it-qat'},
                 {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'label': 'Nomic Embed', 'engine_mode': 'embedding'},
             ],
         }):
             result = asyncio.run(list_models())
         ids = {m['id'] for m in result['data']}
-        self.assertEqual(ids, {'gemma-12b-ar', 'nomic-embed'})
+        self.assertEqual(ids, {'gemma-4-12b-it-qat', 'nomic-embed'})
 
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.
@@ -499,6 +499,28 @@ class ConfigTests(unittest.TestCase):
             with patch('socket.create_connection', side_effect=OSError):
                 self.assertEqual(cfg.suggest_runtime_port(), 8911)
                 self.assertEqual(cfg.suggest_server_port(), 8091)
+
+    def test_suggest_server_port_skips_live_listeners(self):
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_connect(addr, timeout=0.4):
+            _host, port = addr[0], addr[1]
+            if port == 8091:
+                return FakeConn()
+            raise OSError('connection refused')
+
+        with patch.object(cfg, 'load_config', return_value={
+            'ui_port': 8900,
+            'servers': [{'id': 'one', 'port': 8090, 'host': '127.0.0.1'}],
+            'runtimes': [],
+        }):
+            with patch('socket.create_connection', side_effect=fake_connect):
+                self.assertEqual(cfg.suggest_server_port(), 8092)
 
     def test_suggest_runtime_port_skips_live_listeners(self):
         class FakeConn:

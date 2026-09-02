@@ -20,6 +20,10 @@
         pct,
         detail: String(raw.detail || '').trim(),
         phase: String(raw.phase || '').trim(),
+        eta_seconds: Number.isFinite(Number(raw.eta_seconds)) ? Number(raw.eta_seconds) : null,
+        elapsed_seconds: Number.isFinite(Number(raw.elapsed_seconds)) ? Number(raw.elapsed_seconds) : null,
+        expert_present: Number.isFinite(Number(raw.expert_present)) ? Number(raw.expert_present) : null,
+        expert_total: Number.isFinite(Number(raw.expert_total)) ? Number(raw.expert_total) : null,
       };
     }
     const num = Number(raw);
@@ -31,8 +35,14 @@
   }
 
   function loadProgressSuffix(raw) {
-    const { pct } = normalizeLoadProgress(raw);
-    return pct != null ? ` · ${Math.round(pct)}%` : '';
+    const progress = normalizeLoadProgress(raw);
+    const parts = [];
+    if (progress.pct != null) parts.push(`${Math.round(progress.pct)}%`);
+    if (progress.eta_seconds != null && progress.eta_seconds >= 0) {
+      const total = Math.round(progress.eta_seconds);
+      parts.push(total < 60 ? `~${total}s left` : `~${Math.ceil(total / 60)}m left`);
+    }
+    return parts.length ? ` · ${parts.join(' · ')}` : '';
   }
 
   function serverIsWarming(server) {

@@ -1551,6 +1551,49 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _registered_target_paths_any(config: dict[str, Any], *, cfg: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    for server in list_servers(config):
+        normalized = normalize_server(server)
+        explicit = str(normalized.get('target_path') or '').strip()
+        if explicit:
+            paths.add(_normalize_path_key(explicit))
+            continue
+        target, _ = _resolve_stack_pair(normalized, cfg=cfg)
+        if target and target.get('path'):
+            paths.add(_normalize_path_key(str(target.get('path'))))
+    return paths
+
+
+def _drop_shadow_unregistered_stacks(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide unregistered stack cards when a configured engine profile owns the target."""
+    profile_paths: set[str] = set()
+    profile_files: set[str] = set()
+    for row in models:
+        if not row.get('server_id'):
+            continue
+        path_text = str(row.get('path') or '').strip()
+        if path_text:
+            profile_paths.add(_normalize_path_key(path_text))
+        filename = str(row.get('filename') or Path(path_text).name).strip().lower()
+        if filename:
+            profile_files.add(filename)
+    kept: list[dict[str, Any]] = []
+    for row in models:
+        if row.get('stack_status') != 'unregistered':
+            kept.append(row)
+            continue
+        path_text = str(row.get('path') or '').strip()
+        path_key = _normalize_path_key(path_text)
+        filename = str(row.get('filename') or Path(path_text).name).strip().lower()
+        if path_key and path_key in profile_paths:
+            continue
+        if filename and filename in profile_files:
+            continue
+        kept.append(row)
+    return kept
+
+
 def _dflash_stack_supplement(
     config: dict[str, Any],
     catalog: dict[str, dict[str, Any]],
@@ -1576,10 +1619,11 @@ def _dflash_stack_supplement(
             continue
         rows.append(_server_catalog_row(normalized, cfg=cfg, enabled=False))
 
-    seen_targets = set(registered_targets)
+    seen_targets = _registered_target_paths_any(config, cfg=cfg)
+    seen_targets.update(registered_targets)
     seen_files = {
         Path(path).name.strip().lower()
-        for path in registered_targets
+        for path in seen_targets
         if Path(path).name.strip()
     }
     pool = list(catalog.values()) + list(extras or [])
@@ -1601,10 +1645,26 @@ def _dflash_stack_supplement(
         filename = Path(str(target.get('path') or '')).name.strip().lower()
         if filename and filename in seen_files:
             continue
+        draft_path = str(target.get('draft_path') or '').strip()
+        if not draft_path:
+            continue
         seen_targets.add(path_key)
         if filename:
             seen_files.add(filename)
-        rows.append(_capable_stack_row(target))
+        try:
+            from core.auto_register import ensure_stack_for_pair
+
+            ensured = ensure_stack_for_pair(
+                str(target.get('path') or ''),
+                draft_path,
+                cfg=config,
+            )
+        except Exception:
+            ensured = {}
+        server = ensured.get('server') if isinstance(ensured, dict) else None
+        if ensured.get('success') and isinstance(server, dict) and server.get('id'):
+            rows.append(_server_catalog_row(normalize_server(server), cfg=config))
+            catalog_server_ids.add(str(server.get('id') or ''))
 
     return rows
 
@@ -2097,6 +2157,7 @@ def _build_models_payload(
     partial: bool = False,
 ) -> dict[str, Any]:
     models = list(catalog.values()) + sorted(extras, key=lambda r: (r.get('label') or '').lower())
+    models = _drop_shadow_unregistered_stacks(models)
     models = _collapse_split_shards(models)
     models = _collapse_hf_hub_repos(models)
     models = _collapse_identical_files(models)

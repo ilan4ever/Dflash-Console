@@ -350,6 +350,10 @@
       pct: Number.isFinite(Number(raw)) ? Number(raw) : null,
       detail: '',
       phase: '',
+      eta_seconds: null,
+      elapsed_seconds: null,
+      expert_present: null,
+      expert_total: null,
     };
   }
 
@@ -448,16 +452,55 @@
     const norm = normalizeLoadProgress(rawProgress);
     const pct = norm.pct != null ? Math.min(100, Math.max(0, Number(norm.pct))) : null;
     const known = pct != null && pct > 0;
+    let etaSeconds = Number(norm.eta_seconds);
+    if (
+      !Number.isFinite(etaSeconds)
+      && Number(norm.expert_present) > 0
+      && Number(norm.expert_total) > Number(norm.expert_present)
+      && Number(norm.elapsed_seconds) > 0
+    ) {
+      etaSeconds = (
+        (Number(norm.expert_total) - Number(norm.expert_present))
+        * Number(norm.elapsed_seconds)
+        / Number(norm.expert_present)
+      );
+    }
+    const etaLabel = Number.isFinite(etaSeconds) && etaSeconds >= 0
+      ? `~${formatLoadEta(etaSeconds)} remaining`
+      : '';
     if (!loading) {
-      if (!known) return { pct: null, known: false, label: '' };
-      return { pct, known: true, label: `${Math.round(pct)}%` };
+      if (!known) return { pct: null, known: false, label: '', etaLabel, detail: norm.detail, phase: norm.phase };
+      return { pct, known: true, label: `${Math.round(pct)}%`, etaLabel, detail: norm.detail, phase: norm.phase };
     }
     if (known) {
       const prefix = warming ? 'Warming' : 'Loading';
-      return { pct, known: true, label: `${prefix} ${Math.round(pct)}%` };
+      return {
+        pct,
+        known: true,
+        label: `${prefix} ${Math.round(pct)}%`,
+        etaLabel,
+        detail: norm.detail,
+        phase: norm.phase,
+      };
     }
     const fallback = warming ? 'Warming' : (norm.detail || 'Loading');
-    return { pct: null, known: false, label: fallback };
+    return {
+      pct: null,
+      known: false,
+      label: fallback,
+      etaLabel,
+      detail: norm.detail,
+      phase: norm.phase,
+    };
+  }
+
+  function formatLoadEta(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    if (total < 60) return `${total}s`;
+    const minutes = Math.floor(total / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
   }
 
   function reschedulePoll() {
@@ -2253,9 +2296,13 @@
         : '';
       const installedBadge = row.external ? '' : '<span class="lm-badge installed">Installed</span>';
       const loadChrome = loading && !isGenerating
-        ? `<div class="lm-model-card-load-shell${progressKnown ? '' : ' is-indeterminate'}"${cardStyle} aria-hidden="true">
-            <span class="lm-model-card-load-label">${loadLabel}<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span>${progressKnown && progressPct != null ? ` ${Math.round(progressPct)}%` : ''}</span>
-            <div class="lm-model-card-load-track"><div class="lm-model-card-load-fill"></div></div>
+        ? `<div class="lm-model-card-load-shell${progressKnown ? '' : ' is-indeterminate'}"${cardStyle} role="status" aria-live="polite">
+            <div class="lm-model-card-load-head">
+              <span class="lm-model-card-load-label">${loadLabel}<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span></span>
+              <span class="lm-model-card-load-percent">${progressKnown && progressPct != null ? `${Math.round(progressPct)}%` : 'Preparing…'}${progress.etaLabel ? ` · ${escapeHtml(progress.etaLabel)}` : ''}</span>
+            </div>
+            <div class="lm-model-card-load-detail">${escapeHtml(progress.detail || (warming ? 'Building expert banks…' : 'Reading model weights…'))}</div>
+            <div class="lm-model-card-load-track" role="progressbar" aria-label="${escapeHtml(`${loadLabel} ${cardDisplayName(row, server)}`)}"${progressKnown && progressPct != null ? ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progressPct)}"` : ' aria-valuemin="0" aria-valuemax="100"'}><div class="lm-model-card-load-fill"></div></div>
           </div>`
         : '';
       const ejectChrome = ejecting

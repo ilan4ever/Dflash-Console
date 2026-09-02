@@ -132,6 +132,68 @@ def test_disabled_via_config(models_root, cfg):
     assert cfg['servers'] == []
 
 
+def test_upgrades_plain_profile_when_accelerator_exists(models_root, cfg, monkeypatch):
+    target = _write(models_root, 'gemma-4-12b-it-q4_k_m.gguf')
+    draft_dir = models_root / 'drafts'
+    draft_dir.mkdir()
+    draft = _write(draft_dir, 'gemma-4-12B-it-DFlash-F16.gguf')
+    cfg['servers'] = [{
+        'id': 'gemma-plain',
+        'profile': 'gemma-ar',
+        'target_path': str(target.resolve()),
+        'port': 8093,
+        'model_id': 'gemma-4-12b-it-q4-k-m',
+        'enabled': True,
+    }]
+    monkeypatch.setattr(
+        'core.auto_register.find_local_accelerators',
+        lambda _target, *, cfg=None, limit=12: [{
+            'path': str(draft.resolve()),
+            'filename': draft.name,
+            'score': 8.0,
+        }],
+    )
+    monkeypatch.setattr(
+        'core.stack_match.list_capable_targets',
+        lambda **kwargs: {'targets': []},
+    )
+    monkeypatch.setattr('core.auto_register._wire_local_vision_for_servers', lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        'core.auto_register.list_local_models',
+        lambda **kwargs: {'models': []},
+    )
+
+    result = ar.auto_setup_models(cfg=cfg)
+
+    assert len(result['upgraded']) == 1
+    server = cfg['servers'][0]
+    assert server.get('draft_path') == str(draft.resolve())
+    assert 'dflash' in str(server.get('profile') or '')
+
+
+def test_ensure_stack_upgrades_existing_plain_profile(models_root, cfg, monkeypatch):
+    target = _write(models_root, 'gemma-4-12B-it-Q4_K_M.gguf')
+    draft_dir = models_root / 'drafts'
+    draft_dir.mkdir()
+    draft = _write(draft_dir, 'gemma-4-12B-it-DFlash-F16.gguf')
+    cfg['servers'] = [{
+        'id': 'gemma-plain',
+        'profile': 'gemma-ar',
+        'target_path': str(target.resolve()),
+        'port': 8093,
+        'model_id': 'gemma-4-12b-it-q4-k-m',
+        'enabled': True,
+    }]
+    monkeypatch.setattr('core.auto_register.write_server_preset', lambda *args, **kwargs: None)
+
+    result = ar.ensure_stack_for_pair(str(target), str(draft), cfg=cfg)
+
+    assert result['success'] is True
+    assert result['created'] is False
+    assert result['server_id'] == 'gemma-plain'
+    assert cfg['servers'][0]['draft_path'] == str(draft.resolve())
+
+
 def test_missing_models_folder_reports_skip(tmp_path, cfg):
     cfg['models_root'] = str(tmp_path / 'does-not-exist')
 

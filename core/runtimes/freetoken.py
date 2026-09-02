@@ -51,7 +51,10 @@ _WATCH_STOP = threading.Event()
 _WATCH_THREAD: threading.Thread | None = None
 
 _EXPERT_PROGRESS_RE = re.compile(
-    r'Loading DSV4 FP4 experts:\s+\d+%\|[^|]*\|\s*(\d+)/(\d+)',
+    r'Loading DSV4 FP4 experts:\s+'
+    r'(?P<pct>\d+(?:\.\d+)?)%\|[^|]*\|\s*'
+    r'(?P<present>\d+)/(?P<total>\d+)'
+    r'(?:\s+\[(?P<elapsed>\d+:\d+)(?:<(?P<remaining>\d+:\d+))?)?',
 )
 
 
@@ -155,20 +158,39 @@ def parse_freetoken_log_progress(log_text: str = '') -> dict[str, Any]:
         text = log_text or FREETOKEN_LOG.read_text(encoding='utf-8', errors='replace')
     except OSError:
         text = log_text or ''
-    tail = text[-16000:]
+    # Ignore progress from an older model load. The warmup server can emit many
+    # 503 probe lines while loading, so keep enough of the current cycle to
+    # retain the latest tqdm update.
+    start_marker = text.lower().rfind('model warming:')
+    if start_marker >= 0:
+        text = text[start_marker:]
+    tail = text[-65536:]
     matches = _EXPERT_PROGRESS_RE.findall(tail)
     if matches:
-        present, total = matches[-1]
+        match = _EXPERT_PROGRESS_RE.finditer(tail)
+        latest = list(match)[-1]
+        present = latest.group('present')
+        total = latest.group('total')
         present_i = int(present)
         total_i = int(total)
         pct = round((present_i / total_i) * 100, 1) if total_i > 0 else None
-        return {
+        progress: dict[str, Any] = {
             'phase': 'experts',
             'expert_present': present_i,
             'expert_total': total_i,
             'expert_pct': pct,
             'detail': f'Building expert banks {present_i}/{total_i}',
         }
+        remaining = latest.group('remaining')
+        if remaining:
+            minutes, seconds = (int(value) for value in remaining.split(':', 1))
+            progress['eta_seconds'] = minutes * 60 + seconds
+            progress['eta'] = remaining
+        elapsed = latest.group('elapsed')
+        if elapsed:
+            minutes, seconds = (int(value) for value in elapsed.split(':', 1))
+            progress['elapsed_seconds'] = minutes * 60 + seconds
+        return progress
     lowered = tail.lower()
     if 'expert banks: slow path' in lowered or 'loading dsv4 fp4 experts' in lowered:
         return {'phase': 'experts', 'detail': 'Building expert banks…'}

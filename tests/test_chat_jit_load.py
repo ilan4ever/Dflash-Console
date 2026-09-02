@@ -48,6 +48,15 @@ def test_ensure_ready_loads_idle_engine(monkeypatch):
     )
     monkeypatch.setattr('core.chat_ready.get_engine_state', lambda sid, cfg=None: {'engine_on': True})
     monkeypatch.setattr('core.chat_ready.tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr('core.chat_ready.listener_is_managed_engine', lambda host, port: True)
+    monkeypatch.setattr(
+        'core.chat_ready.ensure_managed_listen_port',
+        lambda server, cfg=None: {
+            'success': True,
+            'port': int(server.get('port') or 0),
+            'reason': 'ours',
+        },
+    )
     monkeypatch.setattr('core.memory_guardrails.assess_load', lambda srv, cfg=None: {'level': 'ok'})
     monkeypatch.setattr('core.engine_state.note_engine_loaded', lambda sid, **kwargs: None)
 

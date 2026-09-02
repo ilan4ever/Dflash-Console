@@ -16,6 +16,7 @@ from core.stack_match import (
     match_stack_for_target,
     is_target_candidate,
     is_viable_stack_pair,
+    preflight_dflash_pair,
     preflight_stack_target,
     replace_stack_draft,
     resolve_recommended_generation,
@@ -25,6 +26,58 @@ from core.stack_match import (
 
 
 class StackMatchTests(unittest.TestCase):
+    def test_qwen38_preflight_rejects_qwen35_drafter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Qwen3.8-27B-Q6_K_L.gguf'
+            draft = Path(tmp) / 'Qwen3.5-27B-DFlash2-Q4_K_M.gguf'
+            target.write_bytes(b'GGUF')
+            draft.write_bytes(b'GGUF')
+            metadata = {
+                str(target): {
+                    'general.architecture': 'qwen35',
+                    'general.name': 'Qwen3.8 27B',
+                    'qwen35.embedding_length': 5120,
+                },
+                str(draft): {
+                    'general.architecture': 'dflash',
+                    'general.name': 'Qwen3.5-27B-DFlash2',
+                    'general.basename': 'Qwen3.5-27B',
+                    'general.finetune': 'DFlash2',
+                    'dflash.embedding_length': 5120,
+                },
+            }
+            with patch('core.stack_match.read_gguf_metadata', side_effect=lambda path: metadata[str(path)]):
+                result = preflight_dflash_pair(target, draft)
+        self.assertFalse(result['compatible'])
+        self.assertEqual(result['reason_code'], 'model-family-version')
+
+    def test_qwen38_preflight_accepts_exact_dflash2_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'Qwen3.8-27B-Q6_K_L.gguf'
+            draft = Path(tmp) / 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
+            target.write_bytes(b'GGUF')
+            draft.write_bytes(b'GGUF')
+            metadata = {
+                str(target): {
+                    'general.architecture': 'qwen35',
+                    'general.name': 'Qwen3.8 27B',
+                    'qwen35.embedding_length': 5120,
+                },
+                str(draft): {
+                    'general.architecture': 'dflash',
+                    'general.name': 'Qwen3.8-27B-DFlash2',
+                    'general.basename': 'Qwen3.8-27B',
+                    'general.finetune': 'DFlash2',
+                    'dflash.embedding_length': 5120,
+                },
+            }
+            with patch('core.stack_match.read_gguf_metadata', side_effect=lambda path: metadata[str(path)]):
+                result = preflight_dflash_pair(target, draft)
+        self.assertTrue(result['compatible'])
+        self.assertTrue(result['validated'])
+        self.assertEqual(result['dflash_generation'], 'dflash2')
+        self.assertIn('PR #27342', result['engine_requirement'])
+
     def test_accelerator_detection(self):
         self.assertTrue(is_accelerator_path('Qwen3.5-27B-DFlash-F16.gguf'))
         self.assertFalse(is_accelerator_path('Qwen3.5-27B-Q4_K_M.gguf'))

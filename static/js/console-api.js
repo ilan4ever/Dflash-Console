@@ -31,6 +31,7 @@ window.ConsoleApi = (function () {
       }
       return trimmed;
     }
+    if (typeof detail === 'object' && detail.message) return String(detail.message);
     if (typeof detail === 'object' && detail.error?.message) return String(detail.error.message);
     try {
       return JSON.stringify(detail);

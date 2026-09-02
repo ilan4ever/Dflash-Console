@@ -1007,6 +1007,10 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   color: #7dd3fc;
   font-family: Consolas, monospace;
   font-size: 13px;
+  font-weight: 700;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-variant-ligatures: none;
   flex: 0 1 auto;
   max-width: 42%;
   min-width: 0;

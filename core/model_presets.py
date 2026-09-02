@@ -9,7 +9,6 @@ from core.config import (
     get_dflash_root,
     normalize_hardware_settings,
     normalize_load_settings,
-    SPECULATIVE_PROFILES,
 )
 from core.dflash_generation import infer_dflash_generation, spec_draft_n_max
 from core.gpu_devices import resolve_role_gpu_launch_params
@@ -27,6 +26,16 @@ PROFILE_CACHE_TYPES = {
     'qwen-ar': ('q8_0', 'q8_0'),
     'generic-ar': ('q4_0', 'q4_0'),
 }
+
+
+def _kv_offload_enabled(server: dict[str, Any], hardware: dict[str, Any]) -> bool:
+    raw = server.get('load_settings')
+    if isinstance(raw, dict) and 'kv_offload' in raw:
+        return raw.get('kv_offload') is not False
+    load = normalize_load_settings(raw)
+    if 'kv_offload' in load:
+        return bool(load.get('kv_offload'))
+    return hardware.get('offload_kv_cache_to_gpu') is not False
 
 
 def infer_profile_from_path(path: str | Path) -> str:
@@ -145,7 +154,7 @@ def write_server_preset(
             if launch.get('split_mode') != 'none' and launch.get('tensor_split')
             else []
         ),
-        f"kv-offload = {'true' if hardware.get('offload_kv_cache_to_gpu') is not False else 'false'}",
+        f"kv-offload = {'true' if _kv_offload_enabled(server, hardware) else 'false'}",
         f"cache-type-k = {cache_k}",
         f"cache-type-v = {cache_v}",
         f"np = {int(load.get('parallel_slots') or 4)}",
@@ -163,14 +172,16 @@ def write_server_preset(
         elif preset_profile == 'bonsai-spec':
             lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = 999'])
 
-    mmproj_path = str(server.get('mmproj_path') or '').strip()
-    if preset_profile not in SPECULATIVE_PROFILES:
-        if not mmproj_path:
-            from core.vision_setup import resolve_mmproj_path
+    from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
 
+    mmproj_path = str(server.get('mmproj_path') or '').strip()
+    if not mmproj_path:
+        if server_supports_vision_chat(server, cfg=cfg):
             mmproj_path = resolve_mmproj_path(server, cfg=cfg)
-        if mmproj_path and Path(mmproj_path).is_file():
-            lines.append(f"mmproj = {mmproj_path}")
+    elif not server_supports_vision_chat(server, cfg=cfg):
+        mmproj_path = ''
+    if mmproj_path and Path(mmproj_path).is_file():
+        lines.append(f"mmproj = {mmproj_path}")
 
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
     path = preset_path_for(server_id)

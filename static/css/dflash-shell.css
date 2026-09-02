@@ -703,7 +703,10 @@ body.lm-resizing-sidenav {
 
 .df-shell .df-downloads-card-title {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-variant-ligatures: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1254,7 +1257,10 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-title-text {
-  font-weight: 600;
+  font-weight: 700;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-variant-ligatures: none;
   /* Full model name, NEVER trimmed or ellipsized. The name keeps its natural
      width and the badges (Installed, Reasoning, DFlash, pin) sit immediately
      to the right of it on the same line. If the line is wider than the card it
@@ -2459,6 +2465,60 @@ body.lm-resizing-table-col {
   box-shadow:
     inset 0 0 0 1px rgba(153, 246, 228, 0.2),
     inset 0 -8px 16px rgba(20, 184, 166, 0.08);
+}
+
+.df-shell .lm-model-card-compact > .lm-model-card-load-shell {
+  position: relative;
+  inset: auto;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 10px 5px;
+  background: rgba(8, 25, 24, 0.96);
+  border-bottom: 1px solid rgba(45, 212, 191, 0.3);
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-load-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-load-label {
+  position: static;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #99f6e4;
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-load-percent {
+  flex: 0 0 auto;
+  color: #ccfbf1;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-load-detail {
+  overflow: hidden;
+  color: rgba(204, 251, 241, 0.78);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-load-track {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
 }
 
 .df-shell .lm-model-card-compact .lm-tag {
@@ -5812,6 +5872,10 @@ body.lm-resizing-chat-sidebar {
   align-items: center;
   color: var(--text);
   font-size: 13px;
+  font-weight: 700;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-variant-ligatures: none;
 }
 
 .df-shell .lm-scan-dialog {

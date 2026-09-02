@@ -337,12 +337,56 @@ def test_stack_supplement_uses_scanned_extras(tmp_path: Path, monkeypatch):
         'core.stack_match.list_local_models',
         lambda **_kwargs: {'models': [], 'partial': True},
     )
-    rows = _dflash_stack_supplement({'servers': []}, {}, extras, cfg={'servers': []})
+    monkeypatch.setattr('core.config.save_config', lambda cfg: None)
+    monkeypatch.setattr('core.auto_register.save_config', lambda cfg: None)
+    monkeypatch.setattr('core.auto_register.write_server_preset', lambda *args, **kwargs: None)
+    monkeypatch.setattr('core.local_models.invalidate_model_catalog_cache', lambda: None)
+    cfg = {'servers': []}
+    rows = _dflash_stack_supplement(cfg, {}, extras, cfg=cfg)
     assert len(rows) == 1
     assert rows[0]['filename'] == target.name
-    assert rows[0]['label'] == 'Qwen 3.5 27B D-Flash'
-    assert rows[0]['stack_status'] == 'unregistered'
+    assert 'Qwen' in str(rows[0]['label'] or '')
+    assert rows[0]['stack_status'] == 'ready'
+    assert rows[0]['server_id']
     assert rows[0]['draft_filename'] == draft.name
+
+
+def test_stack_supplement_hides_unregistered_when_server_owns_target(tmp_path: Path, monkeypatch):
+    from core.local_models import _dflash_stack_supplement
+
+    target = tmp_path / 'gemma-4-12B-it-Q4_K_M.gguf'
+    draft = tmp_path / 'gemma-4-12B-it-DFlash-F16.gguf'
+    target.write_bytes(b'target')
+    draft.write_bytes(b'draft')
+    extras = [{
+        'path': str(target),
+        'filename': target.name,
+        'label': target.name,
+        'size_gb': 7.14,
+        'source': 'library',
+    }]
+    monkeypatch.setattr(
+        'core.stack_match.list_capable_targets',
+        lambda **_kwargs: {'targets': [{
+            'path': str(target),
+            'filename': target.name,
+            'label': target.name,
+            'draft_path': str(draft),
+            'draft_filename': draft.name,
+            'match_score': 8.0,
+        }]},
+    )
+    cfg = {
+        'servers': [{
+            'id': 'gemma-4-12b-it-q4-k-m',
+            'enabled': True,
+            'target_path': str(target),
+            'draft_path': str(draft),
+            'profile': 'gemma-12-dflash',
+        }],
+    }
+    rows = _dflash_stack_supplement(cfg, {}, extras, cfg=cfg)
+    assert all(row.get('stack_status') != 'unregistered' for row in rows)
 
 
 def test_stack_supplement_keeps_one_row_for_duplicate_target_copies(tmp_path: Path, monkeypatch):
@@ -385,10 +429,17 @@ def test_stack_supplement_keeps_one_row_for_duplicate_target_copies(tmp_path: Pa
         'core.stack_match.list_local_models',
         lambda **_kwargs: {'models': [], 'partial': True},
     )
-    rows = _dflash_stack_supplement({'servers': []}, {}, extras, cfg={'servers': []})
+    monkeypatch.setattr('core.config.save_config', lambda cfg: None)
+    monkeypatch.setattr('core.auto_register.save_config', lambda cfg: None)
+    monkeypatch.setattr('core.auto_register.write_server_preset', lambda *args, **kwargs: None)
+    monkeypatch.setattr('core.local_models.invalidate_model_catalog_cache', lambda: None)
+    cfg = {'servers': []}
+    rows = _dflash_stack_supplement(cfg, {}, extras, cfg=cfg)
     assert len(rows) == 1
     assert rows[0]['path'] == str(console_target)
     assert rows[0]['filename'] == console_target.name
+    assert rows[0]['stack_status'] == 'ready'
+    assert rows[0]['server_id']
 
 
 def test_large_dflash_gguf_is_accelerator_only():

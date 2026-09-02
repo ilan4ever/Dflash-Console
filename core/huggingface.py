@@ -3156,6 +3156,46 @@ def _finish_safetensors_download_job(job_id: str, dest: Path, **extra: Any) -> N
     invalidate_model_catalog_cache()
 
 
+def _run_dflash_attach_post_action(
+    post_action: dict[str, Any],
+    draft_path: Path,
+) -> dict[str, Any]:
+    """Validate and attach a downloaded accelerator exactly once."""
+    if post_action.get('type') != 'attach_dflash':
+        return {}
+    from core.stack_match import preflight_dflash_pair
+
+    target_path = str(post_action.get('target_path') or '').strip()
+    check = preflight_dflash_pair(target_path, draft_path)
+    if not check.get('compatible') or not check.get('validated'):
+        return {
+            'success': False,
+            'error': str(check.get('reason') or 'downloaded accelerator failed compatibility preflight'),
+            'preflight': check,
+        }
+    cfg = None
+    server_id = str(post_action.get('server_id') or '').strip()
+    if server_id:
+        from core.stack_match import replace_stack_draft
+
+        result = replace_stack_draft(server_id, str(draft_path), cfg=cfg)
+    else:
+        from core.auto_register import ensure_stack_for_pair
+
+        result = ensure_stack_for_pair(target_path, str(draft_path), cfg=cfg)
+    if not result.get('success'):
+        return {
+            'success': False,
+            'error': str(result.get('error') or 'could not attach downloaded accelerator'),
+            'preflight': check,
+        }
+    return {
+        'success': True,
+        'result': result,
+        'preflight': check,
+    }
+
+
 def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, *, resume: bool = False) -> None:
     url = f'{HF_BASE}/{repo_id}/resolve/main/{urllib.parse.quote(filename, safe="/")}'
     headers = _hf_download_headers()
@@ -3215,6 +3255,17 @@ def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, 
                 wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
             except Exception as exc:
                 extra['post_action_error'] = str(exc)
+        if isinstance(post_action, dict) and post_action.get('type') == 'attach_dflash':
+            attached = _run_dflash_attach_post_action(post_action, dest)
+            extra['attach_result'] = attached
+            if not attached.get('success'):
+                extra['post_action_error'] = attached.get('error')
+        try:
+            from core.auto_register import auto_setup_models
+
+            auto_setup_models(download_vision=False)
+        except Exception:
+            pass
         if dest.suffix.lower() == '.safetensors':
             _finish_safetensors_download_job(job_id, dest, **extra)
         else:
@@ -3286,6 +3337,17 @@ def _download_worker_once(job_id: str, repo_id: str, filename: str, dest: Path, 
             wire_vision_after_download({**post_action, 'mmproj_path': str(dest)})
         except Exception as exc:
             extra['post_action_error'] = str(exc)
+    if isinstance(post_action, dict) and post_action.get('type') == 'attach_dflash':
+        attached = _run_dflash_attach_post_action(post_action, dest)
+        extra['attach_result'] = attached
+        if not attached.get('success'):
+            extra['post_action_error'] = attached.get('error')
+    try:
+        from core.auto_register import auto_setup_models
+
+        auto_setup_models(download_vision=False)
+    except Exception:
+        pass
     if dest.suffix.lower() == '.safetensors':
         _finish_safetensors_download_job(job_id, dest, **extra)
     else:
@@ -4087,8 +4149,9 @@ def list_download_jobs(
     _ensure_download_history_loaded()
     if not console_only:
         _merge_disk_download_history(force=discover)
-    # Scanning disk for incomplete shard folders is expensive — only on discover.
-    if discover:
+    # Active download views must include resumable shard jobs as well; callers
+    # that only want a passive history still avoid the disk scan.
+    if discover or active_only:
         _merge_incomplete_repo_jobs()
     with _jobs_lock:
         raw_jobs = [dict(job) for job in _download_jobs.values()]

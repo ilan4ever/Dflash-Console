@@ -91,6 +91,13 @@ def execute_catalog_load(
         requested_runtime = str((load_settings or {}).get('runtime_id') or '').strip()
     if not requested_runtime and str(server_id or '') in {'vllm', 'transformers', 'freetoken'}:
         requested_runtime = str(server_id)
+    from core.model_runtime_policy import requires_freetoken, runtime_load_block
+
+    if not requested_runtime and requires_freetoken(target):
+        requested_runtime = 'freetoken'
+    warning = runtime_load_block(target, requested_runtime)
+    if warning:
+        raise HTTPException(status_code=400, detail=warning)
     if requested_runtime in {'vllm', 'transformers', 'freetoken'}:
         runtime_id = requested_runtime
 
@@ -180,7 +187,13 @@ def execute_catalog_load(
                 model_payload['preset'] = load_settings.get('preset')
         result = adapter.load(model_payload)
         if not result.get('success'):
-            raise HTTPException(status_code=400, detail=result.get('error') or f'{runtime_id} load failed')
+            from core.model_runtime_policy import explain_freetoken_load_error
+
+            error = explain_freetoken_load_error(result) if runtime_id == 'freetoken' else None
+            raise HTTPException(
+                status_code=400,
+                detail=error or result.get('error') or f'{runtime_id} load failed',
+            )
         loaded = bool(result.get('loaded'))
         warming = bool(result.get('warming'))
         return {

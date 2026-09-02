@@ -175,7 +175,9 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     gpu_weights_gb = round((target_gb * gpu_fraction) + draft_gb, 2)
     kv_cache_gb = round((context / 8192) * 0.4, 2)
     hardware = normalize_hardware_settings(cfg.get('hardware_settings'))
-    kv_on_gpu = hardware.get('offload_kv_cache_to_gpu') is not False
+    from core.model_presets import _kv_offload_enabled
+
+    kv_on_gpu = _kv_offload_enabled(server, hardware)
     gpu_kv_gb = kv_cache_gb if kv_on_gpu else 0.0
     cpu_kv_gb = 0.0 if kv_on_gpu else kv_cache_gb
     devices = _gpu_snapshot(cfg)

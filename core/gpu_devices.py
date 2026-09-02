@@ -230,10 +230,14 @@ def _pick_single_gpu(
     *,
     model_id: str = '',
     context_size: int | None = None,
+    required_gb: float | None = None,
 ) -> int:
     ranked = sorted(devices, key=_gpu_preference_score, reverse=True)
     preferred = ranked[0]
-    needed = estimate_model_vram_gb(model_id, context_size=context_size)
+    needed = float(required_gb) if required_gb and required_gb > 0 else estimate_model_vram_gb(
+        model_id,
+        context_size=context_size,
+    )
     free_pref = preferred.get('vram_free_gb')
     # Keep the fast card when it still has room (or free VRAM unknown).
     if free_pref is None or float(free_pref) >= needed:
@@ -259,7 +263,12 @@ def resolve_auto_gpu_launch(
     if not devices:
         return {'main_gpu': 0, 'split_mode': 'none', 'tensor_split': ''}
 
-    main_gpu = _pick_single_gpu(devices, model_id=model_id, context_size=context_size)
+    main_gpu = _pick_single_gpu(
+        devices,
+        model_id=model_id,
+        context_size=context_size,
+        required_gb=required_gb,
+    )
     strategy = str(hw.get('gpu_strategy') or DEFAULT_HARDWARE_SETTINGS['gpu_strategy'])
 
     # Default / recommended: never layer-split — PCIe sync kills tok/s.

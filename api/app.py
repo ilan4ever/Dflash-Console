@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from core.config import PACKAGE_ROOT, ROOT, get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_download_settings, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_remote_nodes, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
-from core.model_paths import allowed_model_roots, disk_scan_roots, validate_model_path
+from core.model_paths import allowed_model_roots, disk_scan_roots, get_models_root, validate_model_path
 from core.gpu_devices import get_gpu_devices_payload
 from core.local_models import (
     friendly_model_dir_label,
@@ -111,6 +111,10 @@ def _start_parent_watchdog() -> None:
                 parent_pid,
             )
             try:
+                # The API can outlive the Electron shell after a forced quit.
+                # Stop adapter-owned workers before exiting so WSL/FreeToken
+                # cannot retain model RAM after the Console is gone.
+                _stop_hf_engine_workers()
                 _stop_gateway_server()
                 _release_gpu_on_shutdown()
             except Exception:
@@ -379,19 +383,22 @@ def _start_background_tasks() -> None:
 
     def auto_register() -> None:
         try:
-            from core.auto_register import auto_register_console_models
+            from core.auto_register import auto_setup_models
 
-            result = auto_register_console_models()
-            if result.get('registered'):
+            result = auto_setup_models()
+            if result.get('changed'):
                 logger.info(
-                    'auto-registered console models: %s',
-                    ', '.join(str(row.get('server_id')) for row in result['registered']),
+                    'auto-setup models: upgraded=%s registered=%s stacks=%s vision=%s',
+                    len(result.get('upgraded') or []),
+                    len(result.get('registered') or []),
+                    len(result.get('stacks') or []),
+                    len(result.get('vision') or []),
                 )
                 invalidate_model_catalog_cache()
         except Exception as exc:
-            logger.exception('auto-register console models failed: %s', exc)
+            logger.exception('auto-setup models failed: %s', exc)
 
-    threading.Thread(target=auto_register, daemon=True, name='auto-register-models').start()
+    threading.Thread(target=auto_register, daemon=True, name='auto-setup-models').start()
 
     def warm_hf_catalog() -> None:
         try:
@@ -623,6 +630,19 @@ class ServerCreateRequest(BaseModel):
     copy_to_console: bool = False
     copy_mode: str | None = Field(default=None, pattern='^(copy|move|none)$')
     overwrite: bool = Field(default=False)
+
+
+class StackEnsureRequest(BaseModel):
+    target_path: str = Field(..., min_length=1)
+    draft_path: str = Field(..., min_length=1)
+
+
+class StackDraftSearchRequest(BaseModel):
+    target_path: str = Field(..., min_length=1)
+    server_id: str | None = Field(default=None, max_length=80)
+    current_draft: str | None = None
+    dflash_generation: str = Field(default='auto', max_length=20)
+    attach: bool = False
 
 
 class AudioSpeechRequest(BaseModel):
@@ -2336,21 +2356,53 @@ def _ensure_server_ready_for_chat(
     client_label: str = 'DFlash Console',
     required_context: int | None = None,
 ) -> dict[str, Any]:
-    """JIT-load configured checkpoint when chat arrives — only if engine is on.
+    """JIT-load configured checkpoint when chat arrives.
 
-    Implements context auto-grow: when a request needs more per-slot context
-    than the loaded model provides, reload with a larger context.  Requests
-    that fit share the already-loaded model (no reload).
+    Auto-starts the engine listener when needed (``engine_off`` only blocks boot
+    restore, not inbound chat). Implements context auto-grow when a request needs
+    more per-slot context than the loaded model provides.
     """
     import time
 
-    from core.chat_ready import assess_server_chat_ready, chat_ready_http_error_detail
+    from core.chat_ready import (
+        assess_server_chat_ready,
+        chat_ready_http_error_detail,
+        ensure_engine_listener_for_chat,
+    )
+    from core.config import get_server, load_config, normalize_server
     from core.engine_state import note_engine_loaded
     from core.memory_guardrails import assess_load
     from core.runtime import build_server_status
 
+    started = ensure_engine_listener_for_chat(server, cfg=cfg)
+    cfg = load_config()
+    server = normalize_server(get_server(cfg, server_id) or server)
+    rebound_port = int(started.get('port') or 0)
+    if started.get('reason') == 'rebound' or started.get('previous_port'):
+        if rebound_port > 0:
+            host = str(server.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+            server['port'] = rebound_port
+            server['api_url'] = str(
+                started.get('api_url') or f'http://{host}:{rebound_port}/v1'
+            )
     gate = assess_server_chat_ready(server, cfg=cfg)
     if not gate.get('ready'):
+        if not started.get('success') and str(gate.get('reason') or '') == 'engine_stopped':
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    'error': {
+                        'message': str(
+                            started.get('error')
+                            or gate.get('message')
+                            or 'Engine listener could not be started.',
+                        ),
+                        'type': 'unavailable_error',
+                        'code': 503,
+                        'reason': 'engine_start_failed',
+                    }
+                },
+            )
         raise HTTPException(status_code=503, detail=chat_ready_http_error_detail(gate))
 
     def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
@@ -2378,7 +2430,9 @@ def _ensure_server_ready_for_chat(
         )
 
     live = build_server_status(server, cfg=cfg)
-    if live.get('status') == 'loaded' and live.get('loaded_models'):
+    if live.get('loaded_models'):
+        if live.get('status') != 'loaded':
+            live = {**live, 'status': 'loaded'}
         # Already loaded.  Auto-grow if this request needs more context than
         # the loaded model provides; otherwise share the model as-is.
         if required_context and cfg.get('context_auto_grow') is not False:
@@ -2397,6 +2451,10 @@ def _ensure_server_ready_for_chat(
         configured_per_slot = _configured_per_slot(server)
         if configured_per_slot and required_context > configured_per_slot:
             return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
+
+    _auto_stop_other_servers(cfg, server_id)
+    cfg = load_config()
+    server = normalize_server(get_server(cfg, server_id) or server)
 
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
@@ -2429,7 +2487,7 @@ def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list
     """
     if cfg.get('runtime_stop_others_on_load') is not True:
         return []
-    from core.config import is_embedding_server
+    from core.config import get_server, is_embedding_server, normalize_server
     from core.runtimes.contention import gpu_contention_report
 
     try:
@@ -2443,7 +2501,10 @@ def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list
         other_id = str(row.get('id') or '')
         if not other_id or other_id == target_server_id or not row.get('running'):
             continue
-        server = _require_server(cfg, other_id)
+        server = get_server(cfg, other_id)
+        if not server:
+            continue
+        server = normalize_server(server)
         if is_embedding_server(server):
             continue
         try:
@@ -2568,6 +2629,11 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
+        cfg = load_config()
+        server = _require_server(cfg, server_id)
+        check = assess_load(server, cfg=cfg)
+        if check.get('level') == 'block':
+            raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
     result = load_server_checkpoint(
         server,
         cfg=cfg,
@@ -2736,6 +2802,37 @@ async def proxy_chat_completions(server_id: str, request: Request):
             body_json = json.loads(raw.decode('utf-8', errors='replace'))
         except Exception:
             body_json = None
+        if isinstance(body_json, dict):
+            from core.chat_vision import (
+                chat_messages_contain_images,
+                ensure_vision_ready_for_chat,
+                normalize_multimodal_chat_body,
+            )
+
+            if chat_messages_contain_images(body_json):
+                body_json, changed = normalize_multimodal_chat_body(body_json)
+                if changed:
+                    raw = json.dumps(body_json).encode('utf-8')
+                vision = ensure_vision_ready_for_chat(server, cfg=cfg)
+                if not vision.get('success'):
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            'error': {
+                                'message': str(
+                                    vision.get('error')
+                                    or 'This model does not support image input.',
+                                ),
+                                'type': 'invalid_request_error',
+                                'code': 400,
+                                'reason': str(vision.get('reason') or 'vision_unsupported'),
+                                'supports_vision': False,
+                                'imageInput': False,
+                            }
+                        },
+                    )
+                cfg = load_config()
+                server = _require_server(cfg, server_id)
         required_context = (
             estimate_request_context(body_json) if isinstance(body_json, dict) else 0
         )
@@ -3280,6 +3377,65 @@ def _delete_allowed_roots(cfg: dict[str, Any]) -> list[Path]:
     return roots
 
 
+def _cleanup_empty_model_directories(
+    cfg: dict[str, Any],
+    *,
+    start_paths: list[Path] | None = None,
+) -> list[str]:
+    """Remove empty descendants of the configured Console model root.
+
+    Cleanup never removes the model root itself. When ``start_paths`` is
+    provided, only the deleted files' ancestor chain is checked; without it,
+    all empty descendants are removed for the manual cleanup action.
+    """
+    try:
+        root = get_models_root(cfg).expanduser().resolve()
+    except OSError:
+        return []
+    if not root.is_dir():
+        return []
+
+    candidates: set[Path] = set()
+    if start_paths:
+        for path in start_paths:
+            try:
+                current = path.expanduser().resolve()
+            except OSError:
+                continue
+            if current.is_file():
+                current = current.parent
+            elif current == root or not current.is_relative_to(root):
+                continue
+            while current != root and current.is_relative_to(root):
+                candidates.add(current)
+                current = current.parent
+    else:
+        try:
+            candidates = {
+                path
+                for path in root.rglob('*')
+                if path.is_dir()
+            }
+        except OSError:
+            return []
+
+    removed: list[str] = []
+    for folder in sorted(candidates, key=lambda path: len(path.parts), reverse=True):
+        if folder == root or not folder.is_dir():
+            continue
+        try:
+            next(folder.iterdir())
+        except StopIteration:
+            try:
+                folder.rmdir()
+            except OSError:
+                continue
+            removed.append(str(folder))
+        except OSError:
+            continue
+    return removed
+
+
 _PROTECTED_DELETE_NAMES = frozenset({
     'hub', 'huggingface', 'models', 'snapshots', 'blobs', 'refs',
 })
@@ -3352,6 +3508,168 @@ def stacks_preflight(target_path: str = Query(..., min_length=1)) -> dict[str, A
     return preflight_stack_target(target_path, cfg=cfg)
 
 
+@app.post('/api/stacks/find-draft')
+@app.post('/api/stacks/find-and-attach-draft')
+def stacks_find_and_attach_draft(body: StackDraftSearchRequest) -> dict[str, Any]:
+    """Find a validated local/HF accelerator and optionally attach it."""
+    from core.huggingface import start_download
+    from core.stack_match import (
+        match_stack_for_target,
+        preflight_dflash_pair,
+        replace_stack_draft,
+    )
+    from core.auto_register import ensure_stack_for_pair
+
+    cfg = load_config()
+    target = _validate_gguf_under_allowed_roots(
+        body.target_path,
+        cfg,
+        roots=_stack_model_roots(cfg),
+    )
+    current = str(body.current_draft or '').strip() or None
+    if current:
+        _validate_gguf_under_allowed_roots(current, cfg, roots=_stack_model_roots(cfg))
+    server = get_server(cfg, str(body.server_id or '').strip()) if body.server_id else None
+    if body.server_id and not server:
+        raise HTTPException(status_code=404, detail=f'unknown server: {body.server_id}')
+    if server:
+        configured_target = str(server.get('target_path') or '').strip()
+        if configured_target:
+            try:
+                same_target = Path(configured_target).expanduser().resolve() == target
+            except OSError:
+                same_target = False
+            if not same_target:
+                raise HTTPException(
+                    status_code=400,
+                    detail='server target does not match target_path',
+                )
+    result = match_stack_for_target(
+        target,
+        cfg=cfg,
+        current_draft_path=current or (server or {}).get('draft_path'),
+        dflash_generation=body.dflash_generation,
+    )
+    local = [
+        row for row in (result.get('local_accelerators') or [])
+        if row.get('validated') or row.get('preflight', {}).get('reason_code') == 'metadata-unavailable'
+    ]
+    if local:
+        selected = local[0]
+        selected_path = str(selected.get('path') or '')
+        if body.attach:
+            attached = (
+                replace_stack_draft(str(body.server_id), selected_path, cfg=cfg)
+                if body.server_id
+                else ensure_stack_for_pair(str(target), selected_path, cfg=cfg)
+            )
+            if not attached.get('success'):
+                raise HTTPException(status_code=400, detail=str(attached.get('error') or 'could not attach accelerator'))
+            _invalidate_status_cache()
+            invalidate_model_catalog_cache()
+            return {
+                'success': True,
+                'attached': True,
+                'source': 'local',
+                'candidate': selected,
+                'match_reason': (selected.get('preflight') or {}).get('reason'),
+                **attached,
+            }
+        return {
+            'success': True,
+            'attached': False,
+            'source': 'local',
+            'candidate': selected,
+            'matches': local,
+            'hf_suggestions': result.get('hf_suggestions') or [],
+            'match_reason': (selected.get('preflight') or {}).get('reason'),
+        }
+
+    hf = result.get('recommended_hf') or (
+        (result.get('hf_suggestions') or [None])[0]
+    )
+    if not hf:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                'error': 'No compatible DFlash accelerator was found for this target.',
+                'reason_code': 'no-match',
+                'target_path': str(target),
+            },
+        )
+    files = hf.get('download_files') or []
+    filename = str(hf.get('default_download') or '').strip()
+    if not filename:
+        for item in files:
+            name = str(item.get('filename') if isinstance(item, dict) else item).strip()
+            if name.lower().endswith('.gguf') and 'dflash' in name.lower():
+                filename = name
+                break
+    if not filename:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                'error': 'A compatible Hugging Face repository was found, but it has no downloadable GGUF file.',
+                'reason_code': 'no-downloadable-candidate',
+                'candidate': hf,
+            },
+        )
+    if not body.attach:
+        return {
+            'success': True,
+            'attached': False,
+            'source': 'huggingface',
+            'candidate': hf,
+            'match_reason': (hf.get('preflight') or {}).get('reason'),
+            'download_filename': filename,
+        }
+    post_action = {
+        'type': 'attach_dflash',
+        'target_path': str(target),
+        'server_id': str(body.server_id or ''),
+    }
+    download = start_download(
+        str(hf.get('id') or ''),
+        filename,
+        post_action=post_action,
+        cfg=cfg,
+    )
+    if download.get('already_installed') and download.get('path'):
+        draft = Path(str(download['path'])).expanduser().resolve()
+        check = preflight_dflash_pair(target, draft)
+        if not check.get('validated') or not check.get('compatible'):
+            raise HTTPException(status_code=400, detail=str(check.get('reason') or 'downloaded accelerator failed preflight'))
+        attached = (
+            replace_stack_draft(str(body.server_id), str(draft), cfg=cfg)
+            if body.server_id
+            else ensure_stack_for_pair(str(target), str(draft), cfg=cfg)
+        )
+        if not attached.get('success'):
+            raise HTTPException(status_code=400, detail=str(attached.get('error') or 'could not attach accelerator'))
+        _invalidate_status_cache()
+        invalidate_model_catalog_cache()
+        return {
+            'success': True,
+            'attached': True,
+            'source': 'huggingface',
+            'candidate': hf,
+            'download': download,
+            'match_reason': check.get('reason'),
+            **attached,
+        }
+    if not download.get('success'):
+        raise HTTPException(status_code=400, detail=str(download.get('error') or 'could not start accelerator download'))
+    return {
+        'success': True,
+        'attached': False,
+        'pending_attach': True,
+        'source': 'huggingface',
+        'candidate': hf,
+        'download': download,
+        'match_reason': (hf.get('preflight') or {}).get('reason'),
+    }
+
+
 @app.get('/api/stacks/match')
 def stacks_match(
     target_path: str = Query(..., min_length=1),
@@ -3403,6 +3721,7 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
         is_accelerator_path,
         is_target_candidate,
         is_viable_stack_pair,
+        preflight_dflash_pair,
         score_accelerator_pair,
         suggest_server_id,
     )
@@ -3426,6 +3745,12 @@ def create_server(body: ServerCreateRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail='These two files do not look like a compatible target and DFlash accelerator pair.',
+        )
+    pair_preflight = preflight_dflash_pair(target, draft, score=pair_score)
+    if pair_preflight.get('reason_code') != 'metadata-unavailable' and not pair_preflight.get('validated'):
+        raise HTTPException(
+            status_code=400,
+            detail=str(pair_preflight.get('reason') or 'target and accelerator failed GGUF compatibility preflight'),
         )
     server_id = str(body.id or suggest_server_id(target, cfg=cfg)).strip()
     if not server_id:
@@ -3684,9 +4009,29 @@ def delete_model_file(
         result['path'] = result.get('path') or deleted_dirs[0]
         result['deleted_dirs'] = deleted_dirs
         result['model'] = friendly_model_dir_label(deleted_dirs[0])
+    cleaned_empty_dirs = _cleanup_empty_model_directories(
+        cfg,
+        start_paths=[*file_paths, *dir_paths],
+    )
+    if cleaned_empty_dirs:
+        result['cleaned_empty_dirs'] = cleaned_empty_dirs
     if removed:
         result['removed_profiles'] = removed
     return result
+
+
+@app.post('/api/models/cleanup')
+def cleanup_model_library() -> dict[str, Any]:
+    """Remove empty folders left behind under the configured model root."""
+    cfg = load_config()
+    cleaned = _cleanup_empty_model_directories(cfg)
+    invalidate_model_catalog_cache()
+    return {
+        'success': True,
+        'root': str(get_models_root(cfg)),
+        'cleaned_empty_dirs': cleaned,
+        'count': len(cleaned),
+    }
 
 
 class ModelImportIntoConsoleRequest(BaseModel):
@@ -3708,18 +4053,31 @@ def model_import_progress(progress_id: str) -> dict[str, Any]:
 
 @app.post('/api/models/auto-register')
 def models_auto_register() -> dict[str, Any]:
-    """Register any model files found under the Console's own models folder.
+    """Register model files under the Console library (legacy alias for auto-setup)."""
+    return models_auto_setup()
 
-    Idempotent: files already covered by a server profile are skipped, existing
-    profiles are never modified, and only the Console's own library is scanned.
-    Run automatically at server startup; this endpoint allows an on-demand run.
-    """
-    from core.auto_register import auto_register_console_models
+
+@app.post('/api/models/auto-setup')
+def models_auto_setup() -> dict[str, Any]:
+    """Upgrade plain profiles to DFlash stacks, register new models, and wire vision."""
+    from core.auto_register import auto_setup_models
 
     cfg = load_config()
-    result = auto_register_console_models(cfg=cfg)
-    if result.get('registered'):
+    result = auto_setup_models(cfg=cfg)
+    if result.get('changed'):
         invalidate_model_catalog_cache()
+    return result
+
+
+@app.post('/api/stacks/ensure')
+def stacks_ensure(body: StackEnsureRequest) -> dict[str, Any]:
+    """Create or upgrade the engine profile for one target + accelerator pair."""
+    from core.auto_register import ensure_stack_for_pair
+
+    result = ensure_stack_for_pair(body.target_path, body.draft_path)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=str(result.get('error') or 'could not set up stack'))
+    invalidate_model_catalog_cache()
     return result
 
 

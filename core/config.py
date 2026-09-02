@@ -142,6 +142,7 @@ DEFAULT_CONTEXT_AUTO_GROW = True
 DEFAULT_CONTEXT_MAX = 131072
 
 SPECULATIVE_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec'})
+VISION_CHAT_PROFILES = frozenset({'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
 
 
 def is_embedding_server(entry: dict[str, Any]) -> bool:
@@ -605,13 +606,35 @@ def reserved_ports(cfg: dict[str, Any] | None = None) -> dict[int, str]:
     return ports
 
 
+def _loopback_port_is_live(port: int, *, timeout: float = 0.4) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(('127.0.0.1', int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def suggest_server_port(*, cfg: dict[str, Any] | None = None) -> int:
+    """Suggest a free llama engine port.
+
+    Skips ports reserved in config and ports with a live listener so a
+    foreign app sitting on 8090 cannot block Qwen from starting.
+    """
     config = cfg or load_config()
     used = set(reserved_ports(config))
     for port in DEFAULT_ENGINE_PORTS:
-        if port not in used:
-            return port
-    return max(used) + 1 if used else 8090
+        if port in used:
+            continue
+        if _loopback_port_is_live(port):
+            used.add(port)
+            continue
+        return port
+    candidate = (max(used) + 1) if used else 8090
+    while candidate < 65535 and (candidate in used or _loopback_port_is_live(candidate)):
+        candidate += 1
+    return candidate
 
 
 def suggest_runtime_port(*, cfg: dict[str, Any] | None = None) -> int:
@@ -623,31 +646,29 @@ def suggest_runtime_port(*, cfg: dict[str, Any] | None = None) -> int:
     """
     config = cfg or load_config()
     used = set(reserved_ports(config))
-
-    def _live(port: int) -> bool:
-        import socket
-
-        try:
-            with socket.create_connection(('127.0.0.1', port), timeout=0.4):
-                return True
-        except OSError:
-            return False
-
     for port in DEFAULT_RUNTIME_PORTS:
         if port in used:
             continue
-        if _live(port):
+        if _loopback_port_is_live(port):
             used.add(port)
             continue
         return port
     candidate = (max(used) + 1) if used else 8910
-    while candidate < 65535 and _live(candidate):
+    while candidate < 65535 and _loopback_port_is_live(candidate):
         candidate += 1
     return candidate
 
 
 def save_config(cfg: dict[str, Any]) -> None:
     validate_config(cfg)
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        default_cfg = (ROOT / 'config.json').resolve()
+        try:
+            if CONFIG_PATH.resolve() == default_cfg:
+                return
+        except OSError:
+            if CONFIG_PATH == ROOT / 'config.json':
+                return
     payload = json.dumps(cfg, indent=2) + '\n'
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     temp_name = ''
@@ -755,6 +776,28 @@ def update_server_runtime(
     }
 
 
+def apply_server_listen_port(
+    server_id: str,
+    port: int,
+    *,
+    cfg: dict[str, Any] | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Move an engine profile to ``port`` and keep ``api_url`` in sync."""
+    config = cfg if cfg is not None else load_config()
+    entry = get_server(config, server_id)
+    if not entry:
+        return {'success': False, 'error': 'server not found'}
+    host = str(entry.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+    new_port = int(port)
+    api_url = f'http://{host}:{new_port}/v1'
+    entry['port'] = new_port
+    entry['api_url'] = api_url
+    if persist:
+        save_config(config)
+    return {'success': True, 'port': new_port, 'api_url': api_url, 'host': host}
+
+
 def get_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any] | None:
     for entry in cfg.get('servers') or []:
         if isinstance(entry, dict) and str(entry.get('id') or '') == server_id:
@@ -797,6 +840,8 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
     mmproj_path = str(entry.get('mmproj_path') or '').strip()
     if mmproj_path:
         result['mmproj_path'] = mmproj_path
+    if entry.get('vision') is False:
+        result['vision'] = False
     engine_mode = str(entry.get('engine_mode') or '').strip().lower()
     profile_name = str(result.get('profile') or '').strip().lower()
     if engine_mode:

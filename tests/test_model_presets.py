@@ -115,7 +115,7 @@ def test_write_server_preset_sanitizes_library_file_model_id(tmp_path, monkeypat
     assert 'library-file:' not in text
 
 
-def test_write_server_preset_skips_mmproj_for_speculative_profiles(tmp_path, monkeypatch):
+def test_write_server_preset_includes_mmproj_for_speculative_profiles(tmp_path, monkeypatch):
     target = tmp_path / 'target.gguf'
     draft = tmp_path / 'draft-dflash.gguf'
     mmproj = tmp_path / 'mmproj-gemma-4-12b-it-qat-q4_0.gguf'
@@ -144,5 +144,5 @@ def test_write_server_preset_skips_mmproj_for_speculative_profiles(tmp_path, mon
     text = path.read_text(encoding='utf-8')
     assert 'model-draft' in text
     assert 'spec-type = draft-dflash' in text
-    assert 'mmproj' not in text
+    assert f'mmproj = {mmproj}' in text
     assert 'gemma-12-dflash' in SPECULATIVE_PROFILES

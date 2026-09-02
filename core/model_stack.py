@@ -150,12 +150,6 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
     gemma12_draft = models / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
     if not gemma12_draft.is_file():
         gemma12_draft = root / 'models' / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
-    qwen_target = models / 'Qwen3.5-27B-Q4_K_M.gguf'
-    if not qwen_target.is_file():
-        qwen_target = root / 'models' / 'Qwen3.5-27B-Q4_K_M.gguf'
-    qwen_draft = models / 'Qwen3.5-27B-DFlash-F16.gguf'
-    if not qwen_draft.is_file():
-        qwen_draft = root / 'models' / 'Qwen3.5-27B-DFlash-F16.gguf'
     bonsai_root = root / 'bonsai-27b'
     bonsai_target = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-Q2_0.gguf'
     bonsai_draft = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-dspark-Q4_1.gguf'
@@ -217,19 +211,19 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         return stack
 
     if profile == 'qwen-dflash':
-        stack = [
-            _stack_entry(role='target', label='Qwen3.5 27B (target)', path=qwen_target, source='dflash'),
-            _stack_entry(role='draft-dflash', label='Qwen3.5 27B DFlash draft', path=qwen_draft, source='dflash'),
-        ]
-        if alias:
-            stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
-        return stack
+        # Qwen stacks must be explicit.  The old Qwen3.5 fallback could silently
+        # pair a Qwen3.8 target with an obsolete drafter when a profile was
+        # missing its paths.  A stack created by the Console always has
+        # target_path/draft_path (handled above), so an unconfigured legacy
+        # profile is intentionally represented by its alias only.
+        return [
+            _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias),
+        ] if alias else []
 
     if profile == 'qwen-ar':
-        stack = [_stack_entry(role='target', label='Qwen3.5 27B (target)', path=qwen_target, source='dflash')]
-        if alias:
-            stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
-        return stack
+        return [
+            _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias),
+        ] if alias else []
 
     if profile == 'bonsai-spec':
         stack = [

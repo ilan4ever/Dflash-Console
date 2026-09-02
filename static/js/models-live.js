@@ -18,7 +18,7 @@
   const pendingModelUnloads = new Map();
   const pendingServerUnloads = new Set();
   let runtimePollTimer = null;
-  let catalogRefreshInFlight = null;
+  let autoSetupInFlight = null;
   let partialRetryTimer = null;
   let contextModel = null;
   let stackPreflight = { key: '', status: 'idle', result: null };
@@ -468,7 +468,7 @@
       if (visionIdx >= 0) capList.splice(visionIdx, 1);
     }
     const caps = capabilityTags(capList, {
-      loadable: model.loadable && !isDflashAccelerator(model) && !isProjectorModel(model) && !modelFileMissing(model) && model.stack_status !== 'unregistered',
+      loadable: (model.loadable || !!(model.draft_path && model.path)) && !isDflashAccelerator(model) && !isProjectorModel(model) && !modelFileMissing(model),
       port: resolveModelPort(model),
     });
     if (isDflashStack(model)) {
@@ -514,6 +514,29 @@
     return model.kind === 'dir' && String(model.modality || 'llm') === 'llm';
   }
 
+  function modelDiskSizeGb(model) {
+    const size = Number(model?.size_gb);
+    if (Number.isFinite(size) && size > 0) return size;
+    const bytes = Number(model?.size_bytes);
+    return Number.isFinite(bytes) && bytes > 0 ? bytes / (1024 ** 3) : 0;
+  }
+
+  function requiresFreeToken(model) {
+    const path = String(model?.path || '');
+    const isHfFolder = model?.kind === 'dir' || !/\.gguf$/i.test(path);
+    const engines = Array.isArray(model?.engines) ? model.engines : [];
+    return isHfFolder && engines.includes('freetoken') && modelDiskSizeGb(model) >= 48;
+  }
+
+  function freeTokenRequirementMessage(model, runtime) {
+    const size = modelDiskSizeGb(model);
+    return `${model?.label || model?.filename || 'This model'} is about ${Math.round(size)} GB and cannot be loaded reliably with ${runtime}. Use FreeToken (WSL). Set the Windows paging file to System managed or approximately 200 GB first.`;
+  }
+
+  function freeTokenPagingFileMessage(model) {
+    return `${model?.label || model?.filename || 'This model'} needs more Windows virtual memory than is currently available. Increase the Windows paging file to System managed or approximately 200 GB, restart WSL/Windows, and load it again.`;
+  }
+
   function syncLoadEnginePicks() {
     const current = getLoadEngine();
     document.querySelectorAll('[data-load-engine-pick]').forEach((el) => {
@@ -528,9 +551,14 @@
         model.engines.filter((id) => !HF_LOAD_ENGINES.includes(id)),
       )
       : HF_LOAD_ENGINES.slice();
-    const preferred = engines.includes('transformers') ? 'transformers' : engines[0];
+    if (requiresFreeToken(model) && !engines.includes('freetoken')) engines.unshift('freetoken');
+    const preferred = requiresFreeToken(model)
+      ? 'freetoken'
+      : (engines.includes('transformers') ? 'transformers' : engines[0]);
     const global = getLoadEngine();
-    const current = engines.includes(global) ? global : preferred;
+    const current = requiresFreeToken(model)
+      ? preferred
+      : (engines.includes(global) ? global : preferred);
     const opts = engines.map((id) => {
       const label = id === 'vllm'
         ? 'vLLM'
@@ -541,7 +569,10 @@
             : id;
       return `<option value="${escapeHtml(id)}" ${id === current ? 'selected' : ''}>${escapeHtml(label)}</option>`;
     }).join('');
-    return `<select class="lm-select small lm-engine-pick" data-engine-pick="${escapeHtml(modelKey(model))}" title="Engine to load this model">${opts}</select>`;
+    const title = requiresFreeToken(model)
+      ? 'Large model: FreeToken (WSL) is the supported engine. Other engines will be blocked.'
+      : 'Engine to load this model';
+    return `<select class="lm-select small lm-engine-pick" data-engine-pick="${escapeHtml(modelKey(model))}" title="${escapeHtml(title)}">${opts}</select>`;
   }
 
   function rowEngineControl(model) {
@@ -567,15 +598,8 @@
     return true;
   }
 
-  function needsDflashSetupActions(model) {
-    return !!(
-      model?.path
-      && model.draft_path
-      && model.stack_status === 'unregistered'
-      && !model.server_id
-      && !isDflashAccelerator(model)
-      && !modelFileMissing(model)
-    );
+  function needsDflashSetupActions(_model) {
+    return false;
   }
 
   function stackActionButton(model) {
@@ -607,12 +631,6 @@
     }
     if (model.stack_status === 'disabled' && model.server_id) {
       return actionButton('enable-stack', 'Enable', 'Enable this engine profile');
-    }
-    if (needsDflashSetupActions(model)) {
-      return actionStackHtml([
-        actionButton('setup-stack', 'Setup stack', 'Pair the target model with its accelerator'),
-        actionButton('load-llm', 'Load LLM', 'Load the target model without speculative decoding'),
-      ], { setup: true });
     }
     if (canLoadInConsole(model)) {
       const control = rowEngineControl(model);
@@ -653,9 +671,6 @@
     }
     if (model.stack_status === 'disabled') {
       return '<span class="lm-tag yellow">disabled profile</span>';
-    }
-    if (model.stack_status === 'unregistered') {
-      return '<span class="lm-tag blue">needs setup</span>';
     }
     return '';
   }
@@ -1026,8 +1041,25 @@
     return catalogModels.map((model) => {
       const key = modelKey(model);
       let merged = { ...model };
-      if (model.server_id && serverMap[model.server_id]) {
-        const server = serverMap[model.server_id];
+      if (!merged.server_id && merged.stack_status === 'unregistered') {
+        const pathKey = normalizeModelPath(merged.path);
+        const filename = String(merged.filename || merged.path || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+        const bound = (serversData.servers || []).find((server) => {
+          const target = normalizeModelPath(server.target_path || server.path || '');
+          const serverFile = String(server.target_path || server.path || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+          return (pathKey && target === pathKey) || (filename && serverFile === filename);
+        });
+        if (bound?.id) {
+          merged.server_id = bound.id;
+          merged.stack_status = 'ready';
+          merged.loadable = true;
+          merged.dflash_stack = true;
+          merged.port = bound.port || merged.port;
+          merged.profile = bound.profile || merged.profile;
+        }
+      }
+      if (merged.server_id && serverMap[merged.server_id]) {
+        const server = serverMap[merged.server_id];
         merged = {
           ...merged,
           context_size: server.context_size ?? merged.context_size,
@@ -1056,6 +1088,18 @@
         merged.runtime_loaded = isStackLoadedOnGpu(merged);
       }
       return merged;
+    }).filter((model, _index, rows) => {
+      const synthetic = String(model.id || '').startsWith('stack-capable:') || model.stack_status === 'unregistered';
+      if (!synthetic) return true;
+      const pathKey = normalizeModelPath(model.path);
+      const filename = String(model.filename || model.path || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+      return !rows.some((row) => {
+        if (row === model || !row.server_id) return false;
+        if (String(row.id || '').startsWith('stack-capable:')) return false;
+        const rowFile = String(row.filename || row.path || '').split(/[\\/]/).pop()?.toLowerCase() || '';
+        return (pathKey && normalizeModelPath(row.path) === pathKey)
+          || (filename && rowFile === filename);
+      });
     });
   }
 
@@ -1152,11 +1196,19 @@
     return !!(isDflashStack(model) && model.server_id && model.draft_path && model.path);
   }
 
+  function canFindCompatibleDraft(model) {
+    return !!(model?.path && !isDflashAccelerator(model));
+  }
+
   function stackMenuActionHtml(model) {
     const state = stackMenuState(model);
     const result = state.result || {};
+    const findDraftAction = canFindCompatibleDraft(model)
+      ? `<button type="button" data-cmd="find-attach-draft" title="Find, validate, and attach the correct DFlash accelerator">Find and attach compatible DFlash draft…</button>`
+      : '';
     if (result.reason_code === 'already-stack' && canReplaceStackDraft(model)) {
       return `
+        ${findDraftAction}
         <button type="button" data-cmd="replace-draft" title="Compare local and Hugging Face accelerators and update this stack">
           Check for better accelerator…
         </button>
@@ -1164,6 +1216,7 @@
     }
     if (state.status === 'checking') {
       return `
+        ${findDraftAction}
         <button type="button" data-cmd="create-stack" disabled title="Checking for a compatible DFlash accelerator">
           Checking DFlash compatibility…
         </button>
@@ -1172,6 +1225,7 @@
     if (state.status === 'ready' && result.eligible) {
       const accelerator = result.best_accelerator?.filename || 'compatible accelerator';
       return `
+        ${findDraftAction}
         <button type="button" data-cmd="create-stack" title="Open the DFlash stack wizard">
           Create DFlash stack…
         </button>
@@ -1179,6 +1233,7 @@
     }
     if (canStartHfStack(model, result)) {
       return `
+        ${findDraftAction}
         <button type="button" data-cmd="create-stack" title="Open the DFlash stack wizard">
           Create DFlash stack…
         </button>
@@ -1192,6 +1247,7 @@
         <div class="df-stack-preflight df-model-stack-preflight is-unavailable">${escapeHtml(result.reason)}</div>`;
     }
     return `
+      ${findDraftAction}
       <button type="button" data-cmd="create-stack" disabled title="${escapeHtml(result.reason || 'DFlash stack is not available')}">
         DFlash stack unavailable
       </button>
@@ -1207,6 +1263,11 @@
     button?.addEventListener('click', (event) => {
       event.stopPropagation();
       void runContextCommand('create-stack', model);
+      hideContextMenu();
+    });
+    slot.querySelector('button[data-cmd="find-attach-draft"]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void runContextCommand('find-attach-draft', model);
       hideContextMenu();
     });
   }
@@ -1766,6 +1827,7 @@
         if (event.target.closest('[data-action="open-folder"]')) return;
         if (event.target.closest('[data-action="browse-model"]')) return;
         if (event.target.closest('[data-action="enable-stack"]')) return;
+        if (event.target.closest('[data-action="auto-setup-stack"]')) return;
         if (event.target.closest('[data-action="setup-stack"]')) return;
         if (event.target.closest('[data-action="unload-model"]')) return;
         if (event.target.closest('[data-engine-pick]')) return;
@@ -1786,6 +1848,15 @@
         event.stopPropagation();
         const model = modelForRow(btn.closest('.lm-model-row'));
         if (model) void loadModel(model);
+      });
+    });
+    body.querySelectorAll('[data-engine-pick]').forEach((pick) => {
+      pick.addEventListener('change', () => {
+        const model = modelForRow(pick.closest('.lm-model-row'));
+        const runtime = String(pick.value || '').toLowerCase();
+        if (model && requiresFreeToken(model) && runtime !== 'freetoken') {
+          toast(freeTokenRequirementMessage(model, runtime), false);
+        }
       });
     });
     body.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
@@ -1821,6 +1892,13 @@
         event.stopPropagation();
         const model = modelForRow(btn.closest('.lm-model-row'));
         if (model) void enableStack(model);
+      });
+    });
+    body.querySelectorAll('[data-action="auto-setup-stack"]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const model = modelForRow(btn.closest('.lm-model-row'));
+        if (model) void finishStackSetup(model);
       });
     });
     body.querySelectorAll('[data-action="setup-stack"]').forEach((btn) => {
@@ -2123,6 +2201,29 @@
     }
   }
 
+  async function waitForDraftAttach(jobId, model) {
+    const deadline = Date.now() + 60 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const data = await api(`/api/hf/download/${encodeURIComponent(jobId)}`, { timeoutMs: 10000 });
+      const job = data?.job || data;
+      if (job?.status === 'done') {
+        if (job.post_action_error || job.attach_result?.success === false) {
+          throw new Error(job.post_action_error || 'The downloaded draft failed compatibility validation.');
+        }
+        await refresh({ rebindInspector: true });
+        await window.DFlashServerLive?.refresh?.();
+        return;
+      }
+      if (job?.status === 'error') {
+        throw new Error(job.error || 'DFlash draft download failed.');
+      }
+      const progress = job?.progress;
+      toast(progress != null ? `Downloading compatible DFlash draft… ${progress}%` : 'Downloading compatible DFlash draft…');
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    }
+    throw new Error('Timed out waiting for the compatible DFlash draft download.');
+  }
+
   async function runContextCommand(cmd, model) {
     const key = modelKey(model);
     if (cmd === 'pin') {
@@ -2158,6 +2259,39 @@
       const url = huggingFaceUrl(model);
       if (url) window.open(url, '_blank', 'noopener,noreferrer');
       else toast('No Hugging Face URL for this model', false);
+      return;
+    }
+    if (cmd === 'find-attach-draft') {
+      if (!canFindCompatibleDraft(model)) {
+        toast('Choose the full target model to find its DFlash draft.', false);
+        return;
+      }
+      toast('Searching local files and Hugging Face for a compatible DFlash draft…');
+      try {
+        const result = await api('/api/stacks/find-and-attach-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          timeoutMs: 30000,
+          body: JSON.stringify({
+            target_path: model.path,
+            server_id: model.server_id || null,
+            current_draft: model.draft_path || null,
+            dflash_generation: model.dflash_generation || 'auto',
+            attach: true,
+          }),
+        });
+        if (result.pending_attach && result.download?.job_id) {
+          toast('Compatible draft found. Download started…');
+          await waitForDraftAttach(result.download.job_id, model);
+        } else {
+          await refresh({ rebindInspector: true });
+          await window.DFlashServerLive?.refresh?.();
+          const candidate = result.candidate?.filename || result.candidate?.title || 'compatible draft';
+          toast(`Attached ${candidate}`);
+        }
+      } catch (err) {
+        toast(err.message || 'Could not find a compatible DFlash draft.', false);
+      }
       return;
     }
     if (cmd === 'create-stack') {
@@ -2424,12 +2558,19 @@
         window.DFlashStatusFeed?.note(`${label} ready`, 'FreeToken is ready for chat');
         return data;
       }
+      if (requiresFreeToken(model) && data?.running === false) {
+        throw new Error(freeTokenPagingFileMessage(model));
+      }
       renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
       window.DFlashDownloadsLive?.render?.();
       await refreshRuntimeState({ silent: true });
       await new Promise((resolve) => window.setTimeout(resolve, 2500));
     }
-    throw new Error('FreeToken did not finish warming up in time');
+    throw new Error(
+      requiresFreeToken(model)
+        ? freeTokenPagingFileMessage(model)
+        : 'FreeToken did not finish warming up in time',
+    );
   }
 
   async function loadModel(model, { llmOnly = false } = {}) {
@@ -2439,10 +2580,6 @@
     }
     if (modelFileMissing(model)) {
       toast('Model file not found on disk. Refresh the catalog or check Settings → model folders.', false);
-      return;
-    }
-    if (model.stack_status === 'unregistered' && !llmOnly) {
-      toast('Set up a DFlash stack first, or use LLM on the row.', false);
       return;
     }
     const runtimeId = String(model.runtime_id || '');
@@ -2459,6 +2596,10 @@
       const isTf = loadRuntime === 'transformers';
       const isVllm = loadRuntime === 'vllm';
       const isFreeToken = loadRuntime === 'freetoken';
+      if (requiresFreeToken(model) && !isFreeToken) {
+        toast(freeTokenRequirementMessage(model, loadRuntime), false);
+        return;
+      }
       if ((isVllm || isTf || isFreeToken) && !isHfEngineModel(model)) {
         toast(
           isFreeToken
@@ -2533,6 +2674,23 @@
       return;
     }
     let serverId = llmOnly ? '' : model.server_id;
+    if (!llmOnly && !serverId && model.path && model.draft_path) {
+      try {
+        const ensured = await api('/api/stacks/ensure', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_path: model.path,
+            draft_path: model.draft_path,
+          }),
+        });
+        serverId = String(ensured?.server_id || ensured?.server?.id || '').trim();
+        if (serverId) model.server_id = serverId;
+      } catch (err) {
+        toast(err?.message || 'Could not register the DFlash stack', false);
+        return;
+      }
+    }
     if (model.plain_gguf || llmOnly || !serverId) {
       const active = window.DFlashServerLive.activeServer?.();
       serverId = active?.id;
@@ -2669,6 +2827,48 @@
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
   }
 
+  async function runAutoSetup() {
+    if (autoSetupInFlight) return autoSetupInFlight;
+    autoSetupInFlight = api('/api/models/auto-setup', { method: 'POST', timeoutMs: 120000 })
+      .finally(() => { autoSetupInFlight = null; });
+    return autoSetupInFlight;
+  }
+
+  async function maybeAutoSetupStacks() {
+    const needsSetup = models.some((m) => m.stack_status === 'unregistered' && m.draft_path && m.path);
+    if (!needsSetup) return false;
+    try {
+      const result = await runAutoSetup();
+      return Boolean(result?.changed);
+    } catch {
+      return false;
+    }
+  }
+
+  async function finishStackSetup(model) {
+    const targetPath = String(model?.path || '').trim();
+    const draftPath = String(model?.draft_path || '').trim();
+    if (!targetPath || !draftPath) {
+      toast('Missing target or accelerator path', false);
+      return;
+    }
+    window.DFlashStatusFeed?.setTransient(`Setting up ${model.label || model.filename || 'stack'}…`, {
+      secondary: 'Registering DFlash stack',
+      ttlMs: 60000,
+    });
+    try {
+      await api('/api/stacks/ensure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_path: targetPath, draft_path: draftPath }),
+      });
+      await refresh({ silent: true, forceCatalogRefresh: true, autoSetupPass: false, rebindInspector: true });
+      toast(`${model.label || model.filename || 'Stack'} is ready — use Load.`);
+    } catch (err) {
+      toast(err?.message || 'Could not set up DFlash stack', false);
+    }
+  }
+
   async function refreshCatalogQuiet() {
     try {
       await refresh({ silent: true });
@@ -2677,7 +2877,7 @@
     }
   }
 
-  async function performRefresh({ rebindInspector = false, forceCatalogRefresh = false, silent = false } = {}) {
+  async function performRefresh({ rebindInspector = false, forceCatalogRefresh = false, silent = false, autoSetupPass = true } = {}) {
     const filter = document.getElementById('modelsFilterInput')?.value || '';
     // Only the first load needs the loading state; polling refreshes keep the
     // current rows on screen (no flicker).
@@ -2752,6 +2952,15 @@
       else if (models[0]) await selectModel(modelKey(models[0]), { applyInspector: true });
     } else if (rebindInspector) {
       await selectModel(selectedKey, { applyInspector: true });
+    }
+    if (!partialCatalog && autoSetupPass) {
+      const needsSetup = models.some((m) => m.stack_status === 'unregistered' && m.draft_path && m.path && !m.server_id);
+      if (needsSetup) {
+        const changed = await maybeAutoSetupStacks();
+        if (changed) {
+          await refresh({ silent: true, forceCatalogRefresh: true, rebindInspector: true, autoSetupPass: false });
+        }
+      }
     }
   }
 

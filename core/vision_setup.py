@@ -13,6 +13,19 @@ from core.model_paths import allowed_model_roots
 
 _MMPROJ_RE = re.compile(r'mmproj', re.I)
 
+VISION_CHAT_PROFILES = frozenset({'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
+
+
+def server_supports_vision_chat(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
+    """True only for profiles that intentionally run chat vision (mmproj in preset)."""
+    if server.get('vision') is False:
+        return False
+    profile = str(server.get('profile') or '').strip().lower()
+    if profile not in VISION_CHAT_PROFILES:
+        return False
+    mmproj = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
+    return bool(mmproj and Path(mmproj).expanduser().is_file())
+
 
 def _is_mmproj_name(name: str) -> bool:
     lower = str(name or '').lower()

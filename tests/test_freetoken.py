@@ -70,6 +70,8 @@ def test_freetoken_log_progress_parses_expert_banks():
     assert progress['expert_present'] == 18
     assert progress['expert_total'] == 43
     assert progress['expert_pct'] == 41.9
+    assert progress['eta_seconds'] == 710
+    assert progress['elapsed_seconds'] == 491
 
 
 def test_freetoken_load_without_install_returns_install_hint(monkeypatch):

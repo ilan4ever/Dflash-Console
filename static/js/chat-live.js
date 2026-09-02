@@ -211,6 +211,8 @@
   }
 
   function imageInputSupported(engine) {
+    if (engine?.supportsVision || engine?.mmprojPath) return true;
+    if (Array.isArray(engine?.capabilities) && engine.capabilities.includes('vision')) return true;
     const model = selectedCatalogModel()
       || catalogModels.find((entry) => entry.server_id === engine?.id || entry.id === engine?.modelId);
     const capabilities = Array.isArray(model?.capabilities) ? model.capabilities : [];
@@ -436,6 +438,9 @@
       port: server.port,
       modelId,
       inference: server.inference_settings || {},
+      supportsVision: server.supports_vision === true,
+      mmprojPath: String(server.mmproj_path || '').trim(),
+      capabilities: Array.isArray(server.capabilities) ? server.capabilities : [],
     };
   }
 

@@ -976,6 +976,8 @@ def build_server_status(
     boot_error = boot_failure_message(log_lines)
     load_error = None if boot_error else model_load_failure_message(log_lines)
     status_error = boot_error or load_error
+    if status_error and loaded_models:
+        status_error = None
     active_boot = is_active_boot(log_lines)
     active_model_load = is_active_model_load(log_lines)
     log_load_progress = parse_load_progress(log_lines) if (active_boot or active_model_load) and not load_error else None
@@ -1099,13 +1101,11 @@ def build_server_status(
 
     active_model_id = loaded_models[0] if loaded_models else ''
 
-    from core.vision_setup import resolve_mmproj_path
-    from core.local_models import _has_vision_support
+    from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
 
     mmproj_path = resolve_mmproj_path(server, cfg=cfg)
     target_path = str(server.get('target_path') or '').strip()
-    target_file = Path(target_path).expanduser() if target_path else None
-    supports_vision = bool(mmproj_path) or _has_vision_support(target_file if target_file and target_file.is_file() else None)
+    supports_vision = server_supports_vision_chat(server, cfg=cfg)
 
     result = {
         **server,
