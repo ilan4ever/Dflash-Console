@@ -176,6 +176,7 @@ jobs:
           if ($manifest.appId -ne "com.dflash.console") { throw "Unexpected DFlash manifest appId." }
 
       - name: Publish signed DFlash update feed
+        continue-on-error: true
         shell: pwsh
         env:
           HOSTINGER_SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
