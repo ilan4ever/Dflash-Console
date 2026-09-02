@@ -187,6 +187,8 @@ jobs:
         run: |
           $key = "$env:RUNNER_TEMP\hostinger-dflash.key"
           $env:HOSTINGER_SSH_PRIVATE_KEY | Set-Content $key -Encoding ascii
+          icacls $key /inheritance:r | Out-Null
+          icacls $key /grant:r "$($env:USERNAME):(R)" | Out-Null
           $env:HOSTINGER_SSH_PRIVATE_KEY_PATH = $key
           $version = node -p "require('./package.json').version"
           .\scripts\publish-dflash-update.ps1 `
