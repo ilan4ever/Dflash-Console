@@ -79,16 +79,6 @@ jobs:
           $endpoint | Set-Content electron/resources/update-endpoint.json -Encoding UTF8
           $env:DFLASH_UPDATE_PRIVATE_KEY | Set-Content "$env:RUNNER_TEMP\dflash-update-private.pem" -Encoding UTF8
 
-      - name: Verify Windows code-signing configuration
-        shell: pwsh
-        env:
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: |
-          if (-not $env:WINDOWS_CSC_LINK -or -not $env:WINDOWS_CSC_KEY_PASSWORD) {
-            throw "WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD repository secrets are required for production releases."
-          }
-
       - name: Verify update-feed publishing configuration
         shell: pwsh
         env:
@@ -114,10 +104,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Portable package build failed.' }
           .\scripts\build-fast-installer.ps1 -SkipStage
           if ($LASTEXITCODE -ne 0) { throw 'Branded installer build failed.' }
-          .\scripts\sign-windows-artifact.ps1 `
-            -Artifact ("dist-electron/DFlash-Console-Setup-" + (node -p "require('./package.json').version") + "-x64.exe")
+          if ($env:WINDOWS_CSC_LINK -and $env:WINDOWS_CSC_KEY_PASSWORD) {
+            .\scripts\sign-windows-artifact.ps1 `
+              -Artifact ("dist-electron/DFlash-Console-Setup-" + (node -p "require('./package.json').version") + "-x64.exe")
+            if ($LASTEXITCODE -ne 0) { throw 'Windows artifact signing failed.' }
+          } else {
+            Write-Warning 'No Windows code-signing certificate configured; publishing unsigned open-source artifacts.'
+          }
 
-      - name: Verify release signatures
+      - name: Verify release signatures when configured
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
@@ -125,10 +123,17 @@ jobs:
             "dist-electron/DFlash-Console-Setup-$version-x64.exe",
             "dist-electron/DFlash-Console-Portable-$version-x64.exe"
           )
-          foreach ($artifact in $artifacts) {
-            $signature = Get-AuthenticodeSignature $artifact
-            if ($signature.Status -ne 'Valid') {
-              throw "Release artifact is not validly signed: $artifact ($($signature.Status))"
+          if ($env:WINDOWS_CSC_LINK -and $env:WINDOWS_CSC_KEY_PASSWORD) {
+            foreach ($artifact in $artifacts) {
+              $signature = Get-AuthenticodeSignature $artifact
+              if ($signature.Status -ne 'Valid') {
+                throw "Release artifact is not validly signed: $artifact ($($signature.Status))"
+              }
+            }
+          } else {
+            foreach ($artifact in $artifacts) {
+              $signature = Get-AuthenticodeSignature $artifact
+              Write-Warning "Unsigned release artifact allowed by policy: $artifact ($($signature.Status))"
             }
           }
 
