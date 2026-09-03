@@ -102,7 +102,7 @@ def _overview_html(base: str) -> str:
     <div class="df-docs-hero-actions">
       <a class="df-docs-pill primary" href="{base}/" target="_blank" rel="noopener">Open console</a>
       <a class="df-docs-pill" href="{base}/docs" target="_blank" rel="noopener">Swagger UI</a>
-      <a class="df-docs-pill" href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>
+      <a class="df-docs-pill" href="https://github.com/z-lab/DFlash" target="_blank" rel="noopener">DFlash project</a>
     </div>
   </div>
 </div>
@@ -162,7 +162,7 @@ def _overview_html(base: str) -> str:
     the GNU Affero General Public License version 3 or later.
     Visit the <a href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener">source repository</a>,
     <a href="https://github.com/ilan4ever" target="_blank" rel="noopener">developer profile</a>, or
-    <a href="https://github.com/ilan4ever/Dflash" target="_blank" rel="noopener">DFlash project</a>.
+    <a href="https://github.com/z-lab/DFlash" target="_blank" rel="noopener">DFlash project</a>.
     The AGPL requires retaining the copyright and license notices and providing
     corresponding source when its distribution or network-use terms apply.
     There is no warranty for the covered work. See the repository license and

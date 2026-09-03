@@ -196,4 +196,4 @@ GNU AGPL v3 or later. See [LICENSE](./LICENSE), [NOTICE.md](./NOTICE.md), and
 [TRADEMARKS.md](./TRADEMARKS.md).
 
 DFlash Console is developed by **ILAN AVIV**. Related project:
-[DFlash](https://github.com/ilan4ever/Dflash).
+[DFlash](https://github.com/z-lab/DFlash).
