@@ -1,3 +1,3 @@
 """DFlash Console release label."""
 
-APP_VERSION = "0.3.119"
+APP_VERSION = "0.3.120"
