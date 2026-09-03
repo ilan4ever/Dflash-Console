@@ -6,7 +6,7 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 
 > **Status:** Public preview for local, single-user Windows use.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.120
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.121
 
 ## Download (Windows)
 

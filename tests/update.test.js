@@ -65,6 +65,12 @@ test('supports public and authenticated HTTPS update configurations', () => {
   assert.equal(config.token, 'test-token');
 });
 
+test('public GitHub updates do not require a feed token', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  assert.match(main, /if \(!manifestUrl\) return null;/);
+  assert.doesNotMatch(main, /if \(!manifestUrl \|\| !token\)/);
+});
+
 test('does not attach authentication headers to public update requests', () => {
   const publicService = new UpdateService({
     manifestUrl: 'https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json',

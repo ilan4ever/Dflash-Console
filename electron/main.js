@@ -318,7 +318,9 @@ function createUpdateService() {
       || config.token
       || '',
   ).trim();
-  if (!manifestUrl || !token) return null;
+  // Public GitHub Releases do not use a feed token. A token is optional and
+  // only attached when a private/legacy feed still requires it.
+  if (!manifestUrl) return null;
   return new UpdateService({
     manifestUrl,
     token,
