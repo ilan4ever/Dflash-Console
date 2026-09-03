@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dflash-console"
-version = "0.3.122"
+version = "0.3.123"
 description = "Local control panel and terminal CLI for DFlash stacks and local model runtimes"
 readme = "README.md"
 license = { file = "LICENSE" }

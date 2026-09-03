@@ -71,6 +71,24 @@ def test_vision_capability_requires_mmproj_file(tmp_path: Path, monkeypatch: pyt
     assert vision_capability(server)['supports_vision'] is True
 
 
+def test_vision_capability_true_for_gemma_chat_when_mmproj_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr('core.vision_setup._is_allowed_model_path', lambda path, cfg: True)
+    target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    mmproj = tmp_path / 'mmproj-BF16.gguf'
+    target.write_bytes(b'model')
+    mmproj.write_bytes(b'mmproj')
+    server = {
+        'id': 'gemma-4-31b-q4-0-it-dflash',
+        'profile': 'gemma-chat',
+        'target_path': str(target),
+        'mmproj_path': str(mmproj),
+    }
+    cap = vision_capability(server)
+    assert cap['supports_vision'] is True
+    assert cap['imageInput'] is True
+    assert cap['mmproj_path'] == str(mmproj.resolve())
+
+
 def test_ensure_vision_ready_for_chat_rejects_without_mmproj(tmp_path: Path):
     target = tmp_path / 'model.gguf'
     target.write_bytes(b'model')

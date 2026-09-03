@@ -62,6 +62,23 @@ def test_vision_plan_wires_local_mmproj_without_huggingface(tmp_path: Path):
     assert plan['mmproj_path'] == str(projector)
 
 
+def test_server_supports_vision_chat_gemma_chat_with_mmproj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(vision_setup, '_is_allowed_model_path', lambda path, cfg: True)
+    target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    projector = tmp_path / 'mmproj-BF16.gguf'
+    target.write_bytes(b'gguf')
+    projector.write_bytes(b'mmproj')
+    server = {
+        'id': 'gemma-4-31b-q4-0-it-dflash',
+        'profile': 'gemma-chat',
+        'target_path': str(target),
+        'mmproj_path': str(projector),
+    }
+    assert vision_setup.server_supports_vision_chat(server) is True
+    server_off = {**server, 'vision': False}
+    assert vision_setup.server_supports_vision_chat(server_off) is False
+
+
 def test_vision_plan_needs_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     model = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
     model.write_bytes(b'gguf')

@@ -119,9 +119,6 @@ def main() -> int:
             if model_id == 'totally-unknown-model':
                 if status != 404:
                     failures += 1
-            elif model_id == 'gemma-4-31b-q4-0-it-dflash' and kind == 'image':
-                if status != 400 or 'vision projector' not in err_msg.lower():
-                    failures += 1
             elif status != 200:
                 failures += 1
         else:

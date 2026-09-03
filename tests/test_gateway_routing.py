@@ -53,7 +53,6 @@ def _cfg() -> dict:
                 'profile': 'gemma-chat',
                 'model_id': 'gemma-4-31b-q4-0-it',
                 'target_path': r'C:\models\gemma31.gguf',
-                'vision': False,
             },
         ],
     }
@@ -103,9 +102,12 @@ def test_gateway_list_models_uses_catalog_ids(tmp_path, monkeypatch: pytest.Monk
     cfg = _cfg()
     cfg['servers'][2]['target_path'] = str(target)
     cfg['servers'][2]['mmproj_path'] = str(mmproj)
+    cfg['servers'][3]['target_path'] = str(target)
+    cfg['servers'][3]['mmproj_path'] = str(mmproj)
     with patch('api.gateway.load_config', return_value=cfg):
         result = asyncio.run(list_models())
     by_id = {row['id']: row for row in result['data']}
     assert 'gemma-4-12b-it-q4-k-m' in by_id
     assert by_id['gemma-4-12b-it-q4-k-m']['meta']['server_id'] == 'gemma-4-12b-it-q4-k-m-dflash'
-    assert by_id['gemma-4-31b-q4-0-it']['meta']['supports_vision'] is False
+    assert by_id['gemma-4-31b-q4-0-it']['meta']['supports_vision'] is True
+    assert by_id['gemma-4-31b-q4-0-it']['meta']['imageInput'] is True

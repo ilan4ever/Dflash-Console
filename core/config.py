@@ -142,7 +142,7 @@ DEFAULT_CONTEXT_AUTO_GROW = True
 DEFAULT_CONTEXT_MAX = 131072
 
 SPECULATIVE_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec'})
-VISION_CHAT_PROFILES = frozenset({'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
+VISION_CHAT_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
 
 
 def is_embedding_server(entry: dict[str, Any]) -> bool:

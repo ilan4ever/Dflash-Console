@@ -146,3 +146,37 @@ def test_write_server_preset_includes_mmproj_for_speculative_profiles(tmp_path, 
     assert 'spec-type = draft-dflash' in text
     assert f'mmproj = {mmproj}' in text
     assert 'gemma-12-dflash' in SPECULATIVE_PROFILES
+
+
+def test_write_server_preset_includes_mmproj_for_gemma_chat_31b(tmp_path, monkeypatch):
+    target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    draft = tmp_path / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+    mmproj = tmp_path / 'mmproj-BF16.gguf'
+    target.write_bytes(b'target')
+    draft.write_bytes(b'draft')
+    mmproj.write_bytes(b'mmproj')
+
+    preset_dir = tmp_path / 'presets'
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', preset_dir)
+    monkeypatch.setattr(
+        'core.vision_setup.resolve_mmproj_path',
+        lambda server, cfg=None: str(mmproj),
+    )
+
+    server = {
+        'id': 'gemma-4-31b-q4-0-it-dflash',
+        'model_id': 'gemma-4-31b-q4-0-it',
+        'profile': 'gemma-chat',
+        'context_size': 8192,
+        'load_settings': {'gpu_layers': 99},
+        'gpu_device': 'auto',
+        'target_path': str(target),
+        'draft_path': str(draft),
+        'mmproj_path': str(mmproj),
+    }
+    path = write_server_preset(server, profile='gemma-chat')
+    text = path.read_text(encoding='utf-8')
+    assert 'model-draft' in text
+    assert 'spec-type = draft-dflash' in text
+    assert f'mmproj = {mmproj}' in text
+    assert 'gemma-chat' in SPECULATIVE_PROFILES

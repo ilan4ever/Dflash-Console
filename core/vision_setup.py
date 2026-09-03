@@ -13,7 +13,7 @@ from core.model_paths import allowed_model_roots
 
 _MMPROJ_RE = re.compile(r'mmproj', re.I)
 
-VISION_CHAT_PROFILES = frozenset({'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
+VISION_CHAT_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
 
 
 def server_supports_vision_chat(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
