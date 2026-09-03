@@ -19,6 +19,22 @@ if (-not $csc) {
     throw "csc.exe not found (need .NET Framework 4.x)"
 }
 
+$pkg = Get-Content (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json
+$version = [string]$pkg.version
+if ($version -notmatch '^\d+\.\d+\.\d+') {
+    throw "package.json version is missing or invalid: $version"
+}
+$versionCs = Join-Path $PSScriptRoot 'SetupVersion.cs'
+@(
+    'namespace DFlashConsoleSetup'
+    '{'
+    '    internal static class SetupVersion'
+    '    {'
+    "        public const string Value = `"$version`";"
+    '    }'
+    '}'
+) | Set-Content -Path $versionCs -Encoding ASCII
+
 $src = Join-Path $ProjectRoot "tools\dflash-setup-ui\SetupForm.cs"
 $out = Join-Path $OutDir "dflash-setup-ui.exe"
 & $csc /nologo /target:winexe /optimize+ /platform:anycpu `
@@ -26,7 +42,8 @@ $out = Join-Path $OutDir "dflash-setup-ui.exe"
     /reference:System.Drawing.dll `
     /reference:System.dll `
     /out:"$out" `
-    "$src"
+    "$src" `
+    "$versionCs"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $out)) {
     throw "Failed to compile dflash-setup-ui.exe"
 }

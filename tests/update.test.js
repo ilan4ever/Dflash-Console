@@ -44,6 +44,18 @@ test('validates the DFlash x64 setup manifest contract', () => {
   assert.equal(safeArtifactName('../' + value.fileName), false);
 });
 
+test('setup UI bakes package.json version instead of the installed folder label', () => {
+  const builder = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-fast-installer.ps1'), 'utf8');
+  const setupBuild = fs.readFileSync(path.join(__dirname, '..', 'tools', 'dflash-setup-ui', 'build.ps1'), 'utf8');
+  const setupForm = fs.readFileSync(path.join(__dirname, '..', 'tools', 'dflash-setup-ui', 'SetupForm.cs'), 'utf8');
+  assert.match(builder, /install-version\.txt/);
+  assert.match(setupBuild, /SetupVersion\.cs/);
+  assert.match(setupBuild, /package\.json/);
+  assert.match(setupForm, /SetupVersion\.Value/);
+  assert.match(setupForm, /already installed/);
+  assert.doesNotMatch(setupForm, /foreach \(string dir in new\[\] \{ installRoot, uiRoot \}\)/);
+});
+
 test('uses the branded setup UI instead of the Windows NSIS wizard', () => {
   const targets = packageJson.build?.win?.target || [];
   assert.equal(targets.some((target) => target.target === 'nsis'), false);

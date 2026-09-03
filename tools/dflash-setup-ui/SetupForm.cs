@@ -534,7 +534,16 @@ namespace DFlashConsoleSetup
 
         private static string ReadVersion(string uiRoot, string installRoot)
         {
-            foreach (string dir in new[] { installRoot, uiRoot })
+            // Always prefer the version baked into this setup.exe. Reading the
+            // destination install-version.txt or Apps & Features DisplayVersion
+            // first reused the *already installed* label (e.g. 0.3.86) during
+            // upgrades and then wrote that stale value back onto the new files.
+            if (!string.IsNullOrWhiteSpace(SetupVersion.Value))
+            {
+                return SetupVersion.Value.Trim();
+            }
+
+            foreach (string dir in new[] { uiRoot })
             {
                 if (string.IsNullOrWhiteSpace(dir)) continue;
                 try
@@ -549,47 +558,34 @@ namespace DFlashConsoleSetup
                 catch { }
             }
 
-            foreach (string dir in new[] { installRoot, uiRoot })
+            foreach (string pkgPath in PayloadPackageJsonPaths(uiRoot, installRoot))
             {
-                if (string.IsNullOrWhiteSpace(dir)) continue;
                 try
                 {
-                    string pkgPath = Path.Combine(dir, "resources", "app", "package.json");
-                    if (File.Exists(pkgPath))
-                    {
-                        string json = File.ReadAllText(pkgPath);
-                        int idx = json.IndexOf("\"version\"", StringComparison.OrdinalIgnoreCase);
-                        if (idx >= 0)
-                        {
-                            int start = json.IndexOf('"', idx + 9);
-                            int end = json.IndexOf('"', start + 1);
-                            if (start >= 0 && end > start)
-                            {
-                                string v = json.Substring(start + 1, end - start - 1).Trim();
-                                if (!string.IsNullOrEmpty(v)) return v;
-                            }
-                        }
-                    }
+                    if (!File.Exists(pkgPath)) continue;
+                    string json = File.ReadAllText(pkgPath);
+                    int idx = json.IndexOf("\"version\"", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) continue;
+                    int start = json.IndexOf('"', idx + 9);
+                    int end = json.IndexOf('"', start + 1);
+                    if (start < 0 || end <= start) continue;
+                    string v = json.Substring(start + 1, end - start - 1).Trim();
+                    if (!string.IsNullOrEmpty(v)) return v;
                 }
                 catch { }
             }
 
-            try
-            {
-                foreach (RegistryHive hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
-                {
-                    using (RegistryKey baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64))
-                    using (RegistryKey key = baseKey.OpenSubKey(UninstallKeyName))
-                    {
-                        if (key == null) continue;
-                        string v = key.GetValue("DisplayVersion") as string;
-                        if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
-                    }
-                }
-            }
-            catch { }
-
             return "unknown";
+        }
+
+        private static string[] PayloadPackageJsonPaths(string uiRoot, string installRoot)
+        {
+            return new[]
+            {
+                Path.Combine(uiRoot ?? "", "app", "resources", "app", "package.json"),
+                Path.Combine(uiRoot ?? "", "resources", "app", "package.json"),
+                Path.Combine(installRoot ?? "", "resources", "app", "package.json"),
+            };
         }
 
         private void SetStatus(string text)
