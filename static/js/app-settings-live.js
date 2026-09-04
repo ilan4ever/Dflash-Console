@@ -49,6 +49,14 @@
     setChecked('appSettingsShowSplash', data.showSplashOnStartup);
     setChecked('appSettingsStartWithWindows', data.startWithWindows);
     setChecked('appSettingsAllowAutomaticUpdates', data.allowAutomaticUpdates !== false);
+    const startupStatus = el('appSettingsStartupStatus');
+    if (startupStatus) {
+      startupStatus.textContent = data.startWithWindows
+        ? (data.startupRegistered
+          ? 'Windows startup is active.'
+          : 'Windows startup registration needs attention.')
+        : 'Windows startup is off.';
+    }
     syncDependentControls();
 
     if (el('appSettingsVersion')) {

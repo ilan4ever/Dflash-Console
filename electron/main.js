@@ -9,6 +9,7 @@ const {
   loadAppSettings,
   saveAppSettings,
   syncStartupRegistration,
+  startupRegistrationState,
 } = require('./app-settings');
 const { UpdateService } = require('./update-service');
 const { compareVersions } = require('./update-contract');
@@ -511,6 +512,7 @@ function applyTrayFromSettings() {
 function registerAppSettingsIpc() {
   ipcMain.handle('app-settings:get', () => ({
     ...loadAppSettings(),
+    startupRegistered: startupRegistrationState(),
     postInstallWelcome: postInstallWelcomeActive,
     postInstallSetup: postInstallSetupActive,
     isElectron: true,
@@ -535,6 +537,7 @@ function registerAppSettingsIpc() {
     applyTrayFromSettings();
     return {
       ...saved,
+      startupRegistered: startupRegistrationState(),
       isElectron: true,
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,
@@ -549,6 +552,7 @@ function registerAppSettingsIpc() {
     const selected = await chooseDataRoot();
     return {
       ...loadAppSettings(),
+      startupRegistered: startupRegistrationState(),
       isElectron: true,
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron,

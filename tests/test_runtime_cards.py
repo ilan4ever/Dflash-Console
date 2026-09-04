@@ -1,3 +1,4 @@
+from core.gpu_processes import _build_external_card
 from core.runtime import _acceleration_metadata, _build_visible_cards, _annotate_model_stack
 
 
@@ -105,7 +106,7 @@ def test_visible_cards_keep_all_loaded_models_when_router_reports_multiple():
     assert cards[1]['is_adhoc'] is True
 
 
-def test_acceleration_metadata_does_not_infer_dflash_from_profile_name():
+def test_acceleration_metadata_requires_repair_for_dflash_profile_without_draft():
     stack = [
         {'role': 'target', 'path': r'C:\models\qwen.gguf', 'path_missing': False},
     ]
@@ -118,8 +119,9 @@ def test_acceleration_metadata_does_not_infer_dflash_from_profile_name():
     assert result == {
         'acceleration_mode': 'autoregressive',
         'acceleration_expected': True,
-        'acceleration_label': 'No draft · autoregressive',
+        'acceleration_label': 'Draft required · repair',
         'draft_loaded': False,
+        'draft_status': 'repair_required',
     }
 
 
@@ -137,6 +139,70 @@ def test_acceleration_metadata_marks_present_dflash_draft():
     assert result['acceleration_mode'] == 'dflash'
     assert result['acceleration_label'] == 'DFlash active'
     assert result['draft_loaded'] is True
+
+
+def test_acceleration_metadata_honors_draft_free_preset(monkeypatch, tmp_path):
+    preset = tmp_path / 'qwen-dflash.ini'
+    preset.write_text(
+        '[qwen]\nmodel = C:\\models\\qwen.gguf\n',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr('core.runtime.preset_path_for', lambda server_id: preset)
+
+    result = _acceleration_metadata(
+        {'id': 'qwen-dflash', 'profile': 'qwen-dflash'},
+        [
+            {'role': 'target', 'path': r'C:\models\qwen.gguf', 'path_missing': False},
+            {'role': 'draft-dflash', 'path': r'C:\models\draft.gguf', 'path_missing': False},
+        ],
+    )
+
+    assert result['acceleration_mode'] == 'autoregressive'
+    assert result['acceleration_label'] == 'Draft required · repair'
+    assert result['draft_loaded'] is False
+    assert result['draft_status'] == 'repair_required'
+
+
+def test_external_llama_card_reports_observable_draft(monkeypatch):
+    monkeypatch.setattr('core.gpu_processes._listening_ports_for_pid', lambda pid: [])
+    card = _build_external_card(
+        {'pid': 1234, 'gpu_index': 0, 'vram_mb': 8192, 'vram_gb': 8.0},
+        details={
+            'process_name': 'llama-server.exe',
+            'command_line': (
+                r'llama-server.exe --model "C:\models\target.gguf" '
+                r'--model-draft "C:\models\target-DFlash2.gguf" --spec-type draft-dflash'
+            ),
+        },
+        gpus=[{'index': 0, 'name': 'NVIDIA Test GPU'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\other-checkout',
+    )
+
+    assert card is not None
+    assert card['draft_loaded'] is True
+    assert card['draft_status'] == 'active'
+    assert card['draft_path'] == r'C:\models\target-DFlash2.gguf'
+
+
+def test_external_llama_card_reports_unknown_draft_state(monkeypatch):
+    monkeypatch.setattr('core.gpu_processes._listening_ports_for_pid', lambda pid: [])
+    card = _build_external_card(
+        {'pid': 1234, 'gpu_index': 0, 'vram_mb': 8192, 'vram_gb': 8.0},
+        details={
+            'process_name': 'llama-server.exe',
+            'command_line': r'llama-server.exe --model "C:\models\target.gguf"',
+        },
+        gpus=[{'index': 0, 'name': 'NVIDIA Test GPU'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\other-checkout',
+    )
+
+    assert card is not None
+    assert card['draft_loaded'] is None
+    assert card['draft_status'] == 'unknown'
 
 
 def test_api_base_url_strips_v1():

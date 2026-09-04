@@ -34,6 +34,7 @@
     generationTouched: false,
     knownAcceleratorPaths: new Set(),
     awaitingCatalog: false,
+    onAttached: null,
   };
 
   function escapeHtml(value) {
@@ -550,6 +551,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ draft_path: draftPath }),
       });
+      const onAttached = state.onAttached;
       closeModal();
       hideCatalogReturn();
       if (result?.unchanged) {
@@ -562,6 +564,9 @@
       if (state.serverId) {
         window.DFlashModelsLive?.setTypeFilter?.('dflash');
         await window.DFlashModelsLive?.selectModel?.(state.serverId);
+      }
+      if (typeof onAttached === 'function') {
+        await onAttached(result);
       }
     } catch (err) {
       toast(err.message || 'Could not replace accelerator', false);
@@ -643,7 +648,10 @@
     if (state.currentDraftPath) {
       url += `&current_draft=${encodeURIComponent(state.currentDraftPath)}`;
     }
-    state.matchData = await api(url);
+    // Matching may query Hugging Face in addition to scanning local files.
+    // Give the repair wizard the same generous window as the model catalog
+    // instead of letting the generic eight-second UI timeout close the flow.
+    state.matchData = await api(url, { timeoutMs: 60000 });
     applyGenerationFromMatch(state.matchData);
     rememberAccelerators(state.matchData?.local_accelerators || []);
     if (!state.label) state.label = state.matchData.suggested_label || state.targetLabel;
@@ -697,6 +705,9 @@
     if (serverId) {
       window.DFlashModelsLive?.setTypeFilter?.('dflash');
       await window.DFlashModelsLive?.selectModel?.(serverId);
+    }
+    if (typeof state.onAttached === 'function') {
+      await state.onAttached(result);
     }
     return result;
   }
@@ -759,6 +770,7 @@
       generationTouched: Boolean(options.draftPath),
       knownAcceleratorPaths: new Set(),
       awaitingCatalog: false,
+      onAttached: options.onAttached || null,
     };
 
     try {
@@ -834,6 +846,7 @@
       generationTouched: false,
       knownAcceleratorPaths: new Set(),
       awaitingCatalog: false,
+      onAttached: options.onAttached || null,
     };
 
     if (state.currentDraftPath && !state.currentDraftLabel) {

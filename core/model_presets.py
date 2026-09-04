@@ -28,6 +28,14 @@ PROFILE_CACHE_TYPES = {
 }
 
 
+def profile_requires_draft(profile: str | None) -> bool:
+    """Return whether a profile is required to run speculative decoding."""
+    name = str(profile or '').strip().lower()
+    return name in {'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec'} or (
+        'dflash' in name or 'dspark' in name
+    )
+
+
 def _kv_offload_enabled(server: dict[str, Any], hardware: dict[str, Any]) -> bool:
     raw = server.get('load_settings')
     if isinstance(raw, dict) and 'kv_offload' in raw:
@@ -135,6 +143,20 @@ def write_server_preset(
     if use_draft is False:
         draft = None
 
+    if profile_requires_draft(preset_profile):
+        if use_draft is False:
+            raise ValueError(
+                f'DFlash profile {preset_profile} cannot disable its required draft accelerator.'
+            )
+        if not draft or not str(draft.get('path') or '').strip():
+            raise ValueError(
+                f'DFlash profile {preset_profile} requires a target model and a draft accelerator.'
+            )
+        if not Path(str(draft['path'])).expanduser().is_file():
+            raise ValueError(
+                f'DFlash draft file not found: {draft["path"]}'
+            )
+
     lines = [
         'version = 1',
         '',
@@ -168,9 +190,13 @@ def write_server_preset(
         lines.append(f"model-draft = {draft['path']}")
         if preset_profile in ('gemma-chat', 'qwen-dflash', 'gemma-12-dflash'):
             draft_n_max = spec_draft_n_max(draft_path=draft['path'], profile=preset_profile)
-            lines.extend(['spec-type = draft-dflash', f'spec-draft-n-max = {draft_n_max}'])
+            lines.extend([
+                'spec-type = draft-dflash',
+                f'spec-draft-n-max = {draft_n_max}',
+                'ngld = all',
+            ])
         elif preset_profile == 'bonsai-spec':
-            lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = 999'])
+            lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = all'])
 
     from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
 

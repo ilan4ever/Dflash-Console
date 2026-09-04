@@ -1730,6 +1730,8 @@ def _catalog_row_rank(row: dict[str, Any]) -> tuple[int, int]:
         score += 150
     if row.get('server_id'):
         score += 100
+    if 'dflash' in str(row.get('server_id') or '').lower():
+        score += 25
     if row.get('loadable'):
         score += 40
     path = str(row.get('path') or '').replace('\\', '/').lower()
@@ -1762,7 +1764,13 @@ def _collapse_logical_duplicates(models: list[dict[str, Any]]) -> list[dict[str,
             if str(models[index].get('server_id') or '').strip()
         }
         if len(profile_ids) > 1:
-            continue
+            paths = list(dict.fromkeys(
+                _normalize_path_key(str(models[index].get('path') or ''))
+                for index in indices
+                if str(models[index].get('path') or '').strip()
+            ))
+            if len(paths) > 1:
+                continue
         ranked = sorted(indices, key=lambda index: _catalog_row_rank(models[index]), reverse=True)
         survivor = ranked[0]
         paths = list(dict.fromkeys(

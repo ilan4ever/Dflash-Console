@@ -313,6 +313,10 @@
   }
 
   function pickerIdentityKey(model) {
+    const path = normalizePickerPath(model?.path);
+    if (path && /\.gguf$/i.test(path) && (model?.server_id || isDflashStack(model))) {
+      return `target:${path}`;
+    }
     const file = String(model?.filename || '').trim().toLowerCase();
     if (isDflashStack(model) && file) return `stack:${file}`;
     if (file) {

@@ -1055,8 +1055,6 @@ def replace_stack_draft(
     current_draft = str(normalized.get('draft_path') or '').strip()
     if not target_path:
         return {'success': False, 'error': 'server has no target model'}
-    if not current_draft:
-        return {'success': False, 'error': 'server is not a DFlash stack'}
 
     target = Path(target_path).expanduser().resolve()
     draft = Path(str(draft_path)).expanduser().resolve()

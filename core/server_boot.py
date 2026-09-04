@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ from core.model_presets import (
     infer_profile_from_path,
     model_id_from_path,
     preset_path_for,
+    profile_requires_draft,
     sanitize_preset_model_id,
     write_server_preset,
 )
@@ -533,6 +535,10 @@ def _start_router_listener_locked(
     if port <= 0 or not server_id:
         return {'success': False, 'error': 'invalid server'}
 
+    stack_check = validate_dflash_stack(entry, cfg=cfg)
+    if not stack_check.get('valid'):
+        return stack_check
+
     bindable, bind_error = _port_bindable(host, port)
     if not bindable:
         from core.load_progress import mark_boot_failed
@@ -694,6 +700,246 @@ def resolve_load_target_path(
     return ''
 
 
+_MIN_DFLASH2_ENGINE_BUILD = 10658
+_ENGINE_BUILD_RE = re.compile(r'\bbuild\s+(\d+)\b', re.I)
+
+
+def _llama_server_binary(cfg: dict[str, Any] | None = None) -> Path | None:
+    root = get_dflash_root(cfg)
+    candidates = [
+        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server.exe',
+        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def llama_server_capabilities(
+    *,
+    cfg: dict[str, Any] | None = None,
+    binary: str | Path | None = None,
+) -> dict[str, Any]:
+    """Read the bundled engine build and expose supported DFlash generations."""
+    engine = Path(binary).expanduser() if binary else _llama_server_binary(cfg)
+    result: dict[str, Any] = {
+        'available': bool(engine and engine.is_file()),
+        'binary': str(engine) if engine else '',
+        'version': '',
+        'build': None,
+        'dflash2': False,
+    }
+    if not engine or not engine.is_file():
+        result['reason_code'] = 'engine-missing'
+        result['message'] = 'The bundled llama-server engine is not installed.'
+        return result
+    try:
+        completed = subprocess.run(
+            [str(engine), '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        result['reason_code'] = 'engine-unavailable'
+        result['message'] = f'Could not inspect the bundled llama-server engine: {exc}'
+        return result
+    version = '\n'.join(
+        part for part in (str(completed.stdout or ''), str(completed.stderr or '')) if part
+    ).strip()
+    result['version'] = version
+    match = _ENGINE_BUILD_RE.search(version)
+    if match:
+        result['build'] = int(match.group(1))
+        result['dflash2'] = result['build'] >= _MIN_DFLASH2_ENGINE_BUILD
+        result['reason_code'] = 'ok' if result['dflash2'] else 'engine-too-old'
+        result['message'] = (
+            'The bundled llama-server supports DFlash2.'
+            if result['dflash2']
+            else (
+                f'DFlash2 requires llama.cpp build {_MIN_DFLASH2_ENGINE_BUILD}+; '
+                f'found build {result["build"]}.'
+            )
+        )
+    else:
+        result['reason_code'] = 'engine-version-unknown'
+        result['message'] = 'The bundled llama-server build could not be identified.'
+    return result
+
+
+def _dflash_repair_result(
+    entry: dict[str, Any],
+    *,
+    target_path: str = '',
+    draft_path: str = '',
+    reason_code: str,
+    message: str,
+    generation: str = '',
+    preflight: dict[str, Any] | None = None,
+    engine: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current_draft = draft_path if Path(draft_path).expanduser().is_file() else ''
+    repair_action = 'attach_draft' if target_path else 'choose_target'
+    result: dict[str, Any] = {
+        'success': False,
+        'valid': False,
+        'required': True,
+        'error': 'dflash_stack_repair_required',
+        'message': message,
+        'reason_code': reason_code,
+        'server_id': str(entry.get('id') or ''),
+        'target_path': target_path,
+        'draft_path': draft_path,
+        'dflash_generation': generation or 'dflash1',
+        'repair': {
+            'action': repair_action,
+            'server_id': str(entry.get('id') or ''),
+            'target_path': target_path,
+            'current_draft_path': current_draft,
+            'dflash_generation': generation or 'dflash1',
+        },
+    }
+    if preflight is not None:
+        result['preflight'] = preflight
+    if engine is not None:
+        result['engine'] = engine
+        result['repair']['action'] = 'update_engine'
+        result['update'] = {
+            'action': 'update_engine',
+            'required_engine': f'llama.cpp build {_MIN_DFLASH2_ENGINE_BUILD}+',
+            'engine': engine,
+        }
+    return result
+
+
+def validate_dflash_stack(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    model_path: str | None = None,
+) -> dict[str, Any]:
+    """Validate the target, draft, metadata pair, and DFlash engine requirement."""
+    entry = normalize_server(server)
+    if not profile_requires_draft(entry.get('profile')):
+        return {'success': True, 'valid': True, 'required': False}
+
+    from core.dflash_generation import infer_dflash_generation
+    from core.model_stack import resolve_model_stack
+    from core.stack_match import preflight_dflash_pair
+
+    stack = resolve_model_stack(entry, cfg=cfg)
+    target_row = next((row for row in stack if row.get('role') == 'target'), {})
+    draft_row = next(
+        (row for row in stack if str(row.get('role') or '').startswith('draft')),
+        {},
+    )
+    target = str(model_path or entry.get('target_path') or target_row.get('path') or '').strip()
+    draft = str(entry.get('draft_path') or draft_row.get('path') or '').strip()
+    generation = infer_dflash_generation(draft)
+    if not target:
+        return _dflash_repair_result(
+            entry,
+            reason_code='target-required',
+            message='This DFlash profile has no full target model. Choose the target in the stack wizard.',
+            generation=generation,
+        )
+    target_file = Path(target).expanduser()
+    if not target_file.is_file():
+        return _dflash_repair_result(
+            entry,
+            target_path=target,
+            reason_code='missing-target',
+            message=f'DFlash target model file not found: {target}',
+            generation=generation,
+        )
+    if not draft:
+        return _dflash_repair_result(
+            entry,
+            target_path=str(target_file),
+            reason_code='draft-required',
+            message='This DFlash profile requires a matching draft accelerator before it can load.',
+            generation=generation,
+        )
+    draft_file = Path(draft).expanduser()
+    if not draft_file.is_file():
+        return _dflash_repair_result(
+            entry,
+            target_path=str(target_file),
+            draft_path=draft,
+            reason_code='missing-draft',
+            message=f'DFlash draft accelerator file not found: {draft}',
+            generation=generation,
+        )
+
+    preflight = preflight_dflash_pair(target_file, draft_file)
+    generation = str(preflight.get('dflash_generation') or generation or 'dflash1')
+    if not preflight.get('compatible'):
+        return _dflash_repair_result(
+            entry,
+            target_path=str(target_file),
+            draft_path=str(draft_file),
+            reason_code=str(preflight.get('reason_code') or 'incompatible-pair'),
+            message=str(preflight.get('reason') or 'The configured DFlash target and draft are incompatible.'),
+            generation=generation,
+            preflight=preflight,
+        )
+    if not preflight.get('validated'):
+        return _dflash_repair_result(
+            entry,
+            target_path=str(target_file),
+            draft_path=str(draft_file),
+            reason_code='preflight-unavailable',
+            message='The target and draft metadata could not be validated. Choose a verified GGUF pair.',
+            generation=generation,
+            preflight=preflight,
+        )
+    if generation == 'dflash2':
+        engine = llama_server_capabilities(cfg=cfg)
+        if not engine.get('dflash2'):
+            return _dflash_repair_result(
+                entry,
+                target_path=str(target_file),
+                draft_path=str(draft_file),
+                reason_code='engine-update-required',
+                message=str(engine.get('message') or 'This engine cannot load DFlash2.'),
+                generation=generation,
+                preflight=preflight,
+                engine=engine,
+            )
+    return {
+        'success': True,
+        'valid': True,
+        'required': True,
+        'server_id': str(entry.get('id') or ''),
+        'target_path': str(target_file),
+        'draft_path': str(draft_file),
+        'dflash_generation': generation,
+        'preflight': preflight,
+    }
+
+
+def dflash_live_launch_state(server: dict[str, Any]) -> bool | None:
+    """Return whether the current router launch includes a draft argument."""
+    if not profile_requires_draft(server.get('profile')):
+        return None
+    server_id = str(server.get('id') or '').strip()
+    if not server_id:
+        return None
+    preset = preset_path_for(server_id)
+    if not preset.is_file():
+        return None
+    try:
+        return any(
+            line.strip().lower().startswith('model-draft')
+            for line in preset.read_text(encoding='utf-8').splitlines()
+        )
+    except OSError:
+        return None
+
+
 def find_target_loaded_elsewhere(
     server: dict[str, Any],
     *,
@@ -797,12 +1043,46 @@ def _explain_draft_load_error(detail: Any, draft_path: str | None = None) -> str
     return message
 
 
+def _structured_draft_load_failure(
+    entry: dict[str, Any],
+    stack_check: dict[str, Any],
+    error_text: str,
+) -> dict[str, Any] | None:
+    if not profile_requires_draft(entry.get('profile')) or not _draft_load_error(error_text):
+        return None
+    return _dflash_repair_result(
+        entry,
+        target_path=str(stack_check.get('target_path') or entry.get('target_path') or ''),
+        draft_path=str(stack_check.get('draft_path') or entry.get('draft_path') or ''),
+        reason_code='draft-load-failed',
+        message=_explain_draft_load_error(
+            error_text,
+            stack_check.get('draft_path') or entry.get('draft_path'),
+        ),
+        generation=str(stack_check.get('dflash_generation') or ''),
+        preflight=stack_check.get('preflight'),
+    )
+
+
+def _checkpoint_load_failure_error(server_id: str, status_info: dict[str, Any]) -> str:
+    from core.load_progress import model_load_failure_message, read_log_tail
+
+    log_failure = model_load_failure_message(read_log_tail(server_id))
+    if log_failure:
+        return log_failure
+    args = status_info.get('args') or []
+    if args:
+        return ' '.join(str(part) for part in args[-3:])
+    return 'model load failed'
+
+
 def _wait_for_checkpoint_load(
     *,
     api_url: str,
     load_id: str,
     host: str,
     port: int,
+    server_id: str = '',
     timeout_seconds: float = 180.0,
 ) -> dict[str, Any]:
     from core.runtime import _fetch_models_payload, _model_state
@@ -829,7 +1109,7 @@ def _wait_for_checkpoint_load(
         if status == 'unloaded' and status_info.get('failed'):
             return {
                 'status': 'failed',
-                'error': ' '.join(str(part) for part in (status_info.get('args') or [])[-3:]),
+                'error': _checkpoint_load_failure_error(server_id, status_info),
             }
         time.sleep(1.0)
     return {'status': 'timeout', 'error': f'timed out waiting for {load_id} on {host}:{port}'}
@@ -841,7 +1121,6 @@ def load_server_checkpoint(
     cfg: dict[str, Any] | None = None,
     model_path: str | None = None,
     model_id: str | None = None,
-    skip_draft: bool = False,
 ) -> dict[str, Any]:
     """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
     from core.config import is_embedding_server
@@ -850,27 +1129,9 @@ def load_server_checkpoint(
     entry = normalize_server(server)
     if is_embedding_server(entry):
         return start_embedding_server(entry, cfg=cfg)
-    if entry.get('draft_path') and not skip_draft:
-        from core.stack_match import preflight_dflash_pair
-
-        draft_check = preflight_dflash_pair(
-            entry.get('target_path') or resolve_load_target_path(entry, cfg=cfg),
-            entry.get('draft_path'),
-        )
-        if not draft_check.get('compatible'):
-            return {
-                'success': False,
-                'error': str(draft_check.get('reason') or 'configured DFlash draft is incompatible'),
-                'reason_code': draft_check.get('reason_code'),
-                'preflight': draft_check,
-            }
-        if draft_check.get('reason_code') != 'metadata-unavailable' and not draft_check.get('validated'):
-            return {
-                'success': False,
-                'error': 'Configured DFlash target and draft failed GGUF compatibility preflight.',
-                'reason_code': 'preflight-unavailable',
-                'preflight': draft_check,
-            }
+    stack_check = validate_dflash_stack(entry, cfg=cfg, model_path=model_path)
+    if not stack_check.get('valid'):
+        return stack_check
 
     custom_path = str(model_path or '').strip()
     elsewhere = find_target_loaded_elsewhere(
@@ -898,6 +1159,11 @@ def load_server_checkpoint(
     port = int(entry['port'] or 0)
     host = str(entry['host'] or '127.0.0.1')
     api_url = str(entry.get('api_url') or '')
+    live_draft_before_preset = (
+        dflash_live_launch_state(entry)
+        if _tcp_port_open(host, port)
+        else None
+    )
     custom_path = str(model_path or '').strip()
     if custom_path:
         path_obj = Path(custom_path)
@@ -929,7 +1195,12 @@ def load_server_checkpoint(
             preset_entry['load_settings'] = load_settings
         load_id = sanitize_preset_model_id(model_id or model_id_from_path(path_obj), path_obj)
         profile_source = str(path_obj)
-        load_profile = infer_profile_from_path(profile_source)
+        load_profile = (
+            str(entry.get('profile') or '')
+            if profile_requires_draft(entry.get('profile'))
+            else infer_profile_from_path(profile_source)
+        )
+        preset_entry['target_path'] = custom_path
         try:
             write_server_preset(
                 preset_entry,
@@ -937,7 +1208,7 @@ def load_server_checkpoint(
                 target_path=custom_path,
                 model_id=load_id,
                 profile=load_profile,
-                use_draft=False,
+                use_draft=None if profile_requires_draft(load_profile) else False,
             )
         except ValueError as exc:
             return {'success': False, 'error': str(exc), 'port': port}
@@ -947,11 +1218,14 @@ def load_server_checkpoint(
             if not adopted.get('success'):
                 return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
             already = checkpoint_already_loaded(entry, cfg=cfg, model_path=custom_path, model_id=load_id)
-            if already:
+            if already and (
+                not profile_requires_draft(entry.get('profile'))
+                or live_draft_before_preset is True
+            ):
                 return already
             stop_server(port=port, host=host, api_url=api_url)
 
-        listen = start_router_listener(entry, cfg=cfg, skip_preset_write=True)
+        listen = start_router_listener(preset_entry, cfg=cfg)
         if not listen.get('success'):
             return listen
 
@@ -968,13 +1242,13 @@ def load_server_checkpoint(
         load_id = str(model_id or entry.get('model_id') or '').strip()
         if not load_id:
             return {'success': False, 'error': 'model_id required'}
+        resolved_target = resolve_load_target_path(entry, cfg=cfg, model_path=model_path)
+        if resolved_target and not str(entry.get('target_path') or '').strip():
+            entry = {**entry, 'target_path': resolved_target}
         try:
-            write_server_preset(entry, cfg=cfg, use_draft=False if skip_draft else None)
+            write_server_preset(entry, cfg=cfg)
         except ValueError as exc:
             return {'success': False, 'error': str(exc), 'port': port}
-
-    if skip_draft and _tcp_port_open(host, port):
-        stop_server(port=port, host=host, api_url=api_url)
 
     if port <= 0:
         return {'success': False, 'error': 'invalid port'}
@@ -994,17 +1268,26 @@ def load_server_checkpoint(
         if not adopted.get('success'):
             return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
         already = checkpoint_already_loaded(entry, cfg=cfg, model_path=model_path, model_id=load_id)
-        if already:
+        if already and (
+            not profile_requires_draft(entry.get('profile'))
+            or live_draft_before_preset is True
+        ):
             return already
-        if load_id not in registered_ids or preset_stale:
+        if already or load_id not in registered_ids or preset_stale:
             stop_server(port=port, host=host, api_url=api_url)
     else:
-        listen = start_router_listener(entry, cfg=cfg)
+        listen = start_router_listener(
+            entry,
+            cfg=cfg,
+        )
         if not listen.get('success'):
             return listen
 
     if not _tcp_port_open(host, port):
-        listen = start_router_listener(entry, cfg=cfg)
+        listen = start_router_listener(
+            entry,
+            cfg=cfg,
+        )
         if not listen.get('success'):
             return listen
 
@@ -1018,22 +1301,33 @@ def load_server_checkpoint(
             load_id=load_id,
             host=host,
             port=port,
+            server_id=str(entry.get('id') or ''),
         )
         if settled.get('status') == 'loaded':
             note_boot_cycle_end(port)
             return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': bool(custom_path)}
+        error_text = str(settled.get('error') or load_result.get('error') or '')
+        structured_failure = _structured_draft_load_failure(entry, stack_check, error_text)
+        if structured_failure:
+            structured_failure['port'] = port
+            return structured_failure
         return {
             'success': False,
             'error': _explain_draft_load_error(
-                settled.get('error') or load_result.get('error') or 'model load failed',
+                error_text or 'model load failed',
                 entry.get('draft_path'),
             ),
             'port': port,
         }
+    error_text = str(load_result.get('error') or 'model load failed')
+    structured_failure = _structured_draft_load_failure(entry, stack_check, error_text)
+    if structured_failure:
+        structured_failure['port'] = port
+        return structured_failure
     return {
         'success': False,
         'error': _explain_draft_load_error(
-            load_result.get('error') or 'model load failed',
+            error_text,
             entry.get('draft_path'),
         ),
         'port': port,
@@ -1069,6 +1363,9 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     server_id = entry['id']
     if not server_id:
         return {'success': False, 'error': 'server id required'}
+    stack_check = validate_dflash_stack(entry, cfg=cfg)
+    if not stack_check.get('valid'):
+        return stack_check
 
     port = int(entry['port'] or 0)
     host = str(entry['host'] or '127.0.0.1')
@@ -1111,6 +1408,7 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
             'port': port,
         }
     loaded = probe_models(api_url) if port_open else []
+    live_draft_before_preset = dflash_live_launch_state(entry) if port_open else None
 
     if port_open and not router_unload_available(api_url):
         stop_server(port=port, host=host, api_url=api_url)
@@ -1120,7 +1418,10 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         started = _started_launch.get(port) or {}
         if started and started != signature:
             stop_server(port=port, host=host, api_url=api_url)
-        elif model_id in loaded:
+        elif model_id in loaded and (
+            not profile_requires_draft(entry.get('profile'))
+            or live_draft_before_preset is True
+        ):
             note_boot_cycle_end(port)
             return {'success': True, 'port': port, 'already_running': True, 'loaded': True}
         elif loaded:

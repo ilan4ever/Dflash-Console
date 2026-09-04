@@ -1089,3 +1089,26 @@ def test_collapse_logical_duplicates_keeps_distinct_engine_profiles():
     kept = _collapse_logical_duplicates(rows)
     assert len(kept) == 2
 
+
+def test_collapse_logical_duplicates_merges_profiles_for_same_target():
+    from core.local_models import _collapse_logical_duplicates
+
+    rows = [
+        {
+            'filename': 'gemma-4-12b-it-q4_k_m.gguf',
+            'server_id': 'gemma-12b-ar',
+            'source': 'dflash-profile',
+            'path': r'C:\models\gemma-4-12b-it-q4_k_m.gguf',
+            'loadable': True,
+        },
+        {
+            'filename': 'gemma-4-12b-it-q4_k_m.gguf',
+            'server_id': 'gemma-4-12b-it-q4-k-m-dflash',
+            'source': 'dflash-profile',
+            'path': r'C:\models\gemma-4-12b-it-q4_k_m.gguf',
+            'loadable': True,
+        },
+    ]
+    kept = _collapse_logical_duplicates(rows)
+    assert len(kept) == 1
+    assert kept[0]['server_id'] == 'gemma-4-12b-it-q4-k-m-dflash'

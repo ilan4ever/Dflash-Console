@@ -89,7 +89,10 @@ window.ConsoleApi = (function () {
         }
         if (!resp.ok) {
           const detail = data?.detail || data?.error || `HTTP ${resp.status}`;
-          throw new Error(formatApiError(detail));
+          const error = new Error(formatApiError(detail));
+          error.apiDetail = detail;
+          error.status = resp.status;
+          throw error;
         }
         return data;
       } catch (err) {
@@ -153,7 +156,10 @@ window.ConsoleApi = (function () {
       }
       if (!resp.ok) {
         const detail = data?.detail || data?.error || `HTTP ${resp.status}`;
-        throw new Error(formatApiError(detail));
+        const error = new Error(formatApiError(detail));
+        error.apiDetail = detail;
+        error.status = resp.status;
+        throw error;
       }
       return data;
     } catch (err) {

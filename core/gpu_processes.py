@@ -759,6 +759,23 @@ def _model_hint_from_cmdline(command_line: str) -> tuple[str, str]:
     return '', ''
 
 
+def _draft_hint_from_cmdline(command_line: str) -> tuple[str, str]:
+    """Return the observable draft model passed to an external llama server."""
+    cmd = str(command_line or '').strip()
+    if not cmd:
+        return '', ''
+    pattern = re.compile(
+        r'(?:^|\s)(?:-md|--model-draft|--spec-draft-model)(?:=|\s+)'
+        r'(?:"([^"]+)"|(\S+))',
+        re.I,
+    )
+    match = pattern.search(cmd)
+    if not match:
+        return '', ''
+    path = str(match.group(1) or match.group(2) or '').strip().strip('"')
+    return _display_name_from_path(path), path
+
+
 def _display_name_from_path(path: str) -> str:
     clean = str(path or '').strip().strip('"')
     if not clean:
@@ -1400,8 +1417,6 @@ def _build_external_card(
     command_line = str(details.get('command_line') or '')
     parent_name = str(details.get('parent_process_name') or '')
     hay = f'{process_name} {command_line} {parent_name}'.lower()
-    if dflash_root and dflash_root.lower() in hay and 'lm studio' not in hay:
-        return None
 
     app_source, app_label = _classify_app(
         process_name=process_name,
@@ -1409,7 +1424,9 @@ def _build_external_card(
         parent_name=parent_name,
     )
     if app_source == 'dflash':
-        return None
+        # A draft filename often contains "DFlash"; that must not make an
+        # external llama-server look like a Console-owned process.
+        app_source, app_label = 'llama-server', 'llama-server'
 
     if app_source == 'lmstudio' and _is_lmstudio_chromium_helper(command_line):
         return None
@@ -1534,6 +1551,7 @@ def _build_external_card(
 
     vram_gb = entry.get('vram_gb')
     cmd_path = _model_hint_from_cmdline(command_line)[1]
+    draft_name, draft_path = _draft_hint_from_cmdline(command_line)
     if not model_path and cmd_path:
         model_path = cmd_path
     size_gb = _size_gb_from_path(model_path) or _size_gb_from_path(cmd_path)
@@ -1550,6 +1568,27 @@ def _build_external_card(
         command_line=command_line,
         listen_port=listen_port,
     )
+    llama_process = 'llama-server' in hay or 'llama_server' in hay
+    if draft_path:
+        acceleration = {
+            'acceleration_expected': True,
+            'acceleration_mode': 'dflash',
+            'acceleration_label': 'DFlash active',
+            'draft_loaded': True,
+            'draft_status': 'active',
+            'draft_path': draft_path,
+            'draft_filename': draft_name,
+        }
+    elif llama_process:
+        acceleration = {
+            'acceleration_expected': True,
+            'acceleration_mode': 'unknown',
+            'acceleration_label': 'DFlash status unknown',
+            'draft_loaded': None,
+            'draft_status': 'unknown',
+        }
+    else:
+        acceleration = {}
 
     return {
         'id': f'external-gpu-{pid}',
@@ -1577,6 +1616,7 @@ def _build_external_card(
         'subtitle': card_detail,
         'card_detail': card_detail,
         **kind_fields,
+        **acceleration,
     }
 
 

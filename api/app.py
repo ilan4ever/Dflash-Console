@@ -606,7 +606,6 @@ class ServerLoadRequest(BaseModel):
     inference_settings: dict[str, Any] | None = None
     model_path: str | None = None
     model_id: str | None = None
-    skip_draft: bool | None = None
 
 
 class GpuProcessUnload(BaseModel):
@@ -2523,7 +2522,11 @@ def server_load_plan(
     model_id: str = Query(default=''),
 ) -> dict[str, Any]:
     from core.memory_guardrails import assess_load
-    from core.server_boot import checkpoint_already_loaded, find_target_loaded_elsewhere
+    from core.server_boot import (
+        checkpoint_already_loaded,
+        find_target_loaded_elsewhere,
+        validate_dflash_stack,
+    )
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
@@ -2532,6 +2535,17 @@ def server_load_plan(
         candidate['adhoc_model_path'] = model_path.strip()
     if model_id.strip():
         candidate['model_id'] = model_id.strip()
+    stack_check = validate_dflash_stack(
+        candidate,
+        cfg=cfg,
+        model_path=model_path.strip() or None,
+    )
+    if not stack_check.get('valid'):
+        return {
+            'success': False,
+            'level': 'repair_required',
+            **stack_check,
+        }
     already = checkpoint_already_loaded(
         candidate,
         cfg=cfg,
@@ -2582,22 +2596,31 @@ def server_load_plan(
 def server_load(server_id: str, request: Request, body: ServerLoadRequest | None = None) -> dict[str, Any]:
     from core.engine_state import note_engine_loaded
     from core.memory_guardrails import assess_load
-    from core.server_boot import checkpoint_already_loaded, find_target_loaded_elsewhere
+    from core.server_boot import (
+        checkpoint_already_loaded,
+        find_target_loaded_elsewhere,
+        validate_dflash_stack,
+    )
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
     model_path = None
     model_id = None
-    skip_draft = False
     if body:
         patch = body.model_dump(exclude_none=True)
         model_path = patch.pop('model_path', None)
         model_id = patch.pop('model_id', None)
-        skip_draft = bool(patch.pop('skip_draft', False))
         if patch:
             server = _persist_server_merge(cfg, server_id, patch)
     if model_path:
         server = {**server, 'adhoc_model_path': model_path}
+    stack_check = validate_dflash_stack(
+        server,
+        cfg=cfg,
+        model_path=model_path,
+    )
+    if not stack_check.get('valid'):
+        raise HTTPException(status_code=409, detail=stack_check)
     already = checkpoint_already_loaded(server, cfg=cfg, model_path=model_path, model_id=model_id)
     if already:
         note_engine_loaded(server_id, loaded_by=_request_client_label(request))
@@ -2639,10 +2662,12 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         cfg=cfg,
         model_path=model_path,
         model_id=model_id,
-        skip_draft=skip_draft,
     )
     if not result.get('success'):
-        raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
+        raise HTTPException(
+            status_code=409 if result.get('repair') else 400,
+            detail=result,
+        )
     note_engine_loaded(server_id, loaded_by=_request_client_label(request))
     _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
@@ -2815,6 +2840,8 @@ async def proxy_chat_completions(server_id: str, request: Request):
                     raw = json.dumps(body_json).encode('utf-8')
                 vision = ensure_vision_ready_for_chat(server, cfg=cfg)
                 if not vision.get('success'):
+                    if vision.get('repair'):
+                        raise HTTPException(status_code=409, detail=vision)
                     raise HTTPException(
                         status_code=400,
                         detail={
@@ -3544,10 +3571,14 @@ def stacks_find_and_attach_draft(body: StackDraftSearchRequest) -> dict[str, Any
                     status_code=400,
                     detail='server target does not match target_path',
                 )
+    server_draft = str((server or {}).get('draft_path') or '').strip()
+    current_for_match = current
+    if not current_for_match and server_draft and Path(server_draft).expanduser().is_file():
+        current_for_match = server_draft
     result = match_stack_for_target(
         target,
         cfg=cfg,
-        current_draft_path=current or (server or {}).get('draft_path'),
+        current_draft_path=current_for_match,
         dflash_generation=body.dflash_generation,
     )
     local = [

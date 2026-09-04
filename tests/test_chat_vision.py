@@ -236,8 +236,10 @@ def test_ensure_vision_reloads_when_live_worker_missing_mmproj(
 ):
     target = tmp_path / 'model.gguf'
     mmproj = tmp_path / 'mmproj-model.gguf'
+    draft = tmp_path / 'qwen-draft.gguf'
     target.write_bytes(b'model')
     mmproj.write_bytes(b'mmproj')
+    draft.write_bytes(b'draft')
     preset_dir = tmp_path / 'presets'
     preset_dir.mkdir()
     preset_dir.joinpath('qwen.ini').write_text(
@@ -269,6 +271,7 @@ def test_ensure_vision_reloads_when_live_worker_missing_mmproj(
         'model_id': 'qwen',
         'profile': 'qwen-dflash',
         'target_path': str(target),
+        'draft_path': str(draft),
         'mmproj_path': str(mmproj),
         'port': 8097,
         'host': '127.0.0.1',

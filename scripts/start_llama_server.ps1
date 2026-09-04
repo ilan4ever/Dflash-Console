@@ -97,6 +97,7 @@ if (-not $Gemma12Target) {
 }
 $QwenTarget = Join-Path $RepoRoot "models\Qwen3.5-27B-Q4_K_M.gguf"
 $QwenDraft = Join-Path $RepoRoot "models\Qwen3.5-27B-DFlash-F16.gguf"
+$QwenSpecNMax = if ($QwenDraft -match "DFlash2") { 7 } else { 8 }
 $BonsaiTarget = Join-Path $BonsaiRoot "models\ternary-gguf\27B\Ternary-Bonsai-27B-Q2_0.gguf"
 $BonsaiDraft = Join-Path $BonsaiRoot "models\ternary-gguf\27B\Ternary-Bonsai-27B-dspark-Q4_1.gguf"
 
@@ -158,7 +159,8 @@ if ($RouterMode) {
         "--split-mode", $SplitMode,
         "--models-preset", $ModelsPreset,
         "--no-models-autoload",
-        "--jinja"
+        "--jinja",
+        "--fit", "off"
     )
     if ($KvOffload -eq "off") {
         $routerArgs += "--no-kv-offload"
@@ -295,7 +297,9 @@ switch ($Profile) {
             if (-not (Test-Path $p)) { Write-Error "Missing model: $p"; exit 1 }
         }
         $argsList = @("-m", $QwenTarget, "-md", $QwenDraft,
-            "--spec-type", "draft-dflash", "--spec-draft-n-max", "8",
+            "--spec-type", "draft-dflash", "--spec-draft-n-max", "$QwenSpecNMax",
+            "--spec-draft-ngl", "all",
+            "--fit", "off",
             "--cache-type-k", "q8_0", "--cache-type-v", "q8_0") + $argsList
         $endpointNote = "http://${HostAddress}:${Port}/v1  (Qwen3.5-27B DFlash)"
     }

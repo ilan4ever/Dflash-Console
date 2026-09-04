@@ -12,8 +12,8 @@ def _cfg() -> dict:
         'hardware_settings': {'enabled_gpu_indices': [0]},
         'servers': [{
             'id': 'qwen-engine',
-            'label': 'Qwen 3.8 27B D-Flash',
-            'profile': 'qwen3.8-27b-q6-k-l-dflash',
+            'label': 'Qwen 3.8 27B',
+            'profile': 'qwen-ar',
             'port': 8096,
             'host': '127.0.0.1',
             'api_url': 'http://127.0.0.1:8096/v1',
@@ -102,6 +102,68 @@ def test_server_load_still_blocks_different_model_without_vram(monkeypatch):
         assert 'insufficient VRAM' in str(exc.detail)
     else:
         raise AssertionError('expected HTTPException')
+
+
+def test_dflash_missing_draft_returns_repair_before_already_loaded(monkeypatch, tmp_path):
+    target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    target.write_bytes(b'target')
+    cfg = _cfg()
+    cfg['servers'][0].update({
+        'profile': 'qwen-dflash',
+        'target_path': str(target),
+        'model_id': 'qwen3-8-27b-q6-k-l',
+    })
+    monkeypatch.setattr(app, 'load_config', lambda: cfg)
+    checkpoint_called = {'value': False}
+    monkeypatch.setattr(
+        'core.server_boot.checkpoint_already_loaded',
+        lambda *args, **kwargs: checkpoint_called.update(value=True) or None,
+    )
+
+    try:
+        app.server_load('qwen-engine', request=type('Req', (), {'headers': {}})())
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail['reason_code'] == 'draft-required'
+        assert exc.detail['repair']['action'] == 'attach_draft'
+    else:
+        raise AssertionError('expected DFlash repair response')
+    assert checkpoint_called['value'] is False
+
+
+def test_dflash_already_loaded_is_reused_only_with_live_draft(monkeypatch):
+    cfg = _cfg()
+    cfg['servers'][0]['profile'] = 'qwen-dflash'
+    cfg['servers'][0].update({
+        'target_path': r'C:\models\target.gguf',
+        'draft_path': r'C:\models\draft-DFlash2.gguf',
+    })
+    monkeypatch.setattr(app, 'load_config', lambda: cfg)
+    monkeypatch.setattr(
+        'core.server_boot.validate_dflash_stack',
+        lambda *args, **kwargs: {'success': True, 'valid': True, 'required': True},
+    )
+    monkeypatch.setattr('core.server_boot.dflash_live_launch_state', lambda server: True)
+    monkeypatch.setattr(
+        'core.server_boot.checkpoint_already_loaded',
+        lambda *args, **kwargs: {
+            'success': True,
+            'port': 8096,
+            'loaded': True,
+            'already_loaded': True,
+            'model': 'qwen3.8-27b-q6-k-l',
+        },
+    )
+    monkeypatch.setattr(
+        'core.memory_guardrails.assess_load',
+        lambda *args, **kwargs: {
+            'level': 'block',
+            'message': 'Cannot load model: insufficient VRAM',
+        },
+    )
+
+    result = app.server_load('qwen-engine', request=type('Req', (), {'headers': {}})())
+    assert result['already_loaded'] is True
 
 
 def test_checkpoint_id_loaded_matches_library_file_alias_and_filename():

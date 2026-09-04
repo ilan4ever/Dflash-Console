@@ -287,6 +287,22 @@
     const live = server.status === 'loaded' || loadedTokens.length > 0;
     if (live && tokenSetsOverlap(loadedTokens, modelTokens)) return true;
 
+    const boundServerId = String(model.server_id || model.bound_profile_id || '').trim();
+    if (boundServerId && boundServerId === String(server.id || '') && live) return true;
+
+    const modelPath = normalizeModelToken(model.path || model.model_path || '');
+    if (modelPath && live) {
+      const serverPaths = [
+        server.target_path,
+        server.model_catalog?.target_path,
+        ...(Array.isArray(server.model_stack) ? server.model_stack.map((row) => row?.path) : []),
+        ...(Array.isArray(server.visible_cards) ? server.visible_cards.map((row) => row?.path) : []),
+      ].map(normalizeModelToken).filter(Boolean);
+      if (serverPaths.some((row) => row === modelPath || row.endsWith(modelPath) || modelPath.endsWith(row))) {
+        return true;
+      }
+    }
+
     // Older llama-server builds do not expose loaded_models consistently, but
     // the configured profile checkpoint is still unambiguous.
     const configuredTokens = [
@@ -356,8 +372,12 @@
       !model.chat_model_key
       || modelMatchesLoadedServer(model, serverById.get(String(model.server_id || '')))
     ));
+    const catalogServerIds = new Set(
+      result.map((model) => String(model.server_id || '').trim()).filter(Boolean),
+    );
     for (const server of allServers) {
       if (server.engine_mode === 'embedding' || server.model_kind === 'embedding') continue;
+      if (catalogServerIds.has(String(server.id || ''))) continue;
       const loadedIds = Array.isArray(server.loaded_models) ? server.loaded_models : [];
       for (const loadedId of loadedIds) {
         const token = normalizeModelToken(loadedId);
@@ -415,15 +435,19 @@
   }
 
   function chatReadyEngine() {
+    const selected = selectedCatalogModel();
+    const live = findLoadedServerForModel(selected);
     const pick = document.getElementById('chatEnginePick');
-    const serverId = pick?.value || '';
+    if (live && pick && pick.value !== live.id) {
+      pick.value = live.id;
+      syncSessionEngine();
+    }
+    const serverId = String(live?.id || pick?.value || '').trim();
     const server = serverById.get(serverId);
     if (!server || server.status !== 'loaded') return null;
-    const selected = selectedCatalogModel();
-    if (selected?.server_id === serverId && modelLoadState(selected) !== 'loaded') return null;
     const loadedModels = Array.isArray(server.loaded_models) ? server.loaded_models : [];
     const modelId = String(
-      (selected?.server_id === serverId && modelLoadState(selected) === 'loaded'
+      (selected && modelLoadState(selected) === 'loaded'
         ? selected.id || selected.model_id || selected.filename
         : '')
       || server.active_model_id
@@ -1035,7 +1059,7 @@
         : selectedState === 'loading' || loadingCheckpoint
           ? 'Loading…'
           : 'Load';
-      loadBtn.disabled = !canLoad || selectedState === 'loading';
+      loadBtn.disabled = !canLoad || selectedState === 'loading' || usingChat;
       loadBtn.classList.toggle('is-ready', usingChat);
       loadBtn.title = usingChat ? 'This model is loaded — you can chat now' : 'Load the selected model';
     }

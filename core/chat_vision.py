@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_server, load_config, normalize_server
-from core.model_presets import preset_path_for, write_server_preset
+from core.model_presets import profile_requires_draft, preset_path_for, write_server_preset
 from core.runtime import tcp_port_open
 from core.vision_setup import resolve_mmproj_path, wire_vision
 
@@ -256,6 +256,30 @@ def ensure_vision_ready_for_chat(server: dict[str, Any], *, cfg: dict[str, Any] 
         }
 
     target_path = str(entry.get('target_path') or '').strip()
+    if profile_requires_draft(entry.get('profile')):
+        draft_path = str(entry.get('draft_path') or '').strip()
+        if not draft_path or not Path(draft_path).expanduser().is_file():
+            repair_action = 'attach_draft' if target_path else 'choose_target'
+            message = (
+                'This DFlash profile requires a matching draft accelerator before '
+                'vision chat can start.'
+            )
+            return {
+                'success': False,
+                'reason': 'dflash_repair_required',
+                'reason_code': 'draft-required' if not draft_path else 'missing-draft',
+                'error': message,
+                'message': message,
+                'target_path': target_path,
+                'draft_path': draft_path,
+                'repair': {
+                    'action': repair_action,
+                    'server_id': server_id,
+                    'target_path': target_path,
+                    'current_draft_path': '',
+                },
+                **cap,
+            }
     mmproj_path = cap['mmproj_path']
     explicit = str(entry.get('mmproj_path') or '').strip()
     if not explicit or Path(explicit).expanduser().resolve() != Path(mmproj_path):

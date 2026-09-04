@@ -39,10 +39,16 @@ function saveAppSettings(patch) {
   if (!next.minimizeToTray) {
     next.startMinimized = false;
   }
+  const startupRequested = Boolean(next.startWithWindows);
+  const startupRegistered = applyWindowsStartup(startupRequested);
+  if (startupRequested && !startupRegistered) {
+    // Do not persist a checked box when Windows could not register the
+    // executable. The UI will show the actual state on its next refresh.
+    next.startWithWindows = false;
+  }
   cached = next;
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(next, null, 2), 'utf8');
-  applyWindowsStartup(Boolean(next.startWithWindows));
   return { ...next };
 }
 
@@ -67,34 +73,102 @@ function resolveStartupExe() {
   return '';
 }
 
+const STARTUP_ARGS = ['--dflash-startup'];
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const STARTUP_APPROVED_KEY =
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run';
+const STARTUP_VALUE = 'DFlash Console';
+
 function applyWindowsStartup(enabled) {
-  if (process.platform !== 'win32') return;
-  const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-  // reg.exe writes its error text straight to the shared console (it bypasses
-  // the child's stdout/stderr pipes), so when the Run value is missing the
-  // startup terminal would show "The system was unable to find the specified
-  // registry key or value." Use stdio 'ignore' to keep app startup clean; exit
-  // codes still propagate through the thrown Error.
-  const regQuiet = { windowsHide: true, stdio: 'ignore' };
+  if (process.platform !== 'win32') return true;
+  const exe = enabled ? resolveStartupExe() : (app.getPath('exe') || '');
+  if (enabled && (!exe || !fs.existsSync(exe))) {
+    console.error('Cannot enable Windows startup: installed executable was not found.');
+    return false;
+  }
+
+  let applied = false;
+  const errors = [];
+
+  // Electron handles the Windows login-item bookkeeping and keeps
+  // getLoginItemSettings() consistent with the Run entry.
   try {
-    if (enabled) {
-      const exe = resolveStartupExe();
-      if (!exe || !fs.existsSync(exe)) return; // nothing stable to register
-      const launchCommand = `"${exe}" --dflash-startup`;
-      execFileSync(
-        'reg',
-        ['add', regKey, '/v', 'DFlash Console', '/t', 'REG_SZ', '/d', launchCommand, '/f'],
-        regQuiet,
-      );
-      return;
-    }
-    try {
-      execFileSync('reg', ['delete', regKey, '/v', 'DFlash Console', '/f'], regQuiet);
-    } catch (_err) {
-      // Entry may already be absent.
+    if (typeof app.setLoginItemSettings === 'function') {
+      app.setLoginItemSettings({
+        openAtLogin: enabled,
+        path: exe,
+        args: STARTUP_ARGS,
+      });
+      applied = true;
     }
   } catch (err) {
-    console.error('Failed to update Windows startup registration:', err);
+    errors.push(err);
+  }
+
+  // Keep an explicit quoted Run value as a compatibility fallback for older
+  // Electron builds and repair entries written by earlier Console versions.
+  try {
+    const regQuiet = { windowsHide: true, stdio: 'ignore' };
+    if (enabled) {
+      const launchCommand = `"${exe}" ${STARTUP_ARGS.join(' ')}`;
+      execFileSync(
+        'reg',
+        ['add', RUN_KEY, '/v', STARTUP_VALUE, '/t', 'REG_SZ', '/d', launchCommand, '/f'],
+        regQuiet,
+      );
+      // A previous Task Manager disablement must not survive an explicit
+      // checked setting. A missing approval value is treated as enabled.
+      try {
+        execFileSync('reg', ['delete', STARTUP_APPROVED_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
+      } catch (_err) {
+        // The approval value is normally absent.
+      }
+      applied = true;
+    } else {
+      execFileSync('reg', ['delete', RUN_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
+      try {
+        execFileSync('reg', ['delete', STARTUP_APPROVED_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
+      } catch (_err) {
+        // The approval value is normally absent.
+      }
+      applied = true;
+    }
+  } catch (err) {
+    errors.push(err);
+  }
+
+  if (!applied && errors.length) {
+    console.error('Failed to update Windows startup registration:', errors[0]);
+  }
+  return applied;
+}
+
+function startupRegistrationState() {
+  if (process.platform !== 'win32') return false;
+  const exe = resolveStartupExe();
+  if (!exe || !fs.existsSync(exe)) return false;
+  try {
+    const login = typeof app.getLoginItemSettings === 'function'
+      ? app.getLoginItemSettings({ path: exe, args: STARTUP_ARGS })
+      : null;
+    if (login && Object.prototype.hasOwnProperty.call(login, 'executableWillLaunchAtLogin')) {
+      return Boolean(login.executableWillLaunchAtLogin);
+    }
+    if (login && Object.prototype.hasOwnProperty.call(login, 'openAtLogin')) {
+      return Boolean(login.openAtLogin);
+    }
+  } catch (_err) {
+    // Fall through to the registry probe for older Electron builds.
+  }
+  try {
+    const output = execFileSync(
+      'reg',
+      ['query', RUN_KEY, '/v', STARTUP_VALUE],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' },
+    );
+    return String(output).toLowerCase().includes(String(exe).toLowerCase());
+  } catch (_err) {
+    return false;
   }
 }
 
@@ -107,4 +181,5 @@ module.exports = {
   loadAppSettings,
   saveAppSettings,
   syncStartupRegistration,
+  startupRegistrationState,
 };

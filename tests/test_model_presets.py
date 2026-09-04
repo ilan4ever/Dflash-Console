@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from core.config import SPECULATIVE_PROFILES
 from core.model_presets import (
     infer_profile_from_path,
@@ -180,3 +182,23 @@ def test_write_server_preset_includes_mmproj_for_gemma_chat_31b(tmp_path, monkey
     assert 'spec-type = draft-dflash' in text
     assert f'mmproj = {mmproj}' in text
     assert 'gemma-chat' in SPECULATIVE_PROFILES
+
+
+def test_write_server_preset_cannot_disable_required_draft(tmp_path, monkeypatch):
+    target = tmp_path / 'target.gguf'
+    draft = tmp_path / 'target-DFlash2.gguf'
+    target.write_bytes(b'target')
+    draft.write_bytes(b'draft')
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', tmp_path / 'presets')
+
+    with pytest.raises(ValueError, match='cannot disable'):
+        write_server_preset(
+            {
+                'id': 'qwen-stack',
+                'model_id': 'qwen-target',
+                'profile': 'qwen-dflash',
+                'target_path': str(target),
+                'draft_path': str(draft),
+            },
+            use_draft=False,
+        )

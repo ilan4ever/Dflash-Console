@@ -290,6 +290,28 @@ class StackMatchTests(unittest.TestCase):
             self.assertEqual(result['server']['draft_path'], str(new_draft.resolve()))
             self.assertEqual(cfg['servers'][0]['draft_path'], str(new_draft.resolve()))
 
+    def test_replace_stack_draft_repairs_profile_with_missing_current_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / 'Qwen3.8-27B-Q6_K_L.gguf'
+            new_draft = root / 'Qwen3.8-27B-DFlash2-F16.gguf'
+            target.write_bytes(b'x')
+            new_draft.write_bytes(b'x')
+            cfg = {
+                'servers': [{
+                    'id': 'qwen-stack',
+                    'profile': 'qwen-dflash',
+                    'port': 8096,
+                    'target_path': str(target),
+                }],
+            }
+
+            with patch('core.config.save_config'), patch('core.model_presets.write_server_preset'):
+                result = replace_stack_draft('qwen-stack', new_draft, cfg=cfg)
+
+        self.assertTrue(result['success'])
+        self.assertEqual(cfg['servers'][0]['draft_path'], str(new_draft.resolve()))
+
     def test_match_marks_better_local_accelerator(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

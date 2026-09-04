@@ -995,8 +995,13 @@
     if (!model?.path) return false;
     if (model.plain_gguf && !model.library_file) return true;
     const profile = catalogModelForServer(serverId);
-    if (!profile?.path) return true;
-    if (normalizeModelPath(profile.path) !== normalizeModelPath(model.path)) return true;
+    const server = (allServers || servers).find((row) => row.id === serverId);
+    const configuredPath = profile?.path
+      || server?.target_path
+      || server?.model_catalog?.target_path
+      || '';
+    if (!configuredPath) return true;
+    if (normalizeModelPath(configuredPath) !== normalizeModelPath(model.path)) return true;
     return !(model.server_id && model.server_id === serverId);
   }
 
@@ -1778,11 +1783,20 @@
   function accelerationBadge(row) {
     if (!row?.acceleration_expected) return '';
     const active = row.acceleration_mode === 'dflash' && row.draft_loaded === true;
-    const label = active ? 'DFlash active' : 'No draft · AR';
+    const unknown = row.draft_status === 'unknown' || row.acceleration_mode === 'unknown';
+    const needsRepair = row.draft_status === 'repair_required';
+    const label = active
+      ? 'DFlash active'
+      : (unknown ? 'DFlash status unknown' : (needsRepair ? 'Draft required · repair' : 'DFlash stack ready'));
     const title = active
       ? 'A compatible draft model is part of this loaded stack.'
-      : 'This profile expects speculative decoding, but no draft model is loaded.';
-    return `<span class="lm-tag ${active ? 'green' : 'yellow'}" title="${escapeHtml(title)}">${label}</span>`;
+      : (unknown
+        ? 'This external llama-server did not expose its draft argument; the live draft state cannot be verified.'
+        : (needsRepair
+          ? 'This DFlash profile cannot load until a matching draft accelerator is attached.'
+          : 'This DFlash profile has a matching draft accelerator ready for its next load.'));
+    const tone = active ? 'green' : (needsRepair ? 'orange' : 'yellow');
+    return `<span class="lm-tag ${tone}" title="${escapeHtml(title)}">${label}</span>`;
   }
 
   function cardUsesDflashStack(row) {
@@ -2210,6 +2224,9 @@
       }
       return 'Loading model…';
     }
+    if (server?.acceleration_expected && server?.draft_status === 'repair_required') {
+      return 'Draft required. Click Load to choose or download the matching accelerator.';
+    }
     if (server?.status === 'error') return server.boot_error || 'Engine failed to start. Check logs or try Load again.';
     if (server?.status === 'running') return 'Engine is listening but no model is loaded. Click Load.';
     return 'Engine stopped. Turn it on or load a model.';
@@ -2520,7 +2537,11 @@
         `/api/servers/${encodeURIComponent(sid)}/load-plan?${params.toString()}`,
         { timeoutMs: 30000 },
       );
-    } catch {
+    } catch (err) {
+      const detail = dflashRepairDetail(err);
+      if (detail?.repair) {
+        return { level: 'repair_required', ...detail };
+      }
       return {
         level: 'warn',
         message: 'GPU fit could not be checked. Loading may fail if the model exceeds available VRAM.',
@@ -2697,6 +2718,14 @@
     }
     // Only now, on Load press, check GPU fit and surface the VRAM warning.
     await refreshLoadPlan(model).catch(() => {});
+    if (currentLoadPlan?.level === 'repair_required') {
+      await openDflashRepair(
+        { apiDetail: currentLoadPlan },
+        model,
+        model.server_id || activeServer()?.id || '',
+      );
+      return;
+    }
     if (currentLoadPlan?.level === 'block') {
       renderLoadPlanNotice(model); // shows the warning box; the model is not loaded
       toast(currentLoadPlan.message || 'This model does not fit the current GPU memory.', false);
@@ -3584,13 +3613,62 @@
     return activeServer();
   }
 
-  function isDraftLoadFailure(server) {
-    const message = `${server?.load_error || server?.boot_error || ''}`.toLowerCase();
-    return message.includes('draft') || message.includes('d-flash');
+  function dflashRepairDetail(error) {
+    const detail = error?.apiDetail;
+    if (detail?.repair) return detail;
+    if (detail?.detail?.repair) return detail.detail;
+    return null;
+  }
+
+  async function openDflashRepair(error, model, serverId) {
+    const detail = dflashRepairDetail(error);
+    if (!detail?.repair) return false;
+    const repair = detail.repair;
+    const action = String(repair.action || '').toLowerCase();
+    if (action === 'update_engine') {
+      const message = detail.message || detail.update?.engine?.message || 'Update the bundled llama-server before loading this DFlash2 stack.';
+      toast(message, false);
+      window.DFlashStatusFeed?.note('DFlash engine update required', message);
+      return true;
+    }
+    const targetPath = repair.target_path || detail.target_path || model?.path || '';
+    const targetLabel = model?.label || model?.filename || targetPath.split(/[/\\]/).pop() || 'DFlash target';
+    const currentDraftPath = repair.current_draft_path || '';
+    const retry = async (attached) => {
+      await executeModelLoad(
+        model,
+        serverId || attached?.server_id || attached?.server?.id,
+        { skipLoadPlanCheck: true },
+      );
+    };
+    if (serverId && targetPath && window.DFlashStackWizard?.openReplaceDraft) {
+      await window.DFlashStackWizard.openReplaceDraft({
+        serverId,
+        targetPath,
+        targetLabel,
+        currentDraftPath,
+        currentDraftLabel: currentDraftPath.split(/[/\\]/).pop() || '',
+        label: targetLabel,
+        onAttached: retry,
+      });
+      window.DFlashStatusFeed?.note('DFlash draft required', 'Choose or download the matching accelerator');
+      return true;
+    }
+    if (targetPath && window.DFlashStackWizard?.open) {
+      await window.DFlashStackWizard.open({
+        targetPath,
+        targetLabel,
+        allowHfAccelerator: true,
+        onAttached: retry,
+      });
+      window.DFlashStatusFeed?.note('DFlash draft required', 'Choose or download the matching accelerator');
+      return true;
+    }
+    toast(detail.message || 'Choose a target and matching DFlash accelerator in the stack wizard.', false);
+    return true;
   }
 
   async function executeModelLoad(model, forceServerId, options = {}) {
-    const skipDraft = !!options.skipDraft;
     const onProgress = options.onProgress;
     const serverId = forceServerId || model.server_id || activeServer()?.id;
     if (!serverId) {
@@ -3598,24 +3676,35 @@
       return;
     }
     const label = model.label || model.id;
-    if (!skipDraft) {
-      const liveServer = findLiveServerForModel(model);
-      if (liveServer) {
-        toast('Model already loaded');
-        window.DFlashStatusFeed?.note(`${label} ready`, `Port :${liveServer.port || '—'}`);
-        return true;
+    const liveServer = findLiveServerForModel(model);
+    if (liveServer) {
+      if (liveServer.acceleration_expected && liveServer.draft_loaded !== true) {
+        await openDflashRepair({
+          apiDetail: {
+            message: 'This DFlash profile is loaded without a verifiable draft accelerator.',
+            repair: {
+              action: 'attach_draft',
+              server_id: serverId,
+              target_path: model.path || liveServer.target_path || '',
+              current_draft_path: '',
+            },
+          },
+        }, model, serverId);
+        return false;
       }
+      toast('Model already loaded');
+      window.DFlashStatusFeed?.note(`${label} ready`, `Port :${liveServer.port || '—'}`);
+      return true;
     }
     setServerAction(serverId, 'loading');
     pendingLoads.set(serverId, { label, plain_gguf: !!model.plain_gguf });
     syncPendingLoadsFeed();
     window.DFlashStatusFeed?.setTransient(`Loading ${label}…`, {
-      secondary: skipDraft ? 'Loading without D-Flash draft' : 'Reading weights into GPU',
+      secondary: 'Reading target and draft weights into GPU',
       ttlMs: 120000,
     });
     renderAll();
     let completed = false;
-    let retryWithoutDraft = false;
     try {
       await saveInspectorLoadSettings();
       const body = {};
@@ -3624,7 +3713,6 @@
         const loadId = catalogLoadModelId(model);
         if (loadId) body.model_id = loadId;
       }
-      if (skipDraft) body.skip_draft = true;
       const result = await api(`/api/servers/${encodeURIComponent(serverId)}/load`, {
         method: 'POST',
         body: Object.keys(body).length ? JSON.stringify(body) : undefined,
@@ -3644,8 +3732,6 @@
           window.DFlashStatusFeed?.note(`${label} ready`, `Port :${loaded?.port || result.port || '—'}`);
           clearInspectorPendingReload();
           completed = true;
-        } else if (!skipDraft && isDraftLoadFailure(loaded)) {
-          retryWithoutDraft = true;
         } else if (loaded?.status === 'error') {
           const message = loaded.boot_error || loaded.load_error || 'Model load failed. Check the engine log.';
           toast(message, false);
@@ -3663,8 +3749,12 @@
         window.DFlashStatusFeed?.note('Load did not complete', message);
       }
     } catch (err) {
-      toast(err.message, false);
-      window.DFlashStatusFeed?.note('Load failed', err.message || label);
+      if (await openDflashRepair(err, model, serverId)) {
+        completed = false;
+      } else {
+        toast(err.message || 'Model load failed', false);
+        window.DFlashStatusFeed?.note('Load failed', err.message || label);
+      }
     } finally {
       pendingLoads.delete(serverId);
       syncPendingLoadsFeed();
@@ -3675,11 +3765,6 @@
       await refreshStatus(true, { includeExternal: true, fresh: false });
       void refreshStatus(true, { includeExternal: true, fresh: true }).catch(() => {});
       reschedulePoll();
-    }
-    if (retryWithoutDraft) {
-      toast('D-Flash draft is incompatible — loading the main model without it');
-      window.DFlashStatusFeed?.note('Retrying without D-Flash', label);
-      return executeModelLoad(model, forceServerId, { ...options, skipDraft: true });
     }
     return completed;
   }
@@ -3975,6 +4060,10 @@
         const label = payload.label || payload.id || 'Model';
         window.DFlashStatusFeed?.note(`${label} ready`, plan.port ? `Port :${plan.port}` : 'ready');
         return true;
+      }
+      if (plan?.level === 'repair_required') {
+        await openDflashRepair({ apiDetail: plan }, payload, serverId);
+        return false;
       }
       if (plan?.level === 'block') {
         toast(plan.message || 'This model does not fit the current GPU memory.', false);

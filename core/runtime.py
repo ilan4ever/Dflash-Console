@@ -39,11 +39,12 @@ from core.load_progress import (
     parse_load_progress,
     read_log_tail,
 )
-from core.model_presets import gpu_layers_max_for
+from core.model_presets import gpu_layers_max_for, preset_path_for, profile_requires_draft
 from core.model_stack import resolve_model_stack
 from core.server_boot import (
     adopt_running_engine,
     clear_server_tracking,
+    dflash_live_launch_state,
     get_started_launch,
     managed_process_identity,
     terminate_started_process,
@@ -443,34 +444,65 @@ def _stack_has_dflash_draft(parts: list[dict[str, Any]]) -> bool:
     return any(str(row.get('role') or '').startswith('draft') for row in parts)
 
 
+def _preset_has_dflash_draft(server_id: str) -> bool | None:
+    if not str(server_id or '').strip():
+        return None
+    path = preset_path_for(server_id)
+    if not path.is_file():
+        return None
+    try:
+        return any(
+            line.strip().lower().startswith('model-draft')
+            for line in path.read_text(encoding='utf-8').splitlines()
+        )
+    except OSError:
+        return None
+
+
 def _acceleration_metadata(
     server: dict[str, Any],
     stack: list[dict[str, Any]],
+    *,
+    live_draft: bool | None = None,
+    live: bool = False,
 ) -> dict[str, Any]:
     """Describe configured speculative decoding without inferring it from names."""
     parts = [row for row in stack if str(row.get('role') or '') != 'alias']
-    draft_loaded = any(
+    draft_configured = any(
         str(row.get('role') or '').startswith('draft')
         and bool(str(row.get('path') or '').strip())
         and not row.get('path_missing')
         for row in parts
     )
+    preset_has_draft = _preset_has_dflash_draft(str(server.get('id') or ''))
+    if preset_has_draft is False:
+        draft_configured = False
+    draft_loaded = (
+        bool(live_draft)
+        if live_draft is not None
+        else draft_configured
+    )
     profile = str(server.get('profile') or '').strip().lower()
-    acceleration_expected = 'dflash' in profile or 'dspark' in profile
+    acceleration_expected = profile_requires_draft(profile)
     if draft_loaded:
         label = 'DFlash active'
         mode = 'dflash'
+        draft_status = 'active'
     elif acceleration_expected:
-        label = 'No draft · autoregressive'
+        needs_repair = not draft_configured or (live and live_draft is not True)
+        label = 'Draft required · repair' if needs_repair else 'DFlash stack ready'
         mode = 'autoregressive'
+        draft_status = 'repair_required' if needs_repair else 'ready'
     else:
         label = ''
         mode = 'autoregressive'
+        draft_status = 'not_applicable'
     return {
         'acceleration_mode': mode,
         'acceleration_expected': acceleration_expected,
         'acceleration_label': label,
         'draft_loaded': draft_loaded,
+        'draft_status': draft_status,
     }
 
 
@@ -1041,9 +1073,20 @@ def build_server_status(
         loaded_models=loaded_models,
         progress=load_progress,
     )
-    acceleration = _acceleration_metadata(server, model_stack)
+    live_draft_state = dflash_live_launch_state(server) if running else None
+    acceleration = _acceleration_metadata(
+        server,
+        model_stack,
+        live_draft=(live_draft_state is True and status == 'loaded'),
+        live=status in {'loaded', 'error'},
+    )
     for card in visible_cards:
-        card_acceleration = _acceleration_metadata(server, card.get('stack_details') or model_stack)
+        card_acceleration = _acceleration_metadata(
+            server,
+            card.get('stack_details') or model_stack,
+            live_draft=(live_draft_state is True and status == 'loaded'),
+            live=status in {'loaded', 'error'},
+        )
         card.update(card_acceleration)
     from core.gpu_processes import _model_kind_fields
 
