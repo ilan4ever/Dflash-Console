@@ -1,0 +1,37 @@
+---
+description: Full release workflow — GitHub tag + Windows installer + PyPI package
+alwaysApply: true
+---
+
+# Publish release (required)
+
+When the user asks to **publish a release**, **ship a release**, or similar, treat it as a **full release**, not GitHub-only.
+
+A full release includes **all** of:
+
+1. **Version bump** (if not already bumped for this batch) — `.\scripts\bump-version.ps1`
+2. **Commit and push** `main` with the version + changes
+3. **Git tag** `vX.Y.Z` matching `package.json`, pushed to `origin`
+4. **GitHub Release** — triggered by the tag (`release-windows.yml` builds installers)
+5. **PyPI** — `.\scripts\publish-pypi.ps1` so `pip install dflash-console` matches the release
+
+Prefer the unified helper from repo root when doing all steps:
+
+```powershell
+.\scripts\publish-release.ps1
+```
+
+Options: `-Part minor`, `-SetVersion 1.0.0`, `-SkipBuild` (tag + PyPI only), `-WaitForGitHub`.
+
+## PyPI credentials
+
+`scripts/publish-pypi.ps1` reads `PYPI_TOKEN` from `.env.admin` or `TWINE_PASSWORD`. Do **not** skip PyPI unless the user explicitly asks for GitHub-only.
+
+## Verify after publish
+
+```powershell
+pip index versions dflash-console
+gh release view "v$((Get-Content package.json -Raw | ConvertFrom-Json).version)"
+```
+
+See `docs/RELEASING.md` for the maintainer checklist.

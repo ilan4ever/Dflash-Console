@@ -26,3 +26,7 @@
 ## Communication
 - If something is unclear, inspect the project first.
 - Before making a major architectural change, ask me.
+
+## Releases
+- When the user asks to **publish a release**, ship **GitHub tag + Windows installer (CI) + PyPI** (`dflash-console`). See `.cursor/rules/release.mdc` and `docs/RELEASING.md`.
+- Use `.\scripts\publish-release.ps1` for the full flow; never skip PyPI unless the user explicitly requests GitHub-only.

@@ -68,7 +68,37 @@ publish production artifacts:
   Authenticode signing.
 - Hostinger SSH secrets are optional and only publish the legacy protected feed.
 
-## 3. Publish the Windows EXE
+## 3. Publish a release (GitHub + PyPI)
+
+A **release** means both distribution channels stay in sync:
+
+| Channel | Artifact | How |
+|---------|----------|-----|
+| GitHub | `DFlash-Console-Setup-<version>-x64.exe`, portable EXE, `latest.json` | Tag push → Actions |
+| PyPI | `dflash-console` (`pip install dflash-console`) | `scripts/publish-pypi.ps1` |
+
+### One-command release (recommended)
+
+From a clean checkout, after tests pass:
+
+```powershell
+.\scripts\publish-release.ps1
+```
+
+This bumps the version (patch by default), builds the Windows installer locally,
+commits are **not** automatic — commit and push your changes first or after bump,
+creates and pushes `vX.Y.Z`, publishes to PyPI, and prints verification URLs.
+
+Options:
+
+- `.\scripts\publish-release.ps1 -Part minor`
+- `.\scripts\publish-release.ps1 -SetVersion 1.0.0`
+- `.\scripts\publish-release.ps1 -SkipBuild` — tag + PyPI only (CI builds EXEs)
+- `.\scripts\publish-release.ps1 -WaitForGitHub` — wait for the Actions workflow
+
+PyPI token: set `PYPI_TOKEN` in `.env.admin` (or `TWINE_PASSWORD` in the environment).
+
+### GitHub tag only (manual)
 
 Create a version tag that exactly matches `package.json`:
 
@@ -115,17 +145,17 @@ release assets.
 
 ## 5. Publish the pip package
 
-The PyPI name is `dflash-console`. Publish with `scripts/publish-pypi.ps1`
-after every version bump so `pip install dflash-console` matches the release.
+The PyPI name is `dflash-console`. **Every release must publish PyPI** so
+`pip install dflash-console` matches the GitHub tag. This is included in
+`scripts/publish-release.ps1` and must be run by the agent whenever the user
+asks to publish a release.
+
 Users run `dflash serve` / `dflash list`. Do not upload as `dflash`; that name
 is a different project.
 
-After the version bump:
-
 ```powershell
-$env:PYPI_TOKEN = '<pypi-api-token>'
 .\scripts\publish-pypi.ps1
 ```
 
 Use `.\scripts\publish-pypi.ps1 -Test` for TestPyPI. Wheels land in `dist-pypi/`.
-The token needs permission to upload `dflash-console`.
+The token needs permission to upload `dflash-console` (`PYPI_TOKEN` in `.env.admin`).
