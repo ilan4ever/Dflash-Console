@@ -472,7 +472,7 @@ class ConfigTests(unittest.TestCase):
             'ui_port': 8900,
             'gateway_port': 8001,
             'servers': [
-                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B', 'model_id': 'gemma-4-12b-it-qat'},
+                {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B', 'profile': 'generic-ar', 'model_id': 'gemma-4-12b-it-qat'},
                 {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'label': 'Nomic Embed', 'engine_mode': 'embedding'},
             ],
         }):

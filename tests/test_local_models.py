@@ -280,6 +280,25 @@ def test_server_catalog_row_non_dflash_is_loadable_when_target_ready(tmp_path: P
     assert row['stack_status'] == ''
 
 
+def test_server_catalog_row_incomplete_dflash_requires_repair():
+    from core.local_models import _server_catalog_row
+
+    row = _server_catalog_row(
+        {
+            'id': 'orphan-dflash',
+            'model_id': 'orphan-dflash',
+            'label': 'Orphan DFlash',
+            'profile': 'qwen-dflash',
+            'port': 8093,
+            'enabled': True,
+        },
+        cfg={'model_paths': {}},
+    )
+    assert row['dflash_stack'] is True
+    assert row['loadable'] is False
+    assert row['stack_status'] == 'repair-required'
+
+
 def test_vision_detects_mmproj_sibling(tmp_path: Path):
     target = tmp_path / 'gemma-4-12b-it.gguf'
     projector = tmp_path / 'mmproj-gemma-4-12b-it-f16.gguf'
@@ -780,6 +799,35 @@ def test_identical_files_in_multiple_roots_collapse_to_one_row(tmp_path: Path):
     assert rows[0]['duplicate_identical'] is True
     assert rows[0]['duplicate_count'] == 2
     assert set(rows[0]['duplicate_paths']) == {str(first), str(second)}
+
+
+def test_identical_files_keep_distinct_registered_stack_profiles(tmp_path: Path):
+    from core.local_models import _collapse_identical_files
+
+    target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    target.write_bytes(b'identical target payload')
+    rows = _collapse_identical_files([
+        {
+            'filename': target.name,
+            'path': str(target),
+            'server_id': 'legacy-gemma-alias',
+            'source': 'dflash-profile',
+            'dflash_stack': True,
+            'loadable': False,
+        },
+        {
+            'filename': target.name,
+            'path': str(target),
+            'server_id': 'gemma-4-31b-q4-0-it-dflash',
+            'source': 'dflash-profile',
+            'dflash_stack': True,
+            'loadable': True,
+        },
+    ])
+
+    assert len(rows) == 1
+    assert rows[0]['server_id'] == 'gemma-4-31b-q4-0-it-dflash'
+    assert rows[0]['duplicate_count'] == 2
 
 
 def test_same_name_different_content_is_not_collapsed(tmp_path: Path):

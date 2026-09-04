@@ -11,8 +11,10 @@ from api.gateway import list_models
 
 def test_gateway_list_models_includes_vision_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     target = tmp_path / 'model.gguf'
+    draft = tmp_path / 'draft.gguf'
     mmproj = tmp_path / 'mmproj-model.gguf'
     target.write_bytes(b'model')
+    draft.write_bytes(b'draft')
     mmproj.write_bytes(b'mmproj')
     monkeypatch.setattr('core.vision_setup._is_allowed_model_path', lambda path, cfg: True)
     cfg = {
@@ -26,6 +28,7 @@ def test_gateway_list_models_includes_vision_metadata(tmp_path: Path, monkeypatc
             'profile': 'gemma-12-dflash',
             'model_id': 'gemma-4-12b-it-q4-k-m',
             'target_path': str(target),
+            'draft_path': str(draft),
             'mmproj_path': str(mmproj),
         }],
     }

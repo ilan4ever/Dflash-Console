@@ -1411,7 +1411,15 @@ def _server_catalog_row(
     path = Path(str(target.get('path') or '')) if target else None
     caps = ['instruct']
     profile = str(server.get('profile') or '')
+    from core.model_presets import profile_requires_draft
+
+    requires_draft = profile_requires_draft(profile)
     if draft:
+        caps.append('dflash')
+    elif requires_draft:
+        # Keep incomplete legacy DFlash profiles identifiable, but do not
+        # pretend they are ready models.  The loadable flag below is the
+        # authoritative readiness signal used by the Playground.
         caps.append('dflash')
     elif profile == 'gemma-12-ar':
         caps.append('ar')
@@ -1436,6 +1444,14 @@ def _server_catalog_row(
         loadable = is_enabled and target_ready and draft_ready
     else:
         loadable = is_enabled and target_ready
+    stack_status = ''
+    if has_dflash:
+        if not is_enabled:
+            stack_status = 'disabled'
+        elif loadable:
+            stack_status = 'ready'
+        else:
+            stack_status = 'repair-required'
     server_id = str(server.get('id') or '')
     api_model_id = str(server.get('model_id') or server_id)
     display_name = str(catalog_meta.get('display_name') or server.get('label') or api_model_id)
@@ -1477,7 +1493,7 @@ def _server_catalog_row(
         'context_size': server.get('context_size'),
         'gpu_layers_max': 128,
         'dflash_stack': has_dflash,
-        'stack_status': 'ready' if is_enabled and has_dflash else ('disabled' if has_dflash else ''),
+        'stack_status': stack_status,
     }
 
 
@@ -1816,9 +1832,12 @@ def _collapse_identical_files(models: list[dict[str, Any]]) -> list[dict[str, An
         for matching in fingerprints.values():
             if len(matching) < 2:
                 continue
-            # Catalog order already prefers configured profiles and the first
-            # configured/scanned root, so keep that row as the canonical entry.
-            survivor = matching[0]
+            # Prefer a ready/configured DFlash profile over a stale alias or
+            # a duplicate copied into another model library.
+            survivor = max(
+                matching,
+                key=lambda index: (_catalog_row_rank(models[index]), -index),
+            )
             paths = [str(models[index].get('path') or '') for index in matching]
             models[survivor]['duplicate_group'] = (
                 f"dup:{str(models[survivor].get('filename') or '').lower()}"
@@ -1826,7 +1845,7 @@ def _collapse_identical_files(models: list[dict[str, Any]]) -> list[dict[str, An
             models[survivor]['duplicate_count'] = len(paths)
             models[survivor]['duplicate_paths'] = paths
             models[survivor]['duplicate_identical'] = True
-            hidden.update(matching[1:])
+            hidden.update(index for index in matching if index != survivor)
 
     return [row for index, row in enumerate(models) if index not in hidden]
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
@@ -40,6 +41,7 @@ from core.gateway_routing import (
     resolve_chat_server,
 )
 from core.local_models import model_has_reasoning
+from core.model_presets import profile_requires_draft
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,33 @@ async def _console_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _dflash_stack_ready(server: dict[str, Any], *, cfg: dict[str, Any]) -> bool:
+    """Keep incomplete speculative profiles out of the public model list."""
+    if is_embedding_server(server):
+        return True
+    if not profile_requires_draft(server.get('profile')):
+        return True
+    try:
+        from core.model_stack import resolve_model_stack
+
+        stack = resolve_model_stack(server, cfg=cfg)
+    except (OSError, ValueError):
+        stack = []
+    target = next((row for row in stack if row.get('role') == 'target'), {})
+    draft = next(
+        (row for row in stack if str(row.get('role') or '').startswith('draft')),
+        {},
+    )
+    target_path = str(server.get('target_path') or target.get('path') or '').strip()
+    draft_path = str(server.get('draft_path') or draft.get('path') or '').strip()
+    return (
+        bool(target_path)
+        and bool(draft_path)
+        and Path(target_path).expanduser().is_file()
+        and Path(draft_path).expanduser().is_file()
+    )
+
+
 async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[str, Any], str]:
     """Pick the chat engine for an arbitrary client ``model`` name."""
     target = resolve_chat_server(cfg, model)
@@ -160,8 +189,11 @@ async def list_models() -> dict[str, Any]:
     from core.model_stack import resolve_model_stack
 
     data: list[dict[str, Any]] = []
+    seen_model_ids: set[str] = set()
     for server in list_servers(cfg):
         if server.get('enabled', True) is False:
+            continue
+        if not _dflash_stack_ready(server, cfg=cfg):
             continue
         infer = normalize_inference_settings(server.get('inference_settings'))
         try:
@@ -184,6 +216,9 @@ async def list_models() -> dict[str, Any]:
         mmproj_path = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
         supports_vision = server_supports_vision_chat(server, cfg=cfg)
         client_id = catalog_model_id(server)
+        if client_id in seen_model_ids:
+            continue
+        seen_model_ids.add(client_id)
         data.append({
             'id': client_id,
             'object': 'model',

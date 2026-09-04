@@ -571,7 +571,12 @@
   function playgroundLoadableModels() {
     const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
     const hfFilter = window.DFlashModelsLive?.isHfEngineModel;
-    const loadableModels = catalogModels.filter((model) => (
+    const readyModels = catalogModels.filter((model) => (
+      model.loadable !== false
+      && model.path_missing !== true
+      && model.draft_path_missing !== true
+    ));
+    const loadableModels = readyModels.filter((model) => (
       window.DFlashModelGroups?.isPickerVisibleModel?.(model, catalogModels)
       ?? !isAcceleratorOnlyModel(model)
     ));
