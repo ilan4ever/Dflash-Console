@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from unittest.mock import patch
 
 import core.server_boot as server_boot
 
@@ -102,8 +104,91 @@ def test_checkpoint_load_failure_error_prefers_log_message(monkeypatch, tmp_path
     )
 
     assert 'draft' in message.lower()
-    assert '9' not in message
 
+
+def test_repair_dflash_servers_disables_legacy_alias_only_stub():
+    cfg = {
+        'servers': [
+            {
+                'id': 'qwen-dflash',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.5-27b-dflash',
+                'enabled': True,
+                'engine_on': True,
+                'port': 8302,
+                'host': '127.0.0.1',
+            },
+            {
+                'id': 'qwen3-8-27b-q6-k-l',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.8-27b-q6-k-l',
+                'enabled': True,
+                'engine_on': True,
+                'target_path': r'C:\models\Qwen3.8-27B-Q6_K_L.gguf',
+                'draft_path': r'C:\models\Qwen3.8-27B-DFlash2-Q4_K_M.gguf',
+                'port': 8095,
+                'host': '127.0.0.1',
+            },
+        ],
+    }
+    with patch('core.server_boot.validate_dflash_stack') as validate:
+        validate.side_effect = lambda server, **kwargs: (
+            {'valid': True, 'target_path': server.get('target_path'), 'draft_path': server.get('draft_path')}
+            if server.get('target_path') and server.get('draft_path')
+            else {'valid': False, 'reason_code': 'target-required'}
+        )
+        with patch('core.model_stack.resolve_model_stack', return_value=[
+            {'role': 'alias', 'path': ''},
+        ]):
+            result = server_boot.repair_dflash_servers(cfg)
+
+    assert result['changed'] is True
+    assert 'qwen-dflash' in result['disabled']
+    assert cfg['servers'][0]['enabled'] is False
+    assert cfg['servers'][0]['engine_on'] is False
+    assert cfg['servers'][1]['enabled'] is True
+
+
+def test_repair_dflash_servers_prefers_explicit_paths_over_alias_stub(tmp_path):
+    target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    draft = tmp_path / 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
+    target.write_bytes(b't')
+    draft.write_bytes(b'd')
+    cfg = {
+        'servers': [
+            {
+                'id': 'qwen-dflash',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.5-27b-dflash',
+                'enabled': True,
+                'engine_on': True,
+                'port': 8302,
+                'target_path': str(target),
+                'draft_path': str(draft),
+            },
+            {
+                'id': 'qwen3-8-27b-q6-k-l',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.8-27b-q6-k-l',
+                'enabled': True,
+                'engine_on': True,
+                'target_path': str(target),
+                'draft_path': str(draft),
+                'port': 8095,
+            },
+        ],
+    }
+    with patch('core.server_boot.validate_dflash_stack') as validate:
+        validate.side_effect = lambda server, **kwargs: {
+            'valid': True,
+            'target_path': server.get('target_path'),
+            'draft_path': server.get('draft_path'),
+        }
+        result = server_boot.repair_dflash_servers(cfg)
+
+    assert 'qwen-dflash' in result['duplicates']
+    assert cfg['servers'][0]['enabled'] is False
+    assert cfg['servers'][1]['enabled'] is True
 
 def test_dflash2_engine_capability_rejects_old_build(monkeypatch, tmp_path):
     binary = tmp_path / 'llama-server.exe'

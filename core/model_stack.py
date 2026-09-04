@@ -102,6 +102,66 @@ def _find_gemma12_target(*, cfg: dict[str, Any] | None = None) -> Path | None:
     return found[0]
 
 
+def _discover_qwen_dflash_stack(*, cfg: dict[str, Any] | None = None) -> tuple[Path | None, Path | None]:
+    """Return the best installed Qwen target + DFlash draft pair, if any.
+
+    Disk scan only — must not call ``find_local_accelerators`` / ``list_local_models``
+    (those resolve stacks and recurse back into this helper).
+    """
+    from core.stack_match import is_accelerator_path, is_target_candidate, is_viable_stack_pair, score_accelerator_pair
+
+    models = _console_models_dir(cfg)
+    root = get_dflash_root(cfg)
+    scan_roots: list[Path] = []
+    for base in (models, root / 'models', _lmstudio_models_dir()):
+        if base.is_dir():
+            scan_roots.append(base)
+
+    targets: list[Path] = []
+    accelerators: list[Path] = []
+    for base in scan_roots:
+        for hit in base.rglob('*.gguf'):
+            name = hit.name.lower()
+            if is_accelerator_path(hit):
+                accelerators.append(hit)
+            elif is_target_candidate(hit) and 'qwen' in name:
+                targets.append(hit)
+
+    best: tuple[Path, Path, float] | None = None
+    seen_targets: set[str] = set()
+    for target in sorted(set(targets), key=lambda path: path.name.lower()):
+        try:
+            target_key = str(target.resolve()).lower()
+        except OSError:
+            target_key = str(target).lower()
+        if target_key in seen_targets:
+            continue
+        seen_targets.add(target_key)
+
+        best_accel: Path | None = None
+        best_score = 0.0
+        for accel in accelerators:
+            try:
+                if accel.resolve() == target.resolve():
+                    continue
+            except OSError:
+                if str(accel) == str(target):
+                    continue
+            score = score_accelerator_pair(target, accel)
+            if score <= 0 or not is_viable_stack_pair(target, accel, score):
+                continue
+            if best_accel is None or score > best_score:
+                best_accel = accel
+                best_score = score
+
+        if best_accel is not None and (best is None or best_score > best[2]):
+            best = (target, best_accel, best_score)
+
+    if not best:
+        return None, None
+    return best[0], best[1]
+
+
 def _stack_entry(
     *,
     role: str,
@@ -228,11 +288,26 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         return stack
 
     if profile == 'qwen-dflash':
-        # Qwen stacks must be explicit.  The old Qwen3.5 fallback could silently
-        # pair a Qwen3.8 target with an obsolete drafter when a profile was
-        # missing its paths.  A stack created by the Console always has
-        # target_path/draft_path (handled above), so an unconfigured legacy
-        # profile is intentionally represented by its alias only.
+        qwen_target, qwen_draft = _discover_qwen_dflash_stack(cfg=cfg)
+        if qwen_target and qwen_draft:
+            stack = [
+                _stack_entry(
+                    role='target',
+                    label=qwen_target.name,
+                    path=qwen_target,
+                    source='library',
+                ),
+                _stack_entry(
+                    role='draft-dflash',
+                    label=qwen_draft.name,
+                    path=qwen_draft,
+                    source='dflash',
+                ),
+            ]
+            if alias:
+                stack.insert(0, _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias))
+            return stack
+        # No installed pair yet — keep alias-only so repair can disable legacy stubs.
         return [
             _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias),
         ] if alias else []

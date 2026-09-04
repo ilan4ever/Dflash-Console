@@ -323,6 +323,22 @@ def _start_background_tasks() -> None:
     def run() -> None:
         time.sleep(1.0)
         try:
+            from core.config import load_config, save_config
+            from core.server_boot import repair_dflash_servers
+
+            cfg = load_config()
+            repair = repair_dflash_servers(cfg)
+            if repair.get('changed'):
+                save_config(cfg)
+                logger.info(
+                    'repaired DFlash engines: repaired=%s disabled=%s duplicates=%s',
+                    repair.get('repaired'),
+                    repair.get('disabled'),
+                    repair.get('duplicates'),
+                )
+        except Exception as exc:
+            logger.exception('DFlash engine repair failed: %s', exc)
+        try:
             from core.engine_state import restore_engines
 
             results = restore_engines(cfg=load_config())

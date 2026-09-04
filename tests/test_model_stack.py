@@ -90,6 +90,27 @@ class ModelStackTests(unittest.TestCase):
             self.assertEqual(Path(draft_row['path']).resolve(), draft.resolve())
             self.assertFalse(draft_row.get('path_missing'))
 
+    def test_qwen_dflash_discovers_installed_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / 'Qwen3.8-27B-Q6_K_L.gguf'
+            draft = root / 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
+            target.write_bytes(b'target')
+            draft.write_bytes(b'draft')
+            with patch('core.stack_match.find_local_accelerators') as find_local:
+                find_local.side_effect = AssertionError('must not call catalog during qwen discovery')
+                stack = resolve_model_stack({
+                    'profile': 'qwen-dflash',
+                    'model_id': 'qwen3.8-27b-q6-k-l',
+                }, cfg={'dflash_root': str(root), 'models_root': root})
+            roles = [row['role'] for row in stack]
+            self.assertIn('target', roles)
+            self.assertIn('draft-dflash', roles)
+            target_row = next(row for row in stack if row['role'] == 'target')
+            draft_row = next(row for row in stack if row['role'] == 'draft-dflash')
+            self.assertEqual(Path(target_row['path']).resolve(), target.resolve())
+            self.assertEqual(Path(draft_row['path']).resolve(), draft.resolve())
+
 
 if __name__ == '__main__':
     unittest.main()

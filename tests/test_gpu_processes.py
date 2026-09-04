@@ -7,6 +7,7 @@ from core.gpu_processes import (
     _classify_app,
     _external_card_detail,
     _external_card_path_missing,
+    _external_acceleration_fields,
     _fetch_process_details,
     _is_gpu_model_load,
     _model_hint_from_cmdline,
@@ -47,6 +48,59 @@ def test_classify_lmstudio_parent():
     )
     assert source == 'lmstudio'
     assert label == 'LM Studio'
+
+
+def test_external_acceleration_fields_skip_plain_lmstudio_load():
+    fields = _external_acceleration_fields(
+        command_line=(
+            r'C:\Users\me\.lmstudio\extensions\backends\llama-server.exe '
+            r'--model C:\Users\me\.lmstudio\models\google\gemma-4-31B_q4_0-it.gguf '
+            r'--host 127.0.0.1 --port 31086'
+        ),
+        app_source='lmstudio',
+        draft_name='',
+        draft_path='',
+        llama_process=True,
+    )
+    assert fields == {}
+
+
+def test_external_acceleration_fields_keep_lmstudio_dflash_draft():
+    fields = _external_acceleration_fields(
+        command_line=(
+            r'llama-server.exe --model C:\models\target.gguf '
+            r'--model-draft C:\models\gemma-draft.gguf'
+        ),
+        app_source='lmstudio',
+        draft_name='gemma-draft.gguf',
+        draft_path=r'C:\models\gemma-draft.gguf',
+        llama_process=True,
+    )
+    assert fields['acceleration_mode'] == 'dflash'
+    assert fields['draft_status'] == 'active'
+
+
+def test_build_external_card_lmstudio_plain_load_has_no_dflash_badge(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [])
+    card = _build_external_card(
+        {'pid': 44108, 'gpu_index': 0, 'vram_mb': None, 'vram_gb': None, 'process_name': 'llama-server.exe'},
+        details={
+            'process_name': 'llama-server.exe',
+            'command_line': (
+                r'C:\Users\me\.lmstudio\extensions\backends\llama-server.exe '
+                r'--model C:\Users\me\.lmstudio\models\google\gemma-4-31B_q4_0-it.gguf '
+                r'--host 127.0.0.1 --port 31086'
+            ),
+            'parent_process_name': 'LM Studio.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'RTX 4090', 'name': 'RTX 4090'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert card is not None
+    assert card['app_source'] == 'lmstudio'
+    assert 'acceleration_expected' not in card
 
 
 def test_classify_whisper():

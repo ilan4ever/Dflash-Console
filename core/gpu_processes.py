@@ -776,6 +776,39 @@ def _draft_hint_from_cmdline(command_line: str) -> tuple[str, str]:
     return _display_name_from_path(path), path
 
 
+def _external_acceleration_fields(
+    *,
+    command_line: str,
+    app_source: str,
+    draft_name: str,
+    draft_path: str,
+    llama_process: bool,
+) -> dict[str, Any]:
+    """Attach DFlash acceleration badges only when a draft is observable."""
+    if draft_path:
+        return {
+            'acceleration_expected': True,
+            'acceleration_mode': 'dflash',
+            'acceleration_label': 'DFlash active',
+            'draft_loaded': True,
+            'draft_status': 'active',
+            'draft_path': draft_path,
+            'draft_filename': draft_name,
+        }
+    if not llama_process:
+        return {}
+    # LM Studio and Ollama plain loads are external apps, not Console DFlash stacks.
+    if str(app_source or '').lower() in {'lmstudio', 'ollama'}:
+        return {}
+    return {
+        'acceleration_expected': True,
+        'acceleration_mode': 'unknown',
+        'acceleration_label': 'DFlash status unknown',
+        'draft_loaded': None,
+        'draft_status': 'unknown',
+    }
+
+
 def _display_name_from_path(path: str) -> str:
     clean = str(path or '').strip().strip('"')
     if not clean:
@@ -1585,26 +1618,13 @@ def _build_external_card(
         listen_port=listen_port,
     )
     llama_process = 'llama-server' in hay or 'llama_server' in hay
-    if draft_path:
-        acceleration = {
-            'acceleration_expected': True,
-            'acceleration_mode': 'dflash',
-            'acceleration_label': 'DFlash active',
-            'draft_loaded': True,
-            'draft_status': 'active',
-            'draft_path': draft_path,
-            'draft_filename': draft_name,
-        }
-    elif llama_process:
-        acceleration = {
-            'acceleration_expected': True,
-            'acceleration_mode': 'unknown',
-            'acceleration_label': 'DFlash status unknown',
-            'draft_loaded': None,
-            'draft_status': 'unknown',
-        }
-    else:
-        acceleration = {}
+    acceleration = _external_acceleration_fields(
+        command_line=command_line,
+        app_source=app_source,
+        draft_name=draft_name,
+        draft_path=draft_path,
+        llama_process=llama_process,
+    )
 
     return {
         'id': f'external-gpu-{pid}',

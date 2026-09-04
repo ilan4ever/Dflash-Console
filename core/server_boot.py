@@ -846,6 +846,137 @@ def _dflash_repair_result(
     return result
 
 
+def _normalized_model_path(path: str | Path) -> str:
+    try:
+        return str(Path(str(path)).expanduser().resolve()).lower()
+    except OSError:
+        return str(path).lower()
+
+
+def _is_alias_only_dflash_stub(server: dict[str, Any]) -> bool:
+    return (
+        not str(server.get('target_path') or '').strip()
+        and not str(server.get('draft_path') or '').strip()
+    )
+
+
+def repair_dflash_servers(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Repair or disable DFlash engine profiles that cannot load on this machine.
+
+    Legacy upgrades sometimes ship alias-only ``qwen-dflash`` rows with no
+    target/draft paths.  Discover installed pairs when possible; otherwise
+    disable broken stubs so chat/JIT load never hits ``target-required``.
+    """
+    from core.model_presets import profile_requires_draft
+    from core.model_stack import resolve_model_stack
+
+    servers = cfg.get('servers')
+    if not isinstance(servers, list):
+        return {'changed': False, 'repaired': [], 'disabled': [], 'duplicates': []}
+
+    repaired: list[dict[str, str]] = []
+    disabled: list[str] = []
+    duplicates: list[str] = []
+    claimed_targets: dict[str, str] = {}
+
+    dflash_servers = [
+        server for server in servers
+        if isinstance(server, dict) and profile_requires_draft(server.get('profile'))
+    ]
+    # Prefer engines with persisted paths and non-legacy ids before alias-only stubs.
+    ordered = sorted(
+        dflash_servers,
+        key=lambda server: (
+            1 if _is_alias_only_dflash_stub(server) else 0,
+            1 if str(server.get('id') or '').strip() == str(server.get('profile') or '').strip() else 0,
+        ),
+    )
+
+    def _reenable_owner(owner_id: str) -> None:
+        for row in dflash_servers:
+            if str(row.get('id') or '').strip() == owner_id:
+                if row.get('enabled', True) is False:
+                    row['enabled'] = True
+                break
+
+    for server in ordered:
+        server_id = str(server.get('id') or '').strip()
+        check = validate_dflash_stack(server, cfg=cfg)
+        if check.get('valid'):
+            target_path = str(check.get('target_path') or server.get('target_path') or '').strip()
+            draft_path = str(check.get('draft_path') or server.get('draft_path') or '').strip()
+            if target_path:
+                target_key = _normalized_model_path(target_path)
+                owner = claimed_targets.get(target_key)
+                if owner and owner != server_id:
+                    if server.get('enabled', True) is not False or server.get('engine_on'):
+                        server['enabled'] = False
+                        server['engine_on'] = False
+                        duplicates.append(server_id)
+                    _reenable_owner(owner)
+                    continue
+                if not str(server.get('target_path') or '').strip() and target_path and draft_path:
+                    server['target_path'] = target_path
+                    server['draft_path'] = draft_path
+                    repaired.append({
+                        'server_id': server_id,
+                        'target_path': target_path,
+                        'draft_path': draft_path,
+                    })
+                claimed_targets[target_key] = server_id
+            continue
+
+        if _is_alias_only_dflash_stub(server):
+            discovered = resolve_model_stack({**server, 'target_path': '', 'draft_path': ''}, cfg=cfg)
+        else:
+            discovered = resolve_model_stack(server, cfg=cfg)
+        target_row = next((row for row in discovered if row.get('role') == 'target'), {})
+        draft_row = next(
+            (row for row in discovered if str(row.get('role') or '').startswith('draft')),
+            {},
+        )
+        target_path = str(target_row.get('path') or '').strip()
+        draft_path = str(draft_row.get('path') or '').strip()
+
+        if (
+            target_path
+            and draft_path
+            and Path(target_path).expanduser().is_file()
+            and Path(draft_path).expanduser().is_file()
+        ):
+            target_key = _normalized_model_path(target_path)
+            owner = claimed_targets.get(target_key)
+            if owner and owner != server_id:
+                if server.get('enabled', True) is not False or server.get('engine_on'):
+                    server['enabled'] = False
+                    server['engine_on'] = False
+                    duplicates.append(server_id)
+                _reenable_owner(owner)
+                continue
+            server['target_path'] = target_path
+            server['draft_path'] = draft_path
+            claimed_targets[target_key] = server_id
+            repaired.append({
+                'server_id': server_id,
+                'target_path': target_path,
+                'draft_path': draft_path,
+            })
+            continue
+
+        if server.get('enabled', True) is not False or server.get('engine_on'):
+            server['enabled'] = False
+            server['engine_on'] = False
+            disabled.append(server_id)
+
+    changed = bool(repaired or disabled or duplicates)
+    return {
+        'changed': changed,
+        'repaired': repaired,
+        'disabled': disabled,
+        'duplicates': duplicates,
+    }
+
+
 def validate_dflash_stack(
     server: dict[str, Any],
     *,
