@@ -964,35 +964,18 @@ namespace DFlashConsoleSetup
             {
                 _installStarted = true;
                 bool removeData = HasArg(_args, "/RemoveData");
+                bool removeModels = HasArg(_args, "/RemoveModels");
                 if (!HasArg(_args, "/S") && !HasArg(_args, "/silent") && !HasArg(_args, "--silent"))
                 {
-                    DialogResult answer = MessageBox.Show(
-                        this,
-                        "Remove DFlash Console from this PC?",
-                        Text,
-                        MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Question);
-                    if (answer != DialogResult.Yes)
+                    using (UninstallOptionsForm options = new UninstallOptionsForm(_version))
                     {
-                        Close();
-                        return;
-                    }
-
-                    if (!removeData)
-                    {
-                        DialogResult dataAnswer = MessageBox.Show(
-                            this,
-                            "Also remove your Console settings and data folder?\n\n"
-                                + "Keep settings: config, model library links, and downloads folder pointers stay on this PC. "
-                                + "Reinstalling will reuse them.\n\n"
-                                + "Remove settings: deletes the Console data folder and app preferences. "
-                                + "Reinstalling will run first-time setup again.\n\n"
-                                + "Model files in LM Studio or other folders outside the Console data folder are never deleted.",
-                            Text,
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Warning,
-                            MessageBoxDefaultButton.Button2);
-                        removeData = dataAnswer == DialogResult.Yes;
+                        if (options.ShowDialog(this) != DialogResult.OK)
+                        {
+                            Close();
+                            return;
+                        }
+                        removeModels = options.RemoveModels;
+                        removeData = options.RemoveData;
                     }
                 }
 
@@ -1004,9 +987,7 @@ namespace DFlashConsoleSetup
                 await Task.Delay(400);
 
                 SetProgress(40, true);
-                SetStatus(removeData
-                    ? "Removing shortcuts, program files, and Console data…"
-                    : "Removing shortcuts and program files…");
+                SetStatus(BuildUninstallStatus(removeModels, removeData));
                 await Task.Run(() =>
                 {
                     RemoveShortcuts();
@@ -1014,6 +995,10 @@ namespace DFlashConsoleSetup
                     if (removeData)
                     {
                         RemoveConsoleUserData(_destRoot);
+                    }
+                    else if (removeModels)
+                    {
+                        RemoveModelFiles(_destRoot);
                     }
                     if (Directory.Exists(_destRoot))
                     {
@@ -1034,9 +1019,7 @@ namespace DFlashConsoleSetup
 
                 _ok = true;
                 SetProgress(100, false);
-                SetStatus(removeData
-                    ? "DFlash Console and its saved settings were removed."
-                    : "DFlash Console was removed.\nYour settings and model folders were kept.");
+                SetStatus(BuildUninstallCompleteMessage(removeModels, removeData));
                 _finish.Text = "Close";
                 ApplyFinishReadyStyle();
             }
@@ -1047,6 +1030,32 @@ namespace DFlashConsoleSetup
                 _finish.Text = "Close";
                 ApplyFinishReadyStyle();
             }
+        }
+
+        private static string BuildUninstallStatus(bool removeModels, bool removeData)
+        {
+            if (removeData)
+            {
+                return "Removing shortcuts, program files, and Console data…";
+            }
+            if (removeModels)
+            {
+                return "Removing shortcuts, program files, and downloaded model files…";
+            }
+            return "Removing shortcuts and program files…";
+        }
+
+        private static string BuildUninstallCompleteMessage(bool removeModels, bool removeData)
+        {
+            if (removeData)
+            {
+                return "DFlash Console and its saved settings were removed.";
+            }
+            if (removeModels)
+            {
+                return "DFlash Console was removed.\nDownloaded model files were deleted.\nYour settings were kept.";
+            }
+            return "DFlash Console was removed.\nYour settings and model folders were kept.";
         }
 
         private static bool HasAutoInstallArg(string[] args)
@@ -1232,6 +1241,143 @@ namespace DFlashConsoleSetup
                 }
             }
             catch { }
+        }
+
+        private static void RemoveModelFiles(string installRoot)
+        {
+            foreach (string path in CollectModelLibraryPaths(installRoot))
+            {
+                try
+                {
+                    if (Directory.Exists(path))
+                    {
+                        Directory.Delete(path, true);
+                    }
+                    else if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static string[] CollectModelLibraryPaths(string installRoot)
+        {
+            string dataRoot = ResolveConsoleDataRoot(installRoot);
+            System.Collections.Generic.List<string> paths = new System.Collections.Generic.List<string>();
+            System.Collections.Generic.HashSet<string> seen = new System.Collections.Generic.HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+            string configPath = Path.Combine(dataRoot, "config.json");
+            if (!File.Exists(configPath))
+            {
+                AddModelPath(paths, seen, Path.Combine(dataRoot, "models"));
+                return paths.ToArray();
+            }
+
+            string json = File.ReadAllText(configPath);
+            string dflashRoot = ExtractJsonStringValue(json, "dflash_root");
+            if (string.IsNullOrWhiteSpace(dflashRoot))
+            {
+                dflashRoot = dataRoot;
+            }
+            else
+            {
+                dflashRoot = ResolveConfigPath(dflashRoot, dataRoot);
+            }
+
+            string modelsRoot = ExtractJsonStringValue(json, "models_root");
+            if (!string.IsNullOrWhiteSpace(modelsRoot))
+            {
+                AddModelPath(paths, seen, ResolveConfigPath(modelsRoot, dflashRoot));
+            }
+            else
+            {
+                AddModelPath(paths, seen, Path.Combine(dflashRoot, "models"));
+            }
+
+            foreach (string libraryPath in ExtractModelLibraryPaths(json))
+            {
+                AddModelPath(paths, seen, ResolveConfigPath(libraryPath, dflashRoot));
+            }
+
+            return paths.ToArray();
+        }
+
+        private static void AddModelPath(
+            System.Collections.Generic.List<string> paths,
+            System.Collections.Generic.HashSet<string> seen,
+            string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            try
+            {
+                string full = Path.GetFullPath(path.Trim().Trim('"'));
+                if (seen.Add(full))
+                {
+                    paths.Add(full);
+                }
+            }
+            catch { }
+        }
+
+        private static string ResolveConfigPath(string rawPath, string baseRoot)
+        {
+            string path = (rawPath ?? "").Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(path)) return baseRoot;
+            if (Path.IsPathRooted(path)) return path;
+            return Path.GetFullPath(Path.Combine(baseRoot, path));
+        }
+
+        private static string ExtractJsonStringValue(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(key)) return "";
+            string token = "\"" + key + "\"";
+            int idx = json.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return "";
+            int colon = json.IndexOf(':', idx + token.Length);
+            if (colon < 0) return "";
+            int start = json.IndexOf('"', colon + 1);
+            if (start < 0) return "";
+            int end = json.IndexOf('"', start + 1);
+            if (end <= start) return "";
+            return json.Substring(start + 1, end - start - 1).Trim();
+        }
+
+        private static string[] ExtractModelLibraryPaths(string json)
+        {
+            System.Collections.Generic.List<string> paths = new System.Collections.Generic.List<string>();
+            if (string.IsNullOrEmpty(json)) return paths.ToArray();
+
+            int section = json.IndexOf("\"model_libraries\"", StringComparison.OrdinalIgnoreCase);
+            if (section < 0) return paths.ToArray();
+            int arrayStart = json.IndexOf('[', section);
+            if (arrayStart < 0) return paths.ToArray();
+            int arrayEnd = json.IndexOf(']', arrayStart);
+            if (arrayEnd < arrayStart) return paths.ToArray();
+
+            string libraries = json.Substring(arrayStart, arrayEnd - arrayStart + 1);
+            int search = 0;
+            while (true)
+            {
+                int pathKey = libraries.IndexOf("\"path\"", search, StringComparison.OrdinalIgnoreCase);
+                if (pathKey < 0) break;
+                int colon = libraries.IndexOf(':', pathKey + 6);
+                if (colon < 0) break;
+                int quoteStart = libraries.IndexOf('"', colon + 1);
+                if (quoteStart < 0) break;
+                int quoteEnd = libraries.IndexOf('"', quoteStart + 1);
+                if (quoteEnd <= quoteStart) break;
+                string value = libraries.Substring(quoteStart + 1, quoteEnd - quoteStart - 1).Trim();
+                if (!string.IsNullOrEmpty(value))
+                {
+                    paths.Add(value);
+                }
+                search = quoteEnd + 1;
+            }
+
+            return paths.ToArray();
         }
 
         private static int RunRobocopy(string src, string dst)
