@@ -355,6 +355,56 @@ def test_build_external_card_shows_loading_for_gpu_vram(monkeypatch):
     assert card['title'] == 'Loading…'
 
 
+def test_build_external_card_app_worker_ready_when_named(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_loaded_model',
+        lambda *_args, **_kwargs: {'loading': True, 'api_url': 'http://127.0.0.1:9999/v1'},
+    )
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [9999])
+    card = _build_external_card(
+        {'pid': 9001, 'gpu_index': 0, 'vram_mb': 2048.0, 'vram_gb': 2.0, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': r'python.exe -u C:\dev\OneVoice\tools\speech_hermes_ws.py',
+            'parent_process_name': 'OneVoiceSpeak.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'ready'
+    assert card['title'] == 'speech_hermes_ws'
+
+
+def test_build_external_card_llama_timeout_stays_loading(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_loaded_model',
+        lambda *_args, **_kwargs: {'loading': True, 'api_url': 'http://127.0.0.1:32491/v1'},
+    )
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [32491])
+    card = _build_external_card(
+        {'pid': 44108, 'gpu_index': 0, 'vram_mb': 4096.0, 'vram_gb': 4.0, 'process_name': 'llama-server.exe'},
+        details={
+            'process_name': 'llama-server.exe',
+            'command_line': (
+                r'C:\apps\llama-server.exe -m C:\models\gemma-4-31B_q4_0-it.gguf '
+                r'--host 127.0.0.1 --port 32491'
+            ),
+            'parent_process_name': 'LM Studio.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'loading'
+
+
 def test_build_external_card_speak_stt_ready_via_websocket(monkeypatch):
     monkeypatch.setattr(
         gpu_processes,

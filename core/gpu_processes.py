@@ -223,6 +223,40 @@ def _has_ml_signals(*parts: str) -> bool:
     return bool(_ML_PROCESS.search(hay) or _ML_CMD.search(hay))
 
 
+def _is_llama_server_process(*, process_name: str, command_line: str) -> bool:
+    hay = f'{process_name} {command_line}'.lower()
+    return 'llama-server' in hay or 'llama_server' in hay
+
+
+def _model_name_is_loading_placeholder(name: str) -> bool:
+    text = str(name or '').strip().lower()
+    return not text or text.startswith('loading')
+
+
+def _external_card_should_show_loading(
+    *,
+    loading: bool,
+    model_name: str,
+    model_id: str,
+    api_url: str,
+    command_line: str,
+    process_name: str,
+    speak_stt_ready: bool,
+) -> bool:
+    """Keep loading only when we have a positive boot signal, not just GPU VRAM."""
+    if not loading:
+        return False
+    if speak_stt_ready or (model_id and api_url):
+        return False
+    if _model_name_is_loading_placeholder(model_name):
+        return True
+    if _is_llama_server_process(process_name=process_name, command_line=command_line):
+        return True
+    if 'speak_stt.py' in str(command_line or '').lower():
+        return True
+    return False
+
+
 def _is_gpu_model_load(
     *,
     process_name: str,
@@ -1529,10 +1563,12 @@ def _build_external_card(
             continue
         probe = _probe_loaded_model('127.0.0.1', port)
         if probe.get('loading'):
-            api_url = str(probe.get('api_url') or f'http://127.0.0.1:{int(port)}/v1')
-            listen_port = port
-            loading = True
-            break
+            if _is_llama_server_process(process_name=process_name, command_line=command_line):
+                api_url = str(probe.get('api_url') or f'http://127.0.0.1:{int(port)}/v1')
+                listen_port = port
+                loading = True
+                break
+            continue
         if probe.get('api_url'):
             api_url = str(probe.get('api_url') or '')
             model_id = str(probe.get('model_id') or '')
@@ -1572,6 +1608,7 @@ def _build_external_card(
         not loading
         and not api_url
         and not speak_stt_ready
+        and _model_name_is_loading_placeholder(model_name)
         and vram_mib is not None
         and float(vram_mib) >= _MIN_VRAM_MIB
         and _should_track_process(
@@ -1583,6 +1620,15 @@ def _build_external_card(
         )
     ):
         loading = True
+    loading = _external_card_should_show_loading(
+        loading=loading,
+        model_name=model_name,
+        model_id=model_id,
+        api_url=api_url,
+        command_line=command_line,
+        process_name=process_name,
+        speak_stt_ready=speak_stt_ready,
+    )
     if not _is_gpu_model_load(
         process_name=process_name,
         command_line=command_line,
