@@ -390,6 +390,21 @@ def _spawn_detached(
         popen_kwargs['start_new_session'] = True
     try:
         process = subprocess.Popen(cmd, **popen_kwargs)
+    except OSError as exc:
+        # WinError 5 (ERROR_ACCESS_DENIED): the Console is running inside a
+        # Windows Job object that does not allow breakaway (e.g. launched from
+        # the Electron desktop shell). Retry without CREATE_BREAKAWAY_FROM_JOB
+        # so engines can still start; the engine then shares our job lifetime.
+        if sys.platform == 'win32' and getattr(exc, 'winerror', None) == 5 and popen_kwargs.get('creationflags'):
+            popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            try:
+                process = subprocess.Popen(cmd, **popen_kwargs)
+            except Exception:
+                log_file.close()
+                raise
+        else:
+            log_file.close()
+            raise
     except Exception:
         log_file.close()
         raise
@@ -1217,6 +1232,15 @@ def load_server_checkpoint(
             else infer_profile_from_path(profile_source)
         )
         preset_entry['target_path'] = custom_path
+        # The router preset section must be registered under the ad-hoc load id,
+        # not the engine's configured model_id — start_router_listener rewrites
+        # the preset from this entry, and load_model() below asks for load_id.
+        preset_entry['model_id'] = load_id
+        preset_entry['profile'] = load_profile
+        if not profile_requires_draft(load_profile):
+            # Plain ad-hoc GGUF: never pair it with the engine's configured
+            # DFlash draft when the preset is rewritten on listener start.
+            preset_entry['draft_path'] = ''
         try:
             write_server_preset(
                 preset_entry,
