@@ -1410,6 +1410,12 @@ def _build_external_card(
     pid = int(entry['pid'])
     if pid in managed_pids:
         return None
+    # Router-mode llama.cpp spawns each loaded model as a child llama-server on
+    # a random port. That child belongs to the Console-managed engine (its
+    # parent listens on a configured port) — never show it as an external card.
+    parent_pid = int(details.get('parent_pid') or 0)
+    if parent_pid and parent_pid in managed_pids:
+        return None
 
     process_name = str(details.get('process_name') or entry.get('process_name') or '')
     if process_name.startswith('['):
