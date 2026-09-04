@@ -2374,6 +2374,8 @@ def _ensure_server_ready_for_chat(
     from core.runtime import build_server_status
 
     started = ensure_engine_listener_for_chat(server, cfg=cfg)
+    if not started.get('success') and str(started.get('error') or '') == 'dflash_stack_repair_required':
+        raise HTTPException(status_code=409, detail=started)
     cfg = load_config()
     server = normalize_server(get_server(cfg, server_id) or server)
     rebound_port = int(started.get('port') or 0)
@@ -2461,6 +2463,8 @@ def _ensure_server_ready_for_chat(
 
     result = load_server_checkpoint(server, cfg=cfg)
     if not result.get('success'):
+        if str(result.get('error') or '') == 'dflash_stack_repair_required' or result.get('repair'):
+            raise HTTPException(status_code=409, detail=result)
         raise HTTPException(
             status_code=503,
             detail={

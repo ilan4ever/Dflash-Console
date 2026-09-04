@@ -18,6 +18,25 @@ def _console_models_dir(cfg: dict[str, Any] | None = None) -> Path:
     return get_models_root(cfg)
 
 
+def _resolve_gemma_draft_path(models: Path, root: Path, filename: str) -> Path:
+    """Return the first existing Gemma DFlash draft path, else the preferred location."""
+    candidates = [
+        models / 'gemma-draft' / filename,
+        models / 'google' / 'gemma-draft' / filename,
+        root / 'models' / 'gemma-draft' / filename,
+        root / 'models' / 'google' / 'gemma-draft' / filename,
+    ]
+    if filename.lower().startswith('gemma-4-12b'):
+        candidates.extend([
+            models / 'williamliao' / 'gemma-4-12B-it-DFlash-GGUF' / 'gemma-4-12B-it-DFlash-F16.gguf',
+            root / 'models' / 'williamliao' / 'gemma-4-12B-it-DFlash-GGUF' / 'gemma-4-12B-it-DFlash-F16.gguf',
+        ])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
 def _file_size_gb(path: Path) -> float | None:
     try:
         if path.is_file():
@@ -53,7 +72,9 @@ def _find_gemma12_target(*, cfg: dict[str, Any] | None = None) -> Path | None:
     models = _console_models_dir(cfg)
     candidates: list[Path] = [
         models / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
+        models / 'google' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
         root / 'models' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
+        root / 'models' / 'google' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf',
         _lmstudio_models_dir() / 'bartowski' / 'gemma-4-12B-it-GGUF' / 'gemma-4-12B-it-Q4_K_M.gguf',
         _lmstudio_models_dir() / 'google' / 'gemma-4-12B-it-qat-q4_0-gguf' / 'gemma-4-12B_q4_0-it.gguf',
         _lmstudio_models_dir() / 'google' / 'gemma-4-12b-it-qat-q4_0-gguf' / 'gemma-4-12b-it-qat-q4_0.gguf',
@@ -144,12 +165,8 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
     gemma_target = models / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
     if not gemma_target.is_file():
         gemma_target = _lmstudio_models_dir() / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
-    gemma_draft = models / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
-    if not gemma_draft.is_file():
-        gemma_draft = root / 'models' / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
-    gemma12_draft = models / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
-    if not gemma12_draft.is_file():
-        gemma12_draft = root / 'models' / 'gemma-draft' / 'gemma-4-12B-it-DFlash-Q4_K_M.gguf'
+    gemma_draft = _resolve_gemma_draft_path(models, root, 'gemma-4-31B-it-DFlash-Q4_K_M.gguf')
+    gemma12_draft = _resolve_gemma_draft_path(models, root, 'gemma-4-12B-it-DFlash-Q4_K_M.gguf')
     bonsai_root = root / 'bonsai-27b'
     bonsai_target = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-Q2_0.gguf'
     bonsai_draft = bonsai_root / 'models' / 'ternary-gguf' / '27B' / 'Ternary-Bonsai-27B-dspark-Q4_1.gguf'

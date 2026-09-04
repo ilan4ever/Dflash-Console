@@ -869,6 +869,24 @@ def validate_dflash_stack(
     )
     target = str(model_path or entry.get('target_path') or target_row.get('path') or '').strip()
     draft = str(entry.get('draft_path') or draft_row.get('path') or '').strip()
+    if (target and not Path(target).expanduser().is_file()) or (
+        draft and not Path(draft).expanduser().is_file()
+    ):
+        fallback_stack = resolve_model_stack(
+            {**entry, 'target_path': '', 'draft_path': ''},
+            cfg=cfg,
+        )
+        fallback_target = next((row for row in fallback_stack if row.get('role') == 'target'), {})
+        fallback_draft = next(
+            (row for row in fallback_stack if str(row.get('role') or '').startswith('draft')),
+            {},
+        )
+        if target and not Path(target).expanduser().is_file():
+            target = str(fallback_target.get('path') or target).strip()
+        if draft and not Path(draft).expanduser().is_file():
+            draft = str(fallback_draft.get('path') or draft).strip()
+        elif not draft:
+            draft = str(fallback_draft.get('path') or '').strip()
     generation = infer_dflash_generation(draft)
     if not target:
         return _dflash_repair_result(

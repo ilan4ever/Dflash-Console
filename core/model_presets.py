@@ -127,11 +127,26 @@ def write_server_preset(
         }
         draft = None
         if use_draft is not False and draft_path_resolved:
-            draft = {
-                'role': 'draft-dflash',
-                'label': Path(draft_path_resolved).name,
-                'path': draft_path_resolved,
-            }
+            draft_file = Path(draft_path_resolved).expanduser()
+            if draft_file.is_file():
+                draft = {
+                    'role': 'draft-dflash',
+                    'label': draft_file.name,
+                    'path': str(draft_file),
+                }
+        if use_draft is not False and profile_requires_draft(preset_profile) and not draft:
+            stack = resolve_model_stack({**server, 'target_path': '', 'draft_path': ''}, cfg=cfg)
+            draft_row = next(
+                (row for row in stack if str(row.get('role') or '').startswith('draft')),
+                None,
+            )
+            draft_path = str(draft_row.get('path') or '').strip() if draft_row else ''
+            if draft_path and Path(draft_path).expanduser().is_file():
+                draft = {
+                    'role': str(draft_row.get('role') or 'draft-dflash'),
+                    'label': str(draft_row.get('label') or Path(draft_path).name),
+                    'path': draft_path,
+                }
     else:
         stack = resolve_model_stack(server, cfg=cfg)
         target = next((row for row in stack if row.get('role') == 'target'), None)

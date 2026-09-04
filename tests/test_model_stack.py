@@ -55,6 +55,41 @@ class ModelStackTests(unittest.TestCase):
                     picked = _find_gemma12_target(cfg=cfg)
             self.assertEqual(picked.resolve(), standard_file.resolve())
 
+    def test_find_gemma12_target_resolves_google_models_subfolder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models = root / 'models'
+            target = models / 'google' / 'gemma-4-12b-it' / 'gemma-4-12B-it-Q4_K_M.gguf'
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b'standard')
+            cfg = {'dflash_root': str(root), 'models_root': str(models)}
+            with patch('core.model_stack.get_dflash_root', return_value=root):
+                with patch('core.model_stack._console_models_dir', return_value=models):
+                    with patch('core.model_stack._lmstudio_models_dir', return_value=root / 'lmstudio'):
+                        picked = _find_gemma12_target(cfg=cfg)
+            self.assertEqual(picked.resolve(), target.resolve())
+
+    def test_gemma_chat_draft_resolves_google_subfolder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models = root / 'models'
+            target = models / 'google' / 'gemma-4-31B-it-qat-q4_0-gguf' / 'gemma-4-31B_q4_0-it.gguf'
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b'target')
+            draft = models / 'google' / 'gemma-draft' / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+            draft.parent.mkdir(parents=True)
+            draft.write_bytes(b'draft')
+            cfg = {'dflash_root': str(root), 'models_root': str(models)}
+            with patch('core.model_stack.get_dflash_root', return_value=root):
+                with patch('core.model_stack._lmstudio_models_dir', return_value=root / 'lmstudio'):
+                    stack = resolve_model_stack({
+                        'profile': 'gemma-chat',
+                        'model_id': 'gemma-4-31b-it-dflash',
+                    }, cfg=cfg)
+            draft_row = next(row for row in stack if row['role'] == 'draft-dflash')
+            self.assertEqual(Path(draft_row['path']).resolve(), draft.resolve())
+            self.assertFalse(draft_row.get('path_missing'))
+
 
 if __name__ == '__main__':
     unittest.main()

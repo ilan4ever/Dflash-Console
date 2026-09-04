@@ -57,6 +57,39 @@ def test_write_server_preset_with_target_path(tmp_path, monkeypatch):
     assert 'model-draft' not in text
 
 
+def test_write_server_preset_resolves_draft_when_only_target_path_set(tmp_path, monkeypatch):
+    target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'
+    draft = tmp_path / 'gemma-4-31B-it-DFlash-Q4_K_M.gguf'
+    target.write_bytes(b'target')
+    draft.write_bytes(b'draft')
+
+    preset_dir = tmp_path / 'presets'
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', preset_dir)
+    monkeypatch.setattr(
+        'core.model_presets.resolve_model_stack',
+        lambda server, cfg=None: [
+            {'role': 'target', 'label': target.name, 'path': str(target)},
+            {'role': 'draft-dflash', 'label': draft.name, 'path': str(draft)},
+        ],
+    )
+
+    path = write_server_preset(
+        {
+            'id': 'gemma-31b-dflash',
+            'model_id': 'gemma-4-31b-it-dflash',
+            'profile': 'gemma-chat',
+            'context_size': 8192,
+            'load_settings': {'gpu_layers': 99},
+            'gpu_device': 'auto',
+            'target_path': str(target),
+        },
+        profile='gemma-chat',
+    )
+    text = path.read_text(encoding='utf-8')
+    assert f'model = {target}' in text
+    assert f'model-draft = {draft}' in text
+
+
 def test_write_server_preset_includes_split_layout(tmp_path, monkeypatch):
     gguf = tmp_path / 'custom-checkpoint.gguf'
     gguf.write_bytes(b'fake')
