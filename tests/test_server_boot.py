@@ -145,6 +145,22 @@ def test_dflash2_engine_capability_accepts_supported_build(monkeypatch, tmp_path
     assert result['dflash2'] is True
 
 
+def test_llama_server_binary_uses_models_root_engine(monkeypatch, tmp_path):
+    data_root = tmp_path / 'installed-data'
+    models_root = tmp_path / 'developer-checkout' / 'models'
+    binary = models_root.parent / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server.exe'
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b'engine')
+    monkeypatch.delenv('ONEVOICE_ROOT', raising=False)
+
+    result = server_boot._llama_server_binary({
+        'dflash_root': str(data_root),
+        'models_root': str(models_root),
+    })
+
+    assert result == binary
+
+
 def test_dflash_load_failure_returns_repair_instead_of_fallback(monkeypatch, tmp_path):
     target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
     draft = tmp_path / 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf'

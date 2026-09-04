@@ -705,11 +705,27 @@ _ENGINE_BUILD_RE = re.compile(r'\bbuild\s+(\d+)\b', re.I)
 
 
 def _llama_server_binary(cfg: dict[str, Any] | None = None) -> Path | None:
-    root = get_dflash_root(cfg)
+    """Find the engine using the same roots as the Console launcher."""
+    roots = [get_dflash_root(cfg)]
+    try:
+        from core.model_paths import get_models_root
+
+        # Installed shells keep the Console data root separate from the
+        # developer checkout that owns models and llama.cpp.
+        roots.append(get_models_root(cfg).parent)
+    except (OSError, TypeError, ValueError):
+        pass
+
+    onevoice_root = str(os.environ.get('ONEVOICE_ROOT') or '').strip()
     candidates = [
-        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server.exe',
-        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server',
+        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / binary_name
+        for root in roots
+        for binary_name in ('llama-server.exe', 'llama-server')
     ]
+    if onevoice_root:
+        candidates.extend([
+            Path(onevoice_root) / '.tmp' / 'llama-b8418-win-cuda12' / 'llama-server.exe',
+        ])
     for candidate in candidates:
         if candidate.is_file():
             return candidate
