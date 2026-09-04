@@ -1,7 +1,7 @@
 {
   "name": "dflash-console",
   "productName": "DFlash Console",
-  "version": "0.3.137",
+  "version": "0.3.138",
   "description": "Desktop shell for the DFlash Console local control panel",
   "main": "electron/main.js",
   "author": "ILAN AVIV",
