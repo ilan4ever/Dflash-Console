@@ -46,7 +46,8 @@ param(
     [int]$Parallel = 0,
     [ValidateSet("auto", "none", "low", "medium", "high", "max")]
     [string]$ReasoningEffort = "auto",
-    [switch]$RouterMode
+    [switch]$RouterMode,
+    [switch]$NoJinja
 )
 
 $ErrorActionPreference = "Stop"
@@ -159,7 +160,7 @@ if ($RouterMode) {
         "--split-mode", $SplitMode,
         "--models-preset", $ModelsPreset,
         "--no-models-autoload",
-        "--jinja",
+        $(if ($NoJinja) { "--no-jinja" } else { "--jinja" }),
         "--fit", "off"
     )
     if ($KvOffload -eq "off") {

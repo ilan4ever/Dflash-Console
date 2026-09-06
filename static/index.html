@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.140</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.146</span>
           </div>
         </div>
       </div>
@@ -325,7 +325,19 @@ try {
             <section class="lm-logs-panel" id="serverLogsPanel">
               <div class="lm-logs-header">
                 <div class="lm-logs-header-left">
-                  <span class="lm-logs-title">Engine log</span>
+                  <span class="lm-logs-title">Developer logs</span>
+                  <div class="lm-logs-source-dd" id="serverLogsSourceWrap">
+                    <button type="button" class="lm-select compact lm-logs-filter-trigger" id="serverLogsSourceTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Log source">
+                      <span class="lm-logs-filter-label" id="serverLogsSourceLabel">Engine</span>
+                    </button>
+                    <div class="lm-logs-filter-menu" id="serverLogsSourceMenu" role="listbox" aria-label="Log source" hidden>
+                      <button type="button" class="lm-logs-filter-item active" data-source="engine" role="option" aria-selected="true">Engine</button>
+                      <button type="button" class="lm-logs-filter-item" data-source="console" role="option" aria-selected="false">Console API</button>
+                      <button type="button" class="lm-logs-filter-item" data-source="api" role="option" aria-selected="false">API access</button>
+                      <button type="button" class="lm-logs-filter-item" data-source="journal" role="option" aria-selected="false">Support journal</button>
+                      <button type="button" class="lm-logs-filter-item" data-source="all" role="option" aria-selected="false">All merged</button>
+                    </div>
+                  </div>
                   <div class="lm-logs-filter-dd" id="serverLogsFilterWrap">
                     <button type="button" class="lm-select compact lm-logs-filter-trigger" id="serverLogsFilterTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Filter logs">
                       <span class="lm-logs-filter-label" id="serverLogsFilterLabel">All lines</span>
@@ -492,6 +504,7 @@ try {
               </p>
               <div class="df-about-actions">
                 <a class="df-docs-pill primary" href="#/docs">Open documentation</a>
+                <button type="button" class="df-docs-pill primary" id="dfBugReportOpen">Report a bug</button>
                 <a class="df-docs-pill donate" href="https://www.paypal.com/ncp/payment/A3G3ADNXNYLR8" target="_blank" rel="noopener noreferrer">💛 Donate</a>
                 <a class="df-docs-pill" href="https://github.com/ilan4ever/Dflash-Console" target="_blank" rel="noopener noreferrer">View source</a>
               </div>
@@ -505,7 +518,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.140</strong>
+                <strong id="dfAboutVersion">v0.3.146</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -550,8 +563,8 @@ try {
                 <li><strong>Source</strong> — clone the repository, copy <code>config.example.json</code> to <code>config.json</code>, run <code>.\run.ps1</code></li>
               </ul>
               <p class="df-about-muted">
-                Public preview. Report bugs on
-                <a href="https://github.com/ilan4ever/Dflash-Console/issues" target="_blank" rel="noopener noreferrer">GitHub Issues</a>.
+                Public preview. Use <strong>Report a bug</strong> on this page to copy a diagnostic log and open GitHub.
+                Full logs stay on your PC unless you opt in to private upload (when configured).
                 Only one Console API should run on port 8900 at a time.
               </p>
             </section>
@@ -988,6 +1001,38 @@ try {
                   <label class="lm-toggle small"><input type="checkbox" id="settingsOffloadKvGpu" checked><span class="lm-toggle-track"></span></label>
                 </div>
               </section>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <div>
+                    <strong>GPU performance mode</strong>
+                    <p class="lm-setting-desc">Reserves VRAM for Windows and your browser before each load. The guard uses live free GPU memory — any number of small models is fine if they fit. Full GPU saturation can force Chrome into slow software rendering.</p>
+                  </div>
+                </div>
+                <div class="lm-guardrail-list" id="settingsGpuPerformanceList">
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuPerformance" value="performance">
+                    <span>
+                      <strong>Performance</strong>
+                      <small>8 GB desktop headroom. Unloads other loaded engines when you load a new one.</small>
+                    </span>
+                  </label>
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuPerformance" value="balanced" checked>
+                    <span>
+                      <strong>Balanced</strong>
+                      <small>6 GB headroom before each load. Default — blocks only when VRAM would run out.</small>
+                    </span>
+                  </label>
+                  <label class="lm-guardrail-option">
+                    <input type="radio" name="settingsGpuPerformance" value="power">
+                    <span>
+                      <strong>Power</strong>
+                      <small>4 GB headroom. Use when you accept higher VRAM use and possible desktop lag.</small>
+                    </span>
+                  </label>
+                </div>
+                <p class="lm-setting-desc" id="settingsGpuBudgetLine"></p>
+              </section>
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="hw-live">
@@ -1185,6 +1230,12 @@ try {
                   </div>
               </div>
               <p class="lm-setting-desc">Connect Cursor, Claude Desktop, and other tools to your local engines. MCP hosting is not active yet — use the OpenAI-compatible URLs below.</p>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Client identity</strong>
+                  <p class="lm-setting-desc">Send <code>X-DFlash-Client: YourApp</code> on load and chat requests so Engines shows the <strong>Active client</strong> on each card. Optional — missing header appears as <strong>Unknown API client</strong>. Full examples: Documentation → <strong>Client identity</strong>.</p>
+                </div>
+              </section>
               <section class="lm-settings-section">
                 <div class="lm-setting-row">
                   <div><strong>MCP host status</strong><p class="lm-setting-desc">In-console MCP discovery and registration</p></div>
@@ -1879,6 +1930,45 @@ try {
     </div>
   </div>
 
+  <div class="lm-modal" id="dfBugReportModal" aria-hidden="true">
+    <div class="lm-modal-backdrop">
+      <div class="lm-modal-dialog df-confirm-dialog df-bug-report-dialog" role="dialog" aria-modal="true" aria-labelledby="dfBugReportTitle">
+        <div class="lm-modal-head df-confirm-head df-bug-report-head">
+          <div class="df-bug-report-head-copy">
+            <div class="df-update-kicker">Support</div>
+            <h2 id="dfBugReportTitle">Report a bug</h2>
+          </div>
+          <button class="lm-icon-btn" type="button" id="dfBugReportClose" aria-label="Close">✕</button>
+        </div>
+        <div class="df-confirm-body df-bug-report-body">
+          <p class="lm-setting-desc df-bug-report-lead">We copy a <strong>diagnostic report</strong> to your clipboard (settings, GPU, recent errors, support journal). GitHub gets a short summary only. Enable private upload to send the full log to the developer (not GitHub).</p>
+          <div class="df-bug-report-fields">
+            <div class="df-bug-report-field">
+              <label for="dfBugReportActual">What happened?</label>
+              <textarea class="lm-input df-bug-report-input" id="dfBugReportActual" rows="4" placeholder="Describe the problem…"></textarea>
+            </div>
+            <div class="df-bug-report-field">
+              <label for="dfBugReportRepro">Steps to reproduce</label>
+              <textarea class="lm-input df-bug-report-input" id="dfBugReportRepro" rows="4" placeholder="1. Open Engines…&#10;2. Load model…"></textarea>
+            </div>
+          </div>
+          <label class="df-bug-report-private hidden" id="dfBugReportPrivateRow">
+            <input type="checkbox" id="dfBugReportPrivateUpload">
+            <span class="df-bug-report-private-copy">
+              <strong>Send full diagnostic log privately to the developer</strong>
+              <span class="lm-setting-desc">Secure upload to the developer inbox (not GitHub). Requires report token in this Console install.</span>
+            </span>
+          </label>
+          <p class="lm-setting-desc df-bug-report-status" id="dfBugReportStatus" role="status"></p>
+        </div>
+        <div class="lm-modal-footer df-confirm-footer df-bug-report-footer">
+          <button class="lm-btn ghost" type="button" id="dfBugReportCancel">Cancel</button>
+          <button class="lm-btn primary" type="button" id="dfBugReportSubmit">Copy report &amp; open GitHub</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
@@ -1909,6 +1999,7 @@ try {
   <script src="/static/js/desktop-shell.js"></script>
   <script src="/static/js/nodes-live.js"></script>
   <script src="/static/js/about-live.js"></script>
+  <script src="/static/js/bug-report-live.js"></script>
   <script src="/static/js/chat-live.js"></script>
   <script src="/static/js/speak-live.js"></script>
   <script src="/static/js/dflash-console-ui.js"></script>

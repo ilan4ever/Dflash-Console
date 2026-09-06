@@ -6,6 +6,7 @@ from core.config import SPECULATIVE_PROFILES
 from core.model_presets import (
     infer_profile_from_path,
     model_id_from_path,
+    profile_uses_jinja,
     sanitize_preset_model_id,
     write_server_preset,
 )
@@ -13,6 +14,7 @@ from core.model_presets import (
 
 def test_infer_profile_from_path():
     assert infer_profile_from_path('gemma-4-12b-q4.gguf') == 'gemma-ar'
+    assert infer_profile_from_path('translategemma-12b-it.Q4_K_S.gguf') == 'translategemma'
     assert infer_profile_from_path('Qwen3.5-27B-Q4_K_M.gguf') == 'qwen-ar'
     assert infer_profile_from_path('some-random-model.gguf') == 'generic-ar'
 
@@ -235,3 +237,40 @@ def test_write_server_preset_cannot_disable_required_draft(tmp_path, monkeypatch
             },
             use_draft=False,
         )
+
+
+def test_write_server_preset_translategemma_disables_jinja_and_draft(tmp_path, monkeypatch):
+    gguf = tmp_path / 'translategemma-12b-it.Q4_K_S.gguf'
+    mmproj = tmp_path / 'mmproj-gemma-4-12B-it-BF16.gguf'
+    draft = tmp_path / 'gemma-4-12B-it-DFlash-F16.gguf'
+    gguf.write_bytes(b'target')
+    mmproj.write_bytes(b'mmproj')
+    draft.write_bytes(b'draft')
+
+    preset_dir = tmp_path / 'presets'
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', preset_dir)
+
+    path = write_server_preset(
+        {
+            'id': 'gemma-12-dflash',
+            'model_id': 'translategemma-12b-it-q4-k-s',
+            'profile': 'translategemma',
+            'context_size': 8192,
+            'load_settings': {'gpu_layers': 99},
+            'gpu_device': 'auto',
+            'target_path': str(gguf),
+            'draft_path': str(draft),
+            'mmproj_path': str(mmproj),
+            'vision': False,
+        },
+        target_path=str(gguf),
+        model_id='translategemma-12b-it-q4-k-s',
+        profile='translategemma',
+        use_draft=False,
+    )
+    text = path.read_text(encoding='utf-8')
+    assert 'jinja = false' in text
+    assert text.count('jinja = false') >= 2
+    assert 'model-draft' not in text
+    assert 'mmproj' not in text
+    assert profile_uses_jinja('translategemma') is False

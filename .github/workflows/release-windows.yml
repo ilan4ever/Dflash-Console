@@ -67,12 +67,17 @@ jobs:
         shell: pwsh
         env:
           DFLASH_UPDATE_PRIVATE_KEY: ${{ secrets.DFLASH_UPDATE_PRIVATE_KEY }}
+          DFLASH_REPORT_TOKEN: ${{ secrets.DFLASH_REPORT_TOKEN }}
+          DFLASH_UPDATE_TOKEN: ${{ secrets.DFLASH_UPDATE_TOKEN }}
         run: |
           if (-not $env:DFLASH_UPDATE_PRIVATE_KEY) {
             throw "DFLASH_UPDATE_PRIVATE_KEY repository secret is required."
           }
+          $ingestToken = $env:DFLASH_REPORT_TOKEN
+          if (-not $ingestToken) { $ingestToken = $env:DFLASH_UPDATE_TOKEN }
           $endpoint = @{
             manifestUrl = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+            token = $ingestToken
           } | ConvertTo-Json
           $endpoint | Set-Content electron/resources/update-endpoint.json -Encoding UTF8
           $env:DFLASH_UPDATE_PRIVATE_KEY | Set-Content "$env:RUNNER_TEMP\dflash-update-private.pem" -Encoding UTF8

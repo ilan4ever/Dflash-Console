@@ -657,6 +657,33 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   border-radius: 8px;
   z-index: 20000;
   font-size: 13px;
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+.lm-toast.has-report {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+}
+
+.lm-toast-message {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.lm-toast-report-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fecaca;
+}
+
+.lm-toast-report-btn:hover {
+  border-color: rgba(239, 68, 68, 0.7);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 .lm-toast.hidden { display: none; }
@@ -2752,6 +2779,105 @@ body.lm-resizing-logs {
 
 .df-confirm-footer {
   padding-top: 14px;
+}
+
+/* Bug report modal — stacked labels, full-width fields */
+#dfBugReportModal .df-bug-report-dialog {
+  max-width: min(560px, calc(100vw - 32px));
+  border-color: rgba(61, 143, 111, 0.35);
+  background:
+    linear-gradient(145deg, rgba(61, 143, 111, 0.1), transparent 48%),
+    var(--bg-elevated);
+}
+
+#dfBugReportModal .df-bug-report-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#dfBugReportModal .df-bug-report-head-copy {
+  min-width: 0;
+}
+
+#dfBugReportModal .df-bug-report-body {
+  padding-top: 16px;
+}
+
+#dfBugReportModal .df-bug-report-lead {
+  margin: 0;
+  line-height: 1.45;
+}
+
+#dfBugReportModal .df-bug-report-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+#dfBugReportModal .df-bug-report-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+#dfBugReportModal .df-bug-report-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+#dfBugReportModal .df-bug-report-input {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+#dfBugReportModal .df-bug-report-private {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+#dfBugReportModal .df-bug-report-private.hidden {
+  display: none;
+}
+
+#dfBugReportModal .df-bug-report-private input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+#dfBugReportModal .df-bug-report-private-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+#dfBugReportModal .df-bug-report-status {
+  margin-top: 12px;
+  min-height: 1.2em;
+}
+
+#dfBugReportModal .df-bug-report-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .df-chat-load-dialog {

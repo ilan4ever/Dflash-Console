@@ -1544,7 +1544,10 @@
     try {
       const resp = await fetch(`/api/servers/${encodeURIComponent(engine.id)}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: window.ConsoleApi?.requestHeaders?.() || {
+          'Content-Type': 'application/json',
+          'X-DFlash-Client': 'DFlash Console',
+        },
         body: JSON.stringify(body),
         cache: 'no-store',
       });

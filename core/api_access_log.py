@@ -31,6 +31,7 @@ def record_api_call(
     status: int = 0,
     duration_ms: float = 0.0,
     client: str = '',
+    remote: str = '',
     error: str = '',
 ) -> dict[str, Any]:
     row = {
@@ -41,6 +42,7 @@ def record_api_call(
         'status': int(status or 0),
         'duration_ms': round(float(duration_ms or 0.0), 2),
         'client': str(client or ''),
+        'remote': str(remote or ''),
         'error': str(error or '').strip(),
         'level': 'error' if error or status >= 400 else 'info',
     }
@@ -73,6 +75,12 @@ def _append_disk(row: dict[str, Any]) -> None:
                 f'[{stamp}] {row.get("method")} {row.get("path")}{suffix} '
                 f'-> {status} ({row.get("duration_ms")} ms)'
             )
+            client = str(row.get('client') or '').strip()
+            remote = str(row.get('remote') or '').strip()
+            if client:
+                line += f' client={client}'
+            if remote:
+                line += f' remote={remote}'
             if error:
                 line += f' ERROR: {error}'
             with ACCESS_LOG_PATH.open('a', encoding='utf-8') as handle:

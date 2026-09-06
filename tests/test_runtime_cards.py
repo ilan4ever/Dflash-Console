@@ -53,6 +53,17 @@ def test_visible_card_marks_adhoc_gguf_as_plain_llm():
     assert cards[0]['title'] == 'deepseek v2 lite q4 k m'
 
 
+def test_acceleration_metadata_not_applicable_for_adhoc_plain_llm():
+    result = _acceleration_metadata(
+        {'profile': 'gemma-12-dflash'},
+        [],
+        card={'is_adhoc': True, 'plain_llm': True},
+    )
+    assert result['draft_status'] == 'not_applicable'
+    assert result['acceleration_expected'] is False
+    assert result['acceleration_label'] == ''
+
+
 def test_visible_card_uses_filename_when_api_returns_default_alias():
     stack = _annotate_model_stack(
         [

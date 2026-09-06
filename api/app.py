@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -38,6 +39,28 @@ ASSETS_DIR = PACKAGE_ROOT / 'assets' if (PACKAGE_ROOT / 'assets').is_dir() else 
 
 _BOOT_ID = uuid.uuid4().hex[:12]
 _BOOT_AT = time.time()
+
+
+def _load_dflash_env_admin() -> None:
+    """Load DFLASH_* secrets from gitignored .env.admin for local dev."""
+    path = ROOT / '.env.admin'
+    if not path.is_file():
+        return
+    try:
+        for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+            text = line.strip()
+            if not text or text.startswith('#') or '=' not in text:
+                continue
+            key, value = text.split('=', 1)
+            key = key.strip()
+            if not key.startswith('DFLASH_') or key in os.environ:
+                continue
+            os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        return
+
+
+_load_dflash_env_admin()
 _SERVERS_STATUS_LOCK = asyncio.Lock()
 _ADAPTER_ENGINE_ROWS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _ADAPTER_ENGINE_ROWS_CACHE_TTL = 2.0
@@ -126,6 +149,21 @@ def _start_parent_watchdog() -> None:
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    try:
+        from core.support_journal import ensure_support_meta, journal_event
+
+        shell_version = str(os.environ.get('DFLASH_CONSOLE_SHELL_VERSION') or '').strip()
+        ensure_support_meta(shell_version=shell_version)
+        journal_event(
+            'boot',
+            'Console API started',
+            boot_id=_BOOT_ID,
+            version=APP_VERSION,
+            shell_version=shell_version or 'browser/cli',
+        )
+    except Exception:
+        pass
+
     def write_manifests() -> None:
         try:
             _write_runtime_process_manifest()
@@ -259,18 +297,9 @@ app = FastAPI(title='DFlash Console', version=APP_VERSION, lifespan=app_lifespan
 
 
 def _request_client_label(request: Request | None) -> str:
-    if request is None:
-        return 'DFlash Console'
-    explicit = str(request.headers.get('x-dflash-client') or request.headers.get('X-DFlash-Client') or '').strip()
-    if explicit:
-        return explicit
-    user_agent = str(request.headers.get('user-agent') or '').lower()
-    if 'onevoice' in user_agent:
-        return 'OneVoice'
-    referer = str(request.headers.get('referer') or '').lower()
-    if 'onevoice' in referer:
-        return 'OneVoice'
-    return 'DFlash Console'
+    from core.client_identity import resolve_client_label
+
+    return resolve_client_label(request)
 
 
 @app.middleware('http')
@@ -285,13 +314,15 @@ async def no_cache_static_assets(request: Request, call_next):
 @app.middleware('http')
 async def log_console_api_requests(request: Request, call_next):
     from core.api_access_log import record_api_call
+    from core.client_identity import resolve_client_label
 
     path = request.url.path
     if not path.startswith('/api/'):
         return await call_next(request)
 
     start = time.perf_counter()
-    client = request.client.host if request.client else ''
+    remote = request.client.host if request.client else ''
+    client_label = resolve_client_label(request)
     query = request.url.query
     error = ''
     status = 500
@@ -309,9 +340,21 @@ async def log_console_api_requests(request: Request, call_next):
             query=query,
             status=status,
             duration_ms=(time.perf_counter() - start) * 1000,
-            client=client,
+            client=client_label,
+            remote=remote,
             error=error,
         )
+        if status >= 500 or error:
+            try:
+                from core.support_journal import journal_error
+
+                journal_error(
+                    f'{request.method} {path} -> {status}',
+                    client=client_label,
+                    error=error or '',
+                )
+            except Exception:
+                pass
 
 
 def _start_background_tasks() -> None:
@@ -324,9 +367,12 @@ def _start_background_tasks() -> None:
         time.sleep(1.0)
         try:
             from core.config import load_config, save_config
-            from core.server_boot import repair_dflash_servers
+            from core.server_boot import repair_dflash_servers, sweep_orphan_managed_listeners
 
             cfg = load_config()
+            orphans = sweep_orphan_managed_listeners(cfg=cfg)
+            for row in orphans:
+                logger.info('orphan listener cleanup %s', row)
             repair = repair_dflash_servers(cfg)
             if repair.get('changed'):
                 save_config(cfg)
@@ -443,22 +489,26 @@ def _start_background_tasks() -> None:
 
 
 def _release_gpu_on_shutdown() -> None:
-    """Unload managed engines only on intentional Console shutdown (run.ps1 / restart script)."""
+    """Unload managed engines on intentional Console shutdown."""
     import logging
     import os
 
+    from core.config import load_config
+
     shutdown_logger = logging.getLogger('uvicorn.error')
-    if os.environ.get('DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+    cfg = load_config()
+    if cfg.get('keep_models_loaded_on_exit') is True:
         shutdown_logger.info(
-            'Console API exiting — preserving llama-server engines '
-            '(set DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN=1 to stop them)'
+            'Console API exiting — preserving llama-server engines (keep_models_loaded_on_exit=true)'
         )
         return
+    if os.environ.get('DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        shutdown_logger.info('Console API exiting — stopping managed llama-server engines')
 
     from core.engine_state import release_and_stop_all_managed_engines
 
     try:
-        release_and_stop_all_managed_engines()
+        release_and_stop_all_managed_engines(cfg=cfg)
     except Exception as exc:
         shutdown_logger.exception('managed engine release on shutdown failed: %s', exc)
 
@@ -503,6 +553,7 @@ class ConfigPatch(BaseModel):
     servers: list[dict[str, Any]] | None = None
     runtimes: list[dict[str, Any]] | None = None
     runtime_stop_others_on_load: bool | None = None
+    keep_models_loaded_on_exit: bool | None = None
     cpu_slow_warn: bool | None = None
     hardware_settings: dict[str, Any] | None = None
     model_libraries: list[dict[str, Any]] | None = None
@@ -554,6 +605,8 @@ class HardwarePatch(BaseModel):
     enabled_gpu_indices: list[int] | None = None
     limit_offload_dedicated_vram: bool | None = None
     offload_kv_cache_to_gpu: bool | None = None
+    gpu_performance_mode: str | None = None
+    desktop_vram_reserve_gb: float | None = Field(default=None, ge=0.0)
 
 
 class HfResumeDownloadRequest(BaseModel):
@@ -1529,7 +1582,7 @@ def models_catalog(
 
 
 @app.post('/api/models/load')
-def model_load(body: ModelLoadRequest) -> dict[str, Any]:
+def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
     """Unified loader — load ANY catalog model by path.
 
     Dispatches by the catalog row's modality/runtime_id:
@@ -1549,7 +1602,7 @@ def model_load(body: ModelLoadRequest) -> dict[str, Any]:
         load_settings=body.load_settings,
         inference_settings=body.inference_settings,
         requested_runtime_id=body.runtime_id,
-        loaded_by='api:/api/models/load',
+        loaded_by=_request_client_label(request),
         cfg=load_config(),
     )
     _invalidate_status_cache()
@@ -1854,6 +1907,14 @@ def gpu_contention() -> dict[str, Any]:
     from core.runtimes.contention import gpu_contention_report
 
     return gpu_contention_report(cfg=load_config())
+
+
+@app.get('/api/gpu/budget')
+def gpu_budget() -> dict[str, Any]:
+    """GPU VRAM budget, loaded engine count, and performance mode limits."""
+    from core.memory_guardrails import gpu_budget_snapshot
+
+    return gpu_budget_snapshot(load_config())
 
 
 def _require_runtime_adapter(runtime_id: str):
@@ -2210,6 +2271,132 @@ def console_logs(
     )
 
 
+class DiagnosticsReportRequest(BaseModel):
+    user_note: str = ''
+    reproduction: str = ''
+    upload_private: bool = False
+
+
+@app.get('/api/diagnostics/bundle')
+def diagnostics_bundle(
+    tail: int = Query(default=400, ge=50, le=2000),
+    output: str = Query(default='json'),
+    user_note: str = Query(default=''),
+    reproduction: str = Query(default=''),
+) -> Any:
+    from core.diagnostics_bundle import build_diagnostics_bundle, bundle_to_text
+
+    bundle = build_diagnostics_bundle(
+        cfg=load_config(),
+        boot_id=_BOOT_ID,
+        boot_at=_BOOT_AT,
+        shell_version=str(os.environ.get('DFLASH_CONSOLE_SHELL_VERSION') or '').strip(),
+        tail=tail,
+        user_note=user_note,
+        reproduction=reproduction,
+    )
+    if str(output or '').lower() in {'text', 'plain'}:
+        return Response(content=bundle_to_text(bundle), media_type='text/plain; charset=utf-8')
+    return bundle
+
+
+@app.post('/api/diagnostics/report')
+async def diagnostics_report(body: DiagnosticsReportRequest) -> dict[str, Any]:
+    import base64
+    import urllib.error
+    import urllib.request
+
+    from core.diagnostics_bundle import (
+        build_diagnostics_bundle,
+        bundle_to_text,
+        github_issue_prefill,
+    )
+
+    cfg = load_config()
+    bundle = build_diagnostics_bundle(
+        cfg=cfg,
+        boot_id=_BOOT_ID,
+        boot_at=_BOOT_AT,
+        shell_version=str(os.environ.get('DFLASH_CONSOLE_SHELL_VERSION') or '').strip(),
+        tail=500,
+        user_note=body.user_note,
+        reproduction=body.reproduction,
+    )
+    clipboard_text = bundle_to_text(bundle)
+    prefill = github_issue_prefill(bundle)
+    github_url = 'https://github.com/ilan4ever/Dflash-Console/issues/new?template=bug_report.yml'
+
+    uploaded = False
+    upload_error = ''
+    upload_url = str(
+        cfg.get('support_upload_url')
+        or os.environ.get('DFLASH_SUPPORT_UPLOAD_URL')
+        or 'https://onevoiceai.in/wp-json/dflash/v1/report'
+    ).strip()
+    report_token = str(
+        cfg.get('support_report_token')
+        or os.environ.get('DFLASH_REPORT_TOKEN')
+        or os.environ.get('DFLASH_UPDATE_TOKEN')
+        or ''
+    ).strip()
+    if body.upload_private and upload_url:
+        payload = json.dumps({
+            'report_id': bundle.get('report_id'),
+            'version': APP_VERSION,
+            'boot_id': _BOOT_ID,
+            'user_note': body.user_note,
+            'reproduction': body.reproduction,
+            'bundle_text': clipboard_text,
+            'bundle_b64': base64.b64encode(clipboard_text.encode('utf-8')).decode('ascii'),
+            'ingest_token': report_token,
+        }).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'DFlash-Console/{APP_VERSION}',
+        }
+        if report_token:
+            headers['X-DFlash-Report-Token'] = report_token
+        req = urllib.request.Request(
+            upload_url,
+            data=payload,
+            headers=headers,
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                uploaded = 200 <= int(getattr(resp, 'status', 200) or 200) < 300
+        except urllib.error.HTTPError as exc:
+            upload_error = f'upload HTTP {exc.code}'
+        except Exception as exc:
+            upload_error = str(exc)
+    elif body.upload_private and not upload_url:
+        upload_error = 'Private upload is not configured on this Console install.'
+
+    try:
+        from core.support_journal import journal_event
+
+        journal_event(
+            'report',
+            'bug report prepared',
+            report_id=bundle.get('report_id'),
+            uploaded=uploaded,
+            upload_error=upload_error or '',
+        )
+    except Exception:
+        pass
+
+    return {
+        'success': True,
+        'report_id': bundle.get('report_id'),
+        'clipboard_text': clipboard_text,
+        'github_url': github_url,
+        'github_prefill': prefill,
+        'uploaded': uploaded,
+        'upload_error': upload_error,
+        'private_upload_configured': bool(upload_url and report_token),
+    }
+
+
 @app.post('/api/servers/{server_id}/listen')
 @app.post('/api/servers/{server_id}/engine/start')
 def server_listen(server_id: str, request: Request) -> dict[str, Any]:
@@ -2239,7 +2426,6 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
     note_engine_idle(server_id)
-    update_server_runtime(server_id, loaded_by=_request_client_label(request))
     _invalidate_status_cache()
     return result
 
@@ -2363,6 +2549,22 @@ def _configured_per_slot(server: dict[str, Any]) -> int:
     return max(2048, int(server.get('context_size') or 8192)) // parallel
 
 
+def _vram_load_block_detail(check: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'error': 'insufficient_vram',
+        'message': str(check.get('message') or 'insufficient VRAM'),
+        'unload_first': check.get('unload_first') or [],
+        'vram_free_gb': check.get('vram_free_gb'),
+        'level': check.get('level'),
+    }
+
+
+def _merge_server_entry(server: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Refresh a mutable server dict without rebinding the caller's reference."""
+    server.clear()
+    server.update(entry)
+
+
 def _ensure_server_ready_for_chat(
     server_id: str,
     server: dict[str, Any],
@@ -2385,7 +2587,7 @@ def _ensure_server_ready_for_chat(
         ensure_engine_listener_for_chat,
     )
     from core.config import get_server, load_config, normalize_server
-    from core.engine_state import note_engine_loaded
+    from core.engine_state import note_engine_active_client, note_engine_loaded
     from core.memory_guardrails import assess_load
     from core.runtime import build_server_status
 
@@ -2393,7 +2595,7 @@ def _ensure_server_ready_for_chat(
     if not started.get('success') and str(started.get('error') or '') == 'dflash_stack_repair_required':
         raise HTTPException(status_code=409, detail=started)
     cfg = load_config()
-    server = normalize_server(get_server(cfg, server_id) or server)
+    _merge_server_entry(server, normalize_server(get_server(cfg, server_id) or server))
     rebound_port = int(started.get('port') or 0)
     if started.get('reason') == 'rebound' or started.get('previous_port'):
         if rebound_port > 0:
@@ -2402,7 +2604,7 @@ def _ensure_server_ready_for_chat(
             server['api_url'] = str(
                 started.get('api_url') or f'http://{host}:{rebound_port}/v1'
             )
-    gate = assess_server_chat_ready(server, cfg=cfg)
+    gate = assess_server_chat_ready(server, cfg=cfg, require_checkpoint=False)
     if not gate.get('ready'):
         if not started.get('success') and str(gate.get('reason') or '') == 'engine_stopped':
             raise HTTPException(
@@ -2456,6 +2658,7 @@ def _ensure_server_ready_for_chat(
             loaded_ctx = _loaded_per_slot_context(server)
             if loaded_ctx and required_context > loaded_ctx:
                 return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
+        note_engine_active_client(server_id, client_label=client_label)
         return live
 
     if live.get('status') == 'booting':
@@ -2471,16 +2674,36 @@ def _ensure_server_ready_for_chat(
 
     _auto_stop_other_servers(cfg, server_id)
     cfg = load_config()
-    server = normalize_server(get_server(cfg, server_id) or server)
+    _merge_server_entry(server, normalize_server(get_server(cfg, server_id) or server))
+
+    from core.server_boot import duplicate_load_detail, find_target_loaded_elsewhere
+
+    elsewhere = find_target_loaded_elsewhere(server, cfg=cfg, exclude_server_id=server_id)
+    if elsewhere:
+        other_id = str(elsewhere.get('server_id') or '').strip()
+        other_entry = normalize_server(get_server(cfg, other_id) or {}) if other_id else {}
+        if other_id and other_entry:
+            other_live = build_server_status(other_entry, cfg=cfg)
+            if other_live.get('loaded_models'):
+                server.update({
+                    'port': other_entry.get('port'),
+                    'host': other_entry.get('host'),
+                    'api_url': other_entry.get('api_url'),
+                })
+                note_engine_active_client(other_id, client_label=client_label)
+                return other_live
+        raise HTTPException(status_code=409, detail=duplicate_load_detail(elsewhere))
 
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
-        raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+        raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
 
     result = load_server_checkpoint(server, cfg=cfg)
     if not result.get('success'):
         if str(result.get('error') or '') == 'dflash_stack_repair_required' or result.get('repair'):
             raise HTTPException(status_code=409, detail=result)
+        if result.get('already_loaded_elsewhere'):
+            raise HTTPException(status_code=409, detail=duplicate_load_detail(result))
         raise HTTPException(
             status_code=503,
             detail={
@@ -2504,7 +2727,9 @@ def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list
     Console-owned (llama) servers — never embedding engines, never external
     apps. Returns the ids that were unloaded.
     """
-    if cfg.get('runtime_stop_others_on_load') is not True:
+    from core.gpu_policy import should_stop_others_on_load
+
+    if not should_stop_others_on_load(cfg):
         return []
     from core.config import get_server, is_embedding_server, normalize_server
     from core.runtimes.contention import gpu_contention_report
@@ -2518,7 +2743,9 @@ def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list
     stopped: list[str] = []
     for row in report.get('console_runtimes') or []:
         other_id = str(row.get('id') or '')
-        if not other_id or other_id == target_server_id or not row.get('running'):
+        if not other_id or other_id == target_server_id:
+            continue
+        if not row.get('loaded_models'):
             continue
         server = get_server(cfg, other_id)
         if not server:
@@ -2544,6 +2771,7 @@ def server_load_plan(
     from core.memory_guardrails import assess_load
     from core.server_boot import (
         checkpoint_already_loaded,
+        duplicate_load_detail,
         find_target_loaded_elsewhere,
         validate_dflash_stack,
     )
@@ -2590,20 +2818,15 @@ def server_load_plan(
         exclude_server_id=server_id,
     )
     if elsewhere:
-        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
-        port = int(elsewhere.get('port') or 0)
-        port_text = f' (port {port})' if port else ''
+        detail = duplicate_load_detail(elsewhere)
         return {
             'success': True,
             'server_id': server_id,
             'level': 'already_loaded',
             'already_loaded': True,
             'already_loaded_elsewhere': True,
-            'message': (
-                f'This model is already loaded on {host_label}{port_text}. '
-                'Unload it before loading a second copy.'
-            ),
-            **elsewhere,
+            'message': detail['message'],
+            **detail,
         }
     return {
         'success': True,
@@ -2618,6 +2841,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     from core.memory_guardrails import assess_load
     from core.server_boot import (
         checkpoint_already_loaded,
+        duplicate_load_detail,
         find_target_loaded_elsewhere,
         validate_dflash_stack,
     )
@@ -2653,30 +2877,17 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         exclude_server_id=server_id,
     )
     if elsewhere:
-        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
-        port = int(elsewhere.get('port') or 0)
-        port_text = f' (port {port})' if port else ''
-        raise HTTPException(
-            status_code=409,
-            detail={
-                'error': 'model_already_loaded_elsewhere',
-                'message': (
-                    f'This model is already loaded on {host_label}{port_text}. '
-                    'Unload it before loading a second copy.'
-                ),
-                **elsewhere,
-            },
-        )
+        raise HTTPException(status_code=409, detail=duplicate_load_detail(elsewhere))
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
-        raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+        raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
         cfg = load_config()
         server = _require_server(cfg, server_id)
         check = assess_load(server, cfg=cfg)
         if check.get('level') == 'block':
-            raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+            raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
     result = load_server_checkpoint(
         server,
         cfg=cfg,
@@ -2773,6 +2984,9 @@ def cancel_server_inference(server_id: str) -> dict[str, Any]:
         if not is_proxy_generating(server_id):
             break
         mark_inference_end(server_id)
+    from core.client_identity import clear_active_clients
+
+    clear_active_clients(server_id)
     return {
         'success': True,
         'server_id': server_id,
@@ -2800,6 +3014,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
         sse_stream_error_chunk,
         SSE_KEEPALIVE_COMMENT,
         upstream_chat_completion,
+        validate_reasoning_chat_request,
         wants_stream,
     )
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
@@ -2807,8 +3022,12 @@ async def proxy_chat_completions(server_id: str, request: Request):
     from core.runtime import api_base_url, build_server_status
 
     cfg = load_config()
+    client_label = _request_client_label(request)
     adapter_id = str(server_id or '').strip().lower()
     if adapter_id in {'vllm', 'transformers', 'freetoken'}:
+        from core.engine_state import note_engine_active_client
+
+        note_engine_active_client(adapter_id, client_label=client_label)
         adapter = _require_runtime_adapter(adapter_id)
         health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
         if not health.get('running') or not health.get('api_url'):
@@ -2897,7 +3116,30 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=400, detail='engine api_url not configured')
     # Non-reasoning models never negotiate reasoning: strip reasoning_effort and
     # thinking toggles so the API returns the regular chat behaviour.
-    raw = apply_reasoning_policy(raw, reasoning=model_has_reasoning(server))
+    disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
+    reasoning_model = model_has_reasoning(server)
+    reasoning_error = validate_reasoning_chat_request(
+        raw,
+        reasoning=reasoning_model,
+        disable_reasoning=disable_reasoning,
+    )
+    if reasoning_error:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                'error': {
+                    'message': reasoning_error,
+                    'type': 'invalid_request_error',
+                    'code': 400,
+                    'reason': 'reasoning_budget_too_low',
+                }
+            },
+        )
+    raw = apply_reasoning_policy(
+        raw,
+        reasoning=reasoning_model,
+        disable_reasoning=disable_reasoning,
+    )
     content_type = request.headers.get('content-type') or 'application/json'
 
     # llama-server validates the model name against its loaded checkpoint id.
@@ -2911,11 +3153,37 @@ async def proxy_chat_completions(server_id: str, request: Request):
         or str(server.get('model_id') or '')
     ).strip()
     if upstream_model_id:
-        try:
-            body_json = json.loads(raw.decode('utf-8'))
-        except Exception:
-            body_json = None
+        if not isinstance(body_json, dict):
+            try:
+                body_json = json.loads(raw.decode('utf-8'))
+            except Exception:
+                body_json = None
         if isinstance(body_json, dict) and 'model' in body_json:
+            from core.client_identity import request_strict_model_match
+            from core.gateway_routing import model_ids_compatible
+
+            requested_model = str(body_json.get('model') or '').strip()
+            if (
+                request_strict_model_match(request)
+                and requested_model
+                and not model_ids_compatible(requested_model, upstream_model_id)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        'error': {
+                            'message': (
+                                f"Model mismatch: requested '{requested_model}' but engine "
+                                f"has '{upstream_model_id}' loaded."
+                            ),
+                            'type': 'invalid_request_error',
+                            'code': 'model_mismatch',
+                            'param': 'model',
+                            'requested_model': requested_model,
+                            'active_model_id': upstream_model_id,
+                        }
+                    },
+                )
             try:
                 body_json['model'] = upstream_model_id
                 raw = json.dumps(body_json).encode('utf-8')
@@ -2929,6 +3197,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
             server_id,
             api_url=api_url,
             model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
+            client_label=client_label,
         )
         close_upstream = None
         read_timeout = chat_upstream_read_timeout(cfg)
@@ -2941,14 +3210,13 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 read_timeout=read_timeout,
             )
         except urllib.error.HTTPError as exc:
-            mark_inference_end(server_id)
+            mark_inference_end(server_id, client_label=client_label)
             detail = exc.read().decode('utf-8', errors='replace')
             raise HTTPException(status_code=exc.code, detail=detail) from exc
         except Exception as exc:
-            mark_inference_end(server_id)
+            mark_inference_end(server_id, client_label=client_label)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
         keepalive_interval = 15.0
 
         async def stream_body():
@@ -2984,7 +3252,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
                         yield sse_stream_error_chunk('Upstream chat stream closed before completion')
                     else:
                         yield sse_stream_error_chunk(
-                            'Model produced no assistant content; increase max_tokens or send X-Disable-Reasoning: 0'
+                            'Model produced no assistant content. '
+                            'Set reasoning_effort to "none", send X-Disable-Reasoning: 1, '
+                            'or raise max_tokens.'
                         )
             finally:
                 if close_upstream:
@@ -3000,7 +3270,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
                         api_url=api_url,
                         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
                     )
-                mark_inference_end(server_id)
+                mark_inference_end(server_id, client_label=client_label)
 
         return StreamingResponse(
             stream_body(),
@@ -3016,6 +3286,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
         server_id,
         api_url=api_url,
         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
+        client_label=client_label,
     )
     active_model = str(live.get('active_model_id') or server.get('model_id') or '')
     disconnect_task = asyncio.create_task(
@@ -3053,13 +3324,20 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         disconnect_task.cancel()
-        mark_inference_end(server_id)
+        mark_inference_end(server_id, client_label=client_label)
 
 
-def _ensure_server_ready_for_embed(server_id: str, server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def _ensure_server_ready_for_embed(
+    server_id: str,
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    client_label: str = 'DFlash Console',
+) -> dict[str, Any]:
     """JIT-load an embedding engine (no chat-ready gate)."""
     import time
 
+    from core.engine_state import note_engine_active_client
     from core.runtime import build_server_status
 
     def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
@@ -3087,6 +3365,7 @@ def _ensure_server_ready_for_embed(server_id: str, server: dict[str, Any], cfg: 
 
     live = build_server_status(server, cfg=cfg)
     if live.get('status') == 'loaded' and live.get('loaded_models'):
+        note_engine_active_client(server_id, client_label=client_label)
         return live
     if live.get('status') == 'booting':
         return _wait_until_loaded()
@@ -3101,6 +3380,7 @@ def _ensure_server_ready_for_embed(server_id: str, server: dict[str, Any], cfg: 
                 'model_id': live.get('model_id'),
             },
         )
+    note_engine_active_client(server_id, client_label=client_label)
     return _wait_until_loaded()
 
 
@@ -3116,7 +3396,8 @@ async def server_embeddings_proxy(server_id: str, request: Request):
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
-    _ensure_server_ready_for_embed(server_id, server, cfg)
+    client_label = _request_client_label(request)
+    _ensure_server_ready_for_embed(server_id, server, cfg, client_label=client_label)
 
     api_url = str(server.get('api_url') or '')
     base = api_base_url(api_url)
@@ -3170,7 +3451,12 @@ async def server_embed_batch(server_id: str, body: EmbedBatchRequest) -> dict[st
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
-    _ensure_server_ready_for_embed(server_id, server, cfg)
+    _ensure_server_ready_for_embed(
+        server_id,
+        server,
+        cfg,
+        client_label=_request_client_label(request),
+    )
 
     def _run():
         return embed_batch(server, items=body.items, model_id=body.model, cfg=cfg)
@@ -3203,7 +3489,7 @@ def server_start(server_id: str, request: Request) -> dict[str, Any]:
     server = _require_server(cfg, server_id)
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
-        raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
+        raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
     result = start_server(server, cfg=cfg)
@@ -3320,6 +3606,9 @@ def server_unload(server_id: str) -> dict[str, Any]:
                     detail=restart.get('error') or 'model unloaded but idle listener restart failed',
                 )
         note_engine_idle(server_id)
+        from core.client_identity import clear_active_clients
+
+        clear_active_clients(server_id)
         return {
             **result,
             'engine_stopped': False,
@@ -3354,7 +3643,7 @@ def server_unload(server_id: str) -> dict[str, Any]:
 
 
 @app.post('/api/servers/{server_id}/reload')
-def server_reload(server_id: str) -> dict[str, Any]:
+def server_reload(server_id: str, request: Request) -> dict[str, Any]:
     from core.engine_state import note_engine_loaded
 
     cfg = load_config()
@@ -3362,7 +3651,7 @@ def server_reload(server_id: str) -> dict[str, Any]:
     result = reload_server(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'reload failed')
-    note_engine_loaded(server_id)
+    note_engine_loaded(server_id, loaded_by=_request_client_label(request))
     _invalidate_status_cache()
     return result
 

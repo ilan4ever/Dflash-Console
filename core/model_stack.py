@@ -187,6 +187,10 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
     """Return ordered model stack for a server profile (target, optional draft, alias)."""
     custom_target = str(server.get('target_path') or '').strip()
     custom_draft = str(server.get('draft_path') or '').strip()
+    if custom_target and not Path(custom_target).expanduser().is_file():
+        custom_target = ''
+    if custom_draft and not Path(custom_draft).expanduser().is_file():
+        custom_draft = ''
     alias = str(server.get('model_id') or '').strip()
 
     if custom_target:

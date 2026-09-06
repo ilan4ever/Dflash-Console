@@ -1,6 +1,8 @@
 {
   "ui_port": 8900,
   "gateway_port": 8001,
+  "support_upload_url": "https://onevoiceai.in/wp-json/dflash/v1/report",
+  "support_report_token": "",
   "chat_upstream_read_timeout_seconds": 3600,
   "dflash_root": ".",
   "models_root": ".\\models",

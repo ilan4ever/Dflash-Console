@@ -289,6 +289,16 @@ function readUpdateConfig() {
   return {};
 }
 
+function readIngestToken() {
+  const config = readUpdateConfig();
+  return String(
+    process.env.DFLASH_REPORT_TOKEN
+      || process.env.DFLASH_UPDATE_TOKEN
+      || config.token
+      || '',
+  ).trim();
+}
+
 function readUpdatePublicKey() {
   const candidates = [
     path.join(__dirname, 'resources', 'update-manifest-public.pem'),
@@ -849,6 +859,10 @@ function startConsoleServer(port = DEFAULT_PORT) {
         // app leaves this unset so /api/health reports dev_server=true (git
         // checkout + no shell version) and the Developer badge shows.
         ...(app.isPackaged ? { DFLASH_CONSOLE_SHELL_VERSION: app.getVersion() } : {}),
+        // Packaged builds pass the private report-ingest token to the API process.
+        ...(app.isPackaged && readIngestToken()
+          ? { DFLASH_REPORT_TOKEN: readIngestToken() }
+          : {}),
         // App-owned servers release their managed engines on shutdown.
         DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN: '1',
         // Lets the API exit itself if this shell process dies without a

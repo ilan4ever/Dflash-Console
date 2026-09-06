@@ -157,12 +157,14 @@ def empty_completion_guard(payload: dict[str, Any]) -> str | None:
     if isinstance(reasoning, str) and reasoning.strip():
         if finish_reason == 'length':
             return (
-                'Model stopped at max_tokens while still in reasoning; '
-                'increase max_tokens or send X-Disable-Reasoning: 0 to receive reasoning_content.'
+                'Model stopped at max_tokens while still in reasoning. '
+                'Set reasoning_effort to "none", send X-Disable-Reasoning: 1, '
+                'or raise max_tokens.'
             )
         return (
-            'Model produced reasoning only; increase max_tokens or send '
-            'X-Disable-Reasoning: 0 to receive reasoning_content.'
+            'Model produced reasoning only. '
+            'Set reasoning_effort to "none", send X-Disable-Reasoning: 1, '
+            'or raise max_tokens.'
         )
     if finish_reason == 'length':
         return 'Model stopped at max_tokens before emitting assistant content.'
@@ -180,17 +182,24 @@ def sse_stream_error_chunk(message: str) -> bytes:
     return f'data: {body}\n\n'.encode('utf-8') + b'data: [DONE]\n\n'
 
 
-def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
+def apply_reasoning_policy(
+    raw: bytes,
+    *,
+    reasoning: bool,
+    disable_reasoning: bool = False,
+) -> bytes:
     """Rewrite a chat request body's reasoning controls for the target model.
 
     Non-reasoning models must behave like a plain chat model: drop
     ``reasoning_effort`` (and any thinking toggles) so the API never asks for
-    reasoning and the engine keeps its regular output. Reasoning models keep
-    the client's ``reasoning_effort`` untouched so external applications can
-    steer it (the running engine's ``--reasoning``/``--reasoning-budget`` flags
-    from the per-model runtime setting control the actual thinking budget).
+    reasoning and the engine keeps its regular output.
+
+    Reasoning models keep the client's ``reasoning_effort`` unless the caller
+    disables reasoning via ``X-Disable-Reasoning: 1`` or ``reasoning_effort:
+    none`` — in that case we forward ``reasoning_effort: none`` upstream so the
+    engine skips the thinking phase instead of burning the token budget.
     """
-    if not raw or reasoning:
+    if not raw:
         return raw
     try:
         body = json.loads(raw.decode('utf-8', errors='replace'))
@@ -199,6 +208,29 @@ def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
     if not isinstance(body, dict):
         return raw
     changed = False
+    if reasoning:
+        effort = str(body.get('reasoning_effort') or '').strip().lower()
+        if disable_reasoning or effort == 'none':
+            if body.get('reasoning_effort') != 'none':
+                body['reasoning_effort'] = 'none'
+                changed = True
+            for key in ('thinking', 'enable_thinking'):
+                if key in body:
+                    body.pop(key, None)
+                    changed = True
+            try:
+                max_tokens = int(body.get('max_tokens') or 0)
+            except (TypeError, ValueError):
+                max_tokens = 0
+            if 0 < max_tokens < 64:
+                body['max_tokens'] = 64
+                changed = True
+        if not changed:
+            return raw
+        try:
+            return json.dumps(body).encode('utf-8')
+        except (TypeError, ValueError):
+            return raw
     for key in ('reasoning_effort', 'thinking', 'enable_thinking'):
         if key in body:
             body.pop(key, None)
@@ -209,6 +241,37 @@ def apply_reasoning_policy(raw: bytes, *, reasoning: bool) -> bytes:
         return json.dumps(body).encode('utf-8')
     except (TypeError, ValueError):
         return raw
+
+
+def reasoning_disabled_for_request(raw: bytes, *, disable_header: bool = False) -> bool:
+    """True when the client asked to skip the reasoning phase."""
+    if disable_header:
+        return True
+    body = parse_chat_body(raw)
+    return str(body.get('reasoning_effort') or '').strip().lower() == 'none'
+
+
+def validate_reasoning_chat_request(
+    raw: bytes,
+    *,
+    reasoning: bool,
+    disable_reasoning: bool,
+) -> str | None:
+    """Return a client-facing 400 hint when reasoning would exhaust max_tokens."""
+    if not reasoning or reasoning_disabled_for_request(raw, disable_header=disable_reasoning):
+        return None
+    body = parse_chat_body(raw)
+    try:
+        max_tokens = int(body.get('max_tokens') or 0)
+    except (TypeError, ValueError):
+        max_tokens = 0
+    if max_tokens <= 0 or max_tokens >= 128:
+        return None
+    return (
+        'Reasoning models need room for a thinking phase. '
+        'Set reasoning_effort to "none", send header X-Disable-Reasoning: 1, '
+        'or raise max_tokens to at least 128.'
+    )
 
 
 def aggregate_sse_to_completion(raw: bytes) -> dict[str, Any]:

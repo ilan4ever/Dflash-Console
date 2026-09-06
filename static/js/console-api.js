@@ -1,11 +1,15 @@
 /** Shared API helpers for DFlash Console UI */
 window.ConsoleApi = (function () {
+  const DFLASH_UI_CLIENT = 'DFlash Console';
   const inflightGets = new Map();
   const DEFAULT_GET_TIMEOUT_MS = 8000;
   const SLOW_GET_TIMEOUT_MS = 60000;
 
   function defaultGetTimeoutMs(path) {
     const normalized = String(path || '').split('?')[0];
+    if (normalized === '/api/diagnostics/bundle') {
+      return SLOW_GET_TIMEOUT_MS;
+    }
     if (normalized === '/api/servers' || normalized.startsWith('/api/servers/')) {
       return SLOW_GET_TIMEOUT_MS;
     }
@@ -38,6 +42,14 @@ window.ConsoleApi = (function () {
     } catch (_) {
       return String(detail);
     }
+  }
+
+  function requestHeaders(extra = {}) {
+    return {
+      'Content-Type': 'application/json',
+      'X-DFlash-Client': DFLASH_UI_CLIENT,
+      ...extra,
+    };
   }
 
   function createInflightGet(dedupeKey, timeoutMs, options) {
@@ -77,7 +89,7 @@ window.ConsoleApi = (function () {
       try {
         const resp = await fetch(dedupeKey, {
           cache: method === 'GET' ? 'no-store' : 'default',
-          headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
+          headers: requestHeaders(fetchOptions.headers || {}),
           ...fetchOptions,
           signal: callerSignal || controller?.signal,
         });
@@ -144,7 +156,7 @@ window.ConsoleApi = (function () {
     try {
       const resp = await fetch(path, {
         cache: method === 'GET' ? 'no-store' : 'default',
-        headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
+        headers: requestHeaders(fetchOptions.headers || {}),
         ...fetchOptions,
         signal: callerSignal || controller?.signal,
       });
@@ -186,7 +198,7 @@ window.ConsoleApi = (function () {
     window.DFlashSelectTheme?.syncSelect?.(selectEl);
   }
 
-  function toast(message, ok = true) {
+  function toast(message, ok = true, options = {}) {
     let el = document.getElementById('consoleToast');
     if (!el) {
       el = document.createElement('div');
@@ -194,11 +206,38 @@ window.ConsoleApi = (function () {
       el.className = 'lm-toast hidden';
       document.body.appendChild(el);
     }
-    el.textContent = message;
-    el.className = `lm-toast ${ok ? 'ok' : 'err'}`;
+    const showReport = !ok && options.report !== false;
+    el.replaceChildren();
+    if (showReport) {
+      const msg = document.createElement('span');
+      msg.className = 'lm-toast-message';
+      msg.textContent = message;
+      el.appendChild(msg);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lm-btn ghost small lm-toast-report-btn';
+      btn.textContent = 'Report';
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        el.classList.add('hidden');
+        el.classList.remove('has-report');
+        window.DFlashBugReport?.quickReportFromError?.(
+          message,
+          options.reportContext || '',
+        );
+      });
+      el.appendChild(btn);
+      el.className = 'lm-toast err has-report';
+    } else {
+      el.textContent = message;
+      el.className = `lm-toast ${ok ? 'ok' : 'err'}`;
+    }
     window.clearTimeout(toast._timer);
-    toast._timer = window.setTimeout(() => el.classList.add('hidden'), 3200);
+    toast._timer = window.setTimeout(() => {
+      el.classList.add('hidden');
+      el.classList.remove('has-report');
+    }, showReport ? 12000 : 3200);
   }
 
-  return { api, toast, setSelectLoading };
+  return { api, toast, setSelectLoading, DFLASH_UI_CLIENT, requestHeaders };
 })();

@@ -3,6 +3,11 @@ description: Report a reproducible problem in DFlash Console.
 title: "[Bug]: "
 labels: ["bug"]
 body:
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic excerpt (optional)
+      description: Paste from About → Report a bug if you copied a diagnostic report. Remove paths you do not want to share.
   - type: markdown
     attributes:
       value: |

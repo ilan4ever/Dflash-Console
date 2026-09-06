@@ -104,7 +104,10 @@ def gpu_contention_report(
             # First status poll may not have run yet; do not block on a fresh scan.
             external_scan_pending = True
 
-    console_holding_vram = [row for row in console_running if row.get('running')]
+    console_holding_vram = [
+        row for row in console_running
+        if row.get('loaded_models')
+    ]
     if console_holding_vram:
         recommendation = 'stop-others'
     elif external:

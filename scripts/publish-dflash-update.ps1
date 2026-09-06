@@ -73,7 +73,10 @@ if ($Token) {
 }
 
 $commit = "mv '$remoteInstallerTemp' '$remoteInstaller' && mv '$remoteManifestTemp' '$RemoteRoot/latest.json'"
-if ($Token) { $commit += " && mv '$RemoteRoot/.token.part' '$RemoteRoot/.token' && chmod 600 '$RemoteRoot/.token'" }
+if ($Token) {
+    $commit += " && mv '$RemoteRoot/.token.part' '$RemoteRoot/.token' && chmod 600 '$RemoteRoot/.token'"
+    $commit += " && cp '$RemoteRoot/.token' '$RemoteRoot/.report-token' && chmod 600 '$RemoteRoot/.report-token'"
+}
 $commit += " && chmod 600 '$remoteInstaller' '$RemoteRoot/latest.json'"
 & ssh -i $keyPath -p $sshPort -o BatchMode=yes -o StrictHostKeyChecking=accept-new `
     "$sshUser@$sshHost" $commit

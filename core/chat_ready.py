@@ -77,8 +77,20 @@ def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, An
     }
 
 
-def assess_server_chat_ready(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Return whether chat may proceed for this engine profile."""
+def assess_server_chat_ready(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+    require_checkpoint: bool = True,
+) -> dict[str, Any]:
+    """Return whether chat may proceed for this engine profile.
+
+    When ``require_checkpoint`` is True (default, used by ``/chat-ready``), the
+    listener must be up *and* a checkpoint must be loaded. JIT chat passes
+    ``require_checkpoint=False`` so it can auto-load an idle listener.
+    """
+    from core.runtime import build_server_status
+
     config = cfg or load_config()
     server_id = str(server.get('id') or '').strip()
     label = str(server.get('label') or server_id or 'engine').strip()
@@ -97,6 +109,7 @@ def assess_server_chat_ready(server: dict[str, Any], *, cfg: dict[str, Any] | No
         return {
             'ready': False,
             'ready_for_chat': False,
+            'listener_ready': False,
             'reason': 'engine_off',
             'engine_on': False,
             'label': label,
@@ -110,6 +123,7 @@ def assess_server_chat_ready(server: dict[str, Any], *, cfg: dict[str, Any] | No
         return {
             'ready': False,
             'ready_for_chat': False,
+            'listener_ready': False,
             'reason': 'engine_stopped',
             'engine_on': True,
             'label': label,
@@ -119,9 +133,75 @@ def assess_server_chat_ready(server: dict[str, Any], *, cfg: dict[str, Any] | No
             ),
         }
 
+    if require_checkpoint:
+        live = build_server_status(server, cfg=config)
+        loaded_models = [
+            str(item).strip()
+            for item in (live.get('loaded_models') or [])
+            if str(item).strip()
+        ]
+        if not loaded_models:
+            from core.config import get_server, normalize_server
+            from core.server_boot import find_target_loaded_elsewhere
+
+            elsewhere = find_target_loaded_elsewhere(server, cfg=config, exclude_server_id=server_id)
+            if elsewhere:
+                other_id = str(elsewhere.get('server_id') or '').strip()
+                other_entry = normalize_server(get_server(config, other_id) or {}) if other_id else {}
+                if other_entry:
+                    other_live = build_server_status(other_entry, cfg=config)
+                    shared_models = [
+                        str(item).strip()
+                        for item in (other_live.get('loaded_models') or [])
+                        if str(item).strip()
+                    ]
+                    if shared_models:
+                        return {
+                            'ready': True,
+                            'ready_for_chat': True,
+                            'listener_ready': True,
+                            'reason': 'ready',
+                            'engine_on': True,
+                            'label': label,
+                            'status': str(other_live.get('status') or 'loaded'),
+                            'loaded_models': shared_models,
+                            'active_model_id': str(
+                                other_live.get('active_model_id') or shared_models[0]
+                            ),
+                            'routed_server_id': other_id,
+                            'message': '',
+                        }
+            return {
+                'ready': False,
+                'ready_for_chat': False,
+                'listener_ready': True,
+                'reason': 'model_not_loaded',
+                'engine_on': True,
+                'label': label,
+                'status': str(live.get('status') or 'running'),
+                'loaded_models': [],
+                'message': (
+                    f'No checkpoint is loaded on {label}. '
+                    'Load a model or send chat to trigger JIT load.'
+                ),
+            }
+        return {
+            'ready': True,
+            'ready_for_chat': True,
+            'listener_ready': True,
+            'reason': 'ready',
+            'engine_on': True,
+            'label': label,
+            'status': str(live.get('status') or 'loaded'),
+            'loaded_models': loaded_models,
+            'active_model_id': str(live.get('active_model_id') or loaded_models[0]),
+            'message': '',
+        }
+
     return {
         'ready': True,
         'ready_for_chat': True,
+        'listener_ready': True,
         'reason': 'ready',
         'engine_on': True,
         'label': label,

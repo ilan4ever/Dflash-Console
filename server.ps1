@@ -522,5 +522,5 @@ if (-not $orchestratedStart) {
     Write-Host 'Use .\server.ps1 -Foreground to attach this terminal.' -ForegroundColor DarkGray
     Write-Host ''
 } else {
-    Write-StartupLine ('Console API ready at {0} (orchestrated, UI not opened)' -f $url) 'Green'
+    Write-StartupLine ("Console API ready at {0} (orchestrated; UI not opened)" -f $url) 'Green'
 }

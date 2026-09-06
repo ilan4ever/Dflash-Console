@@ -102,6 +102,10 @@ DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     'enabled_gpu_indices': [],
     'limit_offload_dedicated_vram': True,
     'offload_kv_cache_to_gpu': True,
+    # performance | balanced | power — see core.gpu_policy
+    'gpu_performance_mode': 'balanced',
+    # 0 = use mode default (desktop headroom for Windows / Chrome compositor)
+    'desktop_vram_reserve_gb': 0.0,
 }
 
 DEFAULT_DOWNLOAD_SETTINGS: dict[str, Any] = {
@@ -454,12 +458,22 @@ def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
         max_vram_gb = float(raw.get('max_vram_usage_gb') or 0.0)
     except (TypeError, ValueError):
         max_vram_gb = 0.0
+    from core.gpu_policy import normalize_gpu_performance_mode
+
+    try:
+        desktop_reserve_gb = float(raw.get('desktop_vram_reserve_gb') or 0.0)
+    except (TypeError, ValueError):
+        desktop_reserve_gb = 0.0
     return {
         'gpu_strategy': strategy,
         'enabled_gpu_indices': enabled_indices,
         'limit_offload_dedicated_vram': raw.get('limit_offload_dedicated_vram') is not False,
         'offload_kv_cache_to_gpu': raw.get('offload_kv_cache_to_gpu') is not False,
         'max_vram_usage_gb': max(0.0, max_vram_gb),
+        'gpu_performance_mode': normalize_gpu_performance_mode(
+            raw.get('gpu_performance_mode') or DEFAULT_HARDWARE_SETTINGS['gpu_performance_mode']
+        ),
+        'desktop_vram_reserve_gb': max(0.0, desktop_reserve_gb),
     }
 
 
@@ -805,6 +819,44 @@ def get_server(cfg: dict[str, Any], server_id: str) -> dict[str, Any] | None:
     return None
 
 
+def infer_server_profile(entry: dict[str, Any]) -> str:
+    """Pick a sane default profile when config omits one.
+
+    Legacy engines like ``gemma-12b-ar`` must not fall back to ``gemma-chat``
+    (31B + DFlash draft) when they only expose a 12B API alias.
+    """
+    server_id = str(entry.get('id') or '').strip().lower()
+    model_id = str(entry.get('model_id') or '').strip().lower()
+
+    if 'embed' in server_id or server_id.startswith('nomic'):
+        return 'nomic-embed'
+
+    if server_id in {'gemma-12b-ar', 'gemma-12-ar'} or (
+        '12b' in server_id and '-ar' in server_id
+    ):
+        return 'gemma-12-ar'
+
+    if 'dflash' in server_id or 'dflash' in model_id:
+        if '12' in server_id or '12b' in model_id:
+            return 'gemma-12-dflash'
+        if 'qwen' in server_id or 'qwen' in model_id:
+            return 'qwen-dflash'
+        return 'gemma-chat'
+
+    if 'qwen' in server_id or 'qwen' in model_id:
+        return 'qwen-ar'
+
+    if 'bonsai' in server_id:
+        return 'bonsai-spec' if 'spec' in server_id else 'bonsai'
+
+    if 'gemma' in model_id and '12' in model_id and '31' not in model_id:
+        return 'gemma-12-ar'
+    if 'gemma' in model_id and '31' in model_id:
+        return 'gemma-chat'
+
+    return 'gemma-chat'
+
+
 def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
     port = int(entry.get('port') or 0)
     host = str(entry.get('host') or '127.0.0.1').strip() or '127.0.0.1'
@@ -818,7 +870,7 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
     result = {
         'id': str(entry.get('id') or '').strip(),
         'label': str(entry.get('label') or entry.get('id') or 'Server').strip(),
-        'profile': str(entry.get('profile') or 'gemma-chat').strip(),
+        'profile': str(entry.get('profile') or infer_server_profile(entry)).strip(),
         'port': port,
         'host': host,
         'api_url': api_url,

@@ -47,7 +47,15 @@ logger = logging.getLogger(__name__)
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
 
-_FORWARD_HEADERS = {'content-type', 'accept', 'authorization', 'x-disable-reasoning'}
+_FORWARD_HEADERS = {
+    'content-type',
+    'accept',
+    'authorization',
+    'x-disable-reasoning',
+    'x-dflash-client',
+    'user-agent',
+    'referer',
+}
 _STREAM_HEADERS = {
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no',
@@ -350,9 +358,32 @@ async def chat_completions(request: Request) -> Response:
         except Exception:
             body = None
     if body is not None:
-        from core.chat_proxy import apply_reasoning_policy
+        from core.chat_proxy import apply_reasoning_policy, validate_reasoning_chat_request
 
-        body = apply_reasoning_policy(body, reasoning=model_has_reasoning(server))
+        disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
+        reasoning_model = model_has_reasoning(server)
+        reasoning_error = validate_reasoning_chat_request(
+            body,
+            reasoning=reasoning_model,
+            disable_reasoning=disable_reasoning,
+        )
+        if reasoning_error:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    'error': {
+                        'message': reasoning_error,
+                        'type': 'invalid_request_error',
+                        'code': 400,
+                        'reason': 'reasoning_budget_too_low',
+                    }
+                },
+            )
+        body = apply_reasoning_policy(
+            body,
+            reasoning=reasoning_model,
+            disable_reasoning=disable_reasoning,
+        )
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
     filter_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
     response = await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)

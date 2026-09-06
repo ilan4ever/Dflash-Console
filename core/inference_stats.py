@@ -177,10 +177,16 @@ def mark_inference_start(
     *,
     api_url: str = '',
     model_id: str = '',
+    client_label: str = '',
 ) -> None:
     sid = str(server_id or '')
     if not sid:
         return
+    label = str(client_label or '').strip()
+    if label:
+        from core.client_identity import begin_active_client
+
+        begin_active_client(sid, label)
     with _ACTIVE_INFERENCE_LOCK:
         row = _ACTIVE_INFERENCE.get(sid)
         if isinstance(row, dict) and int(row.get('count') or 0) > 0:
@@ -208,10 +214,15 @@ def mark_inference_start(
             pass
 
 
-def mark_inference_end(server_id: str) -> None:
+def mark_inference_end(server_id: str, *, client_label: str = '') -> None:
     sid = str(server_id or '')
     if not sid:
         return
+    label = str(client_label or '').strip()
+    if label:
+        from core.client_identity import end_active_client
+
+        end_active_client(sid, label)
     cleared = False
     with _ACTIVE_INFERENCE_LOCK:
         row = _ACTIVE_INFERENCE.get(sid)

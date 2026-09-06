@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from api.gateway import list_models
 from core.gateway_routing import (
     catalog_model_id,
+    model_ids_compatible,
     normalize_model_token,
     resolve_chat_server,
 )
@@ -61,6 +62,12 @@ def _cfg() -> dict:
 def test_normalize_model_token_maps_dots_and_dflash_suffix():
     assert normalize_model_token('qwen3.8-27b-q6-k-l') == 'qwen3-8-27b-q6-k-l'
     assert normalize_model_token('qwen3-8-27b-q6-k-l-dflash') == 'qwen3-8-27b-q6-k-l'
+
+
+def test_model_ids_compatible_allows_quant_suffix():
+    assert model_ids_compatible('translategemma-12b-it', 'translategemma-12b-it-q4-k-s')
+    assert model_ids_compatible('gemma-4-12b-it-q4-k-m', 'gemma-4-12b-it-qat') is False
+    assert not model_ids_compatible('translategemma-12b-it', 'gemma-4-12b-it-q4-k-m')
 
 
 def test_resolve_chat_server_matches_catalog_model_id():

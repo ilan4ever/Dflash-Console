@@ -34,6 +34,11 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'markdown': _load_cli_guide(),
             },
             {
+                'id': 'client-identity',
+                'title': 'Client identity (X-DFlash-Client)',
+                'markdown': _load_client_identity_guide(),
+            },
+            {
                 'id': 'engines',
                 'title': 'Engine control',
                 'endpoints': _engine_endpoints(),
@@ -87,6 +92,10 @@ def _load_user_guide() -> str:
 
 def _load_cli_guide() -> str:
     return _load_markdown_doc('CLI.md')
+
+
+def _load_client_identity_guide() -> str:
+    return _load_markdown_doc('CLIENT-IDENTITY.md')
 
 
 def _overview_html(base: str) -> str:
@@ -188,6 +197,7 @@ def _overview_html(base: str) -> str:
     <li>On <strong>Engines</strong>, pick DFlash, vLLM, Transformers, or FreeToken, then load a model.</li>
     <li>For a DFlash GGUF, right-click <strong>Find and attach draft</strong> if you want speculative decoding.</li>
     <li>Point your app at <code>http://127.0.0.1:8001/v1</code> or the console chat proxy.</li>
+    <li>Integrators: send <code>X-DFlash-Client: YourApp</code> on load and chat requests so Engines shows the <strong>Active client</strong> on each card (see <strong>Client identity</strong> in the sidebar).</li>
   </ol>
 </section>
 
@@ -230,7 +240,12 @@ def _engine_endpoints() -> list[dict[str, Any]]:
                 'model_path': 'C:\\\\path\\\\to\\\\model.gguf',
                 'model_id': 'optional-router-id',
             },
-            'notes': 'Omit model_path to load the engine profile default. Pass model_path to load any local GGUF on this engine (LM Studio, library scan, etc.).',
+            'notes': (
+                'Omit model_path to load the engine profile default. Pass model_path to load any local GGUF on this engine. '
+                'Plain ad-hoc targets (e.g. TranslateGemma) run without the engine DFlash draft or mmproj. '
+                'Load waits for the child checkpoint to finish before returning success. '
+                'Send header X-DFlash-Client: YourApp so Engines shows the active client; optional — missing header is labeled Unknown API client. The banner updates on each chat/embed call while the model stays loaded.'
+            ),
         },
         {'method': 'POST', 'path': f'/api/servers/{sid}/unload', 'summary': 'Unload checkpoint; router stays up.'},
         {'method': 'POST', 'path': f'/api/servers/{sid}/stop', 'summary': 'Stop the engine process.'},
@@ -242,6 +257,7 @@ def _engine_endpoints() -> list[dict[str, Any]]:
             'path': f'/api/servers/{sid}/v1/chat/completions',
             'summary': 'Proxy chat to engine; supports stream:true SSE passthrough. Requires status loaded — POST /load first if running idle.',
             'body': {'model': 'model-id', 'messages': [{'role': 'user', 'content': 'Hello'}], 'max_tokens': 512, 'stream': True},
+            'notes': 'JIT-loads the model on first chat if idle. Send X-DFlash-Client: YourApp to attribute use on the Engines card (updates on every chat while loaded). Optional X-DFlash-Strict-Model: 1 rejects chat when model does not match the loaded checkpoint (409 model_mismatch).',
         },
         {'method': 'GET', 'path': f'/api/logs/{sid}?tail=200', 'summary': 'Tail engine logs.'},
         {'method': 'DELETE', 'path': f'/api/logs/{sid}', 'summary': 'Clear engine log file.'},
@@ -335,7 +351,7 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
         {'method': 'POST', 'path': '/api/stacks/find-draft', 'summary': 'Search local libraries and Hugging Face for a compatible DFlash 1 or DFlash 2 draft.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
         {'method': 'POST', 'path': '/api/stacks/find-and-attach-draft', 'summary': 'Find, register, and attach a compatible DFlash draft to the target model.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/unload', 'summary': 'Unload the active model and free GPU memory.'},
-        {'method': 'POST', 'path': f'/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}},
+        {'method': 'POST', 'path': '/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}, 'notes': 'Send X-DFlash-Client: YourApp to attribute the load.'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1', 'language': 'en'}},
         {'method': 'POST', 'path': f'/api/servers/{sid}/v1/embeddings', 'summary': 'Embed text on an embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
@@ -369,7 +385,12 @@ def _gateway_guide_md() -> str:
         'or in the API via `GET/PATCH /api/config` (`gateway_port`, `gateway_server_id`).\n\n'
         'Chat auto-loads the model on first use (JIT) and streams with Server-Sent Events when '
         '`"stream": true`; the engine\'s VRAM guard still protects against over-commit. The gateway '
-        'starts and stops together with the Console (check `GET /api/gateway` or `GET http://127.0.0.1:{port}/health`).'
+        'starts and stops together with the Console (check `GET /api/gateway` or `GET http://127.0.0.1:{port}/health`).\n\n'
+        '**Client identity:** send `X-DFlash-Client: YourApp` on gateway requests (and direct Console '
+        'API calls). The gateway forwards this header. DFlash Console UI sends `DFlash Console` '
+        'automatically. Unidentified callers appear as **Unknown API client** on the Engines card. '
+        'The **Active client** banner updates on each chat or embed request while the model stays loaded. '
+        'See **Client identity** in the Documentation sidebar for examples.'
     )
 
 
@@ -379,7 +400,7 @@ def _gateway_endpoints() -> list[dict[str, Any]]:
         {'method': 'GET', 'path': '/health', 'summary': 'Gateway health (checks the Console is reachable).'},
         {'method': 'GET', 'path': '/', 'summary': 'Gateway info banner with the /v1 base URL.'},
         {'method': 'GET', 'path': '/v1/models', 'summary': 'List every enabled engine as an OpenAI model (id = engine id; meta carries engine, embedding, model_id).'},
-        {'method': 'POST', 'path': '/v1/chat/completions', 'summary': 'Chat on the default engine; any model name accepted; streaming when stream=true; JIT-loads the model.', 'body': {'model': 'any-name', 'messages': [{'role': 'user', 'content': 'Hello'}]}},
+        {'method': 'POST', 'path': '/v1/chat/completions', 'summary': 'Chat on the default engine; any model name accepted; streaming when stream=true; JIT-loads the model.', 'body': {'model': 'any-name', 'messages': [{'role': 'user', 'content': 'Hello'}]}, 'notes': 'Optional header X-DFlash-Client: YourApp (forwarded to Console for Engines attribution).'},
         {'method': 'POST', 'path': '/v1/embeddings', 'summary': 'Embed text on the default embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
         {'method': 'POST', 'path': '/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
         {'method': 'POST', 'path': '/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1'}},

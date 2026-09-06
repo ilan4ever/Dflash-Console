@@ -7,6 +7,23 @@ from unittest.mock import patch
 import core.server_boot as server_boot
 
 
+def test_resolve_load_target_path_ignores_missing_config_path(tmp_path):
+    good = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    good.write_bytes(b't')
+    bad = tmp_path / 'missing-target.gguf'
+    server = {
+        'id': 'qwen-dflash',
+        'profile': 'qwen-dflash',
+        'target_path': str(bad),
+        'draft_path': '',
+    }
+    with patch('core.model_stack.resolve_model_stack', return_value=[
+        {'role': 'target', 'path': str(good)},
+    ]):
+        resolved = server_boot.resolve_load_target_path(server, cfg={'models_root': tmp_path})
+    assert resolved == server_boot._normalize_model_path(good)
+
+
 def test_managed_process_identity_rejects_unrelated_process(monkeypatch):
     monkeypatch.setattr(server_boot.sys, 'platform', 'win32')
     monkeypatch.setattr(
@@ -303,3 +320,18 @@ def test_dflash_load_failure_returns_repair_instead_of_fallback(monkeypatch, tmp
     assert result['reason_code'] == 'draft-load-failed'
     assert result['repair']['action'] == 'attach_draft'
     assert 'without' not in str(result).lower()
+
+
+def test_validate_dflash_stack_skips_non_stack_adhoc_target(tmp_path):
+    translategemma = tmp_path / 'translategemma-12b-it.Q4_K_S.gguf'
+    translategemma.write_bytes(b't')
+    server = {
+        'id': 'gemma-4-12b-it-q4-k-m-dflash',
+        'profile': 'gemma-12-dflash',
+        'target_path': str(tmp_path / 'gemma.gguf'),
+        'draft_path': str(tmp_path / 'draft.gguf'),
+    }
+    result = server_boot.validate_dflash_stack(server, model_path=str(translategemma))
+    assert result['valid'] is True
+    assert result.get('adhoc') is True
+    assert result.get('required') is False

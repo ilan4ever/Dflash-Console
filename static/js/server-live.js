@@ -121,6 +121,8 @@
   let lastLogsServerId = '';
   let logLinesRaw = [];
   let logFilterId = localStorage.getItem('dflashConsole.logFilter') || 'all';
+  let logsSourceId = localStorage.getItem('dflashConsole.logSource') || 'engine';
+  let logsSourceBound = false;
   const LOG_FETCH_TAIL = 500;
   const LOG_SCROLL_THRESHOLD = 32;
 
@@ -192,6 +194,107 @@
     });
 
     setLogFilter(logFilterId, false);
+  }
+
+  function bindLogsSourceDropdown() {
+    const trigger = document.getElementById('serverLogsSourceTrigger');
+    const menu = document.getElementById('serverLogsSourceMenu');
+    const label = document.getElementById('serverLogsSourceLabel');
+    if (!trigger || !menu || logsSourceBound) return;
+    logsSourceBound = true;
+
+    const sourceLabels = {
+      engine: 'Engine',
+      console: 'Console API',
+      api: 'API access',
+      journal: 'Support journal',
+      all: 'All merged',
+    };
+
+    function syncSourceUi() {
+      if (label) label.textContent = sourceLabels[logsSourceId] || 'Engine';
+      menu.querySelectorAll('.lm-logs-filter-item').forEach((item) => {
+        const active = item.dataset.source === logsSourceId;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    }
+
+    function closeMenu() {
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+
+    function positionMenu() {
+      const rect = trigger.getBoundingClientRect();
+      menu.style.minWidth = `${Math.max(rect.width, 170)}px`;
+      menu.style.left = `${Math.max(8, rect.left)}px`;
+      menu.style.top = `${Math.max(8, rect.top - menu.offsetHeight - 4)}px`;
+    }
+
+    function openMenu() {
+      menu.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      positionMenu();
+    }
+
+    function setLogSource(nextId) {
+      logsSourceId = nextId || 'engine';
+      localStorage.setItem('dflashConsole.logSource', logsSourceId);
+      syncSourceUi();
+      closeMenu();
+      void refreshLogs().catch(() => {});
+    }
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+    menu.querySelectorAll('.lm-logs-filter-item').forEach((item) => {
+      item.addEventListener('click', () => setLogSource(item.dataset.source || 'engine'));
+    });
+    document.addEventListener('click', closeMenu);
+    window.addEventListener('resize', closeMenu);
+    syncSourceUi();
+  }
+
+  function flattenConsoleLogsPayload(data, serverId) {
+    const lines = [];
+    const push = (prefix, row) => {
+      const text = String(row || '').trim();
+      if (text) lines.push(prefix ? `[${prefix}] ${text}` : text);
+    };
+    const sources = data?.sources || {};
+    if (logsSourceId === 'journal') {
+      return (data?.journal || []).map((line) => String(line || ''));
+    }
+    if (logsSourceId === 'console') {
+      for (const key of ['console', 'console_err', 'startup']) {
+        for (const line of (sources[key]?.lines || [])) push(key, line);
+      }
+      return lines;
+    }
+    if (logsSourceId === 'api') {
+      for (const line of (sources.api_access_file?.lines || [])) push('api', line);
+      for (const row of (data?.api_calls || [])) {
+        if (!row || typeof row !== 'object') continue;
+        push('call', `${row.method || 'GET'} ${row.path || ''} -> ${row.status || ''} (${row.client || ''})`);
+      }
+      return lines;
+    }
+    if (logsSourceId === 'all') {
+      for (const key of ['console', 'console_err', 'startup', 'api_access_file']) {
+        for (const line of (sources[key]?.lines || [])) push(key, line);
+      }
+      const engines = sources.engines || {};
+      const engineLines = engines[serverId]?.lines || [];
+      for (const line of engineLines) push(`engine:${serverId}`, line);
+      for (const line of (data?.journal || [])) push('journal', line);
+      return lines;
+    }
+    return [];
   }
 
   function positionLogsJumpButton() {
@@ -1313,6 +1416,8 @@
       plain_llm: true,
       is_adhoc: true,
       inference_stats: server?.inference_stats || {},
+      loaded_by: server?.loaded_by || '',
+      active_clients: Array.isArray(server?.active_clients) ? server.active_clients : [],
     };
   }
 
@@ -1339,6 +1444,8 @@
       plain_llm: true,
       is_adhoc: true,
       inference_stats: server?.inference_stats || {},
+      loaded_by: server?.loaded_by || '',
+      active_clients: Array.isArray(server?.active_clients) ? server.active_clients : [],
     };
   }
 
@@ -1705,8 +1812,8 @@
     const lines = [cardDisplayName(row, server)];
     const meta = cardMetaLine({ server, row });
     if (meta) lines.push(meta);
-    const loadedBy = row?.loaded_by || row?.app_label;
-    if (loadedBy) lines.push(`Loaded by: ${loadedBy}`);
+    const loadedBy = activeClientLabels(row).join(', ') || formatLoadedByLabel(row?.loaded_by || row?.app_label);
+    if (loadedBy) lines.push(`Active client${activeClientLabels(row).length > 1 ? 's' : ''}: ${loadedBy}`);
     if (row?.model_path) lines.push(`Path: ${row.model_path}`);
     else if (row?.path) lines.push(`Path: ${row.path}`);
     if (row.external) {
@@ -1727,7 +1834,39 @@
 
   function cardAppLabel(row) {
     if (row?.external) return row.app_label || 'External app';
-    return row?.app_label || 'DFlash Console';
+    return formatLoadedByLabel(row?.loaded_by || row?.app_label);
+  }
+
+  function formatLoadedByLabel(raw) {
+    const text = String(raw || '').trim();
+    return text || 'Unknown API client';
+  }
+
+  function activeClientLabels(row) {
+    const list = Array.isArray(row?.active_clients)
+      ? row.active_clients.map((item) => formatLoadedByLabel(item)).filter(Boolean)
+      : [];
+    if (list.length) return list;
+    const single = formatLoadedByLabel(row?.loaded_by || row?.app_label);
+    return single ? [single] : [];
+  }
+
+  function loadedByPrompt({ row, ready }) {
+    if (row?.external || !ready) return '';
+    const clients = activeClientLabels(row);
+    if (!clients.length) return '';
+    const multi = clients.length > 1;
+    const badges = clients.map((label) => {
+      const isUnknown = /^unknown api client$/i.test(label);
+      const isConsole = /^dflash console$/i.test(label);
+      return `<span class="lm-loaded-by-app-badge${isUnknown ? ' is-unknown' : ''}${isConsole ? ' is-console' : ''}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+    }).join('');
+    const soloUnknown = !multi && /^unknown api client$/i.test(clients[0]);
+    const soloConsole = !multi && /^dflash console$/i.test(clients[0]);
+    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloUnknown ? ' is-unknown' : ''}${soloConsole ? ' is-console' : ''}" title="${escapeHtml(multi ? 'Clients using this model' : `Active client: ${clients[0]}`)}">
+            <span class="lm-loaded-by-origin">${multi ? 'Active clients' : 'Active client'}</span>
+            <span class="lm-loaded-by-badges">${badges}</span>
+          </div>`;
   }
 
   function inferModelKind(row) {
@@ -1835,34 +1974,30 @@
       // card (see externalPrompt), not as a tag in the labels row.
       return '';
     }
-    const loadedBy = row?.loaded_by || row?.app_label || '';
-    const appBadge = loadedBy && !/^dflash\s+console$/i.test(String(loadedBy).trim())
-      ? `<span class="lm-tag orange" title="Requested by ${escapeHtml(loadedBy)}">${escapeHtml(loadedBy)}</span>`
-      : '';
     const shared = window.DFlashModelCard?.classificationTags?.(cardModelPresentation(row));
-    if (shared) return `${shared}${appBadge}`;
+    if (shared) return shared;
     if (row.role === 'draft-dflash') {
       const gen = row?.dflash_generation_label || window.DFlashModelGroups?.acceleratorGenerationLabel?.(row) || 'DFlash 1';
-      return `${dflashLogoLabel(`${gen} accelerator`)}${acceleratorBadge(`${gen} draft accelerator; not a target model`)}${appBadge}`;
+      return `${dflashLogoLabel(`${gen} accelerator`)}${acceleratorBadge(`${gen} draft accelerator; not a target model`)}`;
     }
     if (row.role === 'draft-dspark') {
-      return `<span class="lm-tag yellow" title="dspark draft accelerator">dspark draft</span>${acceleratorBadge('DSpark draft accelerator; not a target model')}${appBadge}`;
+      return `<span class="lm-tag yellow" title="dspark draft accelerator">dspark draft</span>${acceleratorBadge('DSpark draft accelerator; not a target model')}`;
     }
     const kind = inferModelKind(row);
     if (kind?.kind === 'embedding') {
-      return `<span class="lm-tag teal" title="Embedding model">Embedding</span>${appBadge}`;
+      return `<span class="lm-tag teal" title="Embedding model">Embedding</span>`;
     }
     if (kind?.kind === 'stt') {
-      return `<span class="lm-tag purple" title="Speech-to-text">${escapeHtml(kind.label)}</span>${appBadge}`;
+      return `<span class="lm-tag purple" title="Speech-to-text">${escapeHtml(kind.label)}</span>`;
     }
     if (cardUsesDflashStack(row)) {
-      return `${dflashLogoLabel('DFlash 1 stack')}${appBadge}`;
+      return `${dflashLogoLabel('DFlash 1 stack')}`;
     }
     if (row.card_state === 'ready' || row.card_state === 'loading' || row.role === 'alias' || kind?.kind === 'llm') {
-      return `<span class="lm-tag cyan" title="Standard LLM checkpoint">LLM</span>${appBadge}`;
+      return `<span class="lm-tag cyan" title="Standard LLM checkpoint">LLM</span>`;
     }
-    if (row.source === 'lmstudio') return `<span class="lm-tag blue">LM Studio</span>${appBadge}`;
-    return `<span class="lm-tag blue" title="Managed by DFlash Console">LLM</span>${appBadge}`;
+    if (row.source === 'lmstudio') return '<span class="lm-tag blue">LM Studio</span>';
+    return '<span class="lm-tag blue" title="Managed by DFlash Console">LLM</span>';
   }
 
   function inferCardDetail(row) {
@@ -2089,6 +2224,11 @@
     return inferenceIsGenerating(stats);
   }
 
+  function slotMetricCacheKey(metricKey, slot) {
+    const slotId = slot?.slot_id;
+    return slotId == null ? metricKey : `${metricKey}:slot:${slotId}`;
+  }
+
   function cardTokenMetricsRow({ server, row }) {
     const isExternal = !!(row?.external || server?.external);
     const stats = row?.inference_stats || server?.inference_stats || {};
@@ -2103,53 +2243,56 @@
     const visibleSlots = slots.length
       ? slots
       : [{ slot_id: 0, ...stats, generating: !!stats.generating }];
-    const primarySlot = visibleSlots.find((slot) => slot?.generating) || visibleSlots[0];
+    const generatingSlots = visibleSlots.filter((slot) => slot?.generating);
+    const slotsToRender = generatingSlots.length > 1
+      ? generatingSlots
+      : [visibleSlots.find((slot) => slot?.generating) || visibleSlots[0]];
     const metricKey = loadedCardKey(server, row);
     const recent = Array.isArray(stats.recent_completions) ? stats.recent_completions : [];
 
     const groups = [];
-    const metrics = [];
-    if (primarySlot.generating) {
-      metrics.push(cardTokenMetricGroup(primarySlot, { live: true }));
-      const outTok = Number(primarySlot.generating_tokens ?? 0) || 0;
-      if (outTok > 0 && metricKey) {
-        // Keep the newest real count available for the brief transition where
-        // the slot becomes idle before the completion summary is published.
-        lastTokenMetrics.set(metricKey, {
-          prompt_tokens: primarySlot.prompt_tokens,
-          generation_tokens: outTok,
-          tokens_per_second: primarySlot.generating_tokens_per_second,
-        });
-      }
-      const liveSpeed = primarySlot.generating_tokens_per_second ?? primarySlot.prefill_tokens_per_second;
-      const liveActive = outTok > 0 || (liveSpeed != null && Number.isFinite(Number(liveSpeed)));
-      const last = recent[0] || {};
-      const hasLast = last.prompt_tokens != null || last.generation_tokens != null;
-      if (!liveActive && hasLast) {
+    for (const slot of slotsToRender) {
+      if (!slot) continue;
+      const cacheKey = slotMetricCacheKey(metricKey, slot);
+      const metrics = [];
+      if (slot.generating) {
+        metrics.push(cardTokenMetricGroup(slot, { live: true }));
+        const outTok = Number(slot.generating_tokens ?? 0) || 0;
+        if (outTok > 0 && cacheKey) {
+          lastTokenMetrics.set(cacheKey, {
+            prompt_tokens: slot.prompt_tokens,
+            generation_tokens: outTok,
+            tokens_per_second: slot.generating_tokens_per_second,
+          });
+        }
+        const liveSpeed = slot.generating_tokens_per_second ?? slot.prefill_tokens_per_second;
+        const liveActive = outTok > 0 || (liveSpeed != null && Number.isFinite(Number(liveSpeed)));
+        const last = recent[0] || {};
+        const hasLast = last.prompt_tokens != null || last.generation_tokens != null;
+        if (!liveActive && hasLast) {
+          metrics.push(cardTokenMetricGroup(last, {
+            live: false,
+            recent,
+          }));
+        }
+      } else {
+        const last = mergedTokenMetric(
+          slot,
+          lastTokenMetrics.get(cacheKey),
+          recent[0],
+          { prompt_tokens: 0, generation_tokens: 0 },
+        );
+        if (last && cacheKey) lastTokenMetrics.set(cacheKey, last);
         metrics.push(cardTokenMetricGroup(last, {
           live: false,
           recent,
         }));
       }
-    }
-
-    if (!primarySlot.generating) {
-      // Keep the row mounted between polls and retain the last completed
-      // request if llama-server briefly reports an empty idle slot.
-      const last = mergedTokenMetric(
-        primarySlot,
-        lastTokenMetrics.get(metricKey),
-        recent[0],
-        { prompt_tokens: 0, generation_tokens: 0 },
-      );
-      if (last && metricKey) lastTokenMetrics.set(metricKey, last);
-      metrics.push(cardTokenMetricGroup(last, {
-        live: false,
-        recent,
-      }));
-    }
-    if (metrics.length) {
-      groups.push(`<span class="lm-model-card-slot-metric-group">${metrics.join('')}</span>`);
+      if (!metrics.length) continue;
+      const slotTag = slotsToRender.length > 1
+        ? `<span class="lm-model-card-slot-label" title="Parallel slot ${Number(slot.slot_id ?? 0) + 1}">#${Number(slot.slot_id ?? 0) + 1}</span>`
+        : '';
+      groups.push(`<span class="lm-model-card-slot-metric-group">${slotTag}${metrics.join('')}</span>`);
     }
 
     if (!groups.length && stats.tokens_loaded != null) {
@@ -2160,7 +2303,10 @@
 
     if (!groups.length) return '';
     const multi = groups.length > 1 ? ' has-multi-slots' : '';
-    return `<div class="lm-model-card-center-row lm-model-card-token-row${multi}">${groups.join('')}</div>`;
+    const dual = groups.length === 1 && groups[0].includes('lm-model-card-token-last') && groups[0].includes('lm-model-card-token-generating')
+      ? ' has-dual-metrics'
+      : '';
+    return `<div class="lm-model-card-center-row lm-model-card-token-row${multi}${dual}">${groups.join('')}</div>`;
   }
 
   function cardLoadingPlaceholderRow(loading) {
@@ -2370,11 +2516,13 @@
           </div>`
         : '';
 
+      const loadedByBanner = loadedByPrompt({ row, ready });
       return `
         ${groupSep}
         <article class="${cardClass}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role || 'external-gpu')}"${row.external ? ` data-external-pid="${row.pid}"` : ''} role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${isGenerating ? ' aria-label="Model generating"' : ''}${ejecting ? ' aria-busy="true"' : ''}${cardStyle}>
           ${loadChrome}
           ${ejectChrome}
+          ${loadedByBanner}
           ${externalPrompt}
           <div class="lm-model-card-top">
             ${centerBlock}
@@ -3274,8 +3422,23 @@
       lastLogsServerId = server.id;
       logsFollowTail = true;
     }
-    const data = await api(`/api/logs/${encodeURIComponent(server.id)}?tail=${LOG_FETCH_TAIL}`);
-    renderLogs(data.lines || []);
+    if (logsSourceId === 'engine') {
+      const data = await api(`/api/logs/${encodeURIComponent(server.id)}?tail=${LOG_FETCH_TAIL}`);
+      renderLogs(data.lines || []);
+      return;
+    }
+    if (logsSourceId === 'journal') {
+      const data = await api(`/api/diagnostics/bundle?tail=${LOG_FETCH_TAIL}`);
+      renderLogs(data.journal_tail || []);
+      return;
+    }
+    const data = await api(`/api/console/logs?tail=${LOG_FETCH_TAIL}&include_engines=${logsSourceId === 'all' ? 'true' : 'false'}`);
+    if (logsSourceId === 'all') {
+      const journal = await api(`/api/diagnostics/bundle?tail=120`).catch(() => ({}));
+      renderLogs(flattenConsoleLogsPayload({ ...data, journal: journal.journal_tail || [] }, server.id));
+      return;
+    }
+    renderLogs(flattenConsoleLogsPayload(data, server.id));
   }
 
   let catalogRefreshGen = 0;
@@ -3992,6 +4155,7 @@
     document.getElementById('serverLogsCopy')?.addEventListener('click', () => void copyVisibleLogs());
     document.getElementById('serverLogsClear')?.addEventListener('click', () => void clearLogs());
     bindLogsFilterDropdown();
+    bindLogsSourceDropdown();
 
     document.getElementById('engineCardsFilterBtn')?.addEventListener('click', () => {
       cycleEngineCardsFilter();

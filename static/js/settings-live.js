@@ -62,6 +62,36 @@
     });
   }
 
+  function gpuPerformanceInputs() {
+    return [...document.querySelectorAll('input[name="settingsGpuPerformance"]')];
+  }
+
+  function gpuPerformanceValue() {
+    return gpuPerformanceInputs().find((el) => el.checked)?.value || 'balanced';
+  }
+
+  function setGpuPerformanceValue(value) {
+    const next = String(value || 'balanced');
+    gpuPerformanceInputs().forEach((el) => {
+      el.checked = el.value === next;
+    });
+  }
+
+  async function renderGpuBudgetLine() {
+    const el = document.getElementById('settingsGpuBudgetLine');
+    if (!el) return;
+    try {
+      const data = await api('/api/gpu/budget', { timeoutMs: 6000 });
+      const used = data?.vram_used_gb ?? 0;
+      const total = data?.vram_total_gb ?? 0;
+      const loaded = data?.loaded_engine_count ?? 0;
+      const reserve = data?.desktop_vram_reserve_gb ?? 6;
+      el.textContent = `GPU budget: ${used} / ${total} GB VRAM — ${loaded} model(s) loaded — ${reserve} GB reserved for desktop`;
+    } catch (_err) {
+      el.textContent = '';
+    }
+  }
+
   function escapeHtml(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -751,6 +781,7 @@
     const dedicated = document.getElementById('settingsLimitDedicatedVram');
     const kv = document.getElementById('settingsOffloadKvGpu');
     setGpuStrategyValue(hardwareDraft.gpu_strategy || 'single_largest');
+    setGpuPerformanceValue(hardwareDraft.gpu_performance_mode || 'balanced');
     if (dedicated) dedicated.checked = hardwareDraft.limit_offload_dedicated_vram !== false;
     if (kv) kv.checked = hardwareDraft.offload_kv_cache_to_gpu !== false;
     renderGpuList();
@@ -760,6 +791,7 @@
   function readHardwareDraftFromForm() {
     if (!hardwareDraft) hardwareDraft = {};
     hardwareDraft.gpu_strategy = gpuStrategyValue();
+    hardwareDraft.gpu_performance_mode = gpuPerformanceValue();
     hardwareDraft.limit_offload_dedicated_vram = !!document.getElementById('settingsLimitDedicatedVram')?.checked;
     hardwareDraft.offload_kv_cache_to_gpu = !!document.getElementById('settingsOffloadKvGpu')?.checked;
     if (!Array.isArray(hardwareDraft.enabled_gpu_indices) || !hardwareDraft.enabled_gpu_indices.length) {
@@ -773,8 +805,14 @@
       fillHardwareForm();
       renderGpuList();
     }
-    if (panelId === 'hw-strategy') fillHardwareForm();
-    if (panelId === 'hw-live') renderMonitor();
+    if (panelId === 'hw-strategy') {
+      fillHardwareForm();
+      void renderGpuBudgetLine();
+    }
+    if (panelId === 'hw-live') {
+      renderMonitor();
+      void renderGpuBudgetLine();
+    }
   }
 
   function renderGatewayPanel() {
@@ -852,7 +890,7 @@
     return {
       mcpServers: {},
       dflashConsole: {
-        note: 'MCP host is not active in DFlash Console yet. Point OpenAI-compatible clients at openai_base_url (the Console OpenAI gateway); send "model" = the engine id.',
+        note: 'MCP host is not active in DFlash Console yet. Point OpenAI-compatible clients at openai_base_url (the Console OpenAI gateway); send "model" = the engine id. Send header X-DFlash-Client: YourApp on load/chat so Engines shows who loaded each model.',
         engines,
       },
     };
@@ -1963,6 +2001,9 @@
     });
 
     gpuStrategyInputs().forEach((el) => {
+      el.addEventListener('change', scheduleHardwareSave);
+    });
+    gpuPerformanceInputs().forEach((el) => {
       el.addEventListener('change', scheduleHardwareSave);
     });
     document.getElementById('hardwareApplyClose')?.addEventListener('click', closeHardwareApplyModal);

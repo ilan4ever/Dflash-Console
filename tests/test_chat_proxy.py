@@ -106,6 +106,52 @@ def test_apply_reasoning_policy_keeps_for_reasoning_model():
     assert body['reasoning_effort'] == 'high'
 
 
+def test_apply_reasoning_policy_forces_none_when_disabled():
+    raw = json.dumps({
+        'model': 'gemma-4-12b-it-qat',
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'reasoning_effort': 'high',
+        'max_tokens': 20,
+    }).encode()
+    out = apply_reasoning_policy(raw, reasoning=True, disable_reasoning=True)
+    body = json.loads(out)
+    assert body['reasoning_effort'] == 'none'
+    assert body['max_tokens'] == 64
+
+
+def test_apply_reasoning_policy_honors_reasoning_effort_none():
+    raw = json.dumps({
+        'model': 'gemma-4-12b-it-qat',
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'reasoning_effort': 'none',
+    }).encode()
+    out = apply_reasoning_policy(raw, reasoning=True)
+    body = json.loads(out)
+    assert body['reasoning_effort'] == 'none'
+
+
+def test_validate_reasoning_chat_request_allows_disabled_low_max_tokens():
+    from core.chat_proxy import validate_reasoning_chat_request
+
+    raw = json.dumps({
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 32,
+        'reasoning_effort': 'none',
+    }).encode()
+    assert validate_reasoning_chat_request(raw, reasoning=True, disable_reasoning=False) is None
+
+
+def test_validate_reasoning_chat_request_blocks_low_max_tokens_without_disable():
+    from core.chat_proxy import validate_reasoning_chat_request
+
+    raw = json.dumps({
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 32,
+        'reasoning_effort': 'high',
+    }).encode()
+    assert validate_reasoning_chat_request(raw, reasoning=True, disable_reasoning=False)
+
+
 def test_apply_reasoning_policy_passthrough_when_no_reasoning_keys():
     raw = json.dumps({'model': 'x', 'messages': []}).encode()
     assert apply_reasoning_policy(raw, reasoning=False) == raw

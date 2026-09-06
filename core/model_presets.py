@@ -25,7 +25,13 @@ PROFILE_CACHE_TYPES = {
     'qwen-dflash': ('q8_0', 'q8_0'),
     'qwen-ar': ('q8_0', 'q8_0'),
     'generic-ar': ('q4_0', 'q4_0'),
+    'translategemma': ('q4_0', 'q4_0'),
 }
+
+
+def profile_uses_jinja(profile: str | None) -> bool:
+    """TranslateGemma uses a structured template; llama-server jinja breaks on normal chat."""
+    return str(profile or '').strip().lower() != 'translategemma'
 
 
 def profile_requires_draft(profile: str | None) -> bool:
@@ -48,6 +54,8 @@ def _kv_offload_enabled(server: dict[str, Any], hardware: dict[str, Any]) -> boo
 
 def infer_profile_from_path(path: str | Path) -> str:
     name = Path(path).name.lower()
+    if 'translategemma' in name:
+        return 'translategemma'
     if 'qwen' in name or 'deepseek' in name:
         return 'qwen-ar'
     if 'bonsai' in name:
@@ -119,6 +127,10 @@ def write_server_preset(
 
     target_path_resolved = str(target_path or server.get('target_path') or '').strip()
     draft_path_resolved = str(server.get('draft_path') or '').strip()
+    if target_path_resolved and not Path(target_path_resolved).expanduser().is_file():
+        target_path_resolved = ''
+    if draft_path_resolved and not Path(draft_path_resolved).expanduser().is_file():
+        draft_path_resolved = ''
     if target_path_resolved:
         target = {
             'role': 'target',
@@ -182,7 +194,7 @@ def write_server_preset(
         f"b = {int(load.get('eval_batch_size') or 2048)}",
         f"ub = {int(load.get('physical_batch_size') or 512)}",
         f"fa = {'on' if load.get('flash_attention', True) else 'off'}",
-        'jinja = true',
+        f"jinja = {'true' if profile_uses_jinja(preset_profile) else 'false'}",
         'mlock = true',
         f"main-gpu = {int(launch.get('main_gpu') or 0)}",
         f"split-mode = {launch.get('split_mode') or 'none'}",
@@ -200,6 +212,8 @@ def write_server_preset(
         f"model = {target['path']}",
         'load-on-startup = false',
     ]
+    if not profile_uses_jinja(preset_profile):
+        lines.append('jinja = false')
 
     if draft and draft.get('path'):
         lines.append(f"model-draft = {draft['path']}")

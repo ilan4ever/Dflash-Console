@@ -22,6 +22,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(entry['idle_unload_minutes'], 45)
         self.assertEqual(entry['api_url'], 'http://127.0.0.1:8090/v1')
 
+    def test_normalize_server_infers_gemma_12_ar_profile(self):
+        entry = cfg.normalize_server({
+            'id': 'gemma-12b-ar',
+            'model_id': 'gemma-4-12b-it-qat',
+            'port': 8191,
+        })
+        self.assertEqual(entry['profile'], 'gemma-12-ar')
+
     def test_normalize_inference_settings_keeps_reasoning_effort(self):
         normalized = cfg.normalize_inference_settings({'reasoning_effort': 'high'})
         self.assertEqual(normalized['reasoning_effort'], 'high')
@@ -272,10 +280,10 @@ class ConfigTests(unittest.TestCase):
         report = {
             'recommendation': 'stop-others',
             'console_runtimes': [
-                {'id': 'a', 'running': True},   # target -> skipped
-                {'id': 'b', 'running': True},   # embedding -> skipped
-                {'id': 'c', 'running': True},   # unload
-                {'id': 'z', 'running': False},  # not running -> skipped
+                {'id': 'a', 'running': True, 'loaded_models': ['m-a']},   # target -> skipped
+                {'id': 'b', 'running': True, 'loaded_models': ['m-b']},   # embedding -> skipped
+                {'id': 'c', 'running': True, 'loaded_models': ['m-c']},   # unload
+                {'id': 'z', 'running': False, 'loaded_models': []},  # not loaded -> skipped
             ],
         }
         with patch('core.runtimes.contention.gpu_contention_report', return_value=report):
@@ -331,6 +339,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(routes[r'C:\models\whisper\w.gguf']['path'], '/api/models/load')
         self.assertEqual(routes[r'C:\models\llm\l.gguf']['path'], '/api/servers/srv/load')
 
+    def _mock_request(self, headers: dict[str, str] | None = None):
+        from types import SimpleNamespace
+
+        mapping = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+
+        class _Headers:
+            def get(self, name: str, default: str = '') -> str:
+                return mapping.get(str(name or '').lower(), default)
+
+        return SimpleNamespace(headers=_Headers())
+
     def test_model_load_404_for_unknown_path(self):
         from fastapi import HTTPException
 
@@ -340,7 +359,7 @@ class ConfigTests(unittest.TestCase):
             {'path': r'C:\known\model.gguf', 'modality': 'llm', 'runtime_id': 'llama-server'},
         ]}):
             with self.assertRaises(HTTPException) as ctx:
-                model_load(ModelLoadRequest(path=r'Z:\unknown\model.gguf'))
+                model_load(ModelLoadRequest(path=r'Z:\unknown\model.gguf'), self._mock_request())
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_model_load_dispatches_stt(self):
@@ -354,7 +373,7 @@ class ConfigTests(unittest.TestCase):
             {'path': stt_path, 'modality': 'speech-to-text', 'runtime_id': 'stt'},
         ]}):
             with patch('core.runtimes.get_runtime_adapter', return_value=fake) as ga:
-                result = model_load(ModelLoadRequest(path=stt_path))
+                result = model_load(ModelLoadRequest(path=stt_path), self._mock_request({'X-DFlash-Client': 'Test'}))
         self.assertTrue(result['success'])
         self.assertEqual(result['runtime_id'], 'stt')
         ga.assert_called_once_with('stt')
@@ -372,7 +391,7 @@ class ConfigTests(unittest.TestCase):
             with patch('core.catalog_load.list_servers', return_value=[server_entry]):
                 with patch('core.memory_guardrails.assess_load', return_value={'level': 'ok'}):
                     with patch('core.catalog_load.load_server_checkpoint', return_value={'success': True, 'loaded': True}) as load_fn:
-                        result = model_load(ModelLoadRequest(path=llm_path))
+                        result = model_load(ModelLoadRequest(path=llm_path), self._mock_request({'X-DFlash-Client': 'Test'}))
         self.assertTrue(result['success'])
         self.assertEqual(result['runtime_id'], 'llama-server')
         self.assertEqual(result['server_id'], 'srv')

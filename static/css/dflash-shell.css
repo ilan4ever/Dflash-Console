@@ -2620,6 +2620,113 @@ body.lm-resizing-table-col {
   border-bottom: 1px solid var(--external-card-border);
 }
 
+.df-shell .lm-model-card-loaded-by-prompt {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 10px;
+  font-size: 10px;
+  color: rgba(226, 232, 240, 0.92);
+  background: rgba(20, 83, 45, 0.22);
+  border-bottom: 1px solid rgba(74, 222, 128, 0.28);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.has-multi-clients {
+  grid-template-columns: auto 1fr;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.is-unknown {
+  background: rgba(120, 53, 15, 0.24);
+  border-bottom-color: rgba(251, 146, 60, 0.34);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-origin {
+  justify-self: start;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.92);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #ecfdf5;
+  background: rgba(6, 78, 59, 0.55);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge.is-unknown {
+  color: #ffedd5;
+  background: rgba(120, 53, 15, 0.45);
+  border-color: rgba(251, 146, 60, 0.4);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge.is-console {
+  color: #dbeafe;
+  background: rgba(30, 58, 138, 0.45);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.is-unknown .lm-loaded-by-app-badge:not(.is-console) {
+  color: #ffedd5;
+}
+
+.df-shell .lm-model-card-slot-label {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(148, 163, 184, 0.92);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-name {
+  grid-column: 2;
+  justify-self: center;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #ecfdf5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.is-unknown .lm-loaded-by-app-name {
+  color: #fed7aa;
+}
+
 .df-shell .lm-model-card-external-prompt .lm-external-origin {
   grid-column: 1;
   justify-self: start;

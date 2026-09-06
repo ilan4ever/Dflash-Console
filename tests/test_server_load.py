@@ -3,7 +3,12 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 import api.app as app
-from core.server_boot import _checkpoint_id_loaded, find_target_loaded_elsewhere, resolve_load_target_path
+from core.server_boot import (
+    _checkpoint_id_loaded,
+    checkpoints_match,
+    find_target_loaded_elsewhere,
+    resolve_load_target_path,
+)
 
 
 def _cfg() -> dict:
@@ -218,3 +223,65 @@ def test_find_target_loaded_elsewhere_detects_same_gguf(monkeypatch, tmp_path):
     )
     assert elsewhere is not None
     assert elsewhere['server_id'] == 'gemma-dflash'
+
+
+def test_checkpoints_match_same_basename_and_size(tmp_path):
+    left = tmp_path / 'models-a' / 'gemma-4-31B_q4_0-it.gguf'
+    right = tmp_path / 'models-b' / 'gemma-4-31B_q4_0-it.gguf'
+    left.parent.mkdir(parents=True)
+    right.parent.mkdir(parents=True)
+    payload = b'gguf' * 32
+    left.write_bytes(payload)
+    right.write_bytes(payload)
+    assert checkpoints_match(str(left), str(right))
+
+
+def test_find_target_loaded_elsewhere_matches_same_basename_copy(monkeypatch, tmp_path):
+    left = tmp_path / 'console' / 'gemma-4-31B_q4_0-it.gguf'
+    right = tmp_path / 'lmstudio' / 'gemma-4-31B_q4_0-it.gguf'
+    left.parent.mkdir(parents=True)
+    right.parent.mkdir(parents=True)
+    payload = b'gguf' * 32
+    left.write_bytes(payload)
+    right.write_bytes(payload)
+    cfg = {
+        'servers': [
+            {
+                'id': 'gemma-4-31b-q4-0-it-dflash',
+                'label': 'Primary 31B',
+                'port': 8094,
+                'host': '127.0.0.1',
+                'api_url': 'http://127.0.0.1:8094/v1',
+                'model_id': 'gemma-4-31b-q4-0-it',
+                'target_path': str(left),
+                'enabled': True,
+            },
+            {
+                'id': 'gemma-4-31b-q4-0-it-dflash-2',
+                'label': 'Secondary 31B',
+                'port': 8093,
+                'host': '127.0.0.1',
+                'api_url': 'http://127.0.0.1:8093/v1',
+                'model_id': 'gemma-4-31b-q4-0-it',
+                'target_path': str(right),
+                'enabled': True,
+            },
+        ],
+    }
+
+    def _status(server, *, cfg=None, **kwargs):
+        sid = str(server.get('id') or '')
+        if sid == 'gemma-4-31b-q4-0-it-dflash':
+            return {'status': 'loaded', 'loaded_models': ['gemma-4-31b-q4-0-it']}
+        return {'status': 'stopped', 'loaded_models': []}
+
+    monkeypatch.setattr('core.config.load_config', lambda: cfg)
+    monkeypatch.setattr('core.runtime.build_server_status', _status)
+
+    elsewhere = find_target_loaded_elsewhere(
+        cfg['servers'][1],
+        cfg=cfg,
+        exclude_server_id='gemma-4-31b-q4-0-it-dflash-2',
+    )
+    assert elsewhere is not None
+    assert elsewhere['server_id'] == 'gemma-4-31b-q4-0-it-dflash'

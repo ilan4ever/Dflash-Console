@@ -101,6 +101,11 @@ def test_assess_load_blocks_single_gpu_when_model_exceeds_free_vram(monkeypatch)
 def test_assess_load_rebalances_even_split_when_second_gpu_is_occupied(monkeypatch):
     monkeypatch.setattr(
         guardrails,
+        'count_loaded_console_engines',
+        lambda cfg, exclude_server_id=None: (0, []),
+    )
+    monkeypatch.setattr(
+        guardrails,
         '_load_components',
         lambda server, cfg: {'target_gb': 22.43, 'draft_gb': 1.07},
     )
@@ -133,13 +138,14 @@ def test_assess_load_rebalances_even_split_when_second_gpu_is_occupied(monkeypat
             'context_size': 32768,
             'load_settings': {'gpu_layers': 99},
         },
-        {
-            'hardware_settings': {
-                'gpu_strategy': 'split_evenly',
-                'enabled_gpu_indices': [0, 1],
-                'offload_kv_cache_to_gpu': True,
+            {
+                'hardware_settings': {
+                    'gpu_strategy': 'split_evenly',
+                    'enabled_gpu_indices': [0, 1],
+                    'offload_kv_cache_to_gpu': True,
+                    'desktop_vram_reserve_gb': 1.0,
+                },
             },
-        },
     )
 
     assert result['level'] != 'block'
@@ -149,3 +155,45 @@ def test_assess_load_rebalances_even_split_when_second_gpu_is_occupied(monkeypat
     assert len(shares) == 2
     assert shares[0] > shares[1]
 
+
+def test_assess_load_includes_unload_first_when_blocked(monkeypatch):
+    server = {
+        'id': 'target-engine',
+        'model_id': 'target-engine',
+        'context_size': 8192,
+        'load_settings': {'gpu_layers': 99},
+    }
+    cfg = {'hardware_settings': {'max_vram_usage_gb': 0}}
+    monkeypatch.setattr(
+        guardrails,
+        '_load_plan',
+        lambda *args, **kwargs: {
+            'gpu_count': 1,
+            'allocations': [{'required_gb': 20.0, 'vram_free_gb': 4.5, 'index': 0}],
+            'fits': False,
+            'usage_ratio': 1.2,
+            'gpu_required_gb': 20.0,
+            'free_gb': 4.5,
+            'split_mode': 'none',
+        },
+    )
+    monkeypatch.setattr(
+        guardrails,
+        'count_loaded_console_engines',
+        lambda cfg, exclude_server_id=None: (
+            1,
+            [{
+                'id': 'gemma-4-31b-q4-0-it-dflash',
+                'label': 'Gemma 31B',
+                'port': 8094,
+                'loaded_models': ['gemma-4-31b-q4-0-it'],
+                'estimated_gb': 18.0,
+                'is_embedding': False,
+            }],
+        ),
+    )
+    plan = guardrails.assess_load(server, cfg)
+    assert plan['level'] == 'block'
+    assert plan['unload_first'][0]['server_id'] == 'gemma-4-31b-q4-0-it-dflash'
+    assert plan['vram_free_gb'] == 4.5
+    assert 'Unload gemma-4-31b-q4-0-it-dflash first' in plan['message']

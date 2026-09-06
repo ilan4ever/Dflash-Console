@@ -6,7 +6,7 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 
 > **Status:** Public preview for local, single-user Windows use.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.140
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.146
 
 ## Download (Windows)
 
@@ -119,6 +119,11 @@ http://127.0.0.1:8001/v1
 The gateway routes chat, embeddings, TTS, and STT to the loaded engine.
 Model names are tolerant (engine id, file name, or an alias such as `gpt-4o`).
 
+**Client identity:** send `X-DFlash-Client: YourApp` on load and chat requests so the
+Engines page shows the **Active client** for each model. The gateway forwards this header.
+The banner updates on every chat or embed call while the model stays loaded. Without the
+header, callers appear as **Unknown API client**. See [docs/CLIENT-IDENTITY.md](./docs/CLIENT-IDENTITY.md).
+
 Selected Console routes (UI/API on port **8900**):
 
 | Method | Endpoint | Purpose |
@@ -142,6 +147,7 @@ Load a Hugging Face folder on a specific engine:
 ```bash
 curl -X POST http://127.0.0.1:8900/api/models/load \
   -H "Content-Type: application/json" \
+  -H "X-DFlash-Client: MyApp" \
   -d "{\"path\": \"C:\\\\models\\\\org\\\\model\", \"runtime_id\": \"vllm\"}"
 ```
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from core.client_identity import display_loaded_by_label, resolve_active_clients, resolve_engine_client_label
 from core.net_listeners import pid_listening_on_port
 
 _SERVER_STATUS_CACHE: dict[str, dict[str, Any]] = {}
@@ -463,10 +464,19 @@ def _acceleration_metadata(
     server: dict[str, Any],
     stack: list[dict[str, Any]],
     *,
+    card: dict[str, Any] | None = None,
     live_draft: bool | None = None,
     live: bool = False,
 ) -> dict[str, Any]:
     """Describe configured speculative decoding without inferring it from names."""
+    if card and (card.get('is_adhoc') or card.get('plain_llm')):
+        return {
+            'acceleration_mode': 'autoregressive',
+            'acceleration_expected': False,
+            'acceleration_label': '',
+            'draft_loaded': False,
+            'draft_status': 'not_applicable',
+        }
     parts = [row for row in stack if str(row.get('role') or '') != 'alias']
     draft_configured = any(
         str(row.get('role') or '').startswith('draft')
@@ -752,7 +762,8 @@ def _build_embedding_server_status(
         or str(entry.get('label') or '')
         or 'Embedding model'
     )
-    loaded_by = str(entry.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
+    loaded_by = resolve_engine_client_label(str(entry.get('id') or ''), entry.get('loaded_by'))
+    active_clients = resolve_active_clients(str(entry.get('id') or ''), entry.get('loaded_by'))
     embedding_dimensions = meta.get('embedding_dimensions') or meta.get('dimensions')
     card_detail = ' · '.join(
         str(part)
@@ -771,6 +782,7 @@ def _build_embedding_server_status(
         card['path'] = str(model_path) if model_path else card.get('path')
         card['app_label'] = loaded_by
         card['loaded_by'] = loaded_by
+        card['active_clients'] = active_clients
         card['app_source'] = 'dflash'
         card['external'] = False
         card['card_detail'] = card_detail
@@ -847,6 +859,8 @@ def _build_embedding_server_status(
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(entry, cfg=cfg),
         'inference_stats': inference_stats,
+        'active_clients': active_clients,
+        'loaded_by': loaded_by,
         'boot_error': boot_error,
     }
 
@@ -1084,13 +1098,27 @@ def build_server_status(
         card_acceleration = _acceleration_metadata(
             server,
             card.get('stack_details') or model_stack,
+            card=card,
             live_draft=(live_draft_state is True and status == 'loaded'),
             live=status in {'loaded', 'error'},
         )
         card.update(card_acceleration)
+    if visible_cards and visible_cards[0].get('is_adhoc'):
+        acceleration = {
+            key: visible_cards[0].get(key)
+            for key in (
+                'acceleration_mode',
+                'acceleration_expected',
+                'acceleration_label',
+                'draft_loaded',
+                'draft_status',
+            )
+            if key in visible_cards[0]
+        }
     from core.gpu_processes import _model_kind_fields
 
-    loaded_by = str(server.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
+    loaded_by = resolve_engine_client_label(server_id, server.get('loaded_by'))
+    active_clients = resolve_active_clients(server_id, server.get('loaded_by'))
 
     for card in visible_cards:
         card['gpu_display'] = gpu_display
@@ -1099,6 +1127,7 @@ def build_server_status(
             card['display_name_full'] = client_meta.get('display_name_full')
         card['app_label'] = loaded_by
         card['loaded_by'] = loaded_by
+        card['active_clients'] = active_clients
         card['app_source'] = 'dflash'
         card['external'] = False
         card.update(
@@ -1179,6 +1208,8 @@ def build_server_status(
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
         'inference_stats': inference_stats,
+        'active_clients': active_clients,
+        'loaded_by': loaded_by,
         'boot_error': status_error,
         'load_error': load_error,
     }

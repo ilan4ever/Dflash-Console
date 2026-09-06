@@ -1,4 +1,4 @@
-"""Automatic VRAM checks before engine loads — no user-facing mode toggle."""
+"""Automatic VRAM checks before engine loads — performance mode caps concurrent models."""
 
 from __future__ import annotations
 
@@ -6,8 +6,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from core.config import normalize_hardware_settings, normalize_load_settings
+from core.config import (
+    is_embedding_server,
+    list_servers,
+    normalize_hardware_settings,
+    normalize_load_settings,
+    normalize_server,
+)
 from core.gpu_devices import VRAM_HEADROOM_GB, get_gpu_devices_payload, resolve_role_gpu_launch_params
+from core.gpu_policy import gpu_performance_mode, gpu_policy_for_config
 from core.model_stack import resolve_model_stack
 from core.system_stats import get_system_stats_payload
 
@@ -15,6 +22,81 @@ _MODEL_SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)(?:[-_])\d{5}-of-\d{5}(?P<suffix>\.[^.]+)$',
     re.IGNORECASE,
 )
+
+
+def _desktop_vram_reserve_gb(cfg: dict[str, Any]) -> float:
+    return float(gpu_policy_for_config(cfg).get('desktop_vram_reserve_gb') or 6.0)
+
+
+def _vram_headroom_gb(cfg: dict[str, Any]) -> float:
+    return max(VRAM_HEADROOM_GB, _desktop_vram_reserve_gb(cfg))
+
+
+def _probe_loaded_models(api_url: str) -> list[str]:
+    from core.runtime import probe_runtime_state
+
+    try:
+        loaded_ids, _loading, _router, _progress = probe_runtime_state(api_url)
+        return [str(item).strip() for item in loaded_ids if str(item).strip()]
+    except Exception:
+        return []
+
+
+def count_loaded_console_engines(
+    cfg: dict[str, Any],
+    *,
+    exclude_server_id: str | None = None,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Return (count, rows) for Console engines that currently hold GPU weights."""
+    from core.runtime import tcp_port_open
+
+    exclude = str(exclude_server_id or '').strip()
+    rows: list[dict[str, Any]] = []
+    for server in list_servers(cfg):
+        if not server.get('enabled', True):
+            continue
+        server_id = str(server.get('id') or '')
+        if exclude and server_id == exclude:
+            continue
+        host = str(server.get('host') or '127.0.0.1')
+        port = int(server.get('port') or 0)
+        api_url = str(server.get('api_url') or '')
+        if port <= 0 or not tcp_port_open(host, port) or not api_url:
+            continue
+        loaded = _probe_loaded_models(api_url)
+        if not loaded:
+            continue
+        estimate = _estimate_load_gb(normalize_server(server), cfg)
+        rows.append({
+            'id': server_id,
+            'label': str(server.get('label') or server_id),
+            'port': port,
+            'loaded_models': loaded,
+            'estimated_gb': estimate,
+            'is_embedding': is_embedding_server(server),
+        })
+    return len(rows), rows
+
+
+def gpu_budget_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Observability: VRAM usage, loaded engines, and policy limits."""
+    policy = gpu_policy_for_config(cfg)
+    devices = _gpu_snapshot(cfg)
+    total_gb = round(sum(float(item.get('vram_gb') or 0.0) for item in devices), 2)
+    free_gb = round(sum(float(item.get('vram_free_gb') or 0.0) for item in devices), 2)
+    used_gb = round(max(0.0, total_gb - free_gb), 2)
+    loaded_count, loaded_rows = count_loaded_console_engines(cfg)
+    return {
+        'success': True,
+        'performance_mode': policy.get('mode'),
+        'desktop_vram_reserve_gb': policy.get('desktop_vram_reserve_gb'),
+        'loaded_engine_count': loaded_count,
+        'loaded_engines': loaded_rows,
+        'vram_total_gb': total_gb,
+        'vram_used_gb': used_gb,
+        'vram_free_gb': free_gb,
+        'gpus': devices,
+    }
 
 
 def _enabled_gpu_indices(cfg: dict[str, Any]) -> list[int]:
@@ -231,8 +313,9 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
             - float(allocation.get('required_gb') or 0.0),
             2,
         )
+    headroom = _vram_headroom_gb(cfg)
     fits = bool(allocations) and all(
-        float(item.get('required_gb') or 0.0) + VRAM_HEADROOM_GB
+        float(item.get('required_gb') or 0.0) + headroom
         <= float(item.get('vram_free_gb') or 0.0)
         for item in allocations
     )
@@ -311,7 +394,8 @@ def _memory_message(plan: dict[str, Any], *, level: str) -> str:
     if level == 'block':
         if str(plan.get('split_mode') or 'none') == 'none':
             message += ' The current launch uses one GPU only.'
-            if float(plan.get('free_gb') or 0.0) + VRAM_HEADROOM_GB < requirement:
+            headroom = float(plan.get('desktop_vram_reserve_gb') or VRAM_HEADROOM_GB)
+            if float(plan.get('free_gb') or 0.0) + headroom < requirement:
                 message += (
                     f' All enabled GPUs currently have only {float(plan.get("free_gb") or 0.0):.1f} GB '
                     'free in total, so splitting also requires unloading other GPU models.'
@@ -340,12 +424,56 @@ def _exceeds_max_vram(plan: dict[str, Any], cfg: dict[str, Any]) -> bool:
     return required > max_gb
 
 
-def assess_load(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def _attach_unload_first(plan: dict[str, Any]) -> None:
+    """Add structured unload hints when VRAM is blocked by other loaded engines."""
+    loaded_rows = [
+        row for row in (plan.get('loaded_engines') or [])
+        if isinstance(row, dict) and not row.get('is_embedding')
+    ]
+    if not loaded_rows:
+        return
+    allocations = plan.get('allocations') or []
+    free_gb = round(
+        sum(float(item.get('vram_free_gb') or 0.0) for item in allocations),
+        2,
+    )
+    unload_first = [
+        {
+            'server_id': str(row.get('id') or ''),
+            'label': str(row.get('label') or row.get('id') or ''),
+            'estimated_gb': float(row.get('estimated_gb') or 0.0),
+            'loaded_models': row.get('loaded_models') or [],
+        }
+        for row in loaded_rows
+        if str(row.get('id') or '').strip()
+    ]
+    plan['unload_first'] = unload_first
+    plan['vram_free_gb'] = free_gb
+    if unload_first and plan.get('level') == 'block':
+        engine_ids = ', '.join(item['server_id'] for item in unload_first)
+        plan['message'] = (
+            f'{str(plan.get("message") or "").rstrip(".")}. '
+            f'Unload {engine_ids} first ({free_gb:.1f} GB VRAM free).'
+        )
+
+
+def assess_load(
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    exclude_server_id: str | None = None,
+) -> dict[str, Any]:
     """Estimate the selected launch, including strategy and current free VRAM."""
     plan = _load_plan(server, cfg)
     plan['model_name'] = Path(
         str(server.get('adhoc_model_path') or server.get('model_id') or server.get('label') or 'model')
     ).name
+    plan['desktop_vram_reserve_gb'] = _desktop_vram_reserve_gb(cfg)
+    plan['performance_mode'] = gpu_performance_mode(cfg)
+    server_id = str(exclude_server_id or server.get('id') or '').strip()
+    loaded_count, loaded_rows = count_loaded_console_engines(cfg, exclude_server_id=server_id or None)
+    plan['loaded_engine_count'] = loaded_count
+    plan['loaded_engines'] = loaded_rows
     if int(plan.get('gpu_count') or 0) <= 0:
         plan.update({
             'level': 'warn',
@@ -380,5 +508,7 @@ def assess_load(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
             'level': 'ok',
             'message': '',
         })
+    if plan.get('level') == 'block':
+        _attach_unload_first(plan)
     plan['estimated_gb'] = plan.get('gpu_required_gb', 0.0)
     return plan

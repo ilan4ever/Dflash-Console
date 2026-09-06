@@ -26,6 +26,7 @@ from core.model_presets import (
     model_id_from_path,
     preset_path_for,
     profile_requires_draft,
+    profile_uses_jinja,
     sanitize_preset_model_id,
     write_server_preset,
 )
@@ -38,6 +39,7 @@ _boot_lock = threading.Lock()
 _port_locks: dict[int, threading.RLock] = {}
 _port_locks_guard = threading.Lock()
 _boot_attempt_at: dict[int, float] = {}
+_checkpoint_load_lock = threading.Lock()
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / 'logs'
@@ -465,6 +467,8 @@ def _spawn_router(
     reasoning_effort = str(signature.get('reasoning_effort') or 'auto')
     if reasoning_effort != 'auto':
         cmd.extend(['-ReasoningEffort', reasoning_effort])
+    if not profile_uses_jinja(entry.get('profile')):
+        cmd.append('-NoJinja')
 
     return _spawn_detached(
         cmd,
@@ -695,6 +699,48 @@ def _normalize_model_path(path: str | Path) -> str:
         return str(path).replace('\\', '/').lower()
 
 
+def checkpoints_match(path_a: str, path_b: str) -> bool:
+    """True when two GGUF paths refer to the same checkpoint (exact path or same name+size)."""
+    left = str(path_a or '').strip()
+    right = str(path_b or '').strip()
+    if not left or not right:
+        return False
+    if _normalize_model_path(left) == _normalize_model_path(right):
+        return True
+    left_path = Path(left).expanduser()
+    right_path = Path(right).expanduser()
+    if left_path.name.lower() != right_path.name.lower():
+        return False
+    try:
+        if left_path.is_file() and right_path.is_file():
+            return left_path.stat().st_size == right_path.stat().st_size
+    except OSError:
+        pass
+    return left_path.name.lower() == right_path.name.lower()
+
+
+def duplicate_load_detail(elsewhere: dict[str, Any]) -> dict[str, Any]:
+    """Structured duplicate-load payload with a concrete server id agents can target."""
+    server_id = str(elsewhere.get('server_id') or '').strip()
+    label = str(elsewhere.get('label') or server_id or 'another engine').strip()
+    port = int(elsewhere.get('port') or 0)
+    port_text = f' (port {port})' if port else ''
+    use_hint = (
+        f'Use {server_id} instead — POST /api/servers/{server_id}/v1/chat/completions'
+        if server_id
+        else 'Unload the other copy before loading again.'
+    )
+    return {
+        'error': 'model_already_loaded_elsewhere',
+        'message': (
+            f'This checkpoint is already loaded on {label}{port_text}. {use_hint}'
+        ),
+        'use_server_id': server_id,
+        'hint': use_hint,
+        **elsewhere,
+    }
+
+
 def resolve_load_target_path(
     server: dict[str, Any],
     *,
@@ -705,13 +751,15 @@ def resolve_load_target_path(
     if custom:
         return _normalize_model_path(custom)
     explicit = str(server.get('target_path') or '').strip()
-    if explicit:
+    if explicit and Path(explicit).expanduser().is_file():
         return _normalize_model_path(explicit)
     from core.model_stack import resolve_model_stack
 
     for row in resolve_model_stack(server, cfg=cfg):
         if str(row.get('role') or '') == 'target' and row.get('path'):
             return _normalize_model_path(row['path'])
+    if explicit:
+        return _normalize_model_path(explicit)
     return ''
 
 
@@ -915,9 +963,20 @@ def repair_dflash_servers(cfg: dict[str, Any]) -> dict[str, Any]:
                         duplicates.append(server_id)
                     _reenable_owner(owner)
                     continue
-                if not str(server.get('target_path') or '').strip() and target_path and draft_path:
+                persisted = False
+                if target_path and (
+                    not str(server.get('target_path') or '').strip()
+                    or not Path(str(server.get('target_path') or '')).expanduser().is_file()
+                ):
                     server['target_path'] = target_path
+                    persisted = True
+                if draft_path and (
+                    not str(server.get('draft_path') or '').strip()
+                    or not Path(str(server.get('draft_path') or '')).expanduser().is_file()
+                ):
                     server['draft_path'] = draft_path
+                    persisted = True
+                if persisted:
                     repaired.append({
                         'server_id': server_id,
                         'target_path': target_path,
@@ -985,6 +1044,19 @@ def validate_dflash_stack(
 ) -> dict[str, Any]:
     """Validate the target, draft, metadata pair, and DFlash engine requirement."""
     entry = normalize_server(server)
+    custom_target = str(model_path or '').strip()
+    if custom_target:
+        from core.stack_match import stack_target_block_reason
+
+        block = stack_target_block_reason(custom_target)
+        if block:
+            return {
+                'success': True,
+                'valid': True,
+                'required': False,
+                'adhoc': True,
+                'reason_code': str(block.get('reason_code') or 'not-stack-target'),
+            }
     if not profile_requires_draft(entry.get('profile')):
         return {'success': True, 'valid': True, 'required': False}
 
@@ -1147,12 +1219,13 @@ def find_target_loaded_elsewhere(
         if status.get('status') != 'loaded' and not status.get('loaded_models'):
             continue
         other_target = resolve_load_target_path(other, cfg=config)
-        if other_target and other_target == target:
+        if other_target and checkpoints_match(other_target, target):
             return {
                 'server_id': other_id,
                 'label': str(other.get('label') or other_id),
                 'port': int(other.get('port') or 0),
-                'target_path': target,
+                'target_path': other_target,
+                'requested_target_path': target,
             }
     return None
 
@@ -1295,6 +1368,44 @@ def _wait_for_checkpoint_load(
     return {'status': 'timeout', 'error': f'timed out waiting for {load_id} on {host}:{port}'}
 
 
+def sweep_orphan_managed_listeners(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Stop Console-managed llama listeners on loopback ports we no longer own."""
+    from core.config import list_servers, load_config, reserved_ports
+    from core.net_listeners import listening_ports_map
+    from core.runtime import stop_server
+
+    config = cfg or load_config()
+    allowed: set[int] = {int(port) for port in reserved_ports(config)}
+    for server in list_servers(config):
+        if not server.get('enabled', True) or server.get('engine_on') is not True:
+            continue
+        port = int(server.get('port') or 0)
+        if port:
+            allowed.add(port)
+    for row in config.get('runtimes') or []:
+        if not isinstance(row, dict) or row.get('enabled', True) is False:
+            continue
+        port = int(row.get('port') or 0)
+        if port:
+            allowed.add(port)
+
+    results: list[dict[str, Any]] = []
+    for pid, ports in listening_ports_map(force=True).items():
+        if not managed_process_identity(pid):
+            continue
+        for port in ports:
+            if port in allowed:
+                continue
+            stop_row = stop_server(port=port, host='127.0.0.1')
+            results.append({
+                'port': port,
+                'pid': pid,
+                'action': 'stopped_orphan',
+                'success': bool(stop_row.get('success')),
+            })
+    return results
+
+
 def load_server_checkpoint(
     server: dict[str, Any],
     *,
@@ -1313,6 +1424,54 @@ def load_server_checkpoint(
     if not stack_check.get('valid'):
         return stack_check
 
+    from core.config import load_config as _load_config
+    from core.memory_guardrails import assess_load
+
+    config = cfg or _load_config()
+    memory_check = assess_load(entry, config, exclude_server_id=str(entry.get('id') or ''))
+    if memory_check.get('level') == 'block':
+        return {
+            'success': False,
+            'error': memory_check.get('message') or 'insufficient VRAM',
+            'memory': memory_check,
+        }
+
+    with _checkpoint_load_lock:
+        return _load_server_checkpoint_locked(
+            entry,
+            cfg=config,
+            model_path=model_path,
+            model_id=model_id,
+            stack_check=stack_check,
+        )
+
+
+def _load_server_checkpoint_locked(
+    entry: dict[str, Any],
+    *,
+    cfg: dict[str, Any],
+    model_path: str | None = None,
+    model_id: str | None = None,
+    stack_check: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialized model load — one cold GPU load at a time."""
+    if profile_requires_draft(entry.get('profile')):
+        updates: dict[str, str] = {}
+        validated_target = str(stack_check.get('target_path') or '').strip()
+        validated_draft = str(stack_check.get('draft_path') or '').strip()
+        current_target = str(entry.get('target_path') or '').strip()
+        current_draft = str(entry.get('draft_path') or '').strip()
+        if validated_target and (
+            not current_target or not Path(current_target).expanduser().is_file()
+        ):
+            updates['target_path'] = validated_target
+        if validated_draft and (
+            not current_draft or not Path(current_draft).expanduser().is_file()
+        ):
+            updates['draft_path'] = validated_draft
+        if updates:
+            entry = {**entry, **updates}
+
     custom_path = str(model_path or '').strip()
     elsewhere = find_target_loaded_elsewhere(
         entry,
@@ -1321,17 +1480,12 @@ def load_server_checkpoint(
         exclude_server_id=str(entry.get('id') or ''),
     )
     if elsewhere:
-        host_label = str(elsewhere.get('label') or elsewhere.get('server_id') or 'another engine')
-        port = int(elsewhere.get('port') or 0)
-        port_text = f' (port {port})' if port else ''
+        detail = duplicate_load_detail(elsewhere)
         return {
             'success': False,
             'already_loaded_elsewhere': True,
-            'error': (
-                f'This model is already loaded on {host_label}{port_text}. '
-                'Unload it before loading a second copy.'
-            ),
-            **elsewhere,
+            'error': detail['message'],
+            **detail,
         }
 
     from core.runtime import _fetch_models_payload, load_model, probe_models, stop_server
@@ -1375,11 +1529,7 @@ def load_server_checkpoint(
             preset_entry['load_settings'] = load_settings
         load_id = sanitize_preset_model_id(model_id or model_id_from_path(path_obj), path_obj)
         profile_source = str(path_obj)
-        load_profile = (
-            str(entry.get('profile') or '')
-            if profile_requires_draft(entry.get('profile'))
-            else infer_profile_from_path(profile_source)
-        )
+        load_profile = infer_profile_from_path(profile_source)
         preset_entry['target_path'] = custom_path
         # The router preset section must be registered under the ad-hoc load id,
         # not the engine's configured model_id — start_router_listener rewrites
@@ -1388,8 +1538,10 @@ def load_server_checkpoint(
         preset_entry['profile'] = load_profile
         if not profile_requires_draft(load_profile):
             # Plain ad-hoc GGUF: never pair it with the engine's configured
-            # DFlash draft when the preset is rewritten on listener start.
+            # DFlash draft or vision projector when the preset is rewritten.
             preset_entry['draft_path'] = ''
+            preset_entry['mmproj_path'] = ''
+            preset_entry['vision'] = False
         try:
             write_server_preset(
                 preset_entry,
@@ -1420,8 +1572,25 @@ def load_server_checkpoint(
 
         load_result = load_model(api_url=api_url, model_id=load_id)
         if load_result.get('success'):
-            note_boot_cycle_end(port)
-            return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': True}
+            settled = _wait_for_checkpoint_load(
+                api_url=api_url,
+                load_id=load_id,
+                host=host,
+                port=port,
+                server_id=str(entry.get('id') or ''),
+            )
+            if settled.get('status') == 'loaded':
+                note_boot_cycle_end(port)
+                return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': True}
+            return {
+                'success': False,
+                'error': str(
+                    settled.get('error')
+                    or _checkpoint_load_failure_error(str(entry.get('id') or ''), {'failed': True})
+                    or 'model load failed'
+                ),
+                'port': port,
+            }
         return {
             'success': False,
             'error': load_result.get('error') or 'model load failed',

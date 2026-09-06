@@ -9,6 +9,17 @@ from core.config import is_embedding_server, list_runtimes, list_servers
 _GENERIC_MODEL_IDS = frozenset({'', 'model', 'default', 'browse'})
 
 
+def model_ids_compatible(requested: str, active: str) -> bool:
+    """True when a client model name refers to the loaded checkpoint (LM Studio style)."""
+    req = normalize_model_token(requested)
+    act = normalize_model_token(active)
+    if not req or not act:
+        return True
+    if req == act:
+        return True
+    return act.startswith(f'{req}-') or req.startswith(f'{act}-')
+
+
 def normalize_model_token(value: str) -> str:
     """Normalize client model ids for tolerant matching (LM Studio style)."""
     text = str(value or '').strip().lower()
