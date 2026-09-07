@@ -25,7 +25,6 @@ def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, An
     not require a manual Engines toggle first.
     """
     from core.config import is_embedding_server
-    from core.embedding_server import start_embedding_server
     from core.server_boot import start_router_listener
 
     config = cfg or load_config()
@@ -59,9 +58,8 @@ def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, An
 
     _sync_engine_on(server, cfg=config, server_id=server_id)
     if is_embedding_server(server):
-        result = start_embedding_server(server, cfg=config)
-    else:
-        result = start_router_listener(server, cfg=config)
+        return {'success': True, 'reason': 'embedding_deferred'}
+    result = start_router_listener(server, cfg=config)
     if result.get('success') and tcp_port_open(host, port):
         payload = {'success': True, 'reason': 'started', **result}
         if port_info.get('reason') == 'rebound':

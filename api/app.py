@@ -466,7 +466,10 @@ def _start_background_tasks() -> None:
         try:
             from core.hf_catalog_cache import preload_hf_catalog_cache, start_hf_catalog_refresh_loop, warm_hf_catalog_cache
 
+            from core.hf_catalog_index import start_hf_catalog_index_loop
+
             preload_hf_catalog_cache()
+            start_hf_catalog_index_loop()
             start_hf_catalog_refresh_loop()
             warm_hf_catalog_cache()
         except Exception as exc:
@@ -1352,8 +1355,40 @@ def hf_search(
         category=category,
         limit=limit,
         force_refresh=refresh,
+        enrich_sizes=False,
         fetcher=lambda: search_models(q, limit=limit, sort=sort, category=category),
     )
+
+
+@app.get('/api/hf/repo-sizes')
+def hf_repo_sizes(ids: str = Query('', max_length=4000)) -> dict[str, Any]:
+    from core.hf_catalog_index import resolve_repo_sizes
+
+    repo_ids = [part.strip() for part in str(ids or '').split(',') if part.strip()]
+    return {'success': True, 'sizes': resolve_repo_sizes(repo_ids)}
+
+
+@app.get('/api/hf/readme')
+def hf_model_readme(repo_id: str = Query(..., min_length=3)) -> dict[str, Any]:
+    from core.huggingface import get_model_readme
+
+    result = get_model_readme(repo_id)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'invalid repo id')
+    return result
+
+
+@app.get('/api/hf/files')
+def hf_model_files(
+    repo_id: str = Query(..., min_length=3),
+    category: str = Query('all'),
+) -> dict[str, Any]:
+    from core.huggingface import get_model_files
+
+    result = get_model_files(repo_id, category=category)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'invalid repo id')
+    return result
 
 
 @app.get('/api/hf/models/{repo_id:path}')
@@ -2401,8 +2436,8 @@ async def diagnostics_report(body: DiagnosticsReportRequest) -> dict[str, Any]:
 @app.post('/api/servers/{server_id}/engine/start')
 def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     from core.config import is_embedding_server
-    from core.embedding_server import start_embedding_server
     from core.engine_state import note_engine_idle
+    from core.server_boot import start_router_listener
 
     cfg = load_config()
     server = get_server(cfg, server_id)
@@ -2421,8 +2456,19 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
         _invalidate_status_cache()
         return result
     server = normalize_server(server)
-    embedding = is_embedding_server(server)
-    result = start_embedding_server(server, cfg=cfg) if embedding else start_router_listener(server, cfg=cfg)
+    if is_embedding_server(server):
+        from core.engine_state import note_engine_on
+
+        note_engine_on(server_id)
+        note_engine_idle(server_id)
+        _invalidate_status_cache()
+        return {
+            'success': True,
+            'deferred': True,
+            'loaded': False,
+            'message': 'Embedding engine armed; loads on first embed request.',
+        }
+    result = start_router_listener(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
     note_engine_idle(server_id)

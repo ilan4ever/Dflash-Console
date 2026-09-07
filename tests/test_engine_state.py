@@ -164,7 +164,7 @@ def test_restore_adopts_idle_listener_without_checkpoint(config_file: Path, monk
     assert saved['servers'][0]['engine_on'] is True
 
 
-def test_restore_starts_embedding_server_for_embedding_profile(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+def test_restore_defers_embedding_server_on_boot(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     saved = json.loads(config_file.read_text(encoding='utf-8'))
     saved['servers'][0].update({
         'profile': 'nomic-embed',
@@ -184,15 +184,11 @@ def test_restore_starts_embedding_server_for_embedding_profile(config_file: Path
         'core.server_boot.start_router_listener',
         lambda *args, **kwargs: router_calls.append('router') or {'success': True},
     )
-    monkeypatch.setattr(
-        'core.memory_guardrails.assess_load',
-        lambda *args, **kwargs: {'level': 'ok', 'message': ''},
-    )
 
     results = engine_state.restore_engines()
 
-    assert results[0]['action'] == 'restarted_listener'
-    assert embedding_calls == ['embedding']
+    assert results[0]['action'] == 'deferred_embedding'
+    assert embedding_calls == []
     assert router_calls == []
 
 
@@ -229,7 +225,7 @@ def test_restore_skips_duplicate_target_paths(config_file: Path, monkeypatch: py
     assert starts == ['gemma-31b-dflash']
 
 
-def test_restore_skips_embedding_when_vram_blocked(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+def test_restore_defers_embedding_even_when_vram_blocked(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     saved = json.loads(config_file.read_text(encoding='utf-8'))
     saved['servers'][0].update({
         'profile': 'nomic-embed',
@@ -239,10 +235,6 @@ def test_restore_skips_embedding_when_vram_blocked(config_file: Path, monkeypatc
     config_file.write_text(json.dumps(saved), encoding='utf-8')
 
     monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: False)
-    monkeypatch.setattr(
-        'core.memory_guardrails.assess_load',
-        lambda *args, **kwargs: {'level': 'block', 'message': 'Not enough VRAM'},
-    )
     embedding_calls: list[str] = []
     monkeypatch.setattr(
         'core.embedding_server.start_embedding_server',
@@ -250,5 +242,5 @@ def test_restore_skips_embedding_when_vram_blocked(config_file: Path, monkeypatc
     )
 
     results = engine_state.restore_engines()
-    assert results[0]['action'] == 'skipped_vram'
+    assert results[0]['action'] == 'deferred_embedding'
     assert embedding_calls == []

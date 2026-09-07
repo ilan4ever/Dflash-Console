@@ -165,6 +165,11 @@
     container?.querySelectorAll('img').forEach((img) => {
       img.loading = 'lazy';
       img.referrerPolicy = 'no-referrer';
+      img.removeAttribute('width');
+      img.removeAttribute('height');
+      img.style.maxWidth = '100%';
+      img.style.height = 'auto';
+      img.style.width = 'auto';
       img.onerror = () => {
         img.classList.add('is-broken');
         img.alt = '';
@@ -216,6 +221,93 @@
       });
   }
 
+  function markReadmeHero(container) {
+    const img = container.querySelector('img:not(.lm-readme-badge)');
+    if (!img) return;
+    const hero = img.closest('p, div') || img;
+    hero.classList.add('lm-readme-hero');
+    const linksInHero = hero.querySelectorAll('a');
+    if (linksInHero.length >= 2) {
+      hero.classList.add('lm-readme-hero-links');
+      return;
+    }
+    let next = hero.nextElementSibling;
+    while (next && !String(next.textContent || '').trim() && !next.querySelector('a, img')) {
+      next = next.nextElementSibling;
+    }
+    if (!next || next.querySelector('img:not(.lm-readme-badge)')) return;
+    const links = next.querySelectorAll('a');
+    const text = String(next.textContent || '').replace(/\s+/g, ' ').trim();
+    if (links.length >= 2 && text.length < 320) {
+      next.classList.add('lm-readme-hero-links');
+    }
+  }
+
+  function wrapReadmeCodeBlocks(container) {
+    container?.querySelectorAll('pre').forEach((pre) => {
+      if (pre.parentElement?.classList.contains('lm-readme-pre-wrap')) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'lm-readme-pre-wrap';
+      pre.parentNode?.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'lm-readme-copy';
+      btn.textContent = 'Copy';
+      btn.title = 'Copy code';
+      btn.setAttribute('aria-label', 'Copy code');
+      wrap.appendChild(btn);
+    });
+  }
+
+  function decorateReadme(container) {
+    if (!container) return;
+    markReadmeHero(container);
+    wrapReadmeCodeBlocks(container);
+  }
+
+  function copyReadmeCode(text) {
+    const value = String(text || '');
+    if (!value) return Promise.reject(new Error('empty'));
+    if (navigator.clipboard?.writeText) {
+      return navigator.clipboard.writeText(value).catch(() => {
+        const area = document.createElement('textarea');
+        area.value = value;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.left = '-9999px';
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand('copy');
+        area.remove();
+        if (!ok) throw new Error('copy failed');
+      });
+    }
+    return Promise.reject(new Error('clipboard unavailable'));
+  }
+
+  function bindReadmeCopyButtons(root) {
+    root?.querySelectorAll('.lm-readme-copy').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const pre = btn.closest('.lm-readme-pre-wrap')?.querySelector('pre');
+        const text = String(pre?.innerText || pre?.textContent || '').replace(/\n$/, '');
+        if (!text) return;
+        copyReadmeCode(text).then(() => {
+          const previous = btn.textContent;
+          btn.textContent = 'Copied';
+          btn.classList.add('is-copied');
+          toast('Copied');
+          window.setTimeout(() => {
+            btn.textContent = previous || 'Copy';
+            btn.classList.remove('is-copied');
+          }, 1400);
+        }).catch(() => toast('Copy failed', false));
+      });
+    });
+  }
+
   function renderReadmeContent(raw, modelId) {
     let text = preprocessReadme(stripDuplicateTitle(stripFrontmatter(raw || ''), modelId));
     if (!text.trim()) return '<p class="lm-readme-empty">README not available.</p>';
@@ -235,13 +327,24 @@
     wrap.className = 'lm-readme-rendered lm-readme-md';
     wrap.innerHTML = html;
     fixReadmeImages(wrap);
+    decorateReadme(wrap);
     return wrap.outerHTML;
   }
 
+  function textOnlyDescription(text) {
+    return String(text || '')
+      .replace(/<img\b[^>]*>/gi, '')
+      .replace(/!\[[^\]]*]\([^)]+\)/g, '')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<\/(?:p|div|h[1-6])>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function renderDescriptionHtml(text) {
-    const raw = String(text || '').trim();
-    if (!raw) return escapeHtml('No description on Hugging Face.');
-    if (/<\s*[a-z]/i.test(raw)) return sanitizeReadmeHtml(raw);
+    const raw = textOnlyDescription(text);
+    if (!raw) return '';
     return escapeHtml(raw);
   }
 
@@ -486,7 +589,159 @@
       const needle = String(uploader).trim().toLowerCase();
       rows = rows.filter((model) => String(modelUploader(model)).trim().toLowerCase() === needle);
     }
-    return rows;
+    return pinCatalogRecommendations(rows);
+  }
+
+  const CATALOG_OFFICIAL_AUTHORS = new Set([
+    'google', 'google-bert', 'google-t5', 'meta-llama', 'meta', 'facebook',
+    'openai', 'mistralai', 'qwen', 'deepseek-ai', 'microsoft', 'ibm-granite',
+    'nvidia', 'stabilityai', 'black-forest-labs', 'cohere', 'huggingface',
+    'openai-community', 'baai', 'nomic-ai',
+  ]);
+  const CATALOG_QUALITY_GGUF_AUTHORS = new Set([
+    'bartowski', 'unsloth', 'lmstudio-community', 'ggml-org', 'thebloke', 'google',
+  ]);
+
+  function catalogRepoSlug(model) {
+    const repoId = String(model?.id || '').trim();
+    return (repoId.includes('/') ? repoId.split('/').pop() : repoId).toLowerCase();
+  }
+
+  function catalogAuthor(model) {
+    const author = String(model?.author || '').trim().toLowerCase();
+    if (author) return author;
+    const repoId = String(model?.id || '').trim();
+    return repoId.includes('/') ? repoId.split('/')[0].toLowerCase() : '';
+  }
+
+  function catalogFormatKind(model) {
+    if (model?.accelerator_only) return 'accel';
+    if (catalogListHasGguf(model)) return 'gguf';
+    return 'full';
+  }
+
+  function catalogFamilyKey(model) {
+    let slug = catalogRepoSlug(model).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    let previous = '';
+    while (slug && slug !== previous) {
+      previous = slug;
+      slug = slug
+        .replace(/(?:-gguf)+$/i, '')
+        .replace(/-(?:qat)(?:-.*)?$/i, '')
+        .replace(/-(?:i?q)\d[\w-]*$/i, '')
+        .replace(/-(?:q[2-8](?:[_-]k(?:[_-][sml])?|[_-]0)?)$/i, '');
+    }
+    return slug.replace(/^(?:google|meta|qwen)-/, '') || catalogRepoSlug(model);
+  }
+
+  function catalogRecommendationScore(model) {
+    const slug = catalogRepoSlug(model);
+    const author = catalogAuthor(model);
+    const kind = catalogFormatKind(model);
+    let score = 0;
+    if (model?.accelerator_only) score -= 600;
+    if (model?.fits_machine === true) score += 1000;
+    else if (model?.fits_machine_uncertain === true) score += 180;
+    else score -= 350;
+    if (model?.local_ready || model?.catalog_ready_to_load) score += 280;
+    if (model?.runnable === true) score += 140;
+    if (kind === 'gguf') {
+      score += 220;
+      if (CATALOG_QUALITY_GGUF_AUTHORS.has(author)) score += 50;
+    }
+    if (CATALOG_OFFICIAL_AUTHORS.has(author)) {
+      score += 200;
+      if (kind === 'full') score += 90;
+    }
+    if (/(?:^|-)(?:it|instruct)(?:-|$)/i.test(slug)) score += 45;
+    if (/uncensored|abliterat|nsfw/i.test(slug)) score -= 90;
+    const downloads = Number(model?.downloads) || 0;
+    score += Math.min(Math.floor(Math.log10(downloads + 1) * 42), 260);
+    return score;
+  }
+
+  function catalogRecommendationCanPair(existing, candidate) {
+    const fam = catalogFamilyKey(candidate);
+    const kind = catalogFormatKind(candidate);
+    return existing.every((row) => {
+      if (catalogFamilyKey(row) !== fam) return true;
+      const other = catalogFormatKind(row);
+      if (other === kind) return false;
+      return new Set([other, kind]).size === 2 && other !== 'accel' && kind !== 'accel'
+        && ((other === 'full' && kind === 'gguf') || (other === 'gguf' && kind === 'full'));
+    });
+  }
+
+  function catalogRecommendationIsQuality(model) {
+    const author = catalogAuthor(model);
+    if (CATALOG_OFFICIAL_AUTHORS.has(author) || CATALOG_QUALITY_GGUF_AUTHORS.has(author)) return true;
+    if (model?.local_ready || model?.catalog_ready_to_load) return true;
+    return (Number(model?.downloads) || 0) >= 100000;
+  }
+
+  function orderCatalogRecommendations(picked) {
+    const groups = new Map();
+    const order = [];
+    picked.forEach((model) => {
+      const fam = catalogFamilyKey(model);
+      if (!groups.has(fam)) {
+        order.push(fam);
+        groups.set(fam, []);
+      }
+      groups.get(fam).push(model);
+    });
+    const ordered = [];
+    order.forEach((fam) => {
+      const group = groups.get(fam) || [];
+      group.sort((a, b) => {
+        const kindA = catalogFormatKind(a) === 'full' ? 0 : 1;
+        const kindB = catalogFormatKind(b) === 'full' ? 0 : 1;
+        if (kindA !== kindB) return kindA - kindB;
+        return catalogRecommendationScore(b) - catalogRecommendationScore(a);
+      });
+      ordered.push(...group);
+    });
+    return ordered;
+  }
+
+  function pinCatalogRecommendations(rows) {
+    const list = Array.isArray(rows) ? rows.slice() : [];
+    list.forEach((model) => {
+      if (!model) return;
+      delete model.catalog_recommended;
+      delete model.catalog_recommended_rank;
+      delete model.catalog_recommended_reason;
+    });
+    if (!list.length) return list;
+    const ranked = list.slice().sort((a, b) => {
+      const delta = catalogRecommendationScore(b) - catalogRecommendationScore(a);
+      if (delta) return delta;
+      return (Number(b?.downloads) || 0) - (Number(a?.downloads) || 0);
+    });
+    const picked = [];
+    const skipAccel = !list.every((model) => model?.accelerator_only);
+    const requireFit = list.some((model) => model?.fits_machine === true);
+    ranked.forEach((model) => {
+      if (picked.length >= 3) return;
+      if (skipAccel && model?.accelerator_only) return;
+      if (requireFit && model?.fits_machine !== true) return;
+      if (picked.length && !catalogRecommendationIsQuality(model)) return;
+      if (!catalogRecommendationCanPair(picked, model)) return;
+      picked.push(model);
+    });
+    const ordered = orderCatalogRecommendations(picked);
+    const reasons = {
+      1: 'Best match for this PC — fits your GPU, popular, and a trusted source when possible',
+      2: 'Strong alternate for this PC',
+      3: 'Another good option for this PC',
+    };
+    ordered.forEach((model, index) => {
+      model.catalog_recommended = true;
+      model.catalog_recommended_rank = index + 1;
+      model.catalog_recommended_reason = reasons[index + 1] || reasons[2];
+    });
+    const pickedIds = new Set(ordered.map((model) => model.id));
+    return [...ordered, ...list.filter((model) => !pickedIds.has(model.id))];
   }
 
   function populateCreatorFilter() {
@@ -541,6 +796,21 @@
     populateUploaderFilter();
   }
 
+  function estimateDiskSizeFromName(repoId, hasGguf) {
+    const name = String(repoId || '').split('/').pop().toLowerCase().replace(/_/g, '-');
+    if (!name) return null;
+    const billions = [...name.matchAll(/(\d+(?:\.\d+)?)\s*b\b/gi)].map((match) => Number(match[1]));
+    const millions = [...name.matchAll(/(?<![a-z0-9])(\d+(?:\.\d+)?)\s*m(?:-|$|\b)/gi)]
+      .map((match) => Number(match[1]) / 1000);
+    const params = [...billions, ...millions].filter((value) => Number.isFinite(value) && value > 0);
+    if (!params.length) return null;
+    const paramsB = Math.max(...params);
+    if (paramsB > 2000) return null;
+    const sizeGb = Math.round(paramsB * (hasGguf ? 0.55 : 2) * 100) / 100;
+    if (sizeGb <= 0) return null;
+    return { size_gb: sizeGb, size_label: `~${Number(sizeGb)} GB` };
+  }
+
   function listSizeLabel(model) {
     const label = String(model?.size_label || '').trim();
     if (label && !/^(?:—|-)$/i.test(label) && !/^0(?:\.0+)?\s*gb$/i.test(label)) return label;
@@ -549,7 +819,8 @@
     if (smallest != null && smallest > 0) return `${smallest} GB`;
     const best = model?.best_fit_quant_gb;
     if (best != null && best > 0) return `~${best} GB`;
-    return '—';
+    const estimated = estimateDiskSizeFromName(model?.id || model?.title, !!model?.has_gguf);
+    return estimated?.size_label || '—';
   }
 
   function listAgeLabel(model) {
@@ -655,9 +926,15 @@
     if (!catalogFitsMachine(model)) return '';
     const shown = listSizeLabel(model);
     const title = shown && shown !== '—'
-      ? `Recommended download (${shown}) fits your largest GPU VRAM`
-      : 'Recommended download size fits your largest GPU VRAM';
+      ? `Fits your largest GPU VRAM (${shown})`
+      : 'Fits your largest GPU VRAM';
     return `<span class="lm-tag green" title="${escapeHtml(title)}">Fits PC</span>`;
+  }
+
+  function catalogRecommendedBadge(model) {
+    if (!model?.catalog_recommended) return '';
+    const reason = String(model.catalog_recommended_reason || 'Best match for this PC').trim();
+    return `<span class="lm-tag gold catalog-recommended" title="${escapeHtml(reason)}">Recommended</span>`;
   }
 
   function catalogDflashCompatibleBadge() {
@@ -705,6 +982,7 @@
       : [];
     const id = String(model?.id || '').toLowerCase();
     const hasAcceleratorMarker = model?.accelerator_only === true
+      || window.DFlashModelCard?.isAccelerator?.(model) === true
       || tags.some((tag) => /dflash|dspark|draft-model|speculative-decoding|speculator|eagle3/.test(tag))
       || /(?:-dflash(?:[-_.]|\/|$)|-dspark(?:[-_.]|\/|$)|eagle3)/i.test(id);
     if (hasAcceleratorMarker) {
@@ -731,11 +1009,12 @@
   }
 
   function catalogListBadges(model) {
-    const shared = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false }) || '';
-    const accelerator = window.DFlashModelCard?.isAccelerator?.(model) === true;
-    const kind = catalogListKindBadge(model);
-    const kindBadge = accelerator ? '' : kind;
-    const compatible = catalogDflashCompatible(model) && !kindBadge && !accelerator
+    const shared = window.DFlashModelCard?.classificationTags?.(model, {
+      includeReasoning: false,
+      includeLogo: false,
+    }) || '';
+    const kindBadge = catalogListKindBadge(model);
+    const compatible = catalogDflashCompatible(model) && !kindBadge
       ? catalogDflashCompatibleBadge()
       : '';
     return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kindBadge}${compatible}`;
@@ -1012,6 +1291,14 @@
         detailSub: 'README, GGUF files, and install status will appear here shortly.',
       };
     }
+    if (String(query || '').trim()) {
+      return {
+        listTitle: 'Searching catalog',
+        listSub: `Matching “${query}” in the local Hugging Face index…`,
+        detailTitle: 'Loading model details',
+        detailSub: 'The list appears first. README and files fill in next.',
+      };
+    }
     return {
       listTitle: 'Loading model catalog',
       listSub: `Fetching ${categoryLabel(category)} from Hugging Face. This usually takes a few seconds.`,
@@ -1079,23 +1366,177 @@
   function requestDetail(repoId, category) {
     const key = detailCacheKey(repoId, category);
     const cached = detailCache.get(key);
-    if (cached) return Promise.resolve(cached);
+    if (cached && !cached.detail_partial) return Promise.resolve(cached);
     const pending = listDetailPending.get(key);
     if (pending) return pending;
 
     let request;
     request = api(
       `/api/hf/models/${encodeURIComponent(repoId)}?category=${encodeURIComponent(category)}`,
-      { timeoutMs: 60000 },
+      { timeoutMs: 20000 },
     ).then((data) => {
       if (!data?.model) throw new Error('Model details unavailable');
-      detailCache.set(key, data.model);
-      return data.model;
+      const model = {
+        ...data.model,
+        detail_partial: Boolean(data.partial || data.model.detail_partial),
+      };
+      if (!model.detail_partial) detailCache.set(key, model);
+      return model;
     }).finally(() => {
       if (listDetailPending.get(key) === request) listDetailPending.delete(key);
     });
     listDetailPending.set(key, request);
     return request;
+  }
+
+  const readmeInflight = new Map();
+
+  function applyReadmeToSelection(repoId, text) {
+    if (selectedId !== repoId) return;
+    selectedDetail = { ...(selectedDetail || {}), id: repoId, readme: text, readme_pending: false };
+    const cacheKey = detailCacheKey(repoId, currentCategory());
+    const cached = detailCache.get(cacheKey);
+    if (cached) detailCache.set(cacheKey, { ...cached, readme: text, readme_pending: false });
+    renderDetail(selectedDetail);
+  }
+
+  function fillReadme(repoId, attempt = 0) {
+    if (!repoId || attempt > 2) return Promise.resolve();
+    if (String(selectedDetail?.readme || '').trim() && selectedDetail?.id === repoId) {
+      return Promise.resolve();
+    }
+    const existing = readmeInflight.get(repoId);
+    if (existing && attempt === 0) return existing;
+    const req = api(
+      `/api/hf/readme?repo_id=${encodeURIComponent(repoId)}`,
+      { timeoutMs: 95000 },
+    ).then((data) => {
+      const text = String(data?.readme || '');
+      if (text.trim()) {
+        applyReadmeToSelection(repoId, text);
+        return;
+      }
+      if (data?.pending && attempt < 2) {
+        if (selectedId === repoId && selectedDetail) {
+          selectedDetail = { ...selectedDetail, readme_pending: true };
+          renderDetail(selectedDetail);
+        }
+        window.setTimeout(() => { void fillReadme(repoId, attempt + 1); }, 1200);
+        return;
+      }
+      if (selectedId === repoId && selectedDetail) {
+        selectedDetail = { ...selectedDetail, readme_pending: false };
+        renderDetail(selectedDetail);
+      }
+    }).catch(() => {
+      if (attempt < 2) window.setTimeout(() => { void fillReadme(repoId, attempt + 1); }, 1200);
+    }).finally(() => {
+      if (readmeInflight.get(repoId) === req) readmeInflight.delete(repoId);
+    });
+    readmeInflight.set(repoId, req);
+    return req;
+  }
+
+  const filesInflight = new Map();
+  const FILES_POLL_MAX_ATTEMPTS = 45;
+  const FILES_POLL_DELAY_MS = 3000;
+
+  function applyFilesToSelection(repoId, payload) {
+    if (selectedId !== repoId || !payload) return;
+    const downloadFiles = Array.isArray(payload.download_files) ? payload.download_files : [];
+    const ggufFiles = Array.isArray(payload.gguf_files) ? payload.gguf_files : [];
+    const files = downloadFiles.length ? downloadFiles : ggufFiles;
+    const hasFiles = files.length > 0;
+    const next = {
+      ...(selectedDetail || {}),
+      id: repoId,
+      download_files: downloadFiles,
+      gguf_files: ggufFiles,
+      download_options: Array.isArray(payload.download_options) ? payload.download_options : [],
+      default_download: payload.default_download || '',
+      has_files: hasFiles || Boolean(payload.has_files),
+      file_count: payload.file_count ?? files.length,
+      has_gguf: Boolean(payload.has_gguf) || ggufFiles.length > 0,
+      gguf_count: payload.gguf_count ?? ggufFiles.length,
+      detail_partial: hasFiles ? false : Boolean(selectedDetail?.detail_partial),
+      detail_pending: !hasFiles && Boolean(payload.pending),
+      files_error: hasFiles ? '' : String(payload.error || selectedDetail?.files_error || ''),
+    };
+    selectedDetail = next;
+    if (hasFiles) {
+      const cacheKey = detailCacheKey(repoId, currentCategory());
+      const cached = detailCache.get(cacheKey);
+      detailCache.set(cacheKey, { ...(cached || next), ...next, detail_partial: false });
+      if (mergeCatalogListDetail(repoId, next)) persistCurrentListMetadata();
+      renderList();
+    }
+    renderDetail(selectedDetail);
+  }
+
+  function fillFiles(repoId, attempt = 0) {
+    if (!repoId || attempt > FILES_POLL_MAX_ATTEMPTS) {
+      if (selectedId === repoId && selectedDetail && !listRowHasDetail(selectedDetail)) {
+        selectedDetail = {
+          ...selectedDetail,
+          detail_pending: false,
+          detail_partial: false,
+          files_error: 'Hugging Face is still slow. Try again in a minute or open the model on Hugging Face.',
+        };
+        renderDetail(selectedDetail);
+      }
+      return Promise.resolve();
+    }
+    if (selectedId === repoId && listRowHasDetail(selectedDetail)) return Promise.resolve();
+    const existing = filesInflight.get(repoId);
+    if (existing && attempt === 0) return existing;
+    const category = currentCategory();
+    const req = api(
+      `/api/hf/files?repo_id=${encodeURIComponent(repoId)}&category=${encodeURIComponent(category)}`,
+      { timeoutMs: 110000 },
+    ).then((data) => {
+      const files = data?.download_files || data?.gguf_files || [];
+      if (Array.isArray(files) && files.length) {
+        applyFilesToSelection(repoId, data);
+        return;
+      }
+      if (data?.pending && attempt < FILES_POLL_MAX_ATTEMPTS) {
+        if (selectedId === repoId && selectedDetail) {
+          selectedDetail = { ...selectedDetail, detail_pending: true, detail_partial: true, files_error: '' };
+          renderDetail(selectedDetail);
+        }
+        window.setTimeout(() => { void fillFiles(repoId, attempt + 1); }, FILES_POLL_DELAY_MS);
+        return;
+      }
+      if (selectedId === repoId && selectedDetail) {
+        selectedDetail = {
+          ...selectedDetail,
+          detail_pending: false,
+          detail_partial: false,
+          files_error: data?.error
+            ? String(data.error)
+            : 'No downloadable files listed on Hugging Face for this repo.',
+        };
+        renderDetail(selectedDetail);
+      }
+    }).catch(() => {
+      if (attempt < FILES_POLL_MAX_ATTEMPTS) {
+        window.setTimeout(() => { void fillFiles(repoId, attempt + 1); }, FILES_POLL_DELAY_MS);
+        return;
+      }
+      if (selectedId === repoId && selectedDetail) {
+        selectedDetail = {
+          ...selectedDetail,
+          detail_pending: false,
+          detail_partial: false,
+          files_error: 'Could not load files from Hugging Face. Check your connection and try again.',
+        };
+        renderDetail(selectedDetail);
+      }
+    }).finally(() => {
+      if (filesInflight.get(repoId) === req) filesInflight.delete(repoId);
+    });
+    filesInflight.set(repoId, req);
+    return req;
   }
 
   function mergeCatalogListDetail(repoId, detail) {
@@ -1154,42 +1595,42 @@
     }, 120);
   }
 
-  async function warmListDetails(rows, category) {
-    const selected = (rows || []).find((model) => model.id === selectedId);
+  async function warmListSizes(rows) {
     const candidates = (rows || [])
-      .filter((model) => listSizeLabel(model) === '—' || listDiskLabel(model) === 'Disk —')
-      .filter((model, index, list) => list.findIndex((row) => row.id === model.id) === index);
-    const warm = [];
-    if (selected && candidates.some((model) => model.id === selected.id)) warm.push(selected);
-    for (const model of candidates) {
-      if (warm.length >= LIST_DETAIL_WARM_LIMIT) break;
-      if (!warm.some((row) => row.id === model.id)) warm.push(model);
+      .filter((model) => model?.id && listSizeLabel(model) === '—')
+      .filter((model, index, list) => list.findIndex((row) => row.id === model.id) === index)
+      .slice(0, LIST_DETAIL_WARM_LIMIT);
+    if (!candidates.length) return;
+    try {
+      const data = await api(
+        `/api/hf/repo-sizes?ids=${encodeURIComponent(candidates.map((model) => model.id).join(','))}`,
+        { timeoutMs: 20000 },
+      );
+      const sizes = data.sizes || {};
+      let changed = false;
+      candidates.forEach((model) => {
+        const size = sizes[model.id];
+        if (size && mergeCatalogListDetail(model.id, size)) changed = true;
+      });
+      if (changed) {
+        persistCurrentListMetadata();
+        putCachedSearch(searchInput()?.value?.trim() || '', currentSort(), currentCategory(), models);
+        scheduleListWarmRender();
+      }
+    } catch {
+      /* size fill is best-effort */
     }
-    if (!warm.length) return;
+  }
 
+  async function warmListDetails(rows, category) {
+    void warmListSizes(rows);
+    const selected = (rows || []).find((model) => model.id === selectedId);
+    if (!selected?.id || listRowHasDetail(selected)) return;
     const run = ++listDetailWarmGen;
-    let cursor = 0;
-    async function worker() {
-      while (cursor < warm.length) {
-        const model = warm[cursor];
-        cursor += 1;
-        const detail = await prefetchDetail(model.id, category);
-        if (run !== listDetailWarmGen) return;
-        if (detail && mergeCatalogListDetail(model.id, detail)) {
-          persistCurrentListMetadata();
-          scheduleListWarmRender();
-        }
-      }
-    }
-    await Promise.all(Array.from(
-      { length: Math.min(LIST_DETAIL_WARM_WORKERS, warm.length) },
-      () => worker(),
-    ));
-    if (run === listDetailWarmGen) {
-      if (listWarmRenderTimer) {
-        window.clearTimeout(listWarmRenderTimer);
-        listWarmRenderTimer = null;
-      }
+    const detail = await prefetchDetail(selected.id, category);
+    if (run !== listDetailWarmGen) return;
+    if (detail && mergeCatalogListDetail(selected.id, detail)) {
+      persistCurrentListMetadata();
       renderList();
     }
   }
@@ -1240,14 +1681,11 @@
 
   async function searchCatalog(query, sort, category) {
     const path = `/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(sort)}&category=${encodeURIComponent(category)}&limit=25`;
-    const slowCategory = category === 'supported' || category === 'all-gguf' || isRepoIdQuery(query);
-    const timeoutMs = slowCategory ? 60000 : 30000;
-    try {
-      return await api(path, { timeoutMs });
-    } catch (firstError) {
-      // Hugging Face can transiently stall; retry once before showing an empty catalog.
-      return api(path, { timeoutMs }).catch(() => { throw firstError; });
-    }
+    const textQuery = String(query || '').trim();
+    const timeoutMs = textQuery
+      ? 12000
+      : (category === 'supported' || category === 'all-gguf' ? 60000 : 35000);
+    return api(path, { timeoutMs });
   }
 
   function renderListLoading(message) {
@@ -1300,8 +1738,9 @@
             <span class="lm-search-item-author">${escapeHtml(labName)}</span>
             · ${escapeHtml(model.downloads_label || '0')} downloads${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
           </span>`;
+      const rec = model.catalog_recommended ? ' catalog-recommended' : '';
       return `
-        <button type="button" class="lm-search-item${selected}${ready}" data-repo-id="${escapeHtml(model.id)}">
+        <button type="button" class="lm-search-item${selected}${ready}${rec}" data-repo-id="${escapeHtml(model.id)}">
           ${avatarImg(model.author, model.author_avatar_url, 'lm-hf-avatar sm')}
           <div class="lm-search-item-main">
             <div class="lm-search-item-title-row">
@@ -1317,6 +1756,7 @@
               <span class="lm-search-item-stat lm-search-item-stat-age" title="Hugging Face last update">${escapeHtml(listAgeLabel(model))}</span>
               <span class="lm-search-item-stat lm-search-item-stat-disk" title="Approximate downloadable model size on disk">${escapeHtml(listDiskLabel(model))}</span>
             </div>
+            ${catalogRecommendedBadge(model)}
           </div>
         </button>`;
     }).join('');
@@ -1558,6 +1998,7 @@
     const pane = detailPane();
     if (!pane || !model) return;
     const downloadOptions = catalogDownloadOptions(model);
+    const filesPending = !downloadOptions.length && (model.detail_pending || model.detail_partial);
     const fileOptions = downloadOptions.map((opt, idx) => {
       const name = String(opt.filename || '').trim();
       const label = catalogDownloadOptionLabel(opt);
@@ -1575,24 +2016,45 @@
           <label class="df-catalog-field-label" for="hfFilePick">${escapeHtml(fieldLabel)}</label>
           <select class="lm-select small df-catalog-file-select" id="hfFilePick">${fileOptions}</select>
         </div>`
-      : '';
+      : (filesPending
+        ? `<div class="df-catalog-file-row">
+          <label class="df-catalog-field-label" for="hfFilePick">Files</label>
+          <select class="lm-select small df-catalog-file-select" id="hfFilePick" disabled><option>Loading files…</option></select>
+        </div>`
+        : '');
     const shardedHint = downloadHint
       ? `<p class="lm-setting-desc df-catalog-download-hint">${escapeHtml(downloadHint)}</p>`
       : '';
     const downloadBtnLabel = initialSize ? `↓ Download (${initialSize})` : '↓ Download';
     const downloadBtn = downloadOptions.length
       ? `<button class="lm-btn hf-primary hf-download-btn" type="button" id="hfDownloadBtn" data-action="download" title="Download from Hugging Face">${escapeHtml(downloadBtnLabel)}</button>`
-      : '';
+      : (filesPending
+        ? '<button class="lm-btn hf-primary hf-download-btn" type="button" disabled>Fetching files…</button>'
+        : '');
     const savePath = downloadTargetLabel(downloadLibraryId);
     const downloadNote = downloadOptions.length
       ? `${shardedHint}<p class="lm-gpu-ok lm-search-save-path" id="hfSaveNote">New downloads save to <code>${escapeHtml(savePath)}</code></p>
          <div class="df-catalog-installed-note hidden" id="hfInstalledNote"></div>`
-      : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>';
+      : filesPending
+        ? '<p class="lm-setting-desc">Fetching the file list from Hugging Face…</p>'
+        : (model.files_error
+          ? `<p class="lm-setting-desc">${escapeHtml(model.files_error)}</p>`
+          : '<p class="lm-setting-desc">No downloadable files listed on Hugging Face for this repo.</p>');
     const downloadStatus = downloadOptions.length
       ? '<p class="lm-search-download-status hidden" id="hfDownloadStatus"></p>'
       : '';
 
-    const summaryText = modelDescription(model) || 'No description on Hugging Face.';
+    const summaryText = textOnlyDescription(modelDescription(model));
+    const summaryHtml = summaryText
+      ? `<p class="lm-search-description">${renderDescriptionHtml(summaryText)}</p>`
+      : (!String(model.readme || '').trim() && (model.detail_partial || model.readme_pending)
+        ? '<p class="lm-search-description">Fetching description from Hugging Face…</p>'
+        : '');
+    const readmePending = !String(model.readme || '').trim()
+      && (model.readme_pending || model.detail_pending || model.detail_partial);
+    const readmeHtml = readmePending
+      ? '<p class="lm-readme-empty">Fetching README from Hugging Face…</p>'
+      : renderReadmeContent(model.readme, model.id);
     pane.innerHTML = `
       <div class="df-catalog-model-card${catalogReadyToLoad(model) ? ' ready-to-load' : ''}">
         <div class="lm-search-detail-head">
@@ -1617,7 +2079,7 @@
                 · Updated ${escapeHtml(model.updated_ago || '—')}${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
               </p>
               <p class="lm-search-repo-id">${escapeHtml(model.id)}</p>
-              <p class="lm-search-description">${renderDescriptionHtml(summaryText)}</p>
+              ${summaryHtml}
               <div class="df-catalog-quant-download-row">
                 ${filePick}
                 ${fileSizeEl}
@@ -1641,13 +2103,14 @@
         ${downloadStatus}
         <section class="lm-readme">
           <h3>README</h3>
-          <div class="lm-readme-body">${renderReadmeContent(model.readme, model.id)}</div>
+          <div class="lm-readme-body">${readmeHtml}</div>
         </section>
       </div>`;
 
     document.getElementById('hfCopyRepo')?.addEventListener('click', () => {
       navigator.clipboard.writeText(model.id).then(() => toast('Repo id copied'));
     });
+    bindReadmeCopyButtons(pane);
     document.getElementById('hfCreateStackBtn')?.addEventListener('click', async () => {
       const filename = getSelectedFilename();
       if (!filename) {
@@ -1763,6 +2226,8 @@
       models = [];
       const message = /not found|404/i.test(err.message)
         ? 'Hugging Face search is unavailable. Restart DFlash Console, then try again.'
+        : /timeout|timed out|huggingface_timeout|unavailable/i.test(err.message)
+        ? 'Hugging Face is slow or unreachable. Check your internet connection, then try again or use org/repo (e.g. bartowski/Qwen3.8-27B-GGUF).'
         : err.message;
       renderListLoading(message);
       renderDetailPlaceholder(message);
@@ -1785,6 +2250,30 @@
     return Array.isArray(files) && files.length > 0;
   }
 
+  function mergeCatalogDetail(base, incoming) {
+    const merged = { ...(base || {}), ...(incoming || {}) };
+    if (!listRowHasDetail(incoming) && listRowHasDetail(base)) {
+      [
+        'download_files',
+        'gguf_files',
+        'download_options',
+        'default_download',
+        'has_files',
+        'file_count',
+        'has_gguf',
+        'gguf_count',
+      ].forEach((field) => {
+        if (base[field] !== undefined) merged[field] = base[field];
+      });
+    }
+    if (listRowHasDetail(merged)) {
+      merged.detail_partial = false;
+      merged.detail_pending = false;
+      merged.files_error = '';
+    }
+    return merged;
+  }
+
   async function selectModel(repoId, { preferCache = false, backgroundDetail = false } = {}) {
     if (!repoId) return;
     selectedId = repoId;
@@ -1793,42 +2282,65 @@
     const cacheKey = detailCacheKey(repoId, category);
     const cachedDetail = detailCache.get(cacheKey);
     const listRow = models.find((model) => model.id === repoId);
-    if (preferCache && cachedDetail) {
+    if (preferCache && cachedDetail && !cachedDetail.detail_partial) {
       selectedDetail = cachedDetail;
       renderDetail(selectedDetail);
+      if (!String(cachedDetail.readme || '').trim()) void fillReadme(repoId);
+      if (!listRowHasDetail(cachedDetail)) void fillFiles(repoId);
       if (backgroundDetail) void refreshDetail(repoId, category, { silent: true });
       return;
     }
-    if (listRow && listRowHasDetail(listRow)) {
-      selectedDetail = listRow;
-      renderDetail(listRow);
+    if (listRow) {
+      selectedDetail = {
+        ...listRow,
+        detail_pending: !listRowHasDetail(listRow),
+        readme_pending: !String(listRow.readme || '').trim(),
+      };
+      renderDetail(selectedDetail);
       void refreshDetail(repoId, category, { silent: true });
+      if (!String(listRow.readme || '').trim()) void fillReadme(repoId);
+      if (!listRowHasDetail(listRow)) void fillFiles(repoId);
       return;
     }
     renderDetailLoading();
-    await refreshDetail(repoId, category, { silent: backgroundDetail });
+    void refreshDetail(repoId, category, { silent: backgroundDetail });
   }
 
   async function refreshDetail(repoId, category, { silent = false } = {}) {
     try {
       const model = await requestDetail(repoId, category);
+      const listRow = models.find((row) => row.id === repoId);
       if (mergeCatalogListDetail(repoId, model)) {
         persistCurrentListMetadata();
         renderList();
       }
       if (selectedId === repoId) {
-        selectedDetail = model;
+        const base = { ...(listRow || {}) };
+        if (selectedDetail?.id === repoId) Object.assign(base, selectedDetail);
+        const merged = mergeCatalogDetail(base, model);
+        const readmeReady = Boolean(String(merged.readme || '').trim());
+        selectedDetail = {
+          ...merged,
+          detail_pending: !listRowHasDetail(merged) && Boolean(merged.detail_partial),
+          readme_pending: !readmeReady && Boolean(merged.readme_pending || merged.detail_partial),
+        };
         renderDetail(selectedDetail);
+        if (!readmeReady) void fillReadme(repoId);
+        if (!listRowHasDetail(merged)) void fillFiles(repoId);
       }
     } catch (err) {
       if (selectedId !== repoId) return;
-      if (selectedDetail && listRowHasDetail(selectedDetail)) return;
-      if (!silent) {
-        renderDetailPlaceholder(err.message);
-        toast(err.message, false);
-      } else {
-        renderDetailPlaceholder('Still loading model details from Hugging Face…');
+      const listRow = models.find((model) => model.id === repoId);
+      const fallback = (selectedDetail && selectedDetail.id === repoId) ? selectedDetail : listRow;
+      if (fallback) {
+        selectedDetail = { ...fallback, detail_pending: !listRowHasDetail(fallback) };
+        renderDetail(selectedDetail);
+        if (!listRowHasDetail(fallback)) void fillFiles(repoId);
+        if (!silent) toast(err.message, false);
+        return;
       }
+      renderDetailPlaceholder(err.message);
+      if (!silent) toast(err.message, false);
     }
   }
 

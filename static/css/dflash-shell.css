@@ -4187,6 +4187,12 @@ body.lm-resizing-table-col {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(184, 204, 196, 0.1);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  contain: inline-size;
 }
 
 .df-shell .df-catalog-file-row {
@@ -4493,6 +4499,9 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-right {
   padding: 16px 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-width: 0;
 }
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-split-handle {
@@ -4513,11 +4522,21 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-list {
   min-height: 0;
-  gap: 2px;
+  gap: 6px;
 }
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-item {
   padding: 9px 8px;
+  align-items: flex-start;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item:hover:not(.selected) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(110, 196, 184, 0.28);
 }
 
 .df-catalog-loading {
@@ -4672,6 +4691,7 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-item.selected {
   background: linear-gradient(180deg, #021815 0%, var(--hf-accent) 52%, #000e0b 100%);
+  border: 1px solid rgba(82, 168, 148, 0.72);
   border-radius: var(--ready-radius);
   color: #fff;
   box-shadow:
@@ -4706,8 +4726,8 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   color: rgba(255, 255, 255, 0.92);
 }
 
-.df-shell .lm-view[data-view="catalog"] .lm-search-item {
-  align-items: flex-start;
+.df-shell .lm-view[data-view="catalog"] .lm-search-item.ready-to-load:not(.selected) {
+  border-color: rgba(249, 115, 22, 0.34);
 }
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row {
@@ -4731,12 +4751,12 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
 .df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot {
   display: inline-flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   align-items: center;
   align-self: flex-start;
   gap: 3px;
-  max-width: 46%;
+  max-width: 62%;
   margin-top: 1px;
 }
 
@@ -4749,16 +4769,54 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   line-height: 1.35;
 }
 
+.df-shell .lm-view[data-view="catalog"] .lm-search-item.catalog-recommended {
+  position: relative;
+}
+
 .df-shell .lm-view[data-view="catalog"] .lm-search-item-aside {
   padding-top: 0;
   padding-right: 0;
+  align-self: flex-start;
+  justify-content: flex-start;
+  min-width: 72px;
 }
 
-.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot .lm-tag {
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot .lm-tag,
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot .lm-badge {
   flex: 0 0 auto;
   padding: 2px 5px;
   font-size: 8px;
   line-height: 1.15;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  border-radius: 3px;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-title-row .lm-search-item-badge-slot .lm-tag.dflash-logo-label {
+  display: none;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item-aside .lm-tag.catalog-recommended {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  margin: 0;
+  padding: 2px 5px;
+  font-size: 8px;
+  line-height: 1.15;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  border-radius: 3px;
+  background: rgba(212, 168, 75, 0.2);
+  color: #f3d78c;
+  border: 1px solid rgba(212, 168, 75, 0.35);
+  white-space: nowrap;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-item.selected .lm-search-item-aside .lm-tag.catalog-recommended {
+  background: rgba(255, 224, 150, 0.22);
+  color: #ffe9b0;
+  border-color: rgba(255, 224, 150, 0.4);
 }
 
 .df-shell .lm-view[data-view="catalog"] .lm-search-item .lm-hf-avatar.sm {
@@ -4832,6 +4890,15 @@ body.lm-resizing-hf-search .df-shell .lm-view[data-view="catalog"] .lm-search-sp
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-muted);
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-detail-head,
+.df-shell .lm-view[data-view="catalog"] .lm-search-detail-identity {
+  max-width: 100%;
+  min-width: 0;
 }
 
 .df-shell .lm-inspector-tab.active {
@@ -5913,12 +5980,113 @@ body.lm-resizing-chat-sidebar {
 .df-shell .lm-readme {
   margin-top: 18px;
   padding-top: 18px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-body {
+  max-height: none;
+  overflow: visible;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .df-shell .lm-readme-body .lm-readme-rendered {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text-muted);
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-body .lm-readme-rendered {
+  max-width: 100%;
+  min-width: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered img:not(.lm-readme-badge),
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered video,
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered svg,
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered iframe,
+.df-shell .lm-view[data-view="catalog"] .df-catalog-model-card .lm-search-description img,
+.df-shell .lm-view[data-view="catalog"] .df-catalog-model-card img:not(.lm-hf-avatar):not(.lm-readme-badge) {
+  display: block;
+  max-width: 100% !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-search-description {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered table,
+.df-shell .lm-view[data-view="catalog"] .df-catalog-model-card pre {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-rendered pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-hero {
+  margin: 0 0 10px;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-hero img {
+  margin: 0 auto 12px;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-hero-links {
+  margin: 0 0 18px;
+  line-height: 1.7;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-pre-wrap {
+  position: relative;
+  max-width: 100%;
+  margin: 0.85em 0;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-pre-wrap pre {
+  margin: 0;
+  padding-right: 64px;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(20, 20, 28, 0.88);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-copy:hover {
+  background: rgba(110, 196, 184, 0.18);
+  border-color: rgba(110, 196, 184, 0.4);
+  color: #fff;
+}
+
+.df-shell .lm-view[data-view="catalog"] .lm-readme-copy.is-copied {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #bbf7d0;
 }
 
 .df-shell .lm-readme-body .lm-readme-rendered img.is-broken,

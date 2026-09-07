@@ -190,8 +190,7 @@ def release_and_stop_all_managed_engines(*, cfg: dict[str, Any] | None = None) -
 def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """On Console boot: restore saved engines and their configured checkpoints."""
     from core.server_boot import adopt_running_engine, start_router_listener
-    from core.embedding_server import probe_embedding_models, start_embedding_server
-    from core.memory_guardrails import assess_load
+    from core.embedding_server import probe_embedding_models
 
     config = cfg or load_config()
     results: list[dict[str, Any]] = []
@@ -271,22 +270,17 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
             continue
 
         if is_embedding_server(server):
-            plan = assess_load(server, config)
-            if plan.get('level') == 'block':
-                logger.warning(
-                    'restore_engines: skipping embedding %s — %s',
-                    server_id,
-                    plan.get('message') or 'insufficient VRAM',
-                )
-                results.append({
-                    'server_id': server_id,
-                    'action': 'skipped_vram',
-                    'message': plan.get('message') or 'insufficient VRAM',
-                })
-                continue
-            started = start_embedding_server(server, cfg=config)
-        else:
-            started = start_router_listener(server, cfg=config)
+            # Embedding engines load weights on first /v1/embeddings request (JIT),
+            # not during Console boot — same policy as LLM checkpoints.
+            note_engine_idle(server_id)
+            results.append({
+                'server_id': server_id,
+                'action': 'deferred_embedding',
+                'message': 'Embedding loads on first API request, not at startup.',
+            })
+            continue
+
+        started = start_router_listener(server, cfg=config)
         if started.get('success'):
             # Start the router only; never repopulate GPU memory during a
             # Console restart.

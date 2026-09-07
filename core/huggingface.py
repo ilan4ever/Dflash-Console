@@ -21,6 +21,15 @@ from core.model_paths import allowed_model_roots, get_download_dir, get_library_
 
 HF_API = 'https://huggingface.co/api'
 HF_BASE = 'https://huggingface.co'
+_readme_memory: dict[str, str] = {}
+_readme_memory_lock = threading.Lock()
+_readme_fetch_locks: dict[str, threading.Lock] = {}
+_files_memory: dict[str, list[dict[str, Any]]] = {}
+_files_memory_lock = threading.Lock()
+_files_bg_running: set[str] = set()
+_files_bg_lock = threading.Lock()
+_files_disk_loaded = False
+_FILES_CACHE_PATH = ROOT / 'logs' / 'hf-files-cache.json'
 
 HF_CATEGORIES: dict[str, dict[str, Any]] = {
     'supported': {
@@ -105,6 +114,15 @@ _SUPPORTED_MODALITIES = frozenset({
 
 _DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml', '.mlmodel')
 
+
+def _use_gguf_only(category: str | None) -> bool:
+    cat_key = str(category or 'dflash').strip().lower()
+    cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
+    if cat_key in ('supported', 'all'):
+        return False
+    return bool(cat.get('gguf_only', True))
+
+
 _download_jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 _HISTORY_PATH = ROOT / 'logs' / 'hf-download-history.json'
@@ -136,24 +154,197 @@ def _is_under_allowed_model_root(path: Path, cfg: dict[str, Any]) -> bool:
     return False
 
 
-def _request_json(url: str, *, timeout: float = 20.0) -> Any:
-    headers = {'Accept': 'application/json', 'User-Agent': 'DFlash-Console/0.1'}
+def _hf_headers(*, accept_json: bool = True) -> dict[str, str]:
+    headers = {'User-Agent': 'DFlash-Console/0.1'}
+    if accept_json:
+        headers['Accept'] = 'application/json'
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
     if token:
         headers['Authorization'] = f'Bearer {token.strip()}'
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='replace') or 'null')
+    return headers
+
+
+def _parse_link_next(header: str | None) -> str | None:
+    for part in str(header or '').split(','):
+        piece = part.strip()
+        if 'rel="next"' not in piece and "rel='next'" not in piece:
+            continue
+        start = piece.find('<')
+        end = piece.find('>')
+        if start >= 0 and end > start:
+            return piece[start + 1:end]
+    return None
+
+
+def _run_with_timeout(func, timeout: float):
+    """Run func with a wall-clock cap. urllib timeouts often do not fire on Windows."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(func)
+        done, _ = wait((future,), timeout=max(0.05, float(timeout)))
+        if not done:
+            raise TimeoutError(f'timed out after {timeout}s')
+        return future.result(timeout=0)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+_requests_ipv4_session: Any = None
+_requests_ipv4_lock = threading.Lock()
+
+
+def _curl_available() -> bool:
+    import shutil
+
+    return bool(shutil.which('curl.exe') or shutil.which('curl'))
+
+
+def _http_host(url: str) -> str:
+    return urllib.parse.urlparse(str(url or '')).netloc.lower().split(':', 1)[0]
+
+
+def _parse_curl_response(raw: bytes) -> tuple[bytes, dict[str, str]]:
+    blocks = raw.split(b'\r\n\r\n')
+    if len(blocks) < 2:
+        blocks = raw.split(b'\n\n')
+    body = blocks[-1]
+    header_block = blocks[-2] if len(blocks) >= 2 else b''
+    hdrs: dict[str, str] = {}
+    for line in header_block.decode('latin-1', errors='replace').splitlines():
+        if line.lower().startswith('http/'):
+            continue
+        if ':' not in line:
+            continue
+        key, value = line.split(':', 1)
+        hdrs[key.strip()] = value.strip()
+    return body, hdrs
+
+
+def _http_bytes_curl(url: str, *, timeout: float, headers: dict[str, str]) -> tuple[bytes, dict[str, str]]:
+    """Windows-friendly GET — curl resolves IPv4 quickly when Python stalls on IPv6."""
+    import shutil
+    import subprocess
+
+    curl = shutil.which('curl.exe') or shutil.which('curl')
+    if not curl:
+        raise RuntimeError('curl not found')
+    budget = max(1.0, float(timeout))
+    cmd = [
+        curl,
+        '-sS',
+        '-L',
+        '--connect-timeout',
+        str(min(8, int(budget))),
+        '--max-time',
+        str(max(1, int(budget))),
+        '-D',
+        '-',
+        '-o',
+        '-',
+    ]
+    for key, value in headers.items():
+        cmd.extend(['-H', f'{key}: {value}'])
+    cmd.append(url)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=budget + 5.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f'timed out after {budget}s') from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode('utf-8', errors='replace').strip() or f'curl exit {proc.returncode}'
+        raise urllib.error.URLError(detail)
+    body, hdrs = _parse_curl_response(proc.stdout)
+    return body, hdrs
+
+
+def _requests_ipv4_session():
+    global _requests_ipv4_session
+    if _requests_ipv4_session is not None:
+        return _requests_ipv4_session
+    with _requests_ipv4_lock:
+        if _requests_ipv4_session is not None:
+            return _requests_ipv4_session
+        import socket
+
+        import requests
+        from requests.adapters import HTTPAdapter
+
+        class _IPv4HTTPAdapter(HTTPAdapter):
+            def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+                import urllib3.util.connection as urllib3_connection
+
+                urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+                super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+        session = requests.Session()
+        adapter = _IPv4HTTPAdapter(pool_connections=4, pool_maxsize=8)
+        session.mount('https://', adapter)
+        session.mount('http://', adapter)
+        _requests_ipv4_session = session
+        return _requests_ipv4_session
+
+
+def _http_bytes(url: str, *, timeout: float = 20.0, accept_json: bool = True) -> tuple[bytes, dict[str, str]]:
+    """GET bytes with a timeout that actually fires on Windows (requests/urllib3)."""
+    headers = _hf_headers(accept_json=accept_json)
+    timeout = max(0.2, float(timeout))
+    connect = min(8.0, timeout)
+    host = _http_host(url)
+    if os.name == 'nt' and host.endswith('huggingface.co') and _curl_available():
+        try:
+            return _http_bytes_curl(url, timeout=timeout, headers=headers)
+        except (TimeoutError, urllib.error.URLError, OSError, RuntimeError):
+            pass
+    try:
+        import requests
+    except ImportError:
+        if _curl_available():
+            return _http_bytes_curl(url, timeout=timeout, headers=headers)
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read(), {str(key): str(value) for key, value in resp.headers.items()}
+    try:
+        resp = _requests_ipv4_session().get(
+            url,
+            headers=headers,
+            timeout=(connect, timeout),
+            allow_redirects=True,
+        )
+    except requests.Timeout as exc:
+        raise TimeoutError(str(exc) or f'timed out after {timeout}s') from exc
+    except requests.RequestException as exc:
+        raise urllib.error.URLError(str(exc)) from exc
+    if resp.status_code >= 400:
+        raise urllib.error.HTTPError(
+            url,
+            int(resp.status_code),
+            str(resp.reason or ''),
+            hdrs=resp.headers,
+            fp=None,
+        )
+    return resp.content, {str(key): str(value) for key, value in resp.headers.items()}
+
+
+def _request_json(url: str, *, timeout: float = 20.0) -> Any:
+    payload, _next = _request_json_page(url, timeout=timeout)
+    return payload
+
+
+def _request_json_page(url: str, *, timeout: float = 20.0) -> tuple[Any, str | None]:
+    body, headers = _http_bytes(url, timeout=timeout, accept_json=True)
+    payload = json.loads(body.decode('utf-8', errors='replace') or 'null')
+    return payload, _parse_link_next(headers.get('Link') or headers.get('link'))
 
 
 def _request_text(url: str, *, timeout: float = 20.0) -> str:
-    headers = {'User-Agent': 'DFlash-Console/0.1'}
-    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
-    if token:
-        headers['Authorization'] = f'Bearer {token.strip()}'
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode('utf-8', errors='replace')
+    body, _headers = _http_bytes(url, timeout=timeout, accept_json=False)
+    return body.decode('utf-8', errors='replace')
 
 
 def _parse_iso_ts(iso_ts: str | None):
@@ -204,6 +395,70 @@ def _format_downloads(count: int | float | None) -> str:
     if value >= 1000:
         return f'{value / 1000:.1f}k'
     return str(value)
+
+
+def _size_from_hub_storage(raw: dict[str, Any] | None) -> tuple[float | None, str]:
+    """Repo disk size from Hub usedStorage — no file-tree walk."""
+    if not isinstance(raw, dict):
+        return None, '—'
+    used = raw.get('usedStorage')
+    if not isinstance(used, (int, float)):
+        used = raw.get('used_storage')
+    if not isinstance(used, (int, float)) or float(used) <= 0:
+        return None, '—'
+    from core.hf_model_fit import bytes_to_size_gb
+
+    size_gb = bytes_to_size_gb(used)
+    if not isinstance(size_gb, (int, float)) or float(size_gb) <= 0:
+        return None, '—'
+    return float(size_gb), f'{float(size_gb):g} GB'
+
+
+_PARAM_B_RE = re.compile(r'(\d+(?:\.\d+)?)\s*b\b', re.I)
+_PARAM_M_RE = re.compile(r'(?<![a-z0-9])(\d+(?:\.\d+)?)\s*m(?:-|$|\b)', re.I)
+
+
+def estimate_disk_size_from_name(repo_id: str, *, has_gguf: bool = False) -> tuple[float | None, str]:
+    """Rough on-disk size from the parameter tag in the repo name (1B, 270M)."""
+    name = str(repo_id or '').split('/')[-1].lower().replace('_', '-')
+    billions = [float(match) for match in _PARAM_B_RE.findall(name)]
+    millions = [float(match) / 1000.0 for match in _PARAM_M_RE.findall(name)]
+    params_b = max(billions + millions) if billions or millions else None
+    if not params_b or params_b <= 0 or params_b > 2000:
+        return None, '—'
+    size_gb = round(params_b * (0.55 if has_gguf else 2.0), 2)
+    if size_gb <= 0:
+        return None, '—'
+    return size_gb, f'~{size_gb:g} GB'
+
+
+def fetch_used_storage_size(repo_id: str, *, timeout: float = 4.0) -> dict[str, Any] | None:
+    """Lightweight Hub size for catalog list cards (usedStorage only)."""
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return None
+    url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
+    try:
+        raw = _request_json(url, timeout=timeout)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    size_gb, size_label = _size_from_hub_storage(raw)
+    if not size_gb:
+        summary = _summary_from_model(raw)
+        size_gb = summary.get('size_gb')
+        size_label = str(summary.get('size_label') or '').strip()
+    if not isinstance(size_gb, (int, float)) or float(size_gb) <= 0:
+        return None
+    if not size_label or size_label in ('—', '0 GB', '0.0 GB'):
+        size_label = f'{float(size_gb):g} GB'
+    return {
+        'id': repo,
+        'size_gb': float(size_gb),
+        'size_label': size_label,
+        'size_bytes': int(float(size_gb) * (1024 ** 3)),
+    }
 
 
 def _entry_name(entry: dict[str, Any] | None) -> str:
@@ -338,17 +593,79 @@ def _fetch_repo_tree(repo: str, *, recursive: bool = False, path: str = '') -> l
     return [row for row in payload if isinstance(row, dict)]
 
 
-def _fetch_repo_siblings_with_blobs(repo: str) -> list[dict[str, Any]]:
+def _fetch_repo_siblings_with_blobs(repo: str, *, timeout: float = 15.0) -> list[dict[str, Any]]:
     """Hub model info with blob sizes — fallback when the tree listing is folders-only."""
     encoded = urllib.parse.quote(repo, safe='/')
     try:
-        payload = _request_json(f'{HF_API}/models/{encoded}?blobs=true', timeout=15.0)
+        payload = _request_json(
+            f'{HF_API}/models/{encoded}?blobs=true',
+            timeout=max(0.5, float(timeout)),
+        )
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return []
     if not isinstance(payload, dict):
         return []
     siblings = payload.get('siblings')
     return [row for row in siblings if isinstance(row, dict)] if isinstance(siblings, list) else []
+
+
+def _siblings_from_api_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    siblings = payload.get('siblings')
+    if not isinstance(siblings, list):
+        return []
+    return [row for row in siblings if isinstance(row, dict) and _entry_name(row)]
+
+
+def _fetch_repo_siblings_http(repo: str, *, timeout: float = 90.0) -> list[dict[str, Any]]:
+    """Fast Hub siblings via HTTP — parallel plain JSON and blobs=true."""
+    encoded = urllib.parse.quote(repo, safe='/')
+    budget = max(5.0, float(timeout))
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    def fetch_json() -> list[dict[str, Any]]:
+        payload = _request_json(f'{HF_API}/models/{encoded}', timeout=budget)
+        return _siblings_from_api_payload(payload)
+
+    def fetch_blobs() -> list[dict[str, Any]]:
+        payload = _request_json(f'{HF_API}/models/{encoded}?blobs=true', timeout=budget)
+        return _siblings_from_api_payload(payload)
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [pool.submit(fetch_json), pool.submit(fetch_blobs)]
+        done, _pending = wait(futures, timeout=budget + 1.0, return_when=FIRST_COMPLETED)
+        for fut in done:
+            try:
+                rows = fut.result(timeout=0) or []
+                if rows:
+                    return rows
+            except Exception:
+                pass
+        wait(futures, timeout=max(1.0, budget))
+        for fut in futures:
+            try:
+                rows = fut.result(timeout=0) or []
+                if rows:
+                    return rows
+            except Exception:
+                pass
+        return []
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _fetch_repo_siblings_hub_api(repo: str) -> list[dict[str, Any]]:
+    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    token_value = str(token).strip() if token and str(token).strip() else None
+    try:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=token_value)
+        return _sibling_rows_from_info(api.model_info(repo))
+    except Exception:
+        return []
 
 
 def _preferred_size_folders(tree: list[dict[str, Any]], siblings: list[Any] | None) -> list[str]:
@@ -919,17 +1236,83 @@ def _card_description(card: dict[str, Any] | None) -> str:
     return str(data.get('short_description') or data.get('description') or '').strip()
 
 
+def _cached_readme(repo: str) -> str:
+    with _readme_memory_lock:
+        return str(_readme_memory.get(repo) or '')
+
+
+def _store_readme(repo: str, text: str) -> str:
+    value = str(text or '')
+    if value.strip():
+        with _readme_memory_lock:
+            _readme_memory[repo] = value
+    return value
+
+
+def _readme_from_hub(repo: str, *, network: bool = True) -> str:
+    from huggingface_hub import hf_hub_download
+
+    with _readme_memory_lock:
+        lock = _readme_fetch_locks.setdefault(repo, threading.Lock())
+    with lock:
+        cached = _cached_readme(repo)
+        if cached.strip():
+            return cached
+        token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+        kwargs: dict[str, Any] = {'repo_id': repo, 'filename': 'README.md'}
+        if token and str(token).strip():
+            kwargs['token'] = str(token).strip()
+        try:
+            path = hf_hub_download(**kwargs, local_files_only=True)
+        except Exception:
+            if not network:
+                raise
+            path = hf_hub_download(**kwargs)
+        return Path(path).read_text(encoding='utf-8', errors='replace')
+
+
+def _readme_urls(repo: str) -> tuple[str, ...]:
+    quoted = urllib.parse.quote(repo, safe='/')
+    return (
+        f'{HF_BASE}/{quoted}/resolve/main/README.md',
+        f'{HF_BASE}/{quoted}/raw/main/README.md',
+        f'{HF_BASE}/{quoted}/resolve/main/readme.md',
+        f'{HF_BASE}/{quoted}/resolve/master/README.md',
+    )
+
+
 def _fetch_readme_head(repo_id: str, *, max_chars: int = 8000, timeout: float = 1.0) -> str:
     repo = str(repo_id or '').strip().strip('/')
     if not repo:
         return ''
-    for candidate in (f'{HF_BASE}/{repo}/raw/main/README.md', f'{HF_BASE}/{repo}/raw/main/readme.md'):
+    cached = _cached_readme(repo)
+    if cached.strip():
+        return cached[:max_chars]
+    budget = max(0.2, float(timeout))
+    deadline = time.monotonic() + budget
+    timed_out = False
+    for candidate in _readme_urls(repo):
+        remaining = deadline - time.monotonic()
+        if remaining < 0.15:
+            timed_out = True
+            break
         try:
-            text = _request_text(candidate, timeout=timeout)
+            text = _request_text(candidate, timeout=remaining)
             if text.strip():
-                return text[:max_chars]
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+                return _store_readme(repo, text)[:max_chars]
+        except urllib.error.HTTPError:
             continue
+        except (urllib.error.URLError, TimeoutError, OSError):
+            timed_out = True
+            break
+    try:
+        hub_text = _readme_from_hub(repo, network=budget >= 8.0 and not timed_out)
+        if hub_text.strip():
+            return _store_readme(repo, hub_text)[:max_chars]
+    except Exception:
+        pass
+    if timed_out:
+        raise TimeoutError(f'readme fetch timed out after {budget}s')
     return ''
 
 
@@ -943,7 +1326,10 @@ def _enrich_model_card(model: dict[str, Any]) -> dict[str, Any]:
     if not needs_title and not needs_desc:
         row['title'] = current_title
         return row
-    readme = _fetch_readme_head(str(row.get('id') or ''))
+    try:
+        readme = _fetch_readme_head(str(row.get('id') or ''))
+    except TimeoutError:
+        readme = ''
     if readme:
         if needs_title:
             row['title'] = _title_from_readme(readme, fallback_title) or fallback_title
@@ -1095,6 +1481,16 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         if disk_gb and disk_gb > 0:
             size_gb = disk_gb
             size_label = f'{disk_gb:g} GB'
+    if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
+        stored_gb, stored_label = _size_from_hub_storage(raw)
+        if stored_gb:
+            size_gb = stored_gb
+            size_label = stored_label
+    if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
+        est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=has_gguf)
+        if est_gb:
+            size_gb = est_gb
+            size_label = est_label
     if isinstance(size_gb, (int, float)) and float(size_gb) <= 0:
         size_gb = None
         size_label = '—'
@@ -1462,7 +1858,7 @@ def _finalize_search_models(
 ) -> list[dict[str, Any]]:
     from core.config import load_config
     from core.hf_catalog_cache import get_cached_detail
-    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load
+    from core.hf_local_match import annotate_models_local_installs
     from core.hf_model_fit import annotate_hf_models_fit
 
     config = load_config()
@@ -1487,19 +1883,7 @@ def _finalize_search_models(
                 row['size_gb'] = float(cached_model['size_gb'])
             if isinstance(cached_model.get('size_bytes'), int):
                 row['size_bytes'] = cached_model['size_bytes']
-    for row in models:
-        repo_id = str(row.get('id') or '')
-        tags = list(row.get('tags') or [])
-        installs = find_repo_local_installs(repo_id, cfg=config)
-        loadable = [item for item in installs if item.get('loadable')]
-        row['local_ready'] = bool(installs)
-        row['local_loadable'] = bool(loadable)
-        row['catalog_ready_to_load'] = is_catalog_ready_to_load(
-            repo_id,
-            title=str(row.get('title') or row.get('label') or repo_id),
-            tags=tags,
-            cfg=config,
-        )
+    annotate_models_local_installs(models, cfg=config, skip=bool(needle.strip()))
     if cat_key == 'dflash':
         models = [
             row for row in models
@@ -1514,7 +1898,9 @@ def _finalize_search_models(
         ]
     models = models[:response_limit]
     annotate_hf_models_fit(models, cfg=config, category=cat_key)
-    return models
+    from core.hf_catalog_recommend import apply_catalog_recommendations
+
+    return apply_catalog_recommendations(models)
 
 
 def _search_models_by_repo_id(
@@ -1700,6 +2086,7 @@ def search_models(
         'sort': sort if sort in ('downloads', 'likes', 'lastModified', 'createdAt') else 'downloads',
         'direction': '-1',
         'full': 'true',
+        'expand': 'usedStorage',
     }
     if needle:
         if use_gguf_only and 'gguf' not in needle.lower():
@@ -1718,15 +2105,27 @@ def search_models(
         if cat.get('filter'):
             params['filter'] = str(cat['filter'])
     url = f'{HF_API}/models?{urllib.parse.urlencode(params)}'
+    hf_timeout = 12.0 if needle else 20.0
     try:
-        payload = _request_json(url)
+        payload = _request_json(url, timeout=hf_timeout)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-        return {'success': False, 'error': str(exc), 'models': [], 'category': cat_key}
+        return {
+            'success': False,
+            'error': 'huggingface_timeout' if isinstance(exc, TimeoutError) else str(exc),
+            'models': [],
+            'category': cat_key,
+            'query': needle,
+        }
     if not isinstance(payload, list):
         return {'success': False, 'error': 'unexpected Hugging Face response', 'models': [], 'category': cat_key}
     # Category ``all`` returns mixed Safetensors/GGUF repos. Fully enriching every
     # row walks Hub trees (can hang the catalog UI for 60s+). Cap Hub size fetches.
-    size_fetch_cap = 2 if cat_key == 'all' else None
+    if cat_key == 'all' and needle:
+        size_fetch_cap = 0
+    elif cat_key == 'all':
+        size_fetch_cap = 2
+    else:
+        size_fetch_cap = None
     models = _summaries_from_models(payload, enrich_sizes=False)
     if enrich_sizes:
         models = _enrich_summaries_sizes(
@@ -1749,6 +2148,7 @@ def search_models(
             'sort': params['sort'],
             'direction': '-1',
             'full': 'true',
+            'expand': 'usedStorage',
             'search': needle,
         }
         if use_gguf_only:
@@ -1786,40 +2186,295 @@ def search_models(
     return {'success': True, 'models': models, 'query': needle, 'category': cat_key}
 
 
-def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any]:
+def _model_detail_from_local(repo: str, *, category: str, readme: str = '') -> dict[str, Any]:
+    """Card payload when Hugging Face is slow — list/index metadata, no file tree."""
+    from core.hf_catalog_index import get_indexed_model
+
+    row = get_indexed_model(repo) or {}
+    text = str(readme or '').strip()
+    title = str(row.get('title') or row.get('label') or repo)
+    description = str(row.get('description') or '').strip()
+    if text:
+        title = _title_from_readme(text, title) or title
+        if not description:
+            description = _description_from_readme(text, limit=320)
+    model = {
+        **row,
+        'id': repo,
+        'title': title,
+        'description': description,
+        'gguf_files': list(row.get('gguf_files') or []),
+        'download_files': list(row.get('download_files') or []),
+        'download_options': list(row.get('download_options') or []),
+        'default_download': '',
+        'readme': text,
+        'readme_pending': not bool(text),
+        'url': f'{HF_BASE}/{repo}',
+        'category': str(category or 'dflash'),
+        'detail_partial': True,
+    }
+    return {'success': True, 'partial': True, 'model': model}
+
+
+def get_model_readme(repo_id: str, *, timeout: float = 90.0) -> dict[str, Any]:
+    """Fetch README only — used when the full detail call timed out."""
     repo = str(repo_id or '').strip().strip('/')
     if not repo or '/' not in repo:
         return {'success': False, 'error': 'invalid repo id'}
-    cat_key = str(category or 'dflash').strip().lower()
-    cat = HF_CATEGORIES.get(cat_key, HF_CATEGORIES['dflash'])
-    use_gguf_only = bool(cat.get('gguf_only', True))
-    if cat_key in ('supported', 'all'):
-        use_gguf_only = False
-    url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
+    budget = max(0.5, float(timeout))
     try:
-        raw = _request_json(url)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return {'success': False, 'error': f'model not found: {repo}'}
-        return {'success': False, 'error': str(exc)}
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return {'success': False, 'error': str(exc)}
-    if not isinstance(raw, dict):
-        return {'success': False, 'error': 'unexpected Hugging Face response'}
+        text = _run_with_timeout(
+            lambda: _fetch_readme_head(repo, max_chars=120_000, timeout=budget),
+            timeout=budget + 0.4,
+        ) or ''
+        return {
+            'success': True,
+            'repo_id': repo,
+            'readme': text,
+            'pending': False,
+        }
+    except TimeoutError:
+        return {'success': True, 'repo_id': repo, 'readme': '', 'pending': True}
 
-    readme = ''
-    for candidate in (f'{HF_BASE}/{repo}/raw/main/README.md', f'{HF_BASE}/{repo}/raw/main/readme.md'):
+
+def _ensure_files_disk() -> None:
+    global _files_disk_loaded
+    if _files_disk_loaded:
+        return
+    with _files_memory_lock:
+        if _files_disk_loaded:
+            return
+        _files_disk_loaded = True
+        if not _FILES_CACHE_PATH.is_file():
+            return
         try:
-            readme = _request_text(candidate, timeout=15)
-            if readme.strip():
-                break
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            payload = json.loads(_FILES_CACHE_PATH.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            return
+        entries = payload.get('repos') if isinstance(payload, dict) else None
+        if not isinstance(entries, dict):
+            return
+        for repo, siblings in entries.items():
+            key = str(repo or '').strip()
+            if not key or key in _files_memory or not isinstance(siblings, list):
+                continue
+            rows = [row for row in siblings if isinstance(row, dict) and _entry_name(row)]
+            if rows:
+                _files_memory[key] = rows
+
+
+def _save_files_disk() -> None:
+    with _files_memory_lock:
+        data = {key: list(val) for key, val in _files_memory.items() if val}
+    if len(data) > 400:
+        data = dict(list(data.items())[-300:])
+    try:
+        _FILES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _FILES_CACHE_PATH.with_suffix('.tmp')
+        tmp.write_text(
+            json.dumps({'version': 1, 'repos': data}, ensure_ascii=False),
+            encoding='utf-8',
+        )
+        tmp.replace(_FILES_CACHE_PATH)
+    except OSError:
+        pass
+
+
+def _cached_siblings(repo: str) -> list[dict[str, Any]]:
+    _ensure_files_disk()
+    with _files_memory_lock:
+        cached = _files_memory.get(repo)
+        return list(cached) if cached else []
+
+
+def _store_siblings(repo: str, siblings: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    rows = [
+        row for row in (siblings or [])
+        if isinstance(row, dict) and _entry_name(row)
+    ]
+    if rows:
+        with _files_memory_lock:
+            _files_memory[repo] = rows
+        _save_files_disk()
+    return rows
+
+
+def _sibling_rows_from_info(info: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in getattr(info, 'siblings', None) or []:
+        name = str(getattr(item, 'rfilename', '') or '').strip()
+        if not name:
             continue
+        row: dict[str, Any] = {'rfilename': name}
+        size = getattr(item, 'size', None)
+        if isinstance(size, int) and size > 0:
+            row['size'] = size
+        rows.append(row)
+    return rows
+
+
+def _schedule_siblings_background(repo: str) -> None:
+    with _files_bg_lock:
+        if repo in _files_bg_running or _cached_siblings(repo):
+            return
+        _files_bg_running.add(repo)
+
+    def _run() -> None:
+        try:
+            _siblings_from_hub(repo)
+        finally:
+            with _files_bg_lock:
+                _files_bg_running.discard(repo)
+
+    threading.Thread(target=_run, name=f'hf-files-{repo}', daemon=True).start()
+
+
+def _siblings_from_hub(repo: str) -> list[dict[str, Any]]:
+    cached = _cached_siblings(repo)
+    if cached:
+        return cached
+    siblings = _fetch_repo_siblings_http(repo, timeout=90.0)
+    if not siblings:
+        siblings = _fetch_repo_siblings_hub_api(repo)
+    if not siblings:
+        siblings = _fetch_repo_siblings_with_blobs(repo, timeout=90.0)
+    return _store_siblings(repo, siblings)
+
+
+def _files_payload(
+    repo: str,
+    siblings: list[dict[str, Any]] | None,
+    *,
+    category: str,
+    pending: bool = False,
+) -> dict[str, Any]:
+    use_gguf_only = _use_gguf_only(category)
+    gguf_files = _gguf_files(siblings)
+    downloadable = _model_files(siblings, gguf_only=use_gguf_only)
+    files = gguf_files if use_gguf_only else downloadable
+    options = build_download_options(files)
+    preferred = str(options[0].get('filename') or '') if options else ''
+    return {
+        'success': True,
+        'pending': pending,
+        'repo_id': repo,
+        'download_files': files,
+        'gguf_files': gguf_files,
+        'download_options': options,
+        'default_download': preferred,
+        'has_files': bool(files),
+        'file_count': len(files),
+        'has_gguf': bool(gguf_files),
+        'gguf_count': len(gguf_files),
+    }
+
+
+def get_model_files(repo_id: str, *, category: str = 'all', timeout: float = 100.0) -> dict[str, Any]:
+    """Fetch downloadable files only — used when the full detail call timed out."""
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return {'success': False, 'error': 'invalid repo id'}
+    cached = _cached_siblings(repo)
+    if cached:
+        return _files_payload(repo, cached, category=category, pending=False)
+    budget = max(0.5, float(timeout))
+    try:
+        siblings = _run_with_timeout(
+            lambda: _siblings_from_hub(repo),
+            timeout=budget + 0.4,
+        ) or []
+    except TimeoutError:
+        _schedule_siblings_background(repo)
+        return _files_payload(repo, [], category=category, pending=True)
+    except Exception as exc:
+        _schedule_siblings_background(repo)
+        payload = _files_payload(repo, [], category=category, pending=True)
+        payload['error'] = str(exc)
+        return payload
+    if not siblings:
+        _schedule_siblings_background(repo)
+        return _files_payload(repo, [], category=category, pending=True)
+    return _files_payload(repo, siblings, category=category, pending=False)
+
+
+def _fetch_detail_sources(repo: str, url: str, hub_timeout: float) -> tuple[Any, Exception | None, str, bool]:
+    """Load model JSON and README in parallel so a hung info call cannot skip README."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    readme_timeout = max(0.2, min(8.0, float(hub_timeout)))
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        info_fut = pool.submit(lambda: _request_json(url, timeout=hub_timeout))
+        readme_fut = pool.submit(
+            lambda: _fetch_readme_head(repo, max_chars=120_000, timeout=readme_timeout),
+        )
+        wait((info_fut, readme_fut), timeout=float(hub_timeout) + 0.8)
+        raw = None
+        info_err: Exception | None = None
+        if info_fut.done():
+            try:
+                raw = info_fut.result(timeout=0)
+            except Exception as exc:
+                info_err = exc
+        else:
+            info_err = TimeoutError(f'timed out after {hub_timeout}s')
+        readme = ''
+        readme_pending = False
+        if readme_fut.done():
+            try:
+                readme = readme_fut.result(timeout=0) or ''
+            except Exception:
+                readme_pending = True
+        else:
+            readme_pending = True
+        if readme.strip():
+            readme_pending = False
+        return raw, info_err, readme, readme_pending
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def get_model_detail(
+    repo_id: str,
+    *,
+    category: str = 'dflash',
+    hub_timeout: float = 8.0,
+) -> dict[str, Any]:
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return {'success': False, 'error': 'invalid repo id'}
+    use_gguf_only = _use_gguf_only(category)
+    url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
+    hub_timeout = max(0.2, float(hub_timeout))
+    raw, info_err, readme, readme_pending = _fetch_detail_sources(repo, url, hub_timeout)
+    if isinstance(info_err, urllib.error.HTTPError) and info_err.code == 404:
+        return {'success': False, 'error': f'model not found: {repo}'}
+    if info_err is not None or not isinstance(raw, dict):
+        local = _model_detail_from_local(repo, category=str(category or 'dflash'), readme=readme)
+        if info_err is not None:
+            local['error'] = str(info_err)
+        if readme_pending and not str(local['model'].get('readme') or '').strip():
+            local['model']['readme_pending'] = True
+        return local
 
     card = raw.get('cardData') if isinstance(raw.get('cardData'), dict) else {}
     tags = [str(t) for t in (raw.get('tags') or []) if t]
-    tree = _resolve_repo_tree(repo, raw.get('siblings'), deadline=time.monotonic() + 25.0)
-    siblings = _siblings_with_sizes(raw.get('siblings'), tree)
+    siblings = raw.get('siblings') if isinstance(raw.get('siblings'), list) else []
+    has_downloadable = bool(_model_files(siblings, gguf_only=False) or _gguf_files(siblings))
+    if not has_downloadable:
+        try:
+            blobs = _run_with_timeout(
+                lambda: _fetch_repo_siblings_with_blobs(repo),
+                timeout=min(4.5, hub_timeout + 0.5),
+            ) or []
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            blobs = []
+        if blobs:
+            siblings = _siblings_with_sizes(siblings, _blob_tree_from_siblings(blobs))
+    else:
+        siblings = _siblings_with_sizes(siblings, [])
+    if siblings:
+        _store_siblings(repo, siblings)
     gguf_files = _gguf_files(siblings)
     downloadable_files = _model_files(siblings, gguf_only=use_gguf_only)
     files = gguf_files if use_gguf_only else downloadable_files
@@ -1876,6 +2531,7 @@ def get_model_detail(repo_id: str, *, category: str = 'dflash') -> dict[str, Any
         'local_ready': bool(repo_installs),
         'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
         'readme': readme,
+        'readme_pending': bool(readme_pending) and not bool(str(readme or '').strip()),
         'url': f'{HF_BASE}/{repo}',
         'gated': bool(raw.get('gated')),
         'private': bool(raw.get('private')),

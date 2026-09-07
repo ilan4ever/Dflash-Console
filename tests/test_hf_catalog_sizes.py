@@ -9,7 +9,9 @@ from core.huggingface import (
     _row_needs_size_enrich,
     _siblings_have_file_sizes,
     _siblings_with_sizes,
+    _size_from_hub_storage,
     _summaries_from_models,
+    _summary_from_model,
 )
 
 
@@ -160,3 +162,30 @@ def test_summaries_from_models_enriches_every_missing_row(monkeypatch):
     rows = _summaries_from_models(raw, enrich_sizes=True)
     assert len(fetched) == 12
     assert all(row.get('size_gb') for row in rows)
+
+
+def test_estimate_disk_size_from_gemma_name():
+    from core.huggingface import estimate_disk_size_from_name
+
+    size_gb, label = estimate_disk_size_from_name('google/gemma-3-1b-it')
+    assert size_gb == 2
+    assert label.startswith('~')
+    tiny_gb, tiny_label = estimate_disk_size_from_name('google/gemma-3-270m')
+    assert tiny_gb and tiny_gb < 1
+    assert tiny_label.startswith('~')
+    size_gb, label = _size_from_hub_storage({'usedStorage': 3 * 1024 ** 3})
+    assert size_gb == 3
+    assert 'GB' in label
+    assert _size_from_hub_storage({})[0] is None
+
+
+def test_summary_uses_used_storage_when_files_have_no_sizes():
+    row = _summary_from_model({
+        'id': 'google/gemma-3-1b-it',
+        'downloads': 1000,
+        'tags': ['transformers', 'safetensors'],
+        'pipeline_tag': 'text-generation',
+        'usedStorage': int(2.4 * 1024 ** 3),
+    })
+    assert row['size_gb'] and row['size_gb'] > 2
+    assert row['size_label'] not in ('', '—')

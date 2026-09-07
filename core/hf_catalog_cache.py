@@ -216,7 +216,7 @@ def get_or_fetch_detail(
         payload['cache_age_seconds'] = round(float(cached.get('age_seconds') or 0.0), 1)
         return _refresh_detail_fit(payload)
     payload = fetcher()
-    if payload.get('success'):
+    if payload.get('success') and not payload.get('partial'):
         put_cached_detail(repo_id=repo_id, category=category, payload=payload)
     return _refresh_detail_fit(payload)
 
@@ -231,7 +231,7 @@ def _schedule_detail_refresh(repo_id: str, category: str, fetcher: Callable[[], 
     def run() -> None:
         try:
             payload = fetcher()
-            if payload.get('success'):
+            if payload.get('success') and not payload.get('partial'):
                 put_cached_detail(repo_id=repo_id, category=category, payload=payload)
         except Exception as exc:
             logger.warning('hf detail background refresh failed: %s', exc)
@@ -332,6 +332,19 @@ def _try_composed_supported_search(
     }
 
 
+def _size_enrich_max_fetches(payload: dict[str, Any]) -> int:
+    """Cap Hub tree walks during search — uncapped enrichment blocks the catalog UI."""
+    category = str(payload.get('category') or '').strip().lower()
+    query = str(payload.get('query') or '').strip()
+    models = payload.get('models')
+    count = len(models) if isinstance(models, list) else 0
+    if category == 'all':
+        return 0 if query else 2
+    if query:
+        return min(4, count)
+    return min(8, count)
+
+
 def _fill_missing_search_sizes(payload: dict[str, Any]) -> bool:
     """Fetch Hub file sizes for catalog rows that still show Disk —."""
     models = payload.get('models')
@@ -339,9 +352,12 @@ def _fill_missing_search_sizes(payload: dict[str, Any]) -> bool:
         return False
     from core.huggingface import _enrich_summaries_sizes, _row_needs_size_enrich
 
+    max_fetches = _size_enrich_max_fetches(payload)
+    if max_fetches <= 0:
+        return False
     if not any(_row_needs_size_enrich(row) for row in models if isinstance(row, dict)):
         return False
-    _enrich_summaries_sizes(models)
+    _enrich_summaries_sizes(models, max_fetches=max_fetches)
     return True
 
 
@@ -353,6 +369,9 @@ def _annotate_search_fit(payload: dict[str, Any], *, category: str) -> dict[str,
     from core.hf_model_fit import annotate_hf_models_fit
 
     annotate_hf_models_fit(models, category=category)
+    from core.hf_catalog_recommend import apply_catalog_recommendations
+
+    payload['models'] = apply_catalog_recommendations(models)
     return payload
 
 
@@ -430,6 +449,22 @@ def search_with_cache(
                 _schedule_refresh(key, fetcher)
             return _finish(payload)
 
+    if not force_refresh:
+        from core.hf_catalog_index import search_local
+
+        indexed = search_local(query, category=category, sort=sort, limit=limit)
+        if indexed and isinstance(indexed.get('models'), list):
+            if query.strip() or indexed['models']:
+                return _finish({
+                    **indexed,
+                    'query': query,
+                    'sort': sort,
+                    'category': category,
+                    'limit': limit,
+                    'cached': True,
+                    'stale': False,
+                })
+
     if (
         not force_refresh
         and str(category or '').strip().lower() == 'supported'
@@ -452,6 +487,16 @@ def search_with_cache(
             'stale': False,
         }
         return _finish(enriched, persist=True)
+    stale_query = _find_stale_query_cache(
+        query=query,
+        sort=sort,
+        category=category,
+        limit=limit,
+    )
+    if stale_query:
+        stale_query['refresh_failed'] = True
+        stale_query['fetch_error'] = str(payload.get('error') or 'huggingface_unavailable')
+        return _finish(stale_query)
     if cached and cached.get('payload'):
         payload = dict(cached['payload'])
         payload['cached'] = True
@@ -459,6 +504,45 @@ def search_with_cache(
         payload['refresh_failed'] = True
         return _finish(payload)
     return _finish(payload)
+
+
+def _find_stale_query_cache(
+    *,
+    query: str,
+    sort: str,
+    category: str,
+    limit: int,
+) -> dict[str, Any] | None:
+    """Best-effort prior search snapshot when Hugging Face is unreachable."""
+    needle = str(query or '').strip().lower()
+    if not needle:
+        return None
+    _ensure_loaded()
+    best_row: dict[str, Any] | None = None
+    best_at = 0.0
+    prefix = f'{category}|{sort}|{limit}|'
+    with _lock:
+        for key, row in _memory.items():
+            if not str(key).startswith(prefix):
+                continue
+            if not isinstance(row, dict):
+                continue
+            cached_q = str(row.get('query') or '').strip().lower()
+            if not cached_q:
+                continue
+            if needle not in cached_q and not cached_q.startswith(needle):
+                continue
+            fetched_at = float(row.get('fetched_at') or 0.0)
+            if fetched_at >= best_at:
+                best_at = fetched_at
+                best_row = row
+    if not best_row or not isinstance(best_row.get('payload'), dict):
+        return None
+    payload = dict(best_row['payload'])
+    payload['cached'] = True
+    payload['stale'] = True
+    payload['cache_age_seconds'] = round(max(0.0, time.time() - best_at), 1)
+    return payload
 
 
 def preload_hf_catalog_cache() -> None:

@@ -200,7 +200,7 @@
     return `<span class="lm-tag gold dflash-logo-label" role="img" aria-label="${safeLabel}" title="${safeLabel}"></span>`;
   }
 
-  function classificationTags(model, { includeReasoning = true } = {}) {
+  function classificationTags(model, { includeReasoning = true, includeLogo = true } = {}) {
     const tags = [];
     const type = modality(model);
     const modalityEntry = MODALITY_BADGES[type];
@@ -209,9 +209,11 @@
     }
     if (isAccelerator(model)) {
       const generation = generationLabel(model) || 'DFlash 1';
-      tags.push(dflashLogo(`${generation} accelerator`));
-      tags.push(tag('Accelerator', 'orange', `${generation} draft accelerator; not a target model`));
-    } else if (isStack(model)) {
+      if (includeLogo) {
+        tags.push(dflashLogo(`${generation} accelerator`));
+        tags.push(tag('Accelerator', 'orange', `${generation} draft accelerator; not a target model`));
+      }
+    } else if (includeLogo && isStack(model)) {
       const generation = generationLabel(model);
       tags.push(dflashLogo(generation ? `${generation} stack` : 'DFlash stack'));
     }

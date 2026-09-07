@@ -282,7 +282,12 @@ def is_dflash_repo(repo_id: str, tags: list[str] | None = None) -> bool:
     return False
 
 
-def find_repo_local_installs(repo_id: str, *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def find_repo_local_installs(
+    repo_id: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+    local_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Return local files on disk that belong to a Hugging Face repo."""
     config = cfg or load_config()
     parts = _repo_parts(repo_id)
@@ -296,8 +301,9 @@ def find_repo_local_installs(repo_id: str, *, cfg: dict[str, Any] | None = None)
     labels = _library_labels(config)
     matches: list[dict[str, Any]] = []
     seen: set[str] = set()
+    catalog_rows = local_rows if local_rows is not None else list_local_models(cfg=config).get('models') or []
 
-    for row in list_local_models(cfg=config).get('models') or []:
+    for row in catalog_rows:
         path_text = str(row.get('path') or '').strip()
         if not path_text:
             continue
@@ -326,7 +332,7 @@ def find_repo_local_installs(repo_id: str, *, cfg: dict[str, Any] | None = None)
             token for token in re.split(r'[^a-z0-9]+', repo_name.lower())
             if len(token) >= 3 and token not in {'gguf', 'llama', 'cpp', 'model', 'dflash', 'dspark'}
         ]
-        for row in list_local_models(cfg=config).get('models') or []:
+        for row in catalog_rows:
             path_text = str(row.get('path') or '').strip()
             path = Path(path_text)
             if not path.is_file():
@@ -345,6 +351,42 @@ def find_repo_local_installs(repo_id: str, *, cfg: dict[str, Any] | None = None)
             matches.append(_row_from_path(path, match_type='model_name', labels=labels, row=row))
 
     return matches
+
+
+def annotate_models_local_installs(
+    models: list[dict[str, Any]],
+    *,
+    cfg: dict[str, Any] | None = None,
+    skip: bool = False,
+) -> None:
+    """Set local_ready/local_loadable on catalog rows with one disk catalog scan."""
+    if skip:
+        for row in models:
+            if not isinstance(row, dict):
+                continue
+            row.setdefault('local_ready', False)
+            row.setdefault('local_loadable', False)
+            row.setdefault('catalog_ready_to_load', False)
+        return
+    config = cfg or load_config()
+    local_rows = list_local_models(cfg=config).get('models') or []
+    for row in models:
+        if not isinstance(row, dict):
+            continue
+        repo_id = str(row.get('id') or '').strip()
+        if not repo_id:
+            continue
+        tags = list(row.get('tags') or [])
+        installs = find_repo_local_installs(repo_id, cfg=config, local_rows=local_rows)
+        loadable = [item for item in installs if item.get('loadable')]
+        row['local_ready'] = bool(installs)
+        row['local_loadable'] = bool(loadable)
+        row['catalog_ready_to_load'] = is_catalog_ready_to_load(
+            repo_id,
+            title=str(row.get('title') or row.get('label') or repo_id),
+            tags=tags,
+            cfg=config,
+        )
 
 
 def primary_local_match(repo_id: str, filename: str, *, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:

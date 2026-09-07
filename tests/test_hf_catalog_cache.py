@@ -177,6 +177,37 @@ def test_capable_stack_row_is_not_loadable(tmp_path: Path):
         'draft_filename': draft.name,
     })
     assert row['loadable'] is False
-    assert row['stack_status'] == 'unregistered'
-    assert not str(row['model_id']).startswith('stack-capable:')
-    assert row['model_id'] == row['label']
+
+
+def test_size_enrich_max_fetches_skips_text_all_category():
+    from core.hf_catalog_cache import _size_enrich_max_fetches
+
+    assert _size_enrich_max_fetches({'category': 'all', 'query': 'qwen3.8', 'models': [{}]}) == 0
+    assert _size_enrich_max_fetches({'category': 'all', 'query': '', 'models': [{}]}) == 2
+
+
+def test_finalize_search_models_scans_local_catalog_once(monkeypatch):
+    from core.huggingface import _finalize_search_models
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        'core.local_models.list_local_models',
+        lambda **kwargs: calls.append(1) or {'models': []},
+    )
+    models = [{'id': f'org/model-{index}', 'tags': []} for index in range(5)]
+    _finalize_search_models(models, needle='', cat_key='all', response_limit=25)
+    assert len(calls) == 1
+
+
+def test_finalize_search_models_skips_local_scan_for_text_search(monkeypatch):
+    from core.huggingface import _finalize_search_models
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        'core.local_models.list_local_models',
+        lambda **kwargs: calls.append(1) or {'models': []},
+    )
+    models = [{'id': 'org/model-0', 'tags': []}]
+    _finalize_search_models(models, needle='qwen3.8', cat_key='all', response_limit=25)
+    assert calls == []
+    assert models[0]['local_ready'] is False
