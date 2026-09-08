@@ -8,6 +8,7 @@
   let range = localStorage.getItem(RANGE_KEY) || 'all';
   let selectedJobId = '';
   const modelByJobId = new Map();
+  const loadingJobIds = new Set();
 
   function escapeHtml(value) {
     return String(value || '')
@@ -115,6 +116,13 @@
     render();
   }
 
+  function isJobModelLoading(model, job) {
+    if (job?.id && loadingJobIds.has(job.id)) return true;
+    if (!model) return false;
+    const live = modelsLive();
+    return Boolean(live?.isStackBooting?.(model) || live?.isStackUnloading?.(model));
+  }
+
   async function loadDownloadJob(jobId) {
     const job = jobById(jobId);
     if (!job) return;
@@ -128,9 +136,15 @@
       return;
     }
     selectedJobId = job.id;
+    loadingJobIds.add(job.id);
     await bindInspectorForJob(job);
-    await modelsLive()?.loadModel?.(model);
-    render();
+    await render();
+    try {
+      await modelsLive()?.loadModel?.(model);
+    } finally {
+      loadingJobIds.delete(job.id);
+      await render();
+    }
   }
 
   function setPane(next) {
@@ -175,6 +189,7 @@
 
     const cards = await Promise.all(rows.map(async (job) => {
       const model = canLoadJob(job) ? await resolveJobModel(job) : null;
+      const modelLoading = isJobModelLoading(model, job);
       const remove = job.status === 'downloading'
         ? ''
         : `<button type="button" class="lm-icon-btn tiny df-downloads-remove" data-clear-job="${escapeHtml(job.id)}" title="Remove from last downloads" aria-label="Remove from last downloads">×</button>`;
@@ -184,6 +199,7 @@
         removeButtonHtml: remove,
         loadActionsHtml: loadActionsHtml(job, model),
         selectedClass,
+        modelLoading,
       }) || '';
       return cardHtml;
     }));

@@ -6,6 +6,8 @@
   let transientTimer = null;
   let serversSnapshot = [];
   let externalSnapshot = [];
+  let gpuOtherSnapshot = null;
+  let gpuOtherMissingPolls = 0;
   let pollInFlight = false;
   let latestSnapshotRevision = 0;
   /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
@@ -48,6 +50,8 @@
   function serverIsWarming(server) {
     return !!(server?.warming || server?.booting || server?.status === 'booting');
   }
+
+  let pipelineStandby = true;
 
   function primaryEl() {
     return document.getElementById('statusFeedPrimary');
@@ -111,6 +115,35 @@
       : [server?.active_model_id || server?.label || server?.id || 'Model'];
   }
 
+  function gpuOtherProcessCount() {
+    return gpuOtherSnapshot?.processes?.length || 0;
+  }
+
+  function gpuOtherProcessSuffix() {
+    const count = gpuOtherProcessCount();
+    if (!count) return '';
+    return count === 1 ? ' · 1 process on GPU' : ` · ${count} processes on GPU`;
+  }
+
+  function mergeGpuOtherUsage(block) {
+    const next = block && Array.isArray(block.processes) ? block : null;
+    if (!next) return;
+    if (next.processes.length) {
+      gpuOtherSnapshot = next;
+      gpuOtherMissingPolls = 0;
+      return;
+    }
+    if (!gpuOtherSnapshot?.processes?.length) {
+      gpuOtherSnapshot = next;
+      return;
+    }
+    gpuOtherMissingPolls += 1;
+    if (gpuOtherMissingPolls > 8) {
+      gpuOtherSnapshot = next;
+      gpuOtherMissingPolls = 0;
+    }
+  }
+
   function buildFromServers(servers, externalRows = []) {
     const loading = [];
     const loaded = [];
@@ -141,24 +174,36 @@
       }
     }
     for (const row of Array.isArray(externalRows) ? externalRows : []) {
+      if (pipelineStandby) continue;
       const port = row?.listen_port || row?.port || '—';
       loaded.push(`${externalModelLabel(row)} ready${port !== '—' ? ` on :${port}` : ''}`);
     }
+    const procSuffix = gpuOtherProcessSuffix();
     if (loading.length) {
       return {
-        primary: loading[0],
+        primary: `${loading[0]}${procSuffix}`,
         secondary: loading.length > 1
           ? `Also loading ${loading.length - 1} more`
           : (loaded[0] || ''),
       };
     }
     if (loaded.length === 1) {
-      return { primary: loaded[0], secondary: 'Model loaded — ready for inference' };
+      return {
+        primary: `${loaded[0]}${procSuffix}`,
+        secondary: procSuffix ? '' : 'Model loaded — ready for inference',
+      };
     }
     if (loaded.length > 1) {
       return {
-        primary: `${loaded.length} models loaded`,
+        primary: `${loaded.length} models loaded${procSuffix}`,
         secondary: `${loaded.slice(0, 3).join(' · ')}${loaded.length > 3 ? ` · +${loaded.length - 3} more` : ''}`,
+      };
+    }
+    if (procSuffix) {
+      const count = gpuOtherProcessCount();
+      return {
+        primary: count === 1 ? '1 process on GPU' : `${count} processes on GPU`,
+        secondary: '',
       };
     }
     if (idle.length === 1) {
@@ -213,8 +258,19 @@
       if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) return;
       if (revision > 0) latestSnapshotRevision = revision;
       serversSnapshot = data.servers || [];
-      if (Array.isArray(data.external_gpu_loads)) {
+      pipelineStandby = data.pipeline_standby === true;
+      window.DFlashServerLive?.syncPipelineStandbyFromFeed?.(pipelineStandby);
+      if (Array.isArray(data.external_gpu_loads) && !pipelineStandby) {
         externalSnapshot = data.external_gpu_loads;
+        window.DFlashServerLive?.ingestExternalGpuLoads?.(externalSnapshot, data);
+      } else if (pipelineStandby) {
+        externalSnapshot = [];
+      }
+      if (data.gpu_other_usage && !pipelineStandby) {
+        mergeGpuOtherUsage(data.gpu_other_usage);
+      } else if (pipelineStandby) {
+        gpuOtherSnapshot = { processes: [], total_other_vram_gb: 0 };
+        gpuOtherMissingPolls = 0;
       }
       refreshDisplay();
     } catch {
@@ -248,5 +304,6 @@
     refresh: poll,
     getServers: () => serversSnapshot,
     setPendingLoads,
+    setGpuOtherUsage: mergeGpuOtherUsage,
   };
 })();

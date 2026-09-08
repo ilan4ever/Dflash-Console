@@ -6,7 +6,7 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 
 > **Status:** Public preview for local, single-user Windows use.
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.163
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.208
 
 ## Download (Windows)
 
@@ -80,10 +80,21 @@ Or install the Windows EXE and open the app. The UI is
 
 Typical first session:
 
-1. Open **Engines** and pick **DFlash**, **vLLM**, **Transformers**, or **FreeToken**.
-2. Load a model from the dropdown or the **Models** tab.
+1. Open **Engines**, turn **Running** on, and pick **DFlash**, **vLLM**, **Transformers**, or **FreeToken**.
+2. Load a model from the dropdown or the **Models** tab — a loading card appears immediately.
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
-4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1`.
+4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
+
+### Recent improvements (v0.3.208)
+
+- **Engine standby** — Running toggle gates load/chat until you arm the pipeline
+- **External GPU cards** — OneVoice, LM Studio, and other apps on the GPU; compact mobile layout; loading state expires when models are ready
+- **Other GPU processes** — per-process VRAM chips for non-model apps
+- **Unload fix** — engine card Unload works reliably while the list refreshes
+- **Client identity** — `X-DFlash-Client` header shows **Active client** on each card
+- **VRAM preflight** — load plans suggest which engine to unload first; co-resident 12B+31B pairs on one GPU
+- **HF catalog** — local index for instant Model catalog search
+- **GPU performance mode** — Balanced / Performance / Inference / Power in Settings → Hardware
 
 From a git checkout: copy `config.example.json` to `config.json`, then
 `.\server.ps1`. Full walkthrough: [docs/USER-GUIDE.md](./docs/USER-GUIDE.md).
@@ -175,10 +186,13 @@ Copy `config.example.json` → `config.json` (never commit the live file).
 
 | Setting | Purpose |
 |---------|---------|
-| `servers[]` | llama-server / DFlash GGUF profiles |
+| `servers[]` | llama-server / DFlash GGUF profiles (`engine_on` per profile) |
 | `runtimes[]` | Piper, Whisper, vLLM, Transformers, FreeToken |
 | `model_libraries[]` | Folders scanned for local models |
+| `hardware_settings` | GPU strategy, performance mode, external GPU scan |
+| `runtime_stop_others_on_load` | Unload other Console engines before a new load |
 | `gateway_port` | OpenAI gateway (default 8001) |
+| `ui_layout.engines_card_filter` | Engines filter: both / console / external |
 
 The Console binds to loopback. It is for one trusted user on one PC. Do not
 expose ports 8900 or 8001 to a LAN or the internet without adding your own

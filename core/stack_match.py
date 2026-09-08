@@ -182,6 +182,11 @@ def stack_target_block_reason(path: str | Path) -> dict[str, str] | None:
             'reason_code': 'projector',
             'reason': 'Vision projectors are companion files, not DFlash stack targets.',
         }
+    if 'imatrix' in text:
+        return {
+            'reason_code': 'auxiliary',
+            'reason': 'Importance-matrix files are calibration data, not loadable model weights.',
+        }
     if 'translategemma' in text:
         return {
             'reason_code': 'not-stack-target',

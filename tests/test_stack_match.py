@@ -160,6 +160,7 @@ class StackMatchTests(unittest.TestCase):
     def test_target_candidate_filters(self):
         self.assertFalse(is_target_candidate('translategemma-12b-it.Q4_K_S.gguf'))
         self.assertFalse(is_target_candidate('translategemma-12b-it.mmproj-f16.gguf'))
+        self.assertFalse(is_target_candidate('imatrix-qwen3.8-27b.gguf'))
         self.assertTrue(is_target_candidate('Qwen3.5-27B-Q4_K_M.gguf'))
 
     def test_viable_stack_pair_rejects_cross_family(self):

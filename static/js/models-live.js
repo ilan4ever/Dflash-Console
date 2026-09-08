@@ -2760,6 +2760,7 @@
       models = mergeModelsWithState(models, serversData, loadBrowsePrefs());
       renderFooter(meta);
       renderTable(filter, { force: true });
+      notifyDownloadsLoadState();
     } catch (err) {
       if (!silent) throw err;
     }
@@ -2785,6 +2786,10 @@
     }, 400);
   }
 
+  function notifyDownloadsLoadState() {
+    window.DFlashDownloadsLive?.render?.();
+  }
+
   function markModelLoadPending(model, serverId) {
     const key = modelKey(model);
     pendingModelLoads.set(key, {
@@ -2793,6 +2798,7 @@
     });
     if (serverId) pendingServerLoads.add(serverId);
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    notifyDownloadsLoadState();
     startRuntimePoll();
   }
 
@@ -2804,6 +2810,7 @@
       stopRuntimePoll();
     }
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    notifyDownloadsLoadState();
   }
 
   function markModelUnloadPending(model, serverId) {
@@ -2814,6 +2821,7 @@
     });
     if (serverId) pendingServerUnloads.add(serverId);
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    notifyDownloadsLoadState();
     startRuntimePoll();
   }
 
@@ -2825,6 +2833,7 @@
       stopRuntimePoll();
     }
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    notifyDownloadsLoadState();
   }
 
   async function runAutoSetup() {
@@ -3546,6 +3555,8 @@
     ensureModelForDownload,
     renderLoadActions: stackActionButton,
     modelKey,
+    isStackBooting,
+    isStackUnloading,
     unloadModel,
     openImportToConsoleWizard,
     importModelWithWizard,

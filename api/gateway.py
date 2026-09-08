@@ -190,6 +190,14 @@ async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[st
     return target, upstream
 
 
+def _require_pipeline_active() -> None:
+    cfg = load_config()
+    from core.engine_state import console_pipeline_active, engine_standby_http_error
+
+    if not console_pipeline_active(cfg):
+        raise HTTPException(status_code=503, detail=engine_standby_http_error())
+
+
 @gateway_app.get('/v1/models')
 async def list_models() -> dict[str, Any]:
     cfg = load_config()
@@ -336,6 +344,7 @@ async def _forward_chat(
 
 @gateway_app.post('/v1/chat/completions')
 async def chat_completions(request: Request) -> Response:
+    _require_pipeline_active()
     cfg = load_config()
     model = ''
     payload: Any = None
@@ -394,6 +403,7 @@ async def chat_completions(request: Request) -> Response:
 
 @gateway_app.post('/v1/embeddings')
 async def embeddings(request: Request) -> Response:
+    _require_pipeline_active()
     cfg = load_config()
     server = _embed_server(cfg)
     sid = str(server.get('id') or '')
@@ -403,6 +413,7 @@ async def embeddings(request: Request) -> Response:
 
 @gateway_app.post('/v1/audio/speech')
 async def audio_speech(request: Request) -> Response:
+    _require_pipeline_active()
     cfg = load_config()
     url = f"{_console_base(cfg)}/api/runtimes/piper/v1/audio/speech"
     return await _forward_chat(request, url)
@@ -410,6 +421,7 @@ async def audio_speech(request: Request) -> Response:
 
 @gateway_app.post('/v1/audio/transcriptions')
 async def audio_transcriptions(request: Request) -> Response:
+    _require_pipeline_active()
     cfg = load_config()
     url = f"{_console_base(cfg)}/api/runtimes/stt/v1/audio/transcriptions"
     return await _forward_chat(request, url)

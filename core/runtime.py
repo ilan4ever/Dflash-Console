@@ -25,7 +25,8 @@ _STATUS_PAYLOAD_CACHE: dict[str, Any] = {
 }
 _STATUS_PAYLOAD_REVISION = 0
 _STATUS_EXTERNAL_CACHE: list[dict[str, Any]] = []
-_STATUS_PAYLOAD_LOCK = threading.Lock()
+_STATUS_GPU_OTHER_CACHE: dict[str, Any] = {}
+_STATUS_PAYLOAD_LOCK = threading.RLock()
 _ROUTER_UNLOAD_CACHE: dict[str, tuple[bool, float]] = {}
 _ROUTER_UNLOAD_CACHE_TTL = 300.0
 
@@ -797,6 +798,9 @@ def _build_embedding_server_status(
         )
         if listener_vram_gb is not None:
             card['vram_gb'] = listener_vram_gb
+        gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
+        if gpu_idx is not None:
+            card['gpu_index'] = int(gpu_idx)
         if entry.get('context_size'):
             card['context_size'] = int(entry.get('context_size'))
         if card.get('size_gb') is None and model_path is not None:
@@ -856,6 +860,7 @@ def _build_embedding_server_status(
             'gpu_layers': (entry.get('load_settings') or {}).get('gpu_layers'),
         },
         'active_gpu_index': started.get('main_gpu') if started else launch.get('main_gpu'),
+        'listener_vram_gb': listener_vram_gb,
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(entry, cfg=cfg),
         'inference_stats': inference_stats,
@@ -1139,6 +1144,9 @@ def build_server_status(
         )
         if listener_vram_gb is not None:
             card['vram_gb'] = listener_vram_gb
+        gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
+        if gpu_idx is not None:
+            card['gpu_index'] = int(gpu_idx)
         if server.get('context_size'):
             card['context_size'] = int(server.get('context_size'))
         if card.get('size_gb') is None:
@@ -1205,6 +1213,7 @@ def build_server_status(
             'idle_unload_seconds': int(server.get('idle_unload_minutes') or 0) * 60,
         },
         'active_gpu_index': started.get('main_gpu') if started else launch.get('main_gpu'),
+        'listener_vram_gb': listener_vram_gb,
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
         'inference_stats': inference_stats,
@@ -1233,6 +1242,83 @@ def _cached_external_gpu_loads() -> list[dict[str, Any]]:
         return [dict(row) for row in _STATUS_EXTERNAL_CACHE]
 
 
+def _cached_gpu_other_usage() -> dict[str, Any]:
+    with _STATUS_PAYLOAD_LOCK:
+        if isinstance(_STATUS_GPU_OTHER_CACHE, dict) and _STATUS_GPU_OTHER_CACHE.get('processes'):
+            return dict(_STATUS_GPU_OTHER_CACHE)
+    return {'processes': [], 'by_gpu': [], 'vram_per_process_limited': False}
+
+
+def _store_gpu_other_cache(block: dict[str, Any] | None) -> None:
+    if not isinstance(block, dict):
+        return
+    processes = block.get('processes')
+    if not isinstance(processes, list) or not processes:
+        return
+    with _STATUS_PAYLOAD_LOCK:
+        global _STATUS_GPU_OTHER_CACHE
+        _STATUS_GPU_OTHER_CACHE = dict(block)
+
+
+def _attributed_model_vram_by_gpu(
+    built_servers: list[dict[str, Any]],
+    external_cards: list[dict[str, Any]],
+) -> dict[int, float]:
+    totals: dict[int, float] = {}
+    for server in built_servers:
+        if not isinstance(server, dict):
+            continue
+        for card in server.get('visible_cards') or []:
+            if not isinstance(card, dict):
+                continue
+            gpu_index = card.get('gpu_index')
+            vram_gb = card.get('vram_gb')
+            if gpu_index is None or vram_gb is None:
+                continue
+            try:
+                totals[int(gpu_index)] = totals.get(int(gpu_index), 0.0) + float(vram_gb)
+            except (TypeError, ValueError):
+                continue
+    for card in external_cards:
+        if not isinstance(card, dict):
+            continue
+        gpu_index = card.get('gpu_index')
+        vram_gb = card.get('vram_gb')
+        if gpu_index is None or vram_gb is None:
+            continue
+        try:
+            totals[int(gpu_index)] = totals.get(int(gpu_index), 0.0) + float(vram_gb)
+        except (TypeError, ValueError):
+            continue
+    return totals
+
+
+def _attach_gpu_other_usage(
+    payload: dict[str, Any],
+    *,
+    servers: list[dict[str, Any]],
+    gpus: list[dict[str, Any]] | None = None,
+) -> None:
+    from core.gpu_processes import get_gpu_other_processes
+
+    external_cards = payload.get('external_gpu_loads') if isinstance(payload.get('external_gpu_loads'), list) else []
+    built = payload.get('servers') if isinstance(payload.get('servers'), list) else []
+    try:
+        block = get_gpu_other_processes(
+            servers=servers,
+            gpus=gpus,
+            external_cards=external_cards,
+            attributed_vram_by_gpu=_attributed_model_vram_by_gpu(built, external_cards),
+        )
+        if block.get('processes') or block.get('unattributed_gb'):
+            _store_gpu_other_cache(block)
+            payload['gpu_other_usage'] = block
+        else:
+            payload['gpu_other_usage'] = _cached_gpu_other_usage()
+    except Exception:
+        payload['gpu_other_usage'] = _cached_gpu_other_usage()
+
+
 def _cached_status_payload(include_external: bool) -> dict[str, Any] | None:
     with _STATUS_PAYLOAD_LOCK:
         cached = _STATUS_PAYLOAD_CACHE.get('payload')
@@ -1247,6 +1333,7 @@ def _cached_status_payload(include_external: bool) -> dict[str, Any] | None:
         # snapshot while preserving the last known external GPU rows.
         fallback = dict(cached)
         fallback['external_gpu_loads'] = [dict(row) for row in _STATUS_EXTERNAL_CACHE]
+        fallback['gpu_other_usage'] = _cached_gpu_other_usage()
         return fallback
     return None
 
@@ -1272,6 +1359,11 @@ def _store_status_payload(payload: dict[str, Any], *, include_external: bool) ->
                 _STATUS_EXTERNAL_CACHE.extend(
                     dict(row) for row in rows if isinstance(row, dict)
                 )
+        gpu_other = snapshot.get('gpu_other_usage')
+        if isinstance(gpu_other, dict) and gpu_other.get('processes'):
+            _store_gpu_other_cache(gpu_other)
+        elif _STATUS_GPU_OTHER_CACHE:
+            snapshot['gpu_other_usage'] = dict(_STATUS_GPU_OTHER_CACHE)
         _STATUS_PAYLOAD_CACHE['payload'] = snapshot
         _STATUS_PAYLOAD_CACHE['updated_at'] = float(payload.get('updated_at') or time.time())
         _STATUS_PAYLOAD_CACHE['include_external'] = include_external
@@ -1449,7 +1541,20 @@ def get_status_payload(
         'updated_at': time.time(),
         'stale': False,
     }
-    if include_external:
+    from core.engine_state import console_pipeline_active
+
+    pipeline_active = console_pipeline_active(cfg)
+    payload['pipeline_standby'] = not pipeline_active
+    if include_external and not pipeline_active:
+        payload['external_gpu_loads'] = []
+        payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}
+        _append_status_trace(
+            status_trace,
+            step='external_scan',
+            started_at=time.time(),
+            detail='skipped (engine standby)',
+        )
+    elif include_external:
         external_started = time.time()
         try:
             payload['external_gpu_loads'] = get_external_gpu_loads(
@@ -1484,5 +1589,9 @@ def get_status_payload(
             started_at=time.time(),
             detail='skipped (include_external=0)',
         )
+    if include_external and pipeline_active:
+        _attach_gpu_other_usage(payload, servers=servers, gpus=resolved_gpus)
+    else:
+        payload['gpu_other_usage'] = _cached_gpu_other_usage() if pipeline_active else {'processes': [], 'total_other_vram_gb': 0.0}
     _store_status_payload(payload, include_external=include_external)
     return payload

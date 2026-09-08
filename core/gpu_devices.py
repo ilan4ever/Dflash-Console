@@ -231,23 +231,19 @@ def _pick_single_gpu(
     model_id: str = '',
     context_size: int | None = None,
     required_gb: float | None = None,
+    headroom_gb: float = VRAM_HEADROOM_GB,
 ) -> int:
     ranked = sorted(devices, key=_gpu_preference_score, reverse=True)
-    preferred = ranked[0]
     needed = float(required_gb) if required_gb and required_gb > 0 else estimate_model_vram_gb(
         model_id,
         context_size=context_size,
     )
-    free_pref = preferred.get('vram_free_gb')
-    # Keep the fast card when it still has room (or free VRAM unknown).
-    if free_pref is None or float(free_pref) >= needed:
-        return int(preferred['index'])
-    # Big-job spill: only when the preferred GPU is too full.
-    for alt in ranked[1:]:
-        free_alt = alt.get('vram_free_gb')
-        if free_alt is not None and float(free_alt) >= needed:
-            return int(alt['index'])
-    return int(preferred['index'])
+    budget = needed + max(0.0, float(headroom_gb or 0.0))
+    for device in ranked:
+        free = device.get('vram_free_gb')
+        if free is None or float(free) >= budget:
+            return int(device['index'])
+    return int(ranked[0]['index'])
 
 
 def resolve_auto_gpu_launch(
@@ -257,6 +253,7 @@ def resolve_auto_gpu_launch(
     *,
     context_size: int | None = None,
     required_gb: float | None = None,
+    headroom_gb: float = VRAM_HEADROOM_GB,
 ) -> dict[str, Any]:
     hw = normalize_hardware_settings(hardware)
     devices = _filter_enabled_gpus(list(gpus or query_gpu_devices()), hw)
@@ -268,6 +265,7 @@ def resolve_auto_gpu_launch(
         model_id=model_id,
         context_size=context_size,
         required_gb=required_gb,
+        headroom_gb=headroom_gb,
     )
     strategy = str(hw.get('gpu_strategy') or DEFAULT_HARDWARE_SETTINGS['gpu_strategy'])
 
@@ -287,10 +285,11 @@ def resolve_auto_gpu_launch(
         model_id,
         context_size=context_size,
     )
+    budget = needed + max(0.0, float(headroom_gb or 0.0))
     preferred = next((item for item in devices if int(item['index']) == int(main_gpu)), None)
     if preferred is not None:
         free_pref = preferred.get('vram_free_gb')
-        if free_pref is None or float(free_pref) >= needed:
+        if free_pref is None or float(free_pref) >= budget:
             return {'main_gpu': main_gpu, 'split_mode': 'none', 'tensor_split': ''}
     weights = balanced_split_weights(by_index, strategy, needed)
     return {
@@ -308,6 +307,7 @@ def resolve_role_gpu_launch_params(
     hardware: dict[str, Any] | None = None,
     context_size: int | None = None,
     required_gb: float | None = None,
+    headroom_gb: float = VRAM_HEADROOM_GB,
 ) -> dict[str, Any]:
     raw = str(gpu_device or 'auto').strip().lower()
     if raw in ('', 'auto', 'automatic'):
@@ -317,6 +317,7 @@ def resolve_role_gpu_launch_params(
             hardware,
             context_size=context_size,
             required_gb=required_gb,
+            headroom_gb=headroom_gb,
         )
         return {
             'gpu_device': 'auto',
@@ -334,6 +335,7 @@ def resolve_role_gpu_launch_params(
             hardware,
             context_size=context_size,
             required_gb=required_gb,
+            headroom_gb=headroom_gb,
         )
         return {
             'gpu_device': 'auto',

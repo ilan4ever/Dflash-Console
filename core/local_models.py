@@ -1081,6 +1081,15 @@ def _scan_gguf(
                 library_preset=library_preset,
                 library_label=library_label,
             )
+            try:
+                from core.config import load_config
+                from core.hf_local_match import _extract_hf_repo_from_path
+
+                hf_repo = _extract_hf_repo_from_path(path, load_config())
+                if hf_repo:
+                    row['hf_repo'] = hf_repo
+            except Exception:
+                pass
             rows.append(row)
     except OSError:
         pass

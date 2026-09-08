@@ -764,6 +764,14 @@ body.lm-resizing-sidenav {
   color: #4ade80;
 }
 
+.df-shell .df-downloads-card-stat-primary.is-loading {
+  color: var(--lm-accent-blue);
+}
+
+.df-shell .df-downloads-card.is-model-loading {
+  border-color: color-mix(in srgb, var(--lm-accent-blue) 45%, transparent);
+}
+
 .df-shell .df-downloads-card-stat-primary.is-error {
   color: #f87171;
 }
@@ -1997,6 +2005,89 @@ body.lm-resizing-table-col {
   gap: 4px;
 }
 
+.df-shell .lm-gpu-overhead-card {
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  cursor: default;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.df-shell .lm-gpu-overhead-inline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 0;
+}
+
+.df-shell .lm-gpu-overhead-label {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  line-height: 1.6;
+  padding-top: 1px;
+}
+
+.df-shell .lm-gpu-overhead-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.df-shell .lm-gpu-overhead-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.45);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-gpu-overhead-note {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  opacity: 0.85;
+}
+
+.df-shell .lm-gpu-overhead-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+  padding-left: 0;
+}
+
+.df-shell .lm-gpu-overhead-total {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted, #94a3b8);
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+
+.df-shell .lm-gpu-overhead-sep::before {
+  content: none;
+}
+
+.df-shell .lm-gpu-overhead-sep {
+  margin-top: 10px;
+}
+
 /* Horizontal separator between the DFlash models and the external GPU group. */
 .df-shell .lm-model-card-group-sep {
   height: 0;
@@ -2114,8 +2205,128 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-card-compact.external-gpu .lm-model-card-identity {
-  flex: 0 1 48%;
-  max-width: 52%;
+  flex: 1 1 auto;
+  max-width: none;
+  min-width: 0;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-model-card-top {
+  min-height: 34px;
+  align-items: flex-end;
+  flex-wrap: nowrap;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-center {
+  gap: 0;
+  padding: 0;
+  align-self: center;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-title-row {
+  align-items: center;
+  gap: 8px;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-labels {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+
+.df-shell .lm-external-subline {
+  display: block;
+  width: 100%;
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: rgba(148, 163, 184, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  align-self: flex-end;
+  flex-shrink: 0;
+  margin-left: auto;
+  gap: 0;
+  min-width: 0;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 2px;
+  min-height: 0;
+  min-width: 44px;
+  width: max-content;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col .lm-btn.ghost.small {
+  width: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+}
+
+.df-shell .lm-external-foot-metrics {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  width: 100%;
+}
+
+.df-shell .lm-external-foot-line {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 9px;
+  line-height: 1.15;
+  color: rgba(148, 163, 184, 0.92);
+  white-space: nowrap;
+  width: 100%;
+}
+
+.df-shell .lm-external-foot-lbl {
+  flex: 0 0 auto;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.df-shell .lm-external-foot-val {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.df-shell .lm-external-foot-vram .lm-external-foot-val {
+  color: rgba(186, 210, 235, 0.96);
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-model-stats .lm-btn.ghost.small {
+  min-width: 44px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.df-shell .lm-model-card-compact.external-gpu.selected .lm-external-foot-line,
+.df-shell .lm-model-card-compact.external-gpu.selected .lm-external-foot-val {
+  color: rgba(226, 232, 240, 0.9);
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-labels {
@@ -5250,6 +5461,31 @@ body.lm-resizing-chat-sidebar {
   background: rgba(0, 0, 0, 0.12);
 }
 
+.df-shell .df-chat-standby-banner {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text-secondary, #c8c4bc);
+  background: rgba(255, 180, 50, 0.1);
+  border-bottom: 1px solid rgba(255, 180, 50, 0.22);
+}
+
+.df-shell .df-chat-standby-banner.hidden {
+  display: none;
+}
+
+.df-shell .df-chat-standby-banner .df-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--accent, #e8b84a);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .df-shell .df-chat-toolbar {
   display: flex;
   align-items: center;
@@ -6953,6 +7189,36 @@ body.lm-resizing-chat-sidebar {
   color: rgba(196, 181, 253, 0.72);
 }
 
+.df-shell .lm-model-card-metric.lm-stack-disk .lm-stack-disk-parts {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.df-shell .lm-model-card-metric.lm-stack-disk .lm-stack-disk-part {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-metric.lm-stack-disk .lm-stack-disk-part .lbl {
+  color: rgba(148, 163, 184, 0.85);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.df-shell .lm-model-card-metric.lm-stack-disk .lm-stack-disk-total {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.df-shell .lm-model-card-compact.selected .lm-model-card-metric.lm-stack-disk .lm-stack-disk-total {
+  color: #f8fafc;
+}
+
 /* Keep every side of the DFlash ready-to-load frame exactly one pixel. */
 .df-shell .lm-view[data-view="models"] .lm-model-row.ready-to-load:not(.external-model) td {
   border-color: transparent !important;
@@ -7231,18 +7497,28 @@ body.lm-resizing-chat-sidebar {
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-top {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
     align-items: center;
-    gap: 6px 8px;
+    gap: 2px 6px;
     min-width: 0;
-    min-height: auto;
-    padding: 7px 8px;
+    min-height: 0;
+    padding: 5px 8px 4px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-top:has(.has-token-row) {
+    min-height: 0;
+    padding-top: 5px;
+    padding-bottom: 4px;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center,
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center.has-token-row {
+    display: contents;
     min-width: 0;
     max-width: 100%;
     width: auto;
+    padding: 0;
+    gap: 0;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-tags {
@@ -7250,28 +7526,32 @@ body.lm-resizing-chat-sidebar {
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-title-row {
+    grid-column: 1 / -1;
+    grid-row: 1;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    gap: 4px 6px;
+    gap: 4px;
     min-width: 0;
     width: 100%;
+    min-height: 0;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-path,
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-title-row .lm-model-path,
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-model-path {
     flex: 1 1 auto;
+    display: block;
     width: auto;
     min-width: 0;
     max-width: 100%;
-    white-space: normal;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    overflow: visible;
-    text-overflow: clip;
-    font-size: 12px;
-    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+    overflow-wrap: normal;
+    font-size: 11px;
+    line-height: 1.2;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-identity,
@@ -7280,65 +7560,227 @@ body.lm-resizing-chat-sidebar {
     width: auto;
     max-width: 100%;
     min-width: 0;
+    overflow: hidden;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-name-line {
     display: flex;
-    flex-wrap: wrap;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels {
-    display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
-    gap: 3px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    align-items: center;
+    min-width: 0;
+    max-width: none;
+    overflow: visible;
+    gap: 2px;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge,
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag {
     min-width: 0;
-    padding: 2px 4px;
-    font-size: 8px;
+    padding: 1px 3px;
+    font-size: 7px;
+    line-height: 1.15;
+    flex-shrink: 0;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge.installed,
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-model-card-detail,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-tag.dflash-logo-label {
+  html.df-narrow .df-shell .lm-model-card-compact .lm-tag.dflash-logo-label,
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag-kind {
     display: none;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-stats {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    justify-content: center;
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center-row.lm-model-card-token-row {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+    min-width: 0;
+    max-width: 100%;
     gap: 4px;
+    margin-top: 0;
+    min-height: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-stats {
+    grid-column: 2;
+    grid-row: 2;
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px 5px;
+    width: auto;
+    max-width: 100%;
     min-width: 0;
     margin-left: 0;
     flex-shrink: 0;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric {
-    font-size: 9px;
+    font-size: 8px;
+    line-height: 1.15;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric .lbl,
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-token-metric .lbl {
+    font-size: 7px;
+    margin-right: 2px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric.lm-stack-disk .lm-stack-disk-parts {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 4px;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-stats .lm-btn {
     min-width: 0;
-    padding: 3px 6px;
-    font-size: 10px;
+    min-height: 0;
+    height: auto;
+    padding: 1px 5px;
+    font-size: 8px;
+    line-height: 1.15;
+    flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center-row.lm-model-card-token-row {
+  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-loading-spacer {
+    display: none;
+    min-height: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact > .lm-model-card-load-shell {
+    padding: 4px 8px 3px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    min-width: 0;
+    font-size: 8px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-origin {
+    font-size: 7px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
+    justify-content: flex-end;
+    flex: 1 1 auto;
+    min-width: 0;
+    gap: 4px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge {
+    padding: 1px 5px;
+    font-size: 8px;
+    line-height: 1.15;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-name {
     min-width: 0;
     max-width: 100%;
-    gap: 5px;
-    margin-top: 3px;
     overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 8px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-subline {
+    display: none;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-badge,
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-tag {
+    padding: 1px 3px;
+    font-size: 7px;
+    line-height: 1.15;
+    flex-shrink: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-top {
+    align-items: center;
+    gap: 2px 6px;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-stats {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px 5px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px 5px;
+    align-self: stretch;
+    margin-left: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px 5px;
+    width: auto;
+    min-width: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col .lm-btn.ghost.small {
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    align-self: center;
+    padding: 1px 5px;
+    font-size: 8px;
+    line-height: 1.15;
+    flex-shrink: 0;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-metrics {
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    width: auto;
+  }
+
+  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-line {
+    font-size: 8px;
+    line-height: 1.15;
+    white-space: nowrap;
+    width: auto;
   }
 
   html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-slot-metric-group {
@@ -7368,29 +7810,76 @@ body.lm-resizing-chat-sidebar {
 
   html.df-narrow .df-shell .lm-model-card-external-prompt {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    gap: 4px 8px;
-    padding: 5px 8px;
+    gap: 6px;
+    padding: 3px 8px;
     min-width: 0;
   }
 
   html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-origin {
     flex: 0 0 auto;
+    font-size: 7px;
   }
 
   html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-app-name {
     flex: 1 1 auto;
     min-width: 0;
     max-width: 100%;
-    text-align: left;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 8px;
   }
 
   html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
+    max-width: none;
+    overflow: visible;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-card {
+    padding: 5px 8px 4px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-inline {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-label {
+    width: 100%;
+    padding-top: 0;
+    line-height: 1.2;
+    font-size: 9px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-chips {
+    width: 100%;
+    gap: 3px 5px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-chip {
+    font-size: 9px;
+    line-height: 1.3;
+    padding: 1px 6px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-footer {
+    justify-content: flex-start;
+    margin-top: 2px;
+    gap: 6px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-total {
+    font-size: 9px;
+  }
+
+  html.df-narrow .df-shell .lm-gpu-overhead-sep {
+    margin-top: 6px;
   }
 
   .df-shell .lm-model-card-group-sep {

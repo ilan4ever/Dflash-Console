@@ -111,6 +111,20 @@ class ModelStackTests(unittest.TestCase):
             self.assertEqual(Path(target_row['path']).resolve(), target.resolve())
             self.assertEqual(Path(draft_row['path']).resolve(), draft.resolve())
 
+    def test_file_size_gb_sums_gguf_shards(self):
+        from core.model_stack import _file_size_gb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / 'demo-model-00001-of-00003.gguf'
+            second = root / 'demo-model-00002-of-00003.gguf'
+            third = root / 'demo-model-00003-of-00003.gguf'
+            first.write_bytes(b'1234')
+            second.write_bytes(b'5678')
+            third.write_bytes(b'9')
+            size = _file_size_gb(first)
+            self.assertAlmostEqual(size or 0.0, (1234 + 5678 + 9) / (1024 ** 3), places=6)
+
 
 if __name__ == '__main__':
     unittest.main()

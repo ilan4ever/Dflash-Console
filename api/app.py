@@ -302,6 +302,20 @@ def _request_client_label(request: Request | None) -> str:
     return resolve_client_label(request)
 
 
+def _raise_if_pipeline_standby(cfg: dict[str, Any]) -> None:
+    from core.engine_state import console_pipeline_active, engine_standby_http_error
+
+    if not console_pipeline_active(cfg):
+        raise HTTPException(status_code=503, detail=engine_standby_http_error())
+
+
+def _raise_if_server_engine_off(server_id: str, cfg: dict[str, Any]) -> None:
+    from core.engine_state import engine_standby_http_error, get_engine_state
+
+    if not get_engine_state(server_id, cfg=cfg).get('engine_on'):
+        raise HTTPException(status_code=503, detail=engine_standby_http_error())
+
+
 @app.middleware('http')
 async def no_cache_static_assets(request: Request, call_next):
     response = await call_next(request)
@@ -1414,18 +1428,33 @@ def hf_local_match(
     repo_id: str = Query(..., min_length=3),
     filename: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
-    from core.hf_local_match import find_local_matches
+    from core.hf_local_match import find_local_matches, is_auxiliary_gguf_filename
 
     matches = find_local_matches(repo_id, filename, cfg=load_config())
-    return {'success': True, 'matches': matches, 'installed': bool(matches)}
+    weight_file = not is_auxiliary_gguf_filename(filename)
+    return {
+        'success': True,
+        'matches': matches,
+        'installed': bool(matches) and weight_file,
+        'auxiliary_only': bool(matches) and not weight_file,
+    }
 
 
 @app.get('/api/hf/local-installs')
 def hf_local_installs(repo_id: str = Query(..., min_length=3)) -> dict[str, Any]:
-    from core.hf_local_match import find_repo_local_installs
+    from core.hf_local_match import find_repo_local_installs, is_auxiliary_gguf_filename
 
     matches = find_repo_local_installs(repo_id, cfg=load_config())
-    return {'success': True, 'matches': matches, 'installed': bool(matches)}
+    weight_matches = [
+        row for row in matches
+        if not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
+    ]
+    return {
+        'success': True,
+        'matches': weight_matches,
+        'installed': bool(weight_matches),
+        'auxiliary_only': bool(matches) and not weight_matches,
+    }
 
 
 @app.post('/api/hf/download')
@@ -1629,6 +1658,8 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
     """
     from core.catalog_load import execute_catalog_load
 
+    cfg = load_config()
+    _raise_if_pipeline_standby(cfg)
     result = execute_catalog_load(
         path=body.path,
         model_id=body.model_id,
@@ -1638,7 +1669,7 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
         inference_settings=body.inference_settings,
         requested_runtime_id=body.runtime_id,
         loaded_by=_request_client_label(request),
-        cfg=load_config(),
+        cfg=cfg,
     )
     _invalidate_status_cache()
     return result
@@ -2081,6 +2112,8 @@ def runtime_voices(runtime_id: str) -> dict[str, Any]:
 
 @app.post('/api/runtimes/{runtime_id}/load')
 def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
+    cfg = load_config()
+    _raise_if_pipeline_standby(cfg)
     adapter = _require_runtime_adapter(runtime_id)
     load_fn = getattr(adapter, 'load', None)
     if not callable(load_fn):
@@ -2468,6 +2501,23 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
             'loaded': False,
             'message': 'Embedding engine armed; loads on first embed request.',
         }
+    from core.runtime import tcp_port_open
+    from core.server_boot import adopt_running_engine
+
+    host = str(server.get('host') or '127.0.0.1')
+    port = int(server.get('port') or 0)
+    if port > 0 and tcp_port_open(host, port):
+        adopted = adopt_running_engine(server, cfg=cfg)
+        if adopted.get('success'):
+            note_engine_idle(server_id)
+            _invalidate_status_cache()
+            return {
+                'success': True,
+                'already_running': True,
+                'adopted': bool(adopted.get('adopted')),
+                'port': port,
+                'message': 'Engine already listening.',
+            }
     result = start_router_listener(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
@@ -2621,9 +2671,9 @@ def _ensure_server_ready_for_chat(
 ) -> dict[str, Any]:
     """JIT-load configured checkpoint when chat arrives.
 
-    Auto-starts the engine listener when needed (``engine_off`` only blocks boot
-    restore, not inbound chat). Implements context auto-grow when a request needs
-    more per-slot context than the loaded model provides.
+    Requires the user to turn the engine on in the Console UI first. Implements
+    context auto-grow when a request needs more per-slot context than the loaded
+    model provides.
     """
     import time
 
@@ -2638,6 +2688,8 @@ def _ensure_server_ready_for_chat(
     from core.runtime import build_server_status
 
     started = ensure_engine_listener_for_chat(server, cfg=cfg)
+    if not started.get('success') and str(started.get('reason') or '') == 'engine_off':
+        raise HTTPException(status_code=503, detail=chat_ready_http_error_detail(started))
     if not started.get('success') and str(started.get('error') or '') == 'dflash_stack_repair_required':
         raise HTTPException(status_code=409, detail=started)
     cfg = load_config()
@@ -2894,6 +2946,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
+    _raise_if_server_engine_off(server_id, cfg)
     model_path = None
     model_id = None
     if body:
@@ -3385,6 +3438,8 @@ def _ensure_server_ready_for_embed(
 
     from core.engine_state import note_engine_active_client
     from core.runtime import build_server_status
+
+    _raise_if_server_engine_off(server_id, cfg)
 
     def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
         deadline = time.time() + timeout_seconds

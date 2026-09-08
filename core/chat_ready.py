@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import get_server, load_config
-from core.engine_state import get_engine_state, note_engine_on
+from core.engine_state import ENGINE_STANDBY_USER_MESSAGE, engine_standby_result, get_engine_state, note_engine_on
 from core.runtime import tcp_port_open
 from core.server_boot import ensure_managed_listen_port, listener_is_managed_engine
 
@@ -19,11 +19,7 @@ def _sync_engine_on(server: dict[str, Any], *, cfg: dict[str, Any], server_id: s
 
 
 def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Start the engine listener for inbound chat when it is off or not listening.
-
-    ``engine_off`` only affects Console boot restore. Gateway and JIT chat must
-    not require a manual Engines toggle first.
-    """
+    """Start the engine listener for inbound chat when the user has turned the engine on."""
     from core.config import is_embedding_server
     from core.server_boot import start_router_listener
 
@@ -31,6 +27,10 @@ def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, An
     server_id = str(server.get('id') or '').strip()
     if not server_id or server.get('enabled', True) is False:
         return {'success': False, 'reason': 'disabled'}
+
+    engine_on = get_engine_state(server_id, cfg=config).get('engine_on') is True
+    if not engine_on:
+        return {'success': False, **engine_standby_result()}
 
     host = str(server.get('host') or '127.0.0.1').strip() or '127.0.0.1'
     port = int(server.get('port') or 0)
@@ -53,10 +53,8 @@ def ensure_engine_listener_for_chat(server: dict[str, Any], *, cfg: dict[str, An
         server['api_url'] = str(fresh.get('api_url') or server.get('api_url') or '')
 
     if tcp_port_open(host, port) and listener_is_managed_engine(host, port):
-        _sync_engine_on(server, cfg=config, server_id=server_id)
         return {'success': True, 'reason': 'already_listening', **port_info}
 
-    _sync_engine_on(server, cfg=config, server_id=server_id)
     if is_embedding_server(server):
         return {'success': True, 'reason': 'embedding_deferred'}
     result = start_router_listener(server, cfg=config)
@@ -97,12 +95,6 @@ def assess_server_chat_ready(
     port_open = port > 0 and tcp_port_open(host, port) and listener_is_managed_engine(host, port)
     engine_on = get_engine_state(server_id, cfg=config).get('engine_on') is True
 
-    # Saved engine_off is authoritative only when the listener is down. A live port
-    # means the engine is running — reconcile stale config so UI and chat agree.
-    if not engine_on and port_open:
-        _sync_engine_on(server, cfg=config, server_id=server_id)
-        engine_on = True
-
     if not engine_on:
         return {
             'ready': False,
@@ -111,10 +103,7 @@ def assess_server_chat_ready(
             'reason': 'engine_off',
             'engine_on': False,
             'label': label,
-            'message': (
-                f'The DFlash Console engine for {label} is turned off. '
-                'Turn the engine on in the Console UI before sending chat.'
-            ),
+            'message': ENGINE_STANDBY_USER_MESSAGE,
         }
 
     if port <= 0 or not port_open:

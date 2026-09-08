@@ -29,6 +29,8 @@ from core.runtime import (
 )
 
 _MIN_VRAM_MIB = 32
+_EXTERNAL_LLAMA_LOADING_MAX_S = 300.0
+_EXTERNAL_APP_LOADING_MAX_S = 90.0
 
 # GGUF split-shard naming, e.g. ``Laguna-...-00001-of-00003.gguf``. Only the
 # first shard holds the header (it is tiny), so disk size must sum every part.
@@ -236,6 +238,7 @@ def _model_name_is_loading_placeholder(name: str) -> bool:
 def _external_card_should_show_loading(
     *,
     loading: bool,
+    boot_loading: bool = False,
     model_name: str,
     model_id: str,
     api_url: str,
@@ -244,9 +247,17 @@ def _external_card_should_show_loading(
     speak_stt_ready: bool,
 ) -> bool:
     """Keep loading only when we have a positive boot signal, not just GPU VRAM."""
-    if not loading:
-        return False
     if speak_stt_ready or (model_id and api_url):
+        return False
+    if boot_loading:
+        if _is_llama_server_process(process_name=process_name, command_line=command_line):
+            return True
+        if 'speak_stt.py' in str(command_line or '').lower():
+            return True
+        if _model_name_is_loading_placeholder(model_name):
+            return True
+        return False
+    if not loading:
         return False
     if _model_name_is_loading_placeholder(model_name):
         return True
@@ -901,6 +912,82 @@ def _speak_stt_log_paths(command_line: str = '') -> list[Path]:
     return paths
 
 
+def _read_last_json_log_event(log_path: Path, *, events: tuple[str, ...]) -> tuple[str, str]:
+    """Return (event_name, model) from the last matching JSON log line."""
+    if not log_path.is_file():
+        return '', ''
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return '', ''
+    cap = min(size, _STT_LOG_SCAN_BYTES)
+    event_name = ''
+    model = ''
+    try:
+        with log_path.open('rb') as handle:
+            pos = size
+            carry = b''
+            scanned = 0
+            while pos > 0 and scanned < cap:
+                take = min(_STT_LOG_SCAN_CHUNK, pos, cap - scanned)
+                pos -= take
+                scanned += take
+                handle.seek(pos)
+                data = (handle.read(take) + carry).decode('utf-8', errors='replace')
+                lines = data.split('\n')
+                at_bof = pos == 0
+                if at_bof:
+                    scan_lines = lines
+                    carry = b''
+                else:
+                    scan_lines = lines[1:]
+                    carry = lines[0].encode('utf-8', errors='replace')
+                for line in reversed(scan_lines):
+                    if not any(event in line for event in events):
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    matched = ''
+                    for event in events:
+                        if event in str(row.get('event') or ''):
+                            matched = event
+                            break
+                    if not matched:
+                        continue
+                    detail = row.get('detail')
+                    candidate = ''
+                    if isinstance(detail, dict):
+                        candidate = str(detail.get('model') or detail.get('model_id') or '').strip()
+                    event_name = matched
+                    model = candidate
+                    break
+                if event_name:
+                    break
+    except OSError:
+        return '', ''
+    return event_name, model
+
+
+def _read_speak_stt_boot_state(*, command_line: str = '') -> dict[str, Any]:
+    """Return the latest speak_stt boot event from debug logs."""
+    for path in _speak_stt_log_paths(command_line):
+        event, model = _read_last_json_log_event(
+            path,
+            events=('model-ready', 'model-loading', 'server-start'),
+        )
+        if event:
+            return {
+                'event': event,
+                'model': model,
+                'loading': event == 'model-loading',
+            }
+    return {}
+
+
 def _read_last_json_log_model(log_path: Path, *, events: tuple[str, ...]) -> str:
     """Return the model field from the last matching JSON log event.
 
@@ -970,7 +1057,7 @@ def _read_speak_stt_active_model(*, command_line: str = '', max_age_seconds: flo
         return cached_model
     model = ''
     for path in _speak_stt_log_paths(command_line):
-        model = _read_last_json_log_model(path, events=('model-ready', 'server-start', 'model-loading'))
+        model = _read_last_json_log_model(path, events=('model-ready', 'server-start'))
         if model:
             break
     _STT_MODEL_CACHE[cache_key] = (now, model)
@@ -1027,7 +1114,8 @@ def _probe_onevoice_stt_status(host: str = '127.0.0.1', port: int = 2711, *, tim
     cache_key = f'{host}:{int(port)}'
     now = time.time()
     cached_at, cached = _STT_WS_CACHE.get(cache_key, (0.0, {}))
-    if cached and (now - cached_at) < _STT_WS_CACHE_TTL:
+    ttl = 0.4 if cached.get('loading') else _STT_WS_CACHE_TTL
+    if cached and (now - cached_at) < ttl:
         return dict(cached)
 
     result: dict[str, Any] = {}
@@ -1373,7 +1461,7 @@ def _resolve_external_model_name(
                 model_name = log_model
 
     if not model_name and 'speak_stt.py' in command_line.lower():
-        return 'Loading…', model_path
+        return '', model_path
 
     if 'speak_stt.py' in command_line.lower() and not model_path:
         model_path = _resolve_stt_model_path(model_name, command_line)
@@ -1533,6 +1621,9 @@ def _build_external_card(
     listen_port: int | None = None
     model_path = ''
     loading = False
+    boot_loading = False
+    stt_ws_loaded = False
+    stt_ws_loading = False
 
     listen_ports = _listening_ports_for_pid(pid)
     if any(port in configured_ports for port in listen_ports):
@@ -1552,10 +1643,13 @@ def _build_external_card(
             listen_port = port
             if stt.get('model_loaded'):
                 model_id = str(stt.get('model') or '').strip()
+                stt_ws_loaded = True
                 loading = False
                 break
             if stt.get('loading'):
                 loading = True
+                boot_loading = True
+                stt_ws_loading = True
                 break
             if stt.get('error'):
                 loading = False
@@ -1567,6 +1661,7 @@ def _build_external_card(
                 api_url = str(probe.get('api_url') or f'http://127.0.0.1:{int(port)}/v1')
                 listen_port = port
                 loading = True
+                boot_loading = True
                 break
             continue
         if probe.get('api_url'):
@@ -1584,6 +1679,15 @@ def _build_external_card(
         parent_name=parent_name,
         api_model_id=model_id,
     )
+    if 'speak_stt.py' in command_line.lower() and not stt_ws_loaded:
+        boot = _read_speak_stt_boot_state(command_line=command_line)
+        if boot.get('loading'):
+            boot_loading = True
+            loading = True
+            if str(boot.get('model') or '').strip():
+                model_name = str(boot.get('model') or '').strip()
+        elif boot.get('model') and not model_name:
+            model_name = str(boot.get('model') or '').strip()
     if not str(model_name or '').strip():
         if loading or (vram_mib is not None and float(vram_mib) >= _MIN_VRAM_MIB):
             model_name = 'Loading…'
@@ -1599,10 +1703,14 @@ def _build_external_card(
                 return None
     elif str(model_name).strip().lower().startswith('loading'):
         loading = True
+        boot_loading = True
     speak_stt_ready = (
         'speak_stt.py' in command_line.lower()
         and model_name
         and not str(model_name).strip().lower().startswith('loading')
+        and stt_ws_loaded
+        and not stt_ws_loading
+        and not boot_loading
     )
     if (
         not loading
@@ -1622,6 +1730,7 @@ def _build_external_card(
         loading = True
     loading = _external_card_should_show_loading(
         loading=loading,
+        boot_loading=boot_loading,
         model_name=model_name,
         model_id=model_id,
         api_url=api_url,
@@ -1921,11 +2030,79 @@ def _attach_external_gpu_activity(card: dict[str, Any], *, gpu_live: dict[int, d
     return dict(card)
 
 
+def _resolve_external_card_disk_gb(card: dict[str, Any]) -> float | None:
+    try:
+        existing = card.get('size_gb')
+        if existing is not None:
+            val = float(existing)
+            if val > 0:
+                return round(val, 2)
+    except (TypeError, ValueError):
+        pass
+    model_path = str(card.get('model_path') or card.get('path') or '').strip()
+    command_line = str(card.get('command_line') or '')
+    model_name = str(card.get('model_name') or card.get('title') or '').strip()
+    if not model_path:
+        kind = str(card.get('model_kind') or '').lower()
+        if kind == 'stt' or 'speak_stt' in command_line.lower():
+            model_path = _resolve_stt_model_path(model_name, command_line)
+    if not model_path:
+        return None
+    return _size_gb_from_path(model_path)
+
+
 def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = True) -> list[dict[str, Any]]:
     gpu_live = _gpu_live_map()
+    vram_rows = [
+        {
+            'pid': int(card.get('pid') or 0),
+            'gpu_index': int(card.get('gpu_index') or 0),
+            'vram_gb': card.get('vram_gb'),
+        }
+        for card in cards
+        if int(card.get('pid') or 0) > 0
+    ]
+    vram_by_key: dict[tuple[int, int], float | None] = {}
+    if vram_rows:
+        try:
+            from core.gpu_process_memory_windows import apply_windows_process_vram
+
+            apply_windows_process_vram(vram_rows)
+        except Exception:
+            pass
+        for row in vram_rows:
+            pid = int(row.get('pid') or 0)
+            gpu_index = int(row.get('gpu_index') or 0)
+            if pid > 0:
+                vram_by_key[(pid, gpu_index)] = row.get('vram_gb')
+
     enriched: list[dict[str, Any]] = []
     for card in cards:
         row = _attach_external_gpu_activity(card, gpu_live=gpu_live)
+        pid = int(row.get('pid') or 0)
+        gpu_index = int(row.get('gpu_index') or 0)
+        if pid > 0:
+            enriched_gb = vram_by_key.get((pid, gpu_index))
+            try:
+                enriched_gb_f = float(enriched_gb) if enriched_gb is not None else None
+            except (TypeError, ValueError):
+                enriched_gb_f = None
+            if (enriched_gb_f is None or enriched_gb_f <= 0) and not row.get('vram_gb'):
+                try:
+                    from core.gpu_process_memory_windows import lookup_windows_process_vram_gb
+
+                    fallback_gb = lookup_windows_process_vram_gb(pid, gpu_index)
+                except Exception:
+                    fallback_gb = None
+                if fallback_gb:
+                    enriched_gb_f = float(fallback_gb)
+            if enriched_gb_f is not None and enriched_gb_f > 0 and not row.get('vram_gb'):
+                row['vram_gb'] = enriched_gb_f
+                row['vram_mb'] = round(enriched_gb_f * 1024, 1)
+                row['vram_source'] = 'windows'
+        size_gb = _resolve_external_card_disk_gb(row)
+        if size_gb:
+            row['size_gb'] = size_gb
         if attach_stats:
             row = _attach_external_inference_stats(row)
         enriched.append(row)
@@ -1986,6 +2163,81 @@ def _external_card_path_missing(card: dict[str, Any]) -> bool:
 
 
 _ONEVOICE_STT_PORTS = (2711,)
+_ONEVOICE_WORKER_SCRIPTS = ('speech_hermes_ws.py',)
+
+
+def _speak_stt_card_signal(*, command_line: str, port: int) -> dict[str, Any]:
+    """Return STT status only when a model is loading, loaded, or recently booted."""
+    stt = _probe_onevoice_stt_status('127.0.0.1', port)
+    if stt.get('model_loaded') or stt.get('loading'):
+        return stt
+    boot = _read_speak_stt_boot_state(command_line=command_line)
+    if boot.get('loading'):
+        return {'loading': True, 'model': boot.get('model')}
+    if boot.get('event') == 'model-ready' and str(boot.get('model') or '').strip():
+        return {'model_loaded': True, 'model': str(boot.get('model') or '').strip()}
+    return {}
+
+
+def _discover_onevoice_worker_cards(
+    *,
+    compute_rows: list[dict[str, Any]],
+    gpus: list[dict[str, Any]],
+    managed_pids: set[int],
+    configured_ports: set[int],
+    dflash_root: str,
+    seen_pids: set[int],
+) -> list[dict[str, Any]]:
+    """Find OneVoice GPU workers before nvidia-smi reports VRAM usage."""
+    try:
+        import psutil
+    except ImportError:
+        return []
+
+    compute_by_pid = {
+        int(row['pid']): row
+        for row in compute_rows
+        if int(row.get('pid') or 0) > 0
+    }
+    cards: list[dict[str, Any]] = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        info = proc.info if isinstance(proc.info, dict) else {}
+        try:
+            pid = int(info.get('pid') or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid <= 0 or pid in seen_pids or pid in managed_pids:
+            continue
+        cmd_parts = info.get('cmdline') or []
+        command_line = ' '.join(str(part) for part in cmd_parts)
+        hay = command_line.lower()
+        if 'speak_stt.py' in hay:
+            continue
+        if not any(script.lower() in hay for script in _ONEVOICE_WORKER_SCRIPTS):
+            continue
+        entry = dict(compute_by_pid.get(pid) or {
+            'pid': pid,
+            'gpu_index': 0,
+            'vram_mb': None,
+            'vram_gb': None,
+            'process_name': str(info.get('name') or 'python.exe'),
+        })
+        details_map = _query_process_details([pid])
+        card = _build_external_card(
+            entry,
+            details=details_map.get(pid, {}),
+            gpus=gpus,
+            managed_pids=managed_pids,
+            configured_ports=configured_ports,
+            dflash_root=dflash_root,
+        )
+        if not card:
+            continue
+        if pid not in compute_by_pid and str(card.get('card_state') or '').lower() != 'loading':
+            continue
+        cards.append(card)
+        seen_pids.add(pid)
+    return cards
 
 
 def _retain_alive_external_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2043,6 +2295,8 @@ def _discover_speak_stt_listener_cards(
         ).lower()
         if 'speak_stt' not in hay:
             continue
+        if not _speak_stt_card_signal(command_line=str(details.get('command_line') or ''), port=port):
+            continue
         entry = {
             'pid': pid,
             'gpu_index': 0,
@@ -2065,6 +2319,43 @@ def _discover_speak_stt_listener_cards(
     return cards
 
 
+def _apply_external_loading_ttl(
+    cards: list[dict[str, Any]],
+    prev_cards: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Stop external cards from staying in loading forever once boot signals go stale."""
+    now = time.time()
+    prev_by_id = {
+        str(card.get('id') or ''): card
+        for card in (prev_cards or [])
+        if isinstance(card, dict)
+    }
+    out: list[dict[str, Any]] = []
+    for card in cards:
+        row = dict(card)
+        card_id = str(row.get('id') or '')
+        state = str(row.get('card_state') or '').lower()
+        title = str(row.get('title') or row.get('model_name') or '')
+        if state != 'loading':
+            row.pop('loading_since', None)
+            out.append(row)
+            continue
+        prev = prev_by_id.get(card_id) or {}
+        since = float(prev.get('loading_since') or now) if card_id in prev_by_id else now
+        row['loading_since'] = since
+        llama = _is_llama_server_process(
+            process_name=str(row.get('process_name') or ''),
+            command_line=str(row.get('command_line') or ''),
+        )
+        max_age = _EXTERNAL_LLAMA_LOADING_MAX_S if llama else _EXTERNAL_APP_LOADING_MAX_S
+        if (now - since) >= max_age and not _model_name_is_loading_placeholder(title):
+            row['card_state'] = 'ready'
+            row['ejectable'] = True
+            row.pop('loading_since', None)
+        out.append(row)
+    return out
+
+
 def get_external_gpu_loads(
     *,
     servers: list[dict[str, Any]] | None = None,
@@ -2082,22 +2373,36 @@ def get_external_gpu_loads(
     if hardware.get('detect_external_gpu_loads') is False:
         return []
 
+    try:
+        from core.config import load_config as _load_config
+        from core.engine_state import console_pipeline_active
+
+        resolved_cfg = cfg if cfg is not None else _load_config()
+    except Exception:
+        resolved_cfg = cfg or {}
+    if not console_pipeline_active(resolved_cfg):
+        return []
+
     now = time.time()
     cached_cards = _EXTERNAL_SCAN_CACHE.get('cards')
     cached_at = float(_EXTERNAL_SCAN_CACHE.get('at') or 0.0)
+    cached_loading = isinstance(cached_cards, list) and any(
+        str(card.get('card_state') or '').lower() == 'loading'
+        for card in cached_cards
+        if isinstance(card, dict)
+    )
+    scan_interval = 0.75 if cached_loading else _EXTERNAL_SCAN_MIN_INTERVAL
     if (
         isinstance(cached_cards, list)
         and cached_cards
-        and (now - cached_at) < _EXTERNAL_SCAN_MIN_INTERVAL
+        and not cached_loading
+        and (now - cached_at) < scan_interval
     ):
         return _enrich_external_cards([dict(row) for row in cached_cards], attach_stats=not fast)
 
     compute_rows = _query_compute_apps()
-    if not compute_rows:
-        return []
-
-    pids = [int(row['pid']) for row in compute_rows]
-    details_map = _query_process_details(pids)
+    pids = [int(row['pid']) for row in compute_rows if int(row.get('pid') or 0) > 0]
+    details_map = _query_process_details(pids) if pids else {}
     managed_pids = _managed_listener_pids(servers)
     configured_ports = {
         int(server.get('port') or 0)
@@ -2153,6 +2458,20 @@ def get_external_gpu_loads(
         seen_ids.add(card_id)
         cards.append(card)
 
+    for card in _discover_onevoice_worker_cards(
+        compute_rows=compute_rows,
+        gpus=gpus,
+        managed_pids=managed_pids,
+        configured_ports=configured_ports,
+        dflash_root=dflash_root,
+        seen_pids=seen_pids,
+    ):
+        card_id = str(card.get('id') or '')
+        if card_id in seen_ids:
+            continue
+        seen_ids.add(card_id)
+        cards.append(card)
+
     cards = _dedupe_external_cards(cards)
     # Never show a card for a model file that no longer exists on disk (e.g.
     # after the file was moved or deleted) — a card for a missing file is
@@ -2163,6 +2482,9 @@ def get_external_gpu_loads(
         if isinstance(prev, list) and prev:
             cards = _retain_alive_external_cards(prev)
     cards.sort(key=lambda item: (-float(item.get('vram_mb') or 0), str(item.get('title') or '')))
+    prev_cards = _EXTERNAL_SCAN_CACHE.get('cards')
+    prev_list = prev_cards if isinstance(prev_cards, list) else []
+    cards = _apply_external_loading_ttl(cards, prev_list)
     _EXTERNAL_SCAN_CACHE['at'] = time.time()
     _EXTERNAL_SCAN_CACHE['cards'] = [dict(card) for card in cards]
     return _enrich_external_cards(cards, attach_stats=not fast)
@@ -2171,6 +2493,334 @@ def get_external_gpu_loads(
 def _forget_external_scan() -> None:
     _EXTERNAL_SCAN_CACHE['at'] = 0.0
     _EXTERNAL_SCAN_CACHE['cards'] = []
+
+
+def _model_card_pids(
+    *,
+    servers: list[dict[str, Any]],
+    external_cards: list[dict[str, Any]],
+    compute_rows: list[dict[str, Any]] | None = None,
+    details_map: dict[int, dict[str, Any]] | None = None,
+) -> set[int]:
+    pids = set(_managed_listener_pids(servers))
+    for card in external_cards:
+        if not isinstance(card, dict):
+            continue
+        pid = int(card.get('pid') or 0)
+        if pid > 0:
+            pids.add(pid)
+
+    managed = set(pids)
+    rows = compute_rows or []
+    details = details_map or {}
+    for row in rows:
+        pid = int(row.get('pid') or 0)
+        if pid <= 0:
+            continue
+        detail = details.get(pid, {})
+        process_name = str(detail.get('process_name') or row.get('process_name') or '')
+        command_line = str(detail.get('command_line') or '')
+        parent_pid = int(detail.get('parent_pid') or 0)
+        if parent_pid in managed:
+            pids.add(pid)
+            continue
+        if _is_llama_server_process(process_name=process_name, command_line=command_line):
+            if '.gguf' in command_line.lower() or re.search(r'(?:^|\s)(?:-m|--model)\b', command_line, re.I):
+                pids.add(pid)
+    return pids
+
+
+def _should_show_other_gpu_process(
+    *,
+    process_name: str,
+    command_line: str,
+    parent_name: str,
+    pid: int,
+    model_pids: set[int],
+) -> bool:
+    """Show GPU compute PIDs that are not already represented on a model card."""
+    if pid in model_pids:
+        return False
+    if str(process_name or '').strip().startswith('['):
+        return False
+    if _is_lmstudio_chromium_helper(command_line):
+        return False
+    hay = f'{process_name} {command_line}'.replace('\\', '/').lower()
+    if _ELECTRON_UI.search(process_name) and 'dflash-console' in hay:
+        return False
+    return True
+
+
+def _expand_model_pids_from_external_cards(
+    external_cards: list[dict[str, Any]],
+    *,
+    compute_rows: list[dict[str, Any]],
+    details_map: dict[int, dict[str, Any]],
+) -> set[int]:
+    """Include STT / external worker PIDs so they are not duplicated in Other GPU."""
+    extra: set[int] = set()
+    for card in external_cards:
+        if not isinstance(card, dict):
+            continue
+        pid = int(card.get('pid') or 0)
+        if pid > 0:
+            extra.add(pid)
+        try:
+            extra.update(_related_external_compute_pids(pid, cached=card, matching=None))
+        except Exception:
+            continue
+    for row in compute_rows:
+        pid = int(row.get('pid') or 0)
+        if pid <= 0:
+            continue
+        details = details_map.get(pid, {})
+        process_name = str(details.get('process_name') or row.get('process_name') or '')
+        command_line = str(details.get('command_line') or '')
+        if _is_llama_server_process(process_name=process_name, command_line=command_line):
+            if '.gguf' in command_line.lower() or re.search(r'(?:^|\s)(?:-m|--model)\b', command_line, re.I):
+                extra.add(pid)
+    return extra
+
+
+def _other_gpu_process_label(
+    *,
+    process_name: str,
+    command_line: str,
+    parent_name: str,
+) -> tuple[str, str]:
+    app_source, app_label = _classify_app(
+        process_name=process_name,
+        command_line=command_line,
+        parent_name=parent_name,
+    )
+    proc = str(process_name or '').replace('\\', '/').split('/')[-1]
+    if proc.lower().endswith('.exe'):
+        proc = proc[:-4]
+    if _DESKTOP_NOISE.search(str(process_name or '')):
+        return proc or str(process_name or 'Desktop'), 'Desktop'
+    title = _generic_workload_title(
+        process_name=process_name,
+        command_line=command_line,
+        parent_name=parent_name,
+        app_label=app_label,
+    )
+    if title and title.lower() not in {'python', 'pythonw', 'gpu workload'}:
+        return title, app_label
+    if proc and proc.lower() not in {'python', 'pythonw'}:
+        return proc, app_label
+    if app_label and app_label.lower() not in {'python', 'pythonw'}:
+        return app_label, app_label
+    return proc or app_label or 'GPU process', app_label
+
+
+def get_gpu_other_processes(
+    *,
+    servers: list[dict[str, Any]] | None = None,
+    gpus: list[dict[str, Any]] | None = None,
+    external_cards: list[dict[str, Any]] | None = None,
+    attributed_vram_by_gpu: dict[int, float] | None = None,
+) -> dict[str, Any]:
+    """Non-model GPU compute processes (desktop, app servers, Electron, etc.)."""
+    servers = servers or []
+    external_cards = external_cards or []
+    if gpus is None:
+        from core.gpu_devices import query_gpu_devices
+
+        gpus = query_gpu_devices()
+
+    compute_rows = _query_compute_apps()
+    if not compute_rows:
+        return {
+            'processes': [],
+            'by_gpu': [],
+            'vram_per_process_limited': False,
+            'unattributed_gb': None,
+            'total_other_vram_gb': None,
+            'total_other_vram_partial': False,
+        }
+
+    pids = [int(row['pid']) for row in compute_rows if int(row.get('pid') or 0) > 0]
+    details_map = _query_process_details(pids)
+    gpu_lookup = {
+        int(gpu.get('index', -1)): gpu
+        for gpu in gpus
+        if isinstance(gpu, dict) and gpu.get('index') is not None
+    }
+
+    model_pids = _model_card_pids(
+        servers=servers,
+        external_cards=external_cards,
+        compute_rows=compute_rows,
+        details_map=details_map,
+    )
+    model_pids |= _expand_model_pids_from_external_cards(
+        external_cards,
+        compute_rows=compute_rows,
+        details_map=details_map,
+    )
+
+    processes: list[dict[str, Any]] = []
+    known_vram_count = 0
+    other_vram_by_gpu: dict[int, float] = {}
+
+    for row in compute_rows:
+        pid = int(row.get('pid') or 0)
+        if pid <= 0:
+            continue
+        details = details_map.get(pid, {})
+        process_name = str(details.get('process_name') or row.get('process_name') or '')
+        command_line = str(details.get('command_line') or '')
+        parent_name = str(details.get('parent_process_name') or '')
+        if not _should_show_other_gpu_process(
+            process_name=process_name,
+            command_line=command_line,
+            parent_name=parent_name,
+            pid=pid,
+            model_pids=model_pids,
+        ):
+            continue
+        label, app_label = _other_gpu_process_label(
+            process_name=process_name,
+            command_line=command_line,
+            parent_name=parent_name,
+        )
+        gpu_index = int(row.get('gpu_index') or 0)
+        gpu = gpu_lookup.get(gpu_index, {})
+        gpu_display = str(
+            gpu.get('display_name')
+            or gpu.get('name')
+            or f'GPU {gpu_index}'
+        ).strip()
+
+        vram_mb = row.get('vram_mb')
+        vram_gb = row.get('vram_gb')
+        try:
+            vram_gb_f = float(vram_gb) if vram_gb is not None else None
+        except (TypeError, ValueError):
+            vram_gb_f = None
+        if vram_gb_f is not None and vram_gb_f > 0:
+            known_vram_count += 1
+            other_vram_by_gpu[gpu_index] = other_vram_by_gpu.get(gpu_index, 0.0) + vram_gb_f
+
+        processes.append({
+            'pid': pid,
+            'gpu_index': gpu_index,
+            'gpu_display': gpu_display,
+            'label': label,
+            'app_label': app_label,
+            'process_name': process_name,
+            'command_line': command_line[:240] if command_line else '',
+            'vram_mb': vram_mb,
+            'vram_gb': vram_gb_f,
+        })
+
+    processes.sort(
+        key=lambda item: (
+            int(item.get('gpu_index') or 0),
+            -float(item.get('vram_mb') or 0),
+            str(item.get('label') or '').lower(),
+        )
+    )
+
+    vram_process_source = 'nvidia' if known_vram_count > 0 else None
+    if known_vram_count == 0 and processes:
+        from core.gpu_process_memory_windows import apply_windows_process_vram
+
+        if apply_windows_process_vram(processes):
+            vram_process_source = 'windows'
+            known_vram_count = 0
+            other_vram_by_gpu = {}
+            for proc in processes:
+                try:
+                    vram_gb_f = float(proc.get('vram_gb') or 0)
+                except (TypeError, ValueError):
+                    vram_gb_f = 0.0
+                if vram_gb_f <= 0:
+                    continue
+                known_vram_count += 1
+                gpu_index = int(proc.get('gpu_index') or 0)
+                other_vram_by_gpu[gpu_index] = other_vram_by_gpu.get(gpu_index, 0.0) + vram_gb_f
+            processes.sort(
+                key=lambda item: (
+                    int(item.get('gpu_index') or 0),
+                    -float(item.get('vram_mb') or 0),
+                    str(item.get('label') or '').lower(),
+                )
+            )
+
+    attributed = {
+        int(key): float(value)
+        for key, value in (attributed_vram_by_gpu or {}).items()
+        if value is not None
+    }
+    by_gpu: list[dict[str, Any]] = []
+    for gpu in gpus:
+        if not isinstance(gpu, dict):
+            continue
+        gpu_index = int(gpu.get('index', -1))
+        if gpu_index < 0:
+            continue
+        used_gb = gpu.get('vram_used_gb')
+        try:
+            used_gb_f = float(used_gb) if used_gb is not None else None
+        except (TypeError, ValueError):
+            used_gb_f = None
+        model_gb = attributed.get(gpu_index, 0.0)
+        other_gb = other_vram_by_gpu.get(gpu_index, 0.0)
+        unattributed_gb = None
+        if used_gb_f is not None and used_gb_f > 0:
+            remainder = round(used_gb_f - model_gb - other_gb, 2)
+            if remainder > 0.05:
+                unattributed_gb = remainder
+        by_gpu.append({
+            'gpu_index': gpu_index,
+            'gpu_display': str(
+                gpu.get('display_name') or gpu.get('name') or f'GPU {gpu_index}'
+            ).strip(),
+            'vram_used_gb': used_gb_f,
+            'vram_total_gb': gpu.get('vram_gb'),
+            'model_vram_gb': round(model_gb, 2) if model_gb > 0 else None,
+            'other_vram_gb': round(other_gb, 2) if other_gb > 0 else None,
+            'unattributed_gb': unattributed_gb,
+            'process_count': sum(
+                1
+                for item in processes
+                if item.get('gpu_index') is not None
+                and int(item.get('gpu_index')) == gpu_index
+            ),
+        })
+
+    total_unattributed = 0.0
+    for summary in by_gpu:
+        try:
+            total_unattributed += float(summary.get('unattributed_gb') or 0)
+        except (TypeError, ValueError):
+            continue
+
+    total_other_vram = 0.0
+    known_vram_processes = 0
+    for proc in processes:
+        try:
+            vram_gb_f = float(proc.get('vram_gb') or 0)
+        except (TypeError, ValueError):
+            continue
+        if vram_gb_f > 0:
+            total_other_vram += vram_gb_f
+            known_vram_processes += 1
+
+    vram_per_process_limited = known_vram_count == 0 and bool(processes)
+
+    return {
+        'processes': processes,
+        'by_gpu': by_gpu,
+        'vram_per_process_limited': vram_per_process_limited,
+        'vram_process_source': vram_process_source,
+        'unattributed_gb': round(total_unattributed, 2) if total_unattributed > 0.05 else None,
+        'total_other_vram_gb': round(total_other_vram, 3) if total_other_vram > 0 else None,
+        'total_other_vram_partial': (
+            known_vram_processes > 0 and known_vram_processes < len(processes)
+        ),
+    }
 
 
 def _related_external_compute_pids(

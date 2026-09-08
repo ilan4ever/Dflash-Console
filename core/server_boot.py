@@ -19,7 +19,7 @@ from core.config import (
     normalize_load_settings,
     normalize_server,
 )
-from core.gpu_devices import resolve_role_gpu_launch_params
+from core.memory_guardrails import plan_engine_gpu_launch
 from core.log_utils import rotate_log
 from core.model_presets import (
     infer_profile_from_path,
@@ -287,12 +287,7 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
             'error': 'configured port is open but does not expose a compatible model API',
         }
 
-    launch = resolve_role_gpu_launch_params(
-        entry.get('gpu_device'),
-        model_id=entry.get('model_id'),
-        hardware=(cfg or {}).get('hardware_settings'),
-        context_size=entry.get('context_size'),
-    )
+    launch = plan_engine_gpu_launch(entry, cfg or {})
     if is_embedding_server(entry):
         from core.embedding_server import _launch_signature as embedding_launch_signature
 
@@ -566,12 +561,7 @@ def _start_router_listener_locked(
         note_boot_cycle_end(port)
         return {'success': False, 'error': bind_error or f'port {port} unavailable', 'port': port}
 
-    launch = resolve_role_gpu_launch_params(
-        entry.get('gpu_device'),
-        model_id=model_id,
-        hardware=(cfg or {}).get('hardware_settings'),
-        context_size=entry.get('context_size'),
-    )
+    launch = plan_engine_gpu_launch(entry, cfg or {})
     signature = _launch_signature(entry, launch, cfg=cfg)
 
     try:
@@ -1734,12 +1724,7 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
     if not model_id:
         return {'success': False, 'error': 'model_id required'}
 
-    launch = resolve_role_gpu_launch_params(
-        entry.get('gpu_device'),
-        model_id=model_id,
-        hardware=(cfg or {}).get('hardware_settings'),
-        context_size=entry.get('context_size'),
-    )
+    launch = plan_engine_gpu_launch(entry, cfg or {})
     signature = _launch_signature(entry, launch, cfg=cfg)
     port_info = ensure_managed_listen_port(entry, cfg=cfg)
     if not port_info.get('success'):

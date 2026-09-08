@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 from core.config import get_dflash_root
 from core.model_paths import get_models_root
+
+_MODEL_SHARD_RE = re.compile(
+    r'^(?P<prefix>.+?)(?:[-_])\d{5}-of-\d{5}(?P<suffix>\.[^.]+)$',
+    re.IGNORECASE,
+)
 
 
 def _lmstudio_models_dir() -> Path:
@@ -39,11 +45,25 @@ def _resolve_gemma_draft_path(models: Path, root: Path, filename: str) -> Path:
 
 def _file_size_gb(path: Path) -> float | None:
     try:
-        if path.is_file():
-            return round(path.stat().st_size / (1024 ** 3), 2)
+        if not path.is_file():
+            return None
+        match = _MODEL_SHARD_RE.match(path.name)
+        if match:
+            pattern = re.compile(
+                rf'^{re.escape(match.group("prefix"))}(?:[-_])\d{{5}}-of-\d{{5}}'
+                rf'{re.escape(match.group("suffix"))}$',
+                re.IGNORECASE,
+            )
+            shard_total = sum(
+                item.stat().st_size
+                for item in path.parent.iterdir()
+                if item.is_file() and pattern.match(item.name)
+            )
+            if shard_total:
+                return round(shard_total / (1024 ** 3), 2)
+        return round(path.stat().st_size / (1024 ** 3), 2)
     except OSError:
-        pass
-    return None
+        return None
 
 
 def _basename_id(path: Path) -> str:

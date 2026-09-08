@@ -16,6 +16,20 @@
 - **Split evenly** — distribute layers evenly
 - **Split by VRAM** — distribute according to available VRAM
 
+## GPU performance mode
+- **Balanced** — default VRAM headroom for desktop use
+- **Performance** — tighter headroom for dedicated inference boxes
+- **Inference** — optimized for multi-engine loads on one GPU
+- **Power** — conservative limits for laptops or shared desktops
+
+Saved in `hardware_settings.gpu_performance_mode`. Load-plan checks and VRAM
+warnings use this mode.
+
+## External GPU scan
+- **Detect external GPU loads** (`hardware_settings.detect_external_gpu_loads`) —
+  when enabled, **Engines** scans for models loaded outside Console. Turn off if
+  you only want Console-managed cards.
+
 ## Live monitor
 - RAM + VRAM usage bar
 - CPU usage bar

@@ -835,7 +835,16 @@ def _catalog_file_sort_key(row: dict[str, Any]) -> tuple[int, int, int, int]:
 def _preferred_gguf_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not files:
         return None
-    return min(files, key=_catalog_file_sort_key)
+    from core.hf_local_match import is_auxiliary_gguf_filename
+
+    pool = [
+        row for row in files
+        if str(row.get('format')) == 'gguf'
+        and not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
+    ]
+    if not pool:
+        return None
+    return min(pool, key=_catalog_file_sort_key)
 
 
 def _size_from_preferred_file(preferred: dict[str, Any] | None) -> tuple[float | None, str]:
@@ -1883,7 +1892,7 @@ def _finalize_search_models(
                 row['size_gb'] = float(cached_model['size_gb'])
             if isinstance(cached_model.get('size_bytes'), int):
                 row['size_bytes'] = cached_model['size_bytes']
-    annotate_models_local_installs(models, cfg=config, skip=bool(needle.strip()))
+    annotate_models_local_installs(models, cfg=config)
     if cat_key == 'dflash':
         models = [
             row for row in models
@@ -2504,12 +2513,17 @@ def get_model_detail(
             description = _description_from_readme(readme, limit=320)
 
     from core.config import load_config
-    from core.hf_local_match import find_repo_local_installs, is_catalog_ready_to_load, local_installs_for_files
+    from core.hf_local_match import (
+        find_repo_local_installs,
+        is_catalog_ready_to_load,
+        local_installs_for_files,
+    )
 
     config = load_config()
     filenames = [str(item.get('filename') or '') for item in files if item.get('filename')]
     local_installs = local_installs_for_files(repo, filenames, cfg=config)
-    repo_installs = find_repo_local_installs(repo, cfg=config)
+    all_repo_installs = find_repo_local_installs(repo, cfg=config, weights_only=False)
+    weight_repo_installs = find_repo_local_installs(repo, cfg=config, weights_only=True)
 
     from core.hf_model_fit import assess_hf_model_fit
 
@@ -2528,7 +2542,8 @@ def get_model_detail(
             size_gb=float(preferred['size_gb']) if preferred and isinstance(preferred.get('size_gb'), (int, float)) else summary.get('size_gb'),
         ),
         'local_installs': local_installs,
-        'local_ready': bool(repo_installs),
+        'local_ready': bool(weight_repo_installs),
+        'local_auxiliary_only': bool(all_repo_installs) and not weight_repo_installs,
         'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
         'readme': readme,
         'readme_pending': bool(readme_pending) and not bool(str(readme or '').strip()),

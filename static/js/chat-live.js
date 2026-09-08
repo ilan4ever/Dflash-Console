@@ -19,6 +19,15 @@
   let generationPollInFlight = false;
   let chatRenderFrame = null;
   let pendingAttachments = [];
+  let pipelineStandby = true;
+
+  const ENGINE_STANDBY_MSG = (
+    'Engines are off. Open the Engines tab and turn on the engine toggle before loading or using models.'
+  );
+
+  function consolePipelineActive() {
+    return !pipelineStandby;
+  }
 
   const MAX_ATTACHMENTS = 5;
   const MAX_TEXT_FILE_BYTES = 250 * 1024;
@@ -615,6 +624,22 @@
       allServers = (serversData.all_servers || []).filter((s) => s.enabled !== false);
     }
     serverById = new Map(allServers.map((s) => [s.id, s]));
+    if (typeof serversData?.pipeline_standby === 'boolean') {
+      pipelineStandby = serversData.pipeline_standby;
+    } else {
+      pipelineStandby = !allServers.some((s) => s.engine_on === true);
+    }
+    renderStandbyBanner();
+  }
+
+  function renderStandbyBanner() {
+    const banner = document.getElementById('chatStandbyBanner');
+    if (!banner) return;
+    banner.classList.toggle('hidden', consolePipelineActive());
+  }
+
+  function gotoEnginesTab() {
+    window.DFlashShell?.setView?.('server');
   }
 
   async function refreshCatalog({ force = false } = {}) {
@@ -1038,6 +1063,23 @@
     const clearBtn = document.getElementById('chatClearBtn');
     const attachBtn = document.getElementById('chatAttachBtn');
     const session = activeSession();
+    renderStandbyBanner();
+
+    if (!consolePipelineActive()) {
+      if (input) {
+        input.disabled = true;
+        input.placeholder = ENGINE_STANDBY_MSG;
+      }
+      if (sendBtn) sendBtn.disabled = true;
+      if (loadBtn) {
+        loadBtn.disabled = true;
+        loadBtn.title = ENGINE_STANDBY_MSG;
+      }
+      if (clearBtn) clearBtn.disabled = !session?.messages?.length;
+      if (attachBtn) attachBtn.disabled = true;
+      return;
+    }
+
     const engine = chatReadyEngine();
     const selectedModel = selectedCatalogModel();
     const selectedState = modelLoadState(selectedModel);
@@ -1289,6 +1331,10 @@
   }
 
   async function loadCheckpoint() {
+    if (!consolePipelineActive()) {
+      toast(ENGINE_STANDBY_MSG, false);
+      return;
+    }
     const model = selectedCatalogModel();
     const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
     if ((loadEngine === 'vllm' || loadEngine === 'transformers') && model) {
@@ -1489,6 +1535,11 @@
     const session = activeSession();
     if (!input || !session || sending) return;
 
+    if (!consolePipelineActive()) {
+      toast(ENGINE_STANDBY_MSG, false);
+      return;
+    }
+
     const text = String(input.value || '').trim();
     const attachments = pendingAttachments.slice();
     if (!text && !attachments.length) return;
@@ -1625,6 +1676,7 @@
     });
     document.getElementById('chatSendBtn')?.addEventListener('click', () => void sendMessage());
     document.getElementById('chatLoadBtn')?.addEventListener('click', () => void loadCheckpoint());
+    document.getElementById('chatGotoEnginesBtn')?.addEventListener('click', gotoEnginesTab);
     setupChatSidebarResize();
 
     document.getElementById('chatEnginePick')?.addEventListener('change', () => {

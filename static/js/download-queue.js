@@ -513,7 +513,13 @@
     };
   }
 
-  function renderDownloadCardHtml(job, { variant = 'panel', removeButtonHtml = '', loadActionsHtml = '', selectedClass = '' } = {}) {
+  function renderDownloadCardHtml(job, {
+    variant = 'panel',
+    removeButtonHtml = '',
+    loadActionsHtml = '',
+    selectedClass = '',
+    modelLoading = false,
+  } = {}) {
     const meta = getJobMeta(job);
     const diskBytes = Number(job?.disk_bytes);
     const hasDiskBytes = Number.isFinite(diskBytes) && diskBytes > 0;
@@ -540,20 +546,24 @@
       ? `${formatBytes(readBytes)} on disk`
       : (meta.sizeLabel || (totalBytes ? formatBytes(totalBytes) : ''));
     const sizeStat = displaySize && job.status !== 'downloading' ? displaySize : '';
-    const statusPrimary = job.status === 'downloading'
-      ? progressLabel(job)
-      : (job.status === 'incomplete'
-        ? (job.shard_total
-          ? `Incomplete ${job.shard_present || 0}/${job.shard_total}`
-          : (totalBytes && readBytes > 0
-            ? `${Math.min(99, Math.round((readBytes / Math.max(totalBytes, readBytes)) * 100))}% on disk`
-            : 'Incomplete — Resume'))
-        : (job.status === 'done' ? 'Complete' : 'Failed'));
-    const statusClass = job.status === 'downloading'
-      ? ''
-      : (job.status === 'incomplete'
-        ? ' is-error'
-        : (job.status === 'done' ? ' is-done' : ' is-error'));
+    const statusPrimary = modelLoading
+      ? 'Loading…'
+      : (job.status === 'downloading'
+        ? progressLabel(job)
+        : (job.status === 'incomplete'
+          ? (job.shard_total
+            ? `Incomplete ${job.shard_present || 0}/${job.shard_total}`
+            : (totalBytes && readBytes > 0
+              ? `${Math.min(99, Math.round((readBytes / Math.max(totalBytes, readBytes)) * 100))}% on disk`
+              : 'Incomplete — Resume'))
+          : (job.status === 'done' ? 'Complete' : 'Failed')));
+    const statusClass = modelLoading
+      ? ' is-loading'
+      : (job.status === 'downloading'
+        ? ''
+        : (job.status === 'incomplete'
+          ? ' is-error'
+          : (job.status === 'done' ? ' is-done' : ' is-error')));
     const asideBytesTotal = totalBytes > 0 && readBytes > totalBytes ? Math.max(totalBytes, readBytes) : totalBytes;
     const asideBytes = asideBytesTotal
       ? `${formatBytes(readBytes)} / ${formatBytes(asideBytesTotal)}`
@@ -573,13 +583,15 @@
         : (job.status === 'incomplete'
           ? String(job.error || shortPath(job.path || job.repo_id || ''))
           : shortPath(job.path || job.repo_id || '')));
-    const bar = job.status === 'downloading'
-      ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill${fillClass}"${fillStyle}></div></div>`
-      : (job.status === 'incomplete' && (job.shard_total || (totalBytes && readBytes > 0))
-        ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill" style="width:${Math.max(1, Math.min(99, job.shard_total
-          ? Math.round(((Number(job.shard_present) || 0) / Number(job.shard_total)) * 100)
-          : Math.round((readBytes / totalBytes) * 100)))}%"></div></div>`
-        : '');
+    const bar = modelLoading && job.status === 'done'
+      ? '<div class="df-downloads-item-bar"><div class="df-downloads-item-fill is-indeterminate"></div></div>'
+      : (job.status === 'downloading'
+        ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill${fillClass}"${fillStyle}></div></div>`
+        : (job.status === 'incomplete' && (job.shard_total || (totalBytes && readBytes > 0))
+          ? `<div class="df-downloads-item-bar"><div class="df-downloads-item-fill" style="width:${Math.max(1, Math.min(99, job.shard_total
+            ? Math.round(((Number(job.shard_present) || 0) / Number(job.shard_total)) * 100)
+            : Math.round((readBytes / totalBytes) * 100)))}%"></div></div>`
+          : ''));
     const resumeBtn = job.status === 'incomplete'
       ? `<button type="button" class="lm-btn ghost tiny df-downloads-resume" data-resume-job="${escapeHtml(job.id)}" title="Resume downloading remaining files">Resume</button>`
       : '';
@@ -598,7 +610,7 @@
     const wrapperClass = variant === 'page' ? 'df-downloads-page-item' : 'df-downloads-item';
     const pageSelectedClass = variant === 'page' ? String(selectedClass || '') : '';
     return `
-      <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
+      <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${modelLoading ? ' is-model-loading' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
         ${removeButtonHtml}
         <div class="df-downloads-card-body">
           ${avatar}

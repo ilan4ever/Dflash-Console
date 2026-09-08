@@ -31,6 +31,18 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return path
 
 
+def test_console_pipeline_active_reflects_engine_on(config_file: Path):
+    assert engine_state.console_pipeline_active() is True
+    engine_state.note_user_stopped('gemma-31b-dflash')
+    assert engine_state.console_pipeline_active() is False
+
+
+def test_engine_standby_http_error_shape():
+    detail = engine_state.engine_standby_http_error()
+    assert detail['error']['reason'] == 'engine_off'
+    assert 'Engines tab' in detail['error']['message']
+
+
 def test_runtime_saved_in_config(config_file: Path):
     engine_state.note_engine_on('gemma-31b-dflash')
     saved = json.loads(config_file.read_text(encoding='utf-8'))

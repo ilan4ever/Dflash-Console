@@ -155,11 +155,15 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
+    <li><strong>Engine standby</strong> — Running toggle arms load/chat; external API callers get a clear 503 when off</li>
+    <li><strong>External GPU cards</strong> — models from OneVoice, LM Studio, and other apps; compact mobile layout; loading clears when ready</li>
+    <li><strong>Other GPU processes</strong> — per-process VRAM chips for desktop and background GPU apps</li>
+    <li><strong>Active client</strong> — send <code>X-DFlash-Client</code> so Engines shows who is using each model</li>
+    <li><strong>VRAM preflight</strong> — load plans with <code>unload_first</code> hints; co-resident 12B+31B on one GPU</li>
+    <li><strong>Model catalog index</strong> — local HF search returns hits immediately while the index refreshes</li>
+    <li><strong>GPU performance mode</strong> — Balanced, Performance, Inference, or Power in Settings → Hardware</li>
     <li><strong>Four LLM engines</strong> — DFlash / llama-server, vLLM, Transformers, and FreeToken</li>
     <li><strong>DFlash 1 and DFlash 2</strong> — architecture-aware draft search, validation, and attach</li>
-    <li><strong>Public preview</strong> — Windows installer on <a href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and <strong>pip install dflash-console</strong></li>
-    <li>Installed apps update from the latest GitHub Release (<code>latest.json</code> + setup EXE)</li>
-    <li><strong>dflash serve</strong> keeps one Console on port 8900 — it stops a foreign instance first</li>
     <li>Playground <strong>Chat · Speak · Transcribe · Embed</strong> plus the OpenAI gateway on port 8001</li>
   </ul>
 </section>

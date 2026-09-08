@@ -85,7 +85,7 @@
       const used = data?.vram_used_gb ?? 0;
       const total = data?.vram_total_gb ?? 0;
       const loaded = data?.loaded_engine_count ?? 0;
-      const reserve = data?.desktop_vram_reserve_gb ?? 6;
+      const reserve = data?.desktop_vram_reserve_gb ?? 2;
       el.textContent = `GPU budget: ${used} / ${total} GB VRAM — ${loaded} model(s) loaded — ${reserve} GB reserved for desktop`;
     } catch (_err) {
       el.textContent = '';

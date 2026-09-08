@@ -141,6 +141,40 @@ GPU memory.
 
 Scroll to **Developer logs** at the bottom. Logs stream from the active engine. Use **Clear** in the header to wipe the log file.
 
+### Engine standby (Running toggle)
+
+The **Running** switch at the top of **Engines** controls whether the Console
+pipeline is active. When it is **off**, Console-managed load and chat routes
+return a clear standby message instead of starting engines in the background.
+External apps that call the Console API see HTTP **503** with guidance to open
+**Engines** and turn the switch on.
+
+Turn **Running** back on before loading models or serving chat. The GPU card
+list refreshes when the pipeline wakes up.
+
+### External GPU models
+
+Below your Console-loaded models, **Engines** lists **external** models that
+other apps (OneVoice, LM Studio, Ollama, and similar) already have on the GPU.
+Each card shows the app name, model title, VRAM, and an **Unload** action when
+Console can stop or release that process safely.
+
+External cards flip to **READY** once the app reports a loaded model. They no
+longer stay on **Loading** indefinitely when the model is already serving.
+
+Use **Import model to Flash Console** on GGUF or STT paths when you want the
+same weights in your Console library.
+
+### Other GPU processes
+
+At the bottom of the card list, **Other GPU · N apps** lists desktop and
+background processes using VRAM (Task Manager–style per-process numbers when
+Windows exposes them). This is separate from model cards so you can see what
+else is on the card.
+
+Filter the card list with **All models** / **Console only** / **External only**
+in the toolbar. Your choice is remembered in `ui_layout.engines_card_filter`.
+
 ---
 
 ## 3. Models tab

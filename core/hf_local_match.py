@@ -12,6 +12,20 @@ from core.model_paths import enabled_scan_roots, get_model_libraries
 from core.stack_match import _param_token
 
 
+def is_auxiliary_gguf_filename(filename: str) -> bool:
+    """GGUF sidecars that should not count as an installed model weight file."""
+    lower = str(filename or '').strip().lower()
+    if not lower.endswith('.gguf'):
+        return lower.endswith('.part')
+    return (
+        'imatrix' in lower
+        or lower.startswith('mmproj')
+        or '.mmproj' in lower
+        or lower.startswith('mtp-')
+        or lower.endswith('.part')
+    )
+
+
 def _repo_parts(repo_id: str) -> tuple[str, str] | None:
     repo = str(repo_id or '').strip().strip('/')
     if not repo or '/' not in repo:
@@ -287,6 +301,7 @@ def find_repo_local_installs(
     *,
     cfg: dict[str, Any] | None = None,
     local_rows: list[dict[str, Any]] | None = None,
+    weights_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Return local files on disk that belong to a Hugging Face repo."""
     config = cfg or load_config()
@@ -350,6 +365,11 @@ def find_repo_local_installs(
             seen.add(key)
             matches.append(_row_from_path(path, match_type='model_name', labels=labels, row=row))
 
+    if weights_only:
+        matches = [
+            row for row in matches
+            if not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
+        ]
     return matches
 
 
@@ -365,6 +385,7 @@ def annotate_models_local_installs(
             if not isinstance(row, dict):
                 continue
             row.setdefault('local_ready', False)
+            row.setdefault('local_auxiliary_only', False)
             row.setdefault('local_loadable', False)
             row.setdefault('catalog_ready_to_load', False)
         return
@@ -377,9 +398,14 @@ def annotate_models_local_installs(
         if not repo_id:
             continue
         tags = list(row.get('tags') or [])
-        installs = find_repo_local_installs(repo_id, cfg=config, local_rows=local_rows)
-        loadable = [item for item in installs if item.get('loadable')]
-        row['local_ready'] = bool(installs)
+        installs = find_repo_local_installs(repo_id, cfg=config, local_rows=local_rows, weights_only=False)
+        weight_installs = [
+            item for item in installs
+            if not is_auxiliary_gguf_filename(str(item.get('filename') or ''))
+        ]
+        loadable = [item for item in weight_installs if item.get('loadable')]
+        row['local_ready'] = bool(weight_installs)
+        row['local_auxiliary_only'] = bool(installs) and not weight_installs
         row['local_loadable'] = bool(loadable)
         row['catalog_ready_to_load'] = is_catalog_ready_to_load(
             repo_id,
@@ -399,7 +425,9 @@ def local_installs_for_files(repo_id: str, filenames: list[str], *, cfg: dict[st
     installs: dict[str, list[dict[str, Any]]] = {}
     for name in filenames:
         fn = Path(str(name or '').strip()).name
-        if not fn:
+        if not fn or is_auxiliary_gguf_filename(fn):
             continue
-        installs[fn] = find_local_matches(repo_id, fn, cfg=config)
+        matches = find_local_matches(repo_id, fn, cfg=config)
+        if matches:
+            installs[fn] = matches
     return installs

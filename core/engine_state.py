@@ -18,6 +18,33 @@ from core.runtime import probe_models, tcp_port_open, unload_model
 
 logger = logging.getLogger(__name__)
 
+ENGINE_STANDBY_USER_MESSAGE = (
+    'Engines are off. Open DFlash Console, go to the Engines tab, '
+    'and turn on the engine toggle before loading or using models.'
+)
+
+
+def engine_standby_http_error() -> dict[str, Any]:
+    """OpenAI-style error body when the inference pipeline is in standby."""
+    return {
+        'error': {
+            'message': ENGINE_STANDBY_USER_MESSAGE,
+            'type': 'unavailable_error',
+            'code': 503,
+            'reason': 'engine_off',
+        }
+    }
+
+
+def engine_standby_result() -> dict[str, Any]:
+    """Chat-ready style payload when engines are off."""
+    return {
+        'ready': False,
+        'reason': 'engine_off',
+        'engine_on': False,
+        'message': ENGINE_STANDBY_USER_MESSAGE,
+    }
+
 
 def _restore_target_path(server: dict[str, Any], cfg: dict[str, Any]) -> str:
     """Normalized target path used to detect duplicate engines on one GGUF."""
@@ -60,7 +87,21 @@ def get_engine_state(server_id: str, *, cfg: dict[str, Any] | None = None) -> di
     return {'engine_on': entry.get('engine_on') is True}
 
 
+def console_pipeline_active(cfg: dict[str, Any] | None = None) -> bool:
+    """True when at least one enabled engine profile is turned on by the user."""
+    config = cfg or load_config()
+    return any(
+        s.get('enabled', True) and s.get('engine_on') is True
+        for s in list_servers(config)
+    )
+
+
 def note_user_stopped(server_id: str) -> dict[str, Any]:
+    from core.gpu_processes import _forget_external_scan
+    from core.runtime import invalidate_status_payload_cache
+
+    _forget_external_scan()
+    invalidate_status_payload_cache()
     return update_server_runtime(server_id, engine_on=False)
 
 

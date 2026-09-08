@@ -6,7 +6,7 @@ from typing import Any
 
 from core.config import normalize_hardware_settings
 
-GPU_PERFORMANCE_MODES = frozenset({'performance', 'balanced', 'power'})
+GPU_PERFORMANCE_MODES = frozenset({'performance', 'balanced', 'power', 'inference'})
 
 _MODE_DEFAULTS: dict[str, dict[str, Any]] = {
     'performance': {
@@ -14,11 +14,15 @@ _MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         'stop_others_on_load': True,
     },
     'balanced': {
-        'desktop_vram_reserve_gb': 6.0,
+        'desktop_vram_reserve_gb': 2.0,
         'stop_others_on_load': False,
     },
     'power': {
         'desktop_vram_reserve_gb': 4.0,
+        'stop_others_on_load': False,
+    },
+    'inference': {
+        'desktop_vram_reserve_gb': 1.0,
         'stop_others_on_load': False,
     },
 }
@@ -62,3 +66,14 @@ def should_stop_others_on_load(cfg: dict[str, Any] | None) -> bool:
     if explicit is False:
         return False
     return bool(gpu_policy_for_config(cfg).get('stop_others_on_load'))
+
+
+def vram_headroom_gb(cfg: dict[str, Any] | None) -> float:
+    """VRAM reserve used for load placement and preflight checks."""
+    from core.gpu_devices import VRAM_HEADROOM_GB
+
+    policy = gpu_policy_for_config(cfg)
+    reserve = policy.get('desktop_vram_reserve_gb')
+    if reserve is None:
+        reserve = 2.0
+    return max(VRAM_HEADROOM_GB, float(reserve))

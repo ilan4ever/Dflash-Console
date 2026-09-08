@@ -40,6 +40,23 @@ def test_spill_to_titan_when_4090_full():
     assert launch['split_mode'] == 'none'
 
 
+def test_spill_when_fast_gpu_has_model_room_but_not_headroom():
+    gpus = [
+        {'index': 0, 'name': 'NVIDIA GeForce RTX 4090 D', 'vram_gb': 48.0, 'vram_free_gb': 3.9},
+        {'index': 1, 'name': 'NVIDIA TITAN RTX', 'vram_gb': 24.0, 'vram_free_gb': 23.0},
+    ]
+    launch = resolve_auto_gpu_launch(
+        'lightonocr-1b-1025-q8-0',
+        gpus,
+        {'gpu_strategy': 'single_largest'},
+        context_size=32768,
+        required_gb=2.0,
+        headroom_gb=2.0,
+    )
+    assert launch['main_gpu'] == 1
+    assert launch['split_mode'] == 'none'
+
+
 def test_never_layer_split_on_single_largest():
     gpus = [
         {'index': 0, 'name': 'NVIDIA GeForce RTX 4090 D', 'vram_gb': 24.0, 'vram_free_gb': 20.0},

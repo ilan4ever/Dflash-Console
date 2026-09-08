@@ -175,6 +175,7 @@ def test_assess_load_includes_unload_first_when_blocked(monkeypatch):
             'gpu_required_gb': 20.0,
             'free_gb': 4.5,
             'split_mode': 'none',
+            'main_gpu': 0,
         },
     )
     monkeypatch.setattr(
@@ -189,6 +190,7 @@ def test_assess_load_includes_unload_first_when_blocked(monkeypatch):
                 'loaded_models': ['gemma-4-31b-q4-0-it'],
                 'estimated_gb': 18.0,
                 'is_embedding': False,
+                'gpu_index': 0,
             }],
         ),
     )
@@ -197,3 +199,45 @@ def test_assess_load_includes_unload_first_when_blocked(monkeypatch):
     assert plan['unload_first'][0]['server_id'] == 'gemma-4-31b-q4-0-it-dflash'
     assert plan['vram_free_gb'] == 4.5
     assert 'Unload gemma-4-31b-q4-0-it-dflash first' in plan['message']
+
+
+def test_plan_engine_gpu_launch_spills_to_second_gpu_when_first_is_tight(monkeypatch):
+    monkeypatch.setattr(
+        guardrails,
+        '_load_components',
+        lambda server, cfg: {'target_gb': 1.5, 'draft_gb': 0.0},
+    )
+    monkeypatch.setattr(
+        guardrails,
+        '_gpu_snapshot',
+        lambda cfg: [
+            {
+                'index': 0,
+                'name': 'NVIDIA GeForce RTX 4090 D',
+                'display_name': 'RTX 4090',
+                'vram_gb': 48.0,
+                'vram_free_gb': 3.9,
+            },
+            {
+                'index': 1,
+                'name': 'NVIDIA TITAN RTX',
+                'display_name': 'TITAN',
+                'vram_gb': 24.0,
+                'vram_free_gb': 23.0,
+            },
+        ],
+    )
+
+    launch = guardrails.plan_engine_gpu_launch(
+        {
+            'id': 'lightonocr-1b-1025-q8-0',
+            'model_id': 'lightonocr-1b-1025-q8-0',
+            'gpu_device': 'auto',
+            'context_size': 32768,
+            'load_settings': {'gpu_layers': 99},
+        },
+        {'hardware_settings': {'gpu_strategy': 'single_largest'}},
+    )
+
+    assert launch['main_gpu'] == 1
+    assert launch['split_mode'] == 'none'

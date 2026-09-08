@@ -198,3 +198,85 @@ def test_catalog_ready_rejects_dflash2_repo_when_stack_has_dflash1_draft(tmp_pat
         tags=['dflash'],
         cfg=cfg,
     ) is True
+
+
+def test_imatrix_file_does_not_count_as_repo_install(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    imatrix = root / 'ISTA-DASLab' / 'Qwen3.8-27B-GSQ-RCO-GGUF' / 'imatrix-qwen3.8-27b.gguf'
+    imatrix.parent.mkdir(parents=True)
+    imatrix.write_bytes(b'gguf')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(imatrix),
+                'publisher': 'ISTA-DASLab',
+                'loadable': True,
+            }],
+        },
+    )
+
+    from core.hf_local_match import annotate_models_local_installs, find_repo_local_installs
+
+    assert find_repo_local_installs('ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF', cfg=cfg) == []
+    assert len(find_repo_local_installs('ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF', cfg=cfg, weights_only=False)) == 1
+    row = {'id': 'ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF', 'title': 'Qwen3.8-27B-GSQ-RCO-GGUF', 'tags': []}
+    annotate_models_local_installs([row], cfg=cfg)
+    assert row['local_ready'] is False
+    assert row['local_auxiliary_only'] is True
+
+
+def test_local_installs_for_files_skips_imatrix(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    imatrix = root / 'ISTA-DASLab' / 'Qwen3.8-27B-GSQ-RCO-GGUF' / 'imatrix-qwen3.8-27b.gguf'
+    imatrix.parent.mkdir(parents=True)
+    imatrix.write_bytes(b'gguf')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(imatrix),
+                'publisher': 'ISTA-DASLab',
+                'loadable': True,
+            }],
+        },
+    )
+
+    from core.hf_local_match import local_installs_for_files
+
+    installs = local_installs_for_files(
+        'ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF',
+        ['imatrix-qwen3.8-27b.gguf', 'model-q4_k_m.gguf'],
+        cfg=cfg,
+    )
+    assert installs == {}

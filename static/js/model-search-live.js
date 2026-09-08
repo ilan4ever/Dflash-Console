@@ -374,6 +374,23 @@
 
   const CATALOG_SHARD_RE = /^(?<prefix>.+?)-(?<part>\d{5})-of-(?<total>\d{5})\.(?:gguf|safetensors|bin)$/i;
 
+  function isAuxiliaryCatalogFilename(filename) {
+    const lower = String(filename || '').trim().toLowerCase();
+    if (!lower) return false;
+    if (lower.includes('imatrix')) return true;
+    if (lower.startsWith('mmproj') || lower.includes('.mmproj')) return true;
+    if (lower.startsWith('mtp-')) return true;
+    if (lower.endsWith('.part')) return true;
+    return false;
+  }
+
+  function catalogHasWeightInstalls(model) {
+    const map = model?.local_installs || {};
+    return Object.entries(map).some(([name, rows]) =>
+      !isAuxiliaryCatalogFilename(name) && Array.isArray(rows) && rows.length > 0,
+    );
+  }
+
   function groupCatalogDownloadFiles(files) {
     const list = Array.isArray(files) ? files.filter((file) => file?.filename) : [];
     const groups = new Map();
@@ -439,8 +456,10 @@
     });
 
     options.sort((a, b) => {
+      const auxRank = (row) => (isAuxiliaryCatalogFilename(row.filename) ? 1 : 0);
       const kindRank = (row) => (row.kind === 'quant' ? 0 : 1);
-      return kindRank(a) - kindRank(b)
+      return auxRank(a) - auxRank(b)
+        || kindRank(a) - kindRank(b)
         || String(a.label).localeCompare(String(b.label))
         || String(a.filename).localeCompare(String(b.filename));
     });
@@ -893,8 +912,16 @@
 
   function catalogInstalled(model) {
     if (model?.local_ready) return true;
+    return catalogHasWeightInstalls(model);
+  }
+
+  function catalogAuxiliaryOnly(model) {
+    if (model?.local_auxiliary_only) return true;
+    if (model?.local_ready || catalogHasWeightInstalls(model)) return false;
     const map = model?.local_installs || {};
-    return Object.values(map).some((rows) => Array.isArray(rows) && rows.length > 0);
+    return Object.entries(map).some(([name, rows]) =>
+      isAuxiliaryCatalogFilename(name) && Array.isArray(rows) && rows.length > 0,
+    );
   }
 
   function catalogInstalledBadge() {
@@ -1017,7 +1044,7 @@
     const compatible = catalogDflashCompatible(model) && !kindBadge
       ? catalogDflashCompatibleBadge()
       : '';
-    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${kindBadge}${compatible}`;
+    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${catalogAuxiliaryOnly(model) ? catalogBadge('calibration only', 'yellow', 'Only an imatrix/calibration file is present — download the model weights') : ''}${kindBadge}${compatible}`;
   }
 
   function catalogListShowsNotRunnableNote(model) {
@@ -1206,7 +1233,7 @@
     return badges.join('');
   }
 
-  const FIT_CACHE_VERSION = 'v6';
+  const FIT_CACHE_VERSION = 'v7';
 
   function searchCacheKey(query, sort, category) {
     const installed = installedOnly() ? '1' : '0';
@@ -1552,6 +1579,7 @@
       'file_count',
       'has_files',
       'local_ready',
+      'local_auxiliary_only',
       'local_installs',
       'catalog_ready_to_load',
       'runnable',
@@ -1828,8 +1856,11 @@
       return;
     }
     const install = filename ? await resolveLocalInstall(model, filename) : null;
-    const repoInstall = install || (model.local_ready ? await resolveAnyLocalInstall(model) : null);
-    const installed = Boolean(repoInstall);
+    const selectedIsAuxiliary = isAuxiliaryCatalogFilename(filename);
+    const weightInstall = install && !selectedIsAuxiliary ? install : null;
+    const repoInstall = weightInstall || (model.local_ready ? await resolveAnyLocalInstall(model) : null);
+    const auxiliaryOnly = selectedIsAuxiliary && Boolean(install);
+    const installed = Boolean(repoInstall) && !auxiliaryOnly;
     const stackReady = catalogReadyToLoad(model);
     const btn = document.getElementById('hfDownloadBtn');
     const saveNote = document.getElementById('hfSaveNote');
@@ -1850,6 +1881,21 @@
           <code class="df-catalog-installed-path">${escapeHtml(repoInstall?.path || 'Installed locally; path unavailable')}</code>`;
       }
       card?.classList.toggle('ready-to-load', stackReady);
+    } else if (auxiliaryOnly) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Download';
+        btn.dataset.action = 'download';
+      }
+      saveNote?.classList.remove('hidden');
+      if (installedNote) {
+        installedNote.classList.remove('hidden');
+        installedNote.innerHTML = `
+          <span class="df-catalog-installed-label">Calibration file only</span>
+          <code class="df-catalog-installed-path">${escapeHtml(install?.path || '')}</code>
+          <span class="df-catalog-installed-hint">Pick a model quant above to download the weights.</span>`;
+      }
+      card?.classList.remove('ready-to-load');
     } else if (stackReady) {
       if (btn) {
         btn.disabled = false;
@@ -1999,12 +2045,20 @@
     if (!pane || !model) return;
     const downloadOptions = catalogDownloadOptions(model);
     const filesPending = !downloadOptions.length && (model.detail_pending || model.detail_partial);
+    const defaultFn = String(model.default_download || '').trim();
+    let selectedOptionIdx = downloadOptions.findIndex(
+      (opt) => opt.filename === defaultFn && !isAuxiliaryCatalogFilename(opt.filename),
+    );
+    if (selectedOptionIdx < 0) {
+      selectedOptionIdx = downloadOptions.findIndex((opt) => !isAuxiliaryCatalogFilename(opt.filename));
+    }
+    if (selectedOptionIdx < 0) selectedOptionIdx = 0;
     const fileOptions = downloadOptions.map((opt, idx) => {
       const name = String(opt.filename || '').trim();
       const label = catalogDownloadOptionLabel(opt);
-      return `<option value="${escapeHtml(name)}" title="${escapeHtml(label)}"${idx === 0 ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+      return `<option value="${escapeHtml(name)}" title="${escapeHtml(label)}"${idx === selectedOptionIdx ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     }).join('');
-    const defaultOpt = downloadOptions[0];
+    const defaultOpt = downloadOptions[selectedOptionIdx] || downloadOptions[0];
     const initialSize = formatCatalogFileSize(defaultOpt);
     const fieldLabel = catalogDownloadFieldLabel(downloadOptions);
     const downloadHint = catalogDownloadHint(model, downloadOptions);
@@ -2118,6 +2172,10 @@
         return;
       }
       const install = await resolveLocalInstall(model, filename);
+      if (isAuxiliaryCatalogFilename(filename)) {
+        toast('Pick a model quant file — calibration files are not loadable weights', false);
+        return;
+      }
       const path = install?.path || '';
       const isAccel = /dflash|dspark/i.test(filename);
       if (!path) {
@@ -2346,7 +2404,7 @@
 
   async function startDownload(repoId, filename, libraryId, model) {
     const install = model ? await resolveLocalInstall(model, filename) : null;
-    if (install) {
+    if (install && !isAuxiliaryCatalogFilename(filename)) {
       toast('Already installed on this PC — use Load model', false);
       void refreshInstallUI(model);
       return;

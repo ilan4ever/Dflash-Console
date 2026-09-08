@@ -13,11 +13,15 @@ def test_normalize_gpu_performance_mode_defaults_to_balanced():
 
 def test_gpu_policy_for_config_mode_defaults():
     balanced = gpu_policy_for_config({'hardware_settings': {'gpu_performance_mode': 'balanced'}})
-    assert balanced['desktop_vram_reserve_gb'] == 6.0
+    assert balanced['desktop_vram_reserve_gb'] == 2.0
 
     performance = gpu_policy_for_config({'hardware_settings': {'gpu_performance_mode': 'performance'}})
     assert performance['desktop_vram_reserve_gb'] == 8.0
     assert performance['stop_others_on_load'] is True
+
+    inference = gpu_policy_for_config({'hardware_settings': {'gpu_performance_mode': 'inference'}})
+    assert inference['desktop_vram_reserve_gb'] == 1.0
+    assert inference['stop_others_on_load'] is False
 
 
 def test_should_stop_others_on_load_respects_explicit_config():

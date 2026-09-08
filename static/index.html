@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.163</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.208</span>
           </div>
         </div>
       </div>
@@ -170,6 +170,12 @@ try {
                   </div>
                 </div>
               </header>
+              <div class="df-chat-standby-banner hidden" id="chatStandbyBanner" role="status">
+                <strong>Engines are off.</strong>
+                Turn on the engine toggle on the
+                <button type="button" class="df-inline-link" id="chatGotoEnginesBtn">Engines</button>
+                tab before loading or using models. Hugging Face catalog search stays available.
+              </div>
               <div class="df-chat-body">
                 <div class="df-chat-messages" id="chatMessages" aria-live="polite"></div>
                 <div class="df-chat-welcome" id="chatWelcome">
@@ -518,7 +524,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.163</strong>
+                <strong id="dfAboutVersion">v0.3.208</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1020,7 +1026,7 @@ try {
                     <input type="radio" name="settingsGpuPerformance" value="balanced" checked>
                     <span>
                       <strong>Balanced</strong>
-                      <small>6 GB headroom before each load. Default — blocks only when VRAM would run out.</small>
+                      <small>2 GB headroom before each load. Default — blocks only when VRAM would run out.</small>
                     </span>
                   </label>
                   <label class="lm-guardrail-option">
@@ -1973,7 +1979,6 @@ try {
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
   <script src="/static/js/ui-layout-prefs.js"></script>
-  <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/download-queue.js"></script>
   <script src="/static/js/downloads-live.js"></script>
   <script src="/static/js/component-install-live.js"></script>
@@ -1992,6 +1997,7 @@ try {
   <script src="/static/js/model-catalog-groups.js"></script>
   <script src="/static/js/model-card.js"></script>
   <script src="/static/js/server-live.js"></script>
+  <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/table-column-resize.js"></script>
   <script src="/static/js/models-live.js"></script>
   <script src="/static/js/stack-wizard.js"></script>

@@ -68,11 +68,7 @@
   function onViewEnter(tab) {
     if (tab === 'docs') void window.DFlashDocsLive?.refresh?.();
     if (tab === 'server') {
-      window.DFlashServerLive?.reschedulePoll?.();
-      // Do not block the first Engines render behind the expensive external
-      // GPU scan. The server status and live inference poll handle local
-      // engines immediately; external cards refresh on their own cadence.
-      void window.DFlashServerLive?.refresh?.(true, { includeExternal: false, fresh: false });
+      window.DFlashServerLive?.onEnginesViewEnter?.();
     }
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();

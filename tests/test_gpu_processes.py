@@ -1,6 +1,8 @@
 import json
+import time
 
 from core.gpu_processes import (
+    _apply_external_loading_ttl,
     _attach_external_gpu_activity,
     _attach_external_inference_stats,
     _build_external_card,
@@ -20,6 +22,8 @@ from core.gpu_processes import (
     _read_speak_stt_active_model,
     _speak_stt_log_paths,
     _discover_speak_stt_listener_cards,
+    _enrich_external_cards,
+    get_external_gpu_loads,
     _retain_alive_external_cards,
     _size_gb_from_path,
 )
@@ -260,8 +264,25 @@ def test_is_gpu_model_load_accepts_stt():
     )
 
 
-def test_resolve_external_model_name_speak_stt_loading(monkeypatch):
+def test_resolve_external_model_name_speak_stt_idle_without_model(monkeypatch):
     monkeypatch.setattr(gpu_processes, '_probe_onevoice_stt_status', lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
+    name, path = _resolve_external_model_name(
+        app_source='onevoice',
+        app_label='OneVoice',
+        process_name='python.exe',
+        command_line=r'python.exe -u C:\tools\stt\speak_stt.py',
+    )
+    assert name == ''
+    assert path == ''
+
+
+def test_resolve_external_model_name_speak_stt_loading(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_onevoice_stt_status',
+        lambda *_args, **_kwargs: {'loading': True},
+    )
     monkeypatch.setattr(gpu_processes, '_read_speak_stt_active_model', lambda **_kwargs: '')
     name, path = _resolve_external_model_name(
         app_source='onevoice',
@@ -355,7 +376,7 @@ def test_build_external_card_shows_loading_for_gpu_vram(monkeypatch):
     assert card['title'] == 'Loading…'
 
 
-def test_build_external_card_app_worker_ready_when_named(monkeypatch):
+def test_build_external_card_app_worker_ready_when_probe_times_out(monkeypatch):
     monkeypatch.setattr(
         gpu_processes,
         '_probe_loaded_model',
@@ -377,6 +398,87 @@ def test_build_external_card_app_worker_ready_when_named(monkeypatch):
     assert card is not None
     assert card['card_state'] == 'ready'
     assert card['title'] == 'speech_hermes_ws'
+
+
+def test_build_external_card_speak_stt_loading_with_named_log(tmp_path, monkeypatch):
+    gpu_processes._STT_MODEL_CACHE.clear()
+    tools = tmp_path / 'Speak-OneVoice' / 'tools'
+    stt_dir = tools / 'stt'
+    stt_dir.mkdir(parents=True)
+    (stt_dir / 'speak_stt.py').write_text('', encoding='utf-8')
+    log_dir = tools / 'logs'
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / 'speak_stt.debug.log'
+    log_path.write_text(
+        json.dumps(
+            {
+                'ts': '2026-08-22 09:15:13',
+                'event': 'model-loading',
+                'detail': {'model': 'small.en'},
+            }
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+    command_line = f'python.exe -u {stt_dir / "speak_stt.py"}'
+    monkeypatch.setattr(gpu_processes, '_probe_onevoice_stt_status', lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [2711])
+    card = _build_external_card(
+        {'pid': 4242, 'gpu_index': 0, 'vram_mb': 128.0, 'vram_gb': 0.12, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': command_line,
+            'parent_process_name': 'OneVoiceSpeak.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'loading'
+    assert card['title'] == 'small.en'
+
+
+def test_get_external_gpu_loads_skips_when_pipeline_standby(monkeypatch):
+    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = 0.0
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
+    monkeypatch.setattr(
+        'core.engine_state.console_pipeline_active',
+        lambda cfg=None: False,
+    )
+    cards = get_external_gpu_loads(
+        servers=[{'id': 'demo', 'port': 8091, 'engine_on': False}],
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        cfg={'servers': [{'id': 'demo', 'engine_on': False}]},
+    )
+    assert cards == []
+
+
+def test_get_external_gpu_loads_discovers_speak_stt_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr('core.engine_state.console_pipeline_active', lambda cfg=None: True)
+    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = 0.0
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
+    monkeypatch.setattr(gpu_processes, '_query_compute_apps', lambda: [])
+    monkeypatch.setattr(
+        gpu_processes,
+        '_discover_speak_stt_listener_cards',
+        lambda **_kwargs: [{
+            'id': 'external-gpu-2711',
+            'pid': 2711,
+            'title': 'Loading…',
+            'card_state': 'loading',
+            'model_kind': 'stt',
+            'listen_port': 2711,
+        }],
+    )
+    monkeypatch.setattr(gpu_processes, '_discover_onevoice_worker_cards', lambda **_kwargs: [])
+    monkeypatch.setattr(gpu_processes, '_dedupe_external_cards', lambda cards: cards)
+    monkeypatch.setattr(gpu_processes, '_enrich_external_cards', lambda cards, **kwargs: cards)
+    cards = get_external_gpu_loads(servers=[], gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}])
+    assert len(cards) == 1
+    assert cards[0]['card_state'] == 'loading'
+
 
 
 def test_build_external_card_llama_timeout_stays_loading(monkeypatch):
@@ -428,6 +530,65 @@ def test_build_external_card_speak_stt_ready_via_websocket(monkeypatch):
     assert card['card_state'] == 'ready'
     assert card['title'] == 'small.en'
     assert card['listen_port'] == 2711
+
+
+def test_build_external_card_speak_stt_ready_ignores_stale_boot_log(tmp_path, monkeypatch):
+    gpu_processes._STT_MODEL_CACHE.clear()
+    tools = tmp_path / 'Speak-OneVoice' / 'tools'
+    stt_dir = tools / 'stt'
+    stt_dir.mkdir(parents=True)
+    (stt_dir / 'speak_stt.py').write_text('', encoding='utf-8')
+    log_dir = tools / 'logs'
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / 'speak_stt.debug.log'
+    log_path.write_text(
+        json.dumps(
+            {
+                'ts': '2026-08-22 09:15:13',
+                'event': 'model-loading',
+                'detail': {'model': 'small.en'},
+            }
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+    command_line = f'python.exe -u {stt_dir / "speak_stt.py"}'
+    monkeypatch.setattr(
+        gpu_processes,
+        '_probe_onevoice_stt_status',
+        lambda *_args, **_kwargs: {'model_loaded': True, 'model': 'small.en', 'loading': False, 'device': 'cuda'},
+    )
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [2711])
+    card = _build_external_card(
+        {'pid': 4242, 'gpu_index': 0, 'vram_mb': 512.0, 'vram_gb': 0.5, 'process_name': 'python.exe'},
+        details={
+            'process_name': 'python.exe',
+            'command_line': command_line,
+            'parent_process_name': 'OneVoiceSpeak.exe',
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is not None
+    assert card['card_state'] == 'ready'
+    assert card['title'] == 'small.en'
+
+
+def test_apply_external_loading_ttl_expires_named_app_card():
+    now = time.time()
+    cards = [{
+        'id': 'external-gpu-42',
+        'card_state': 'loading',
+        'title': 'speech_hermes_ws',
+        'process_name': 'python.exe',
+        'command_line': 'python.exe speech_hermes_ws.py',
+        'loading_since': now - gpu_processes._EXTERNAL_APP_LOADING_MAX_S - 5,
+    }]
+    out = _apply_external_loading_ttl(cards, cards)
+    assert out[0]['card_state'] == 'ready'
+    assert out[0]['ejectable'] is True
 
 
 def test_external_card_detail_stt():
@@ -975,6 +1136,80 @@ def test_build_external_card_rejects_generic_python_training():
     assert card is None
 
 
+def test_enrich_external_cards_applies_windows_vram(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_gpu_live_map',
+        lambda: {0: {'index': 0, 'load_percent': 12}},
+    )
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.apply_windows_process_vram',
+        lambda rows: (
+            rows[0].update({'vram_gb': 0.91, 'vram_mb': 931.8, 'vram_source': 'windows'})
+            or True
+        ),
+    )
+    monkeypatch.setattr(gpu_processes, '_attach_external_inference_stats', lambda card: card)
+    cards = _enrich_external_cards([
+        {
+            'id': 'external-gpu-4242',
+            'pid': 4242,
+            'gpu_index': 0,
+            'title': 'small.en',
+            'vram_gb': None,
+        },
+    ], attach_stats=True)
+    assert cards[0]['vram_gb'] == 0.91
+    assert cards[0]['vram_source'] == 'windows'
+
+
+def test_enrich_external_cards_windows_vram_fallback_when_gpu_index_mismatches(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_gpu_live_map', lambda: {1: {'index': 1, 'load_percent': 8}})
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.apply_windows_process_vram',
+        lambda rows: False,
+    )
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.lookup_windows_process_vram_gb',
+        lambda pid, gpu_index: 3.5 if pid == 5555 else None,
+    )
+    monkeypatch.setattr(gpu_processes, '_attach_external_inference_stats', lambda card: card)
+    cards = _enrich_external_cards([
+        {
+            'id': 'external-gpu-5555',
+            'pid': 5555,
+            'gpu_index': 1,
+            'title': 'speech_hermes_ws',
+            'vram_gb': None,
+        },
+    ], attach_stats=True)
+    assert cards[0]['vram_gb'] == 3.5
+    assert cards[0]['vram_source'] == 'windows'
+
+
+def test_enrich_external_cards_resolves_stt_disk_size(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_gpu_live_map', lambda: {})
+    monkeypatch.setattr(
+        gpu_processes,
+        '_resolve_stt_model_path',
+        lambda model_name, command_line='': r'C:\models\small.en' if model_name == 'small.en' else '',
+    )
+    monkeypatch.setattr(gpu_processes, '_size_gb_from_path', lambda path: 0.46 if path else None)
+    monkeypatch.setattr(gpu_processes, '_attach_external_inference_stats', lambda card: card)
+    cards = _enrich_external_cards([
+        {
+            'id': 'external-gpu-4242',
+            'pid': 4242,
+            'gpu_index': 0,
+            'title': 'small.en',
+            'model_name': 'small.en',
+            'model_kind': 'stt',
+            'command_line': r'python speak_stt.py',
+        },
+    ], attach_stats=True)
+    assert cards[0]['size_gb'] == 0.46
+
+
 def test_attach_external_gpu_activity_keeps_per_process_vram(monkeypatch):
     card = _attach_external_gpu_activity(
         {'gpu_index': 0, 'title': 'worker', 'vram_gb': 1.25},
@@ -985,8 +1220,37 @@ def test_attach_external_gpu_activity_keeps_per_process_vram(monkeypatch):
     assert 'gpu_load_percent' not in card
 
 
+def test_discover_speak_stt_listener_cards_skips_idle_server(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_pid_listening_on_port', lambda port: 2711 if port == 2711 else None)
+    monkeypatch.setattr(gpu_processes, '_speak_stt_card_signal', lambda **_kwargs: {})
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            2711: {
+                'process_name': 'python.exe',
+                'command_line': r'python.exe -u C:\dev\Speak-OneVoice\tools\stt\speak_stt.py',
+                'parent_process_name': 'OneVoiceSpeak.exe',
+            }
+        },
+    )
+    cards = _discover_speak_stt_listener_cards(
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+        seen_pids=set(),
+    )
+    assert cards == []
+
+
 def test_discover_speak_stt_listener_cards(monkeypatch):
     monkeypatch.setattr(gpu_processes, '_pid_listening_on_port', lambda port: 2711 if port == 2711 else None)
+    monkeypatch.setattr(
+        gpu_processes,
+        '_speak_stt_card_signal',
+        lambda **_kwargs: {'model_loaded': True, 'model': 'small.en'},
+    )
     monkeypatch.setattr(
         gpu_processes,
         '_query_process_details',
@@ -1075,3 +1339,139 @@ def test_fetch_process_details_tolerates_access_denied_cmdline(monkeypatch):
   assert details[2220]['command_line'] == ''
   assert details[3333]['process_name'] == 'python.exe'
   assert 'worker.py' in details[3333]['command_line']
+
+
+def test_get_gpu_other_processes_excludes_model_cards(monkeypatch):
+    from core.gpu_processes import get_gpu_other_processes
+
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: [
+            {'gpu_index': 0, 'pid': 100, 'process_name': 'llama-server.exe', 'vram_mb': 4096, 'vram_gb': 4.0},
+            {'gpu_index': 0, 'pid': 200, 'process_name': 'dwm.exe', 'vram_mb': None, 'vram_gb': None},
+            {'gpu_index': 1, 'pid': 300, 'process_name': 'custom-cuda.exe', 'vram_mb': 512, 'vram_gb': 0.5},
+        ],
+    )
+    monkeypatch.setattr(gpu_processes, '_managed_listener_pids', lambda _servers: {100})
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            200: {'process_name': 'dwm.exe', 'command_line': '', 'parent_process_name': ''},
+            300: {
+                'process_name': 'custom-cuda.exe',
+                'command_line': r'C:\tools\custom-cuda.exe --benchmark',
+                'parent_process_name': '',
+            },
+        },
+    )
+
+    payload = get_gpu_other_processes(
+        servers=[],
+        gpus=[
+            {'index': 0, 'display_name': 'RTX 4090', 'vram_gb': 48, 'vram_used_gb': 10.4},
+            {'index': 1, 'display_name': 'TITAN', 'vram_gb': 24, 'vram_used_gb': 1.2},
+        ],
+        external_cards=[{'pid': 100, 'gpu_index': 0, 'vram_gb': 4.0}],
+        attributed_vram_by_gpu={0: 4.0},
+    )
+    pids = {row['pid'] for row in payload['processes']}
+    assert 100 not in pids
+    assert 200 in pids
+    assert 300 in pids
+    assert payload['processes'][0]['label'] in {'custom-cuda', 'dwm'}
+    assert payload['by_gpu'][0]['unattributed_gb'] is not None
+    assert payload['vram_per_process_limited'] is False
+    assert payload['total_other_vram_gb'] == 0.5
+    assert payload['total_other_vram_partial'] is True
+
+
+def test_get_gpu_other_processes_estimates_vram_when_driver_limited(monkeypatch):
+    from core.gpu_processes import get_gpu_other_processes
+
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: [
+            {'gpu_index': 0, 'pid': 200, 'process_name': 'dwm.exe', 'vram_mb': None, 'vram_gb': None},
+            {'gpu_index': 0, 'pid': 201, 'process_name': 'Discord.exe', 'vram_mb': None, 'vram_gb': None},
+        ],
+    )
+    monkeypatch.setattr(gpu_processes, '_managed_listener_pids', lambda _servers: set())
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.apply_windows_process_vram',
+        lambda _rows: False,
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            200: {'process_name': 'dwm.exe', 'command_line': '', 'parent_process_name': ''},
+            201: {'process_name': 'Discord.exe', 'command_line': '', 'parent_process_name': ''},
+        },
+    )
+
+    payload = get_gpu_other_processes(
+        servers=[],
+        gpus=[{'index': 0, 'display_name': 'RTX 4090', 'vram_gb': 48, 'vram_used_gb': 10.0}],
+        external_cards=[],
+        attributed_vram_by_gpu={0: 4.0},
+    )
+    assert len(payload['processes']) == 2
+    assert all(proc.get('vram_gb') is None for proc in payload['processes'])
+    assert payload['vram_per_process_limited'] is True
+    assert payload['unattributed_gb'] == 6.0
+
+
+def test_get_gpu_other_processes_excludes_llama_server_models(monkeypatch):
+    from core.gpu_processes import get_gpu_other_processes
+
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: [
+            {
+                'gpu_index': 0,
+                'pid': 34244,
+                'process_name': 'llama-server.exe',
+                'vram_mb': None,
+                'vram_gb': None,
+            },
+            {
+                'gpu_index': 0,
+                'pid': 500,
+                'process_name': 'python.exe',
+                'vram_mb': None,
+                'vram_gb': None,
+            },
+        ],
+    )
+    monkeypatch.setattr(gpu_processes, '_managed_listener_pids', lambda _servers: {8091})
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            34244: {
+                'process_name': 'llama-server.exe',
+                'command_line': r'llama-server.exe -m C:\models\gemma-4-12b-it-q4_k_m.gguf',
+                'parent_process_name': '',
+                'parent_pid': 8091,
+            },
+            500: {
+                'process_name': 'python.exe',
+                'command_line': r'python C:\dev\OneVoice\ui\server.py',
+                'parent_process_name': 'OneVoice.exe',
+            },
+        },
+    )
+
+    payload = get_gpu_other_processes(
+        servers=[{'port': 8091, 'host': '127.0.0.1'}],
+        gpus=[{'index': 0, 'display_name': 'RTX 4090', 'vram_gb': 48, 'vram_used_gb': 20.0}],
+        external_cards=[],
+        attributed_vram_by_gpu={0: 17.0},
+    )
+    pids = {row['pid'] for row in payload['processes']}
+    assert 34244 not in pids
+    assert 500 in pids

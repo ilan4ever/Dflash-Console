@@ -14,7 +14,7 @@ from core.config import (
     normalize_server,
 )
 from core.gpu_devices import VRAM_HEADROOM_GB, get_gpu_devices_payload, resolve_role_gpu_launch_params
-from core.gpu_policy import gpu_performance_mode, gpu_policy_for_config
+from core.gpu_policy import gpu_performance_mode, gpu_policy_for_config, vram_headroom_gb
 from core.model_stack import resolve_model_stack
 from core.system_stats import get_system_stats_payload
 
@@ -23,13 +23,79 @@ _MODEL_SHARD_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GUARDRAIL_CONTEXT_CAP = 32768
+
 
 def _desktop_vram_reserve_gb(cfg: dict[str, Any]) -> float:
-    return float(gpu_policy_for_config(cfg).get('desktop_vram_reserve_gb') or 6.0)
+    policy = gpu_policy_for_config(cfg)
+    reserve = policy.get('desktop_vram_reserve_gb')
+    if reserve is None:
+        return 2.0
+    return float(reserve)
+
+
+def _guardrail_context_size(server: dict[str, Any]) -> int:
+    context = max(2048, int(server.get('context_size') or 8192))
+    return min(context, _GUARDRAIL_CONTEXT_CAP)
+
+
+def _model_param_b_hint(server: dict[str, Any]) -> float:
+    blob = ' '.join([
+        str(server.get('model_id') or ''),
+        str(server.get('id') or ''),
+        str(server.get('label') or ''),
+        str(server.get('profile') or ''),
+    ]).lower()
+    match = re.search(r'(\d+)\s*b', blob)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
+    return 12.0
+
+
+def _estimate_kv_cache_gb(server: dict[str, Any], context: int) -> float:
+    weights_b = _model_param_b_hint(server)
+    ctx = max(2048, int(context))
+    if ctx >= 65536:
+        return 6.0 if weights_b >= 27 else 3.5
+    if ctx >= 32768:
+        return 3.5 if weights_b >= 27 else 2.0
+    if ctx >= 8192:
+        return 1.5
+    return round((ctx / 8192) * 0.4, 2)
 
 
 def _vram_headroom_gb(cfg: dict[str, Any]) -> float:
-    return max(VRAM_HEADROOM_GB, _desktop_vram_reserve_gb(cfg))
+    return vram_headroom_gb(cfg)
+
+
+def _loaded_engine_gpu_index(
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    estimated_gb: float,
+) -> int:
+    raw = str(server.get('gpu_device') or 'auto').strip().lower()
+    if raw not in ('', 'auto', 'automatic'):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    devices = _gpu_snapshot(cfg)
+    if not devices:
+        return 0
+    hardware = normalize_hardware_settings(cfg.get('hardware_settings'))
+    launch = resolve_role_gpu_launch_params(
+        server.get('gpu_device'),
+        model_id=str(server.get('model_id') or server.get('label') or ''),
+        gpus=devices,
+        hardware=hardware,
+        context_size=_guardrail_context_size(server),
+        required_gb=estimated_gb,
+        headroom_gb=_vram_headroom_gb(cfg),
+    )
+    return int(launch.get('main_gpu') or 0)
 
 
 def _probe_loaded_models(api_url: str) -> list[str]:
@@ -74,6 +140,7 @@ def count_loaded_console_engines(
             'loaded_models': loaded,
             'estimated_gb': estimate,
             'is_embedding': is_embedding_server(server),
+            'gpu_index': _loaded_engine_gpu_index(normalize_server(server), cfg, estimate),
         })
     return len(rows), rows
 
@@ -235,11 +302,11 @@ def _vram_budget(cfg: dict[str, Any]) -> tuple[float, float, int]:
 def _estimate_load_gb(server: dict[str, Any], cfg: dict[str, Any]) -> float:
     components = _load_components(server, cfg)
     weights_gb = components['target_gb'] + components['draft_gb']
-    context = max(2048, int(server.get('context_size') or 8192))
+    context = _guardrail_context_size(server)
     load = normalize_load_settings(server.get('load_settings'))
     gpu_layers = int(load.get('gpu_layers') or 99)
     on_gpu = min(1.0, max(0.0, gpu_layers / 99.0))
-    kv_gb = round((context / 8192) * 0.4, 2)
+    kv_gb = _estimate_kv_cache_gb(server, context)
     gpu_weights = components['target_gb'] * on_gpu + components['draft_gb']
     cpu_weights = weights_gb * (1.0 - on_gpu) * 0.25
     return round(gpu_weights + kv_gb + cpu_weights, 2)
@@ -250,12 +317,12 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     target_gb = components['target_gb']
     draft_gb = components['draft_gb']
     weights_gb = round(target_gb + draft_gb, 2)
-    context = max(2048, int(server.get('context_size') or 8192))
+    context = _guardrail_context_size(server)
     load = normalize_load_settings(server.get('load_settings'))
     gpu_layers = int(load.get('gpu_layers') or 99)
     gpu_fraction = min(1.0, max(0.0, gpu_layers / 99.0))
     gpu_weights_gb = round((target_gb * gpu_fraction) + draft_gb, 2)
-    kv_cache_gb = round((context / 8192) * 0.4, 2)
+    kv_cache_gb = _estimate_kv_cache_gb(server, context)
     hardware = normalize_hardware_settings(cfg.get('hardware_settings'))
     from core.model_presets import _kv_offload_enabled
 
@@ -266,6 +333,7 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     free_gb = round(sum(float(item.get('vram_free_gb') or 0.0) for item in devices), 2)
     total_gb = round(sum(float(item.get('vram_gb') or 0.0) for item in devices), 2)
     model_hint = str(server.get('model_id') or server.get('label') or 'model')
+    headroom = _vram_headroom_gb(cfg)
     launch = resolve_role_gpu_launch_params(
         server.get('gpu_device'),
         model_id=model_hint,
@@ -273,6 +341,7 @@ def _load_plan(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
         hardware=hardware,
         context_size=context,
         required_gb=gpu_weights_gb + gpu_kv_gb,
+        headroom_gb=headroom,
     )
     selected = {
         int(item['index']): item
@@ -432,6 +501,11 @@ def _attach_unload_first(plan: dict[str, Any]) -> None:
     ]
     if not loaded_rows:
         return
+    target_gpu = int(plan.get('main_gpu') or 0)
+    blocking_rows = [
+        row for row in loaded_rows
+        if int(row.get('gpu_index') or target_gpu) == target_gpu
+    ] or loaded_rows
     allocations = plan.get('allocations') or []
     free_gb = round(
         sum(float(item.get('vram_free_gb') or 0.0) for item in allocations),
@@ -444,7 +518,7 @@ def _attach_unload_first(plan: dict[str, Any]) -> None:
             'estimated_gb': float(row.get('estimated_gb') or 0.0),
             'loaded_models': row.get('loaded_models') or [],
         }
-        for row in loaded_rows
+        for row in blocking_rows
         if str(row.get('id') or '').strip()
     ]
     plan['unload_first'] = unload_first
@@ -455,6 +529,16 @@ def _attach_unload_first(plan: dict[str, Any]) -> None:
             f'{str(plan.get("message") or "").rstrip(".")}. '
             f'Unload {engine_ids} first ({free_gb:.1f} GB VRAM free).'
         )
+
+
+def plan_engine_gpu_launch(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve main_gpu / split for a server using live VRAM and policy headroom."""
+    plan = _load_plan(normalize_server(server), cfg)
+    return {
+        'main_gpu': int(plan.get('main_gpu') or 0),
+        'split_mode': str(plan.get('split_mode') or 'none'),
+        'tensor_split': str(plan.get('tensor_split') or ''),
+    }
 
 
 def assess_load(
