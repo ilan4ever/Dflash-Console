@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,7 +42,7 @@ from core.load_progress import (
     parse_load_progress,
     read_log_tail,
 )
-from core.model_presets import gpu_layers_max_for, preset_path_for, profile_requires_draft
+from core.model_presets import context_max_for_server, gpu_layers_max_for, preset_path_for, profile_requires_draft
 from core.model_stack import resolve_model_stack
 from core.server_boot import (
     adopt_running_engine,
@@ -427,6 +428,116 @@ def _stack_detail(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_model_token(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+
+def _resolve_card_model_path(card: dict[str, Any], server: dict[str, Any]) -> str:
+    path = str(card.get('path') or '').strip()
+    if path.lower().endswith('.gguf'):
+        return path
+    adhoc_path = str(server.get('adhoc_model_path') or '').strip()
+    if adhoc_path.lower().endswith('.gguf'):
+        return adhoc_path
+    catalog = server.get('model_catalog') if isinstance(server.get('model_catalog'), dict) else {}
+    loaded_id = _normalize_model_token(str(card.get('id') or ''))
+    configured_ids = {
+        _normalize_model_token(str(catalog.get('api_model_id') or '')),
+        _normalize_model_token(str(catalog.get('target_model_id') or '')),
+        _normalize_model_token(str(server.get('model_id') or '')),
+    }
+    configured_ids.discard('')
+    adhoc_mismatch = bool(
+        (card.get('is_adhoc') or card.get('plain_llm'))
+        and loaded_id
+        and configured_ids
+        and loaded_id not in configured_ids
+    )
+    candidates: list[Any] = []
+    if not adhoc_mismatch:
+        candidates.append(catalog.get('target_path'))
+    candidates.extend((server.get('target_path'), server.get('model_path')))
+    for candidate in candidates:
+        text = str(candidate or '').strip()
+        if text.lower().endswith('.gguf'):
+            return text
+    if adhoc_mismatch and loaded_id:
+        try:
+            from core.model_paths import get_models_root
+
+            root = get_models_root()
+            if root.is_dir():
+                best = ''
+                best_score = -1
+                for candidate_path in root.rglob('*.gguf'):
+                    norm = _normalize_model_token(candidate_path.stem)
+                    if not norm:
+                        continue
+                    if loaded_id in norm or norm in loaded_id:
+                        score = len(norm)
+                        if score > best_score:
+                            best = str(candidate_path)
+                            best_score = score
+                if best:
+                    return best
+        except (OSError, TypeError, ValueError):
+            pass
+    return path
+
+
+def _resolve_card_vram_gb(
+    card: dict[str, Any],
+    server: dict[str, Any],
+    listener_vram_gb: float | None,
+) -> float | None:
+    if listener_vram_gb is not None:
+        try:
+            measured = float(listener_vram_gb)
+        except (TypeError, ValueError):
+            measured = 0.0
+        if measured > 0:
+            return round(measured, 2)
+    if card.get('card_state') != 'ready':
+        return None
+    size_gb = _resolve_card_size_gb(card, server)
+    if size_gb is None:
+        return None
+    try:
+        weight_gb = float(size_gb)
+    except (TypeError, ValueError):
+        return None
+    if weight_gb <= 0:
+        return None
+    from core.runtime_recommendations import _estimate_vram_gb
+
+    context = int(card.get('context_size') or server.get('context_size') or 8192)
+    load_settings = server.get('load_settings') if isinstance(server.get('load_settings'), dict) else {}
+    gpu_layers = int(load_settings.get('gpu_layers') or 99)
+    estimated = _estimate_vram_gb(weight_gb=weight_gb, context=context, gpu_layers=gpu_layers)
+    return estimated if estimated > 0 else None
+
+
+def _resolve_card_size_gb(card: dict[str, Any], server: dict[str, Any]) -> float | None:
+    val = card.get('size_gb')
+    if val is not None:
+        try:
+            size = float(val)
+        except (TypeError, ValueError):
+            size = 0.0
+        if size > 0:
+            return round(size, 2)
+    stacked = _stack_size_gb([card])
+    if stacked is not None:
+        return stacked
+    path = _resolve_card_model_path(card, server)
+    if path.lower().endswith('.gguf'):
+        try:
+            return round(Path(path).stat().st_size / (1024 ** 3), 2)
+        except OSError:
+            return None
+    return None
+
+
 def _stack_size_gb(parts: list[dict[str, Any]]) -> float | None:
     total = 0.0
     found = False
@@ -753,7 +864,13 @@ def _build_embedding_server_status(
         loaded_models=loaded_models,
         progress=load_progress,
     )
-    listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map) if running and port > 0 else None
+    embed_started = get_started_launch(port) if port > 0 else {}
+    embed_gpu_idx = embed_started.get('main_gpu') if embed_started else launch.get('main_gpu')
+    listener_vram_gb = (
+        vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=embed_gpu_idx)
+        if running and port > 0
+        else None
+    )
     embed_settings = dict(entry.get('embedding_settings') or {})
     embed_file_name = model_path.name if model_path else ''
     embed_display = (
@@ -796,8 +913,6 @@ def _build_embedding_server_status(
                 role=str(card.get('role') or 'target'),
             )
         )
-        if listener_vram_gb is not None:
-            card['vram_gb'] = listener_vram_gb
         gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
         if gpu_idx is not None:
             card['gpu_index'] = int(gpu_idx)
@@ -808,6 +923,9 @@ def _build_embedding_server_status(
                 card['size_gb'] = round(model_path.stat().st_size / (1024 ** 3), 2)
             except OSError:
                 pass
+        resolved_vram = _resolve_card_vram_gb(card, entry, listener_vram_gb)
+        if resolved_vram is not None:
+            card['vram_gb'] = resolved_vram
 
     active_model_id = loaded_models[0] if loaded_models else configured_model_id
     started = get_started_launch(port)
@@ -1040,7 +1158,8 @@ def build_server_status(
     if running and port > 0:
         from core.gpu_processes import vram_gb_for_port
 
-        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map)
+        gpu_idx = started_launch.get('main_gpu') if started_launch else launch.get('main_gpu')
+        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=gpu_idx)
     stack = resolve_model_stack(server, cfg=cfg)
     model_size_gb = _stack_size_gb([row for row in stack if str(row.get('role') or '') != 'alias'])
     vram_load_progress = estimate_vram_load_progress(
@@ -1142,15 +1261,20 @@ def build_server_status(
                 role=str(card.get('role') or ''),
             )
         )
-        if listener_vram_gb is not None:
-            card['vram_gb'] = listener_vram_gb
         gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
         if gpu_idx is not None:
             card['gpu_index'] = int(gpu_idx)
         if server.get('context_size'):
             card['context_size'] = int(server.get('context_size'))
-        if card.get('size_gb') is None:
-            card['size_gb'] = card.get('size_gb') or _stack_size_gb([card])
+        resolved_path = _resolve_card_model_path(card, server)
+        if resolved_path:
+            card['path'] = resolved_path
+        resolved_size = _resolve_card_size_gb(card, server)
+        if resolved_size is not None:
+            card['size_gb'] = resolved_size
+        resolved_vram = _resolve_card_vram_gb(card, server, listener_vram_gb)
+        if resolved_vram is not None:
+            card['vram_gb'] = resolved_vram
 
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
     from core.inference_stats import fetch_inference_stats, get_cached_inference_stats, is_proxy_generating
@@ -1216,6 +1340,7 @@ def build_server_status(
         'listener_vram_gb': listener_vram_gb,
         'reachable_url': f'http://{host}:{port}' if port > 0 else '',
         'gpu_layers_max': gpu_layers_max_for(server, cfg=cfg),
+        'model_context_max': context_max_for_server(server, cfg=cfg),
         'inference_stats': inference_stats,
         'active_clients': active_clients,
         'loaded_by': loaded_by,
@@ -1522,6 +1647,12 @@ def get_status_payload(
 
         with ThreadPoolExecutor(max_workers=min(8, len(servers))) as pool:
             built = list(pool.map(_build_one, servers))
+
+    from core.display_names import disambiguate_engine_display_names, sync_visible_card_display_names
+
+    disambiguate_engine_display_names(built)
+    for row in built:
+        sync_visible_card_display_names(row)
 
     loaded_count = sum(1 for row in built if str(row.get('status') or '') == 'loaded')
     _append_status_trace(

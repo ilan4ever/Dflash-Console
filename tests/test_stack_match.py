@@ -89,8 +89,12 @@ class StackMatchTests(unittest.TestCase):
         self.assertGreater(score_accelerator_pair(target, good), score_accelerator_pair(target, bad))
 
     def test_profile_inference(self):
-        self.assertEqual(infer_dflash_profile('gemma-4-12b-it-qat-q4_0.gguf'), 'gemma-12-dflash')
-        self.assertEqual(infer_dflash_profile('Qwen3.5-27B-Q4_K_M.gguf'), 'qwen-dflash')
+        self.assertEqual(infer_dflash_profile('gemma-4-12b-it-qat-q4_0.gguf'), 'gemma-12-ar')
+        self.assertEqual(infer_dflash_profile('Qwen3.5-27B-Q4_K_M.gguf'), 'qwen-ar')
+        self.assertEqual(
+            infer_dflash_profile('Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf'),
+            'qwen-ar',
+        )
 
     def test_hf_query(self):
         query = build_hf_search_query('Qwen3.6-9B-Instruct-Q4_K_M.gguf')

@@ -41,7 +41,7 @@ def test_chat_ready_engine_off_is_immediate(client, monkeypatch):
     assert payload['reason'] == 'engine_off'
 
 
-def test_chat_blocks_when_engine_off(client, monkeypatch):
+def test_chat_arms_engine_when_off(client, monkeypatch):
     server = {
         'id': 'gemma-12b-ar',
         'label': 'Gemma 12B',
@@ -61,19 +61,28 @@ def test_chat_blocks_when_engine_off(client, monkeypatch):
     monkeypatch.setattr('core.config.load_config', lambda: state)
     monkeypatch.setattr('api.app.load_config', lambda: state)
     monkeypatch.setattr('api.app._require_server', lambda cfg, sid: server)
-    monkeypatch.setattr('core.chat_ready.tcp_port_open', lambda host, port: False)
+    monkeypatch.setattr('core.chat_ready.tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr('core.chat_ready.listener_is_managed_engine', lambda host, port: True)
+    monkeypatch.setattr(
+        'core.chat_ready.ensure_managed_listen_port',
+        lambda server, cfg=None: {'success': True, 'port': int(server.get('port') or 0), 'reason': 'free'},
+    )
+    monkeypatch.setattr(
+        'core.runtime.build_server_status',
+        lambda entry, cfg=None: {
+            'status': 'loaded',
+            'loaded_models': ['gemma-4-12b-it-qat'],
+            'active_model_id': 'gemma-4-12b-it-qat',
+        },
+    )
     monkeypatch.setattr('api.app.load_server_checkpoint', lambda *args, **kwargs: load_calls.append('load') or {'success': True})
+    monkeypatch.setattr('core.engine_state.update_server_runtime', lambda sid, **kw: {'engine_on': True})
 
     from api.app import _ensure_server_ready_for_chat
-    from fastapi import HTTPException
 
-    with pytest.raises(HTTPException) as exc:
-        _ensure_server_ready_for_chat('gemma-12b-ar', server, state, client_label='test')
-
-    assert exc.value.status_code == 503
-    assert exc.value.detail['error']['reason'] == 'engine_off'
-    assert load_calls == []
-    assert server.get('engine_on') is not True
+    live = _ensure_server_ready_for_chat('gemma-12b-ar', server, state, client_label='Hermes')
+    assert server.get('engine_on') is True
+    assert live.get('loaded_models')
 
 
 def test_chat_rejects_when_listener_start_fails(client, monkeypatch):
@@ -170,7 +179,7 @@ def test_chat_rejects_images_when_no_mmproj(client, monkeypatch):
     assert body['detail']['error']['supports_vision'] is False
 
 
-def test_chat_ready_keeps_engine_off_when_listener_port_is_open(client, monkeypatch):
+def test_chat_ready_reconciles_engine_on_when_listener_port_is_open(client, monkeypatch):
     server = {
         'id': 'gemma-12b-ar',
         'label': 'Gemma 12B',
@@ -193,13 +202,20 @@ def test_chat_ready_keeps_engine_off_when_listener_port_is_open(client, monkeypa
         'core.chat_ready._sync_engine_on',
         lambda server, cfg, server_id: reconcile_calls.append(server_id),
     )
+    monkeypatch.setattr(
+        'core.runtime.build_server_status',
+        lambda entry, cfg=None: {
+            'status': 'loaded',
+            'loaded_models': ['gemma-4-12b-it-qat'],
+            'active_model_id': 'gemma-4-12b-it-qat',
+        },
+    )
 
     resp = client.get('/api/servers/gemma-12b-ar/chat-ready')
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload['ready'] is False
-    assert payload['reason'] == 'engine_off'
-    assert reconcile_calls == []
+    assert payload['ready'] is True
+    assert reconcile_calls == ['gemma-12b-ar']
 
 
 def test_chat_ready_reports_model_not_loaded_after_unload(client, monkeypatch):

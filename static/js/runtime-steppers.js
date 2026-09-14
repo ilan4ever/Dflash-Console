@@ -86,6 +86,9 @@
         input.value = String(next);
       }
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (input.id === 'inspectorContextMax') {
+        window.DFlashServerLive?.syncInspectorContextCaps?.();
+      }
       if (onChange) onChange(input);
     };
     wrap.querySelectorAll('.lm-stepper-btn').forEach((btn) => {

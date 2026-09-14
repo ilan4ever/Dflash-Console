@@ -309,18 +309,51 @@ def score_accelerator_pair(target_path: str | Path, accelerator_path: str | Path
     return score
 
 
-def infer_dflash_profile(target_path: str | Path, draft_path: str | Path | None = None) -> str:
+def infer_dflash_profile(
+    target_path: str | Path,
+    draft_path: str | Path | None = None,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> str:
     name = Path(target_path).name.lower()
     if 'bonsai' in name:
         return 'bonsai-spec'
+    # Built-in MTP checkpoints use llama.cpp MTP — not a separate DFlash draft file.
+    if re.search(r'[-_.]mtp(?:[-_.]|\.gguf$)', name) and not is_accelerator_path(target_path):
+        if 'qwen' in name or 'deepseek' in name:
+            return 'qwen-ar'
+        return 'generic-ar'
+    draft_file = ''
+    if draft_path and is_accelerator_path(draft_path):
+        candidate = Path(str(draft_path)).expanduser()
+        if candidate.is_file():
+            draft_file = str(candidate)
+    if not draft_file and cfg is not None:
+        local = find_local_accelerators(target_path, cfg=cfg, limit=1)
+        if local and is_viable_stack_pair(
+            target_path,
+            local[0].get('path') or '',
+            float(local[0].get('score') or 0),
+        ):
+            draft_file = str(local[0].get('path') or '')
+    if not draft_file:
+        if 'qwen' in name or 'deepseek' in name:
+            return 'qwen-ar'
+        if 'gemma' in name:
+            if re.search(r'12\s*b', name) or '12b' in name.replace('-', ''):
+                return 'gemma-12-ar'
+            return 'gemma-ar'
+        if 'bonsai' in name:
+            return 'bonsai'
+        return 'generic-ar'
     if 'gemma' in name:
         if re.search(r'12\s*b', name) or '12b' in name.replace('-', ''):
             return 'gemma-12-dflash'
         return 'gemma-chat'
     if 'qwen' in name or 'deepseek' in name:
         return 'qwen-dflash'
-    if draft_path and is_accelerator_path(draft_path):
-        draft_name = Path(draft_path).name.lower()
+    if draft_file and is_accelerator_path(draft_file):
+        draft_name = Path(draft_file).name.lower()
         if 'dspark' in draft_name:
             return 'bonsai-spec'
     return 'qwen-dflash'
@@ -447,7 +480,7 @@ def preflight_stack_target(target_path: str | Path, *, cfg: dict[str, Any] | Non
             **base,
             'reason_code': 'no-accelerator',
             'reason': 'No compatible DFlash accelerator is installed. Download one from Model catalog first.',
-            'suggested_profile': infer_dflash_profile(target),
+            'suggested_profile': infer_dflash_profile(target, cfg=cfg),
         }
     best = local[0]
     score = float(best.get('score') or 0)

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from api.gateway import list_models
 from core.gateway_routing import (
     catalog_model_id,
+    gateway_public_model_ids,
     model_ids_compatible,
     normalize_model_token,
     resolve_chat_server,
@@ -82,6 +83,64 @@ def test_resolve_chat_server_matches_server_id_with_dflash_suffix():
     assert server['id'] == 'gemma-4-31b-q4-0-it-dflash'
 
 
+def test_resolve_chat_server_matches_cursor_compat_alias():
+    cfg = _cfg()
+    cfg['gateway_server_id'] = 'qwen3-8-27b-q6-k-l-dflash'
+    server = resolve_chat_server(cfg, 'gpt-4o-mini')
+    assert server['id'] == 'qwen3-8-27b-q6-k-l-dflash'
+
+
+def test_resolve_chat_server_matches_qwen_dflash_server_id():
+    cfg = _cfg()
+    server = resolve_chat_server(cfg, 'qwen3-8-27b-q6-k-l-dflash')
+    assert server['id'] == 'qwen3-8-27b-q6-k-l-dflash'
+
+
+def test_resolve_chat_server_matches_dotted_model_id():
+    cfg = _cfg()
+    server = resolve_chat_server(cfg, 'qwen3.8-27b-q6-k-l')
+    assert server['id'] == 'qwen3-8-27b-q6-k-l-dflash'
+
+
+def test_gateway_public_model_ids_includes_dflash_suffix_when_stack_ready():
+    qwen = {
+        'id': 'qwen3-8-27b-q6-k-l-dflash',
+        'model_id': 'qwen3.8-27b-q6-k-l',
+        'profile': 'qwen-dflash',
+    }
+    with patch('core.model_presets.server_dflash_stack_ready', return_value=True):
+        ids = gateway_public_model_ids(qwen)
+    assert 'qwen3-8-27b-q6-k-l-dflash' in ids
+    assert 'qwen3-8-27b-q6-k-l' in ids
+
+
+def test_gateway_public_model_ids_omits_dflash_suffix_without_real_stack():
+    qwen = {
+        'id': 'qwen3-8-27b-q6-k-l-dflash',
+        'model_id': 'qwen3.8-27b-q6-k-l',
+        'profile': 'qwen-dflash',
+    }
+    ids = gateway_public_model_ids(qwen)
+    assert 'qwen3-8-27b-q6-k-l' in ids
+    assert 'qwen3.8-27b-q6-k-l' in ids
+    assert 'qwen3-8-27b-q6-k-l-dflash' not in ids
+
+    mtp = {
+        'id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+        'model_id': 'qwen3.8-27b-gsq-rco-iq3-xxs-mtp',
+        'profile': 'qwen-dflash',
+    }
+    mtp_ids = gateway_public_model_ids(mtp)
+    assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp' in mtp_ids
+    assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash' not in mtp_ids
+
+
+def test_resolve_chat_server_still_matches_dflash_suffix():
+    cfg = _cfg()
+    server = resolve_chat_server(cfg, 'qwen3-8-27b-q6-k-l-dflash')
+    assert server['id'] == 'qwen3-8-27b-q6-k-l-dflash'
+
+
 def test_resolve_chat_server_unknown_returns_404():
     cfg = _cfg()
     with pytest.raises(HTTPException) as exc:
@@ -149,10 +208,23 @@ def test_gateway_list_models_deduplicates_registered_model_ids(tmp_path):
     assert rows[0]['meta']['server_id'] == 'gemma-4-31b-q4-0-it-dflash'
 
 
-def test_gateway_list_models_hides_incomplete_dflash_profiles(monkeypatch: pytest.MonkeyPatch):
+def test_gateway_list_models_includes_target_only_dflash_profiles(tmp_path, monkeypatch: pytest.MonkeyPatch):
     cfg = _cfg()
+    qwen_target = tmp_path / 'qwen.gguf'
+    gemma_target = tmp_path / 'gemma12.gguf'
+    qwen_target.write_bytes(b'target')
+    gemma_target.write_bytes(b'target')
+    cfg['servers'][1]['target_path'] = str(qwen_target)
+    cfg['servers'][2]['target_path'] = str(gemma_target)
     with patch('api.gateway.load_config', return_value=cfg):
         result = asyncio.run(list_models())
     ids = {row['meta']['server_id'] for row in result['data']}
-    assert 'qwen3-8-27b-q6-k-l-dflash' not in ids
-    assert 'gemma-4-12b-it-q4-k-m-dflash' not in ids
+    assert 'qwen3-8-27b-q6-k-l-dflash' in ids
+    assert 'gemma-4-12b-it-q4-k-m-dflash' in ids
+    qwen_row = next(row for row in result['data'] if row['meta']['server_id'] == 'qwen3-8-27b-q6-k-l-dflash')
+    assert qwen_row['meta']['draft_required'] is True
+    assert qwen_row['meta']['dflash_ready'] is False
+    assert qwen_row['meta']['loadable'] is True
+    public_ids = {row['id'] for row in result['data'] if row['meta']['server_id'] == 'qwen3-8-27b-q6-k-l-dflash'}
+    assert 'qwen3.8-27b-q6-k-l' in public_ids
+    assert 'qwen3-8-27b-q6-k-l-dflash' not in public_ids

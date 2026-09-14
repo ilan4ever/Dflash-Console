@@ -322,6 +322,78 @@ def test_dflash_load_failure_returns_repair_instead_of_fallback(monkeypatch, tmp
     assert 'without' not in str(result).lower()
 
 
+def test_validate_dflash_stack_falls_back_to_ar_when_draft_missing(tmp_path):
+    target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    target.write_bytes(b'target')
+    server = {
+        'id': 'qwen3-8-27b-q6-k-l-dflash',
+        'profile': 'qwen-dflash',
+        'model_id': 'qwen3.8-27b-q6-k-l',
+        'target_path': str(target),
+        'draft_path': str(tmp_path / 'missing-dflash2.gguf'),
+    }
+    with patch('core.model_stack.resolve_model_stack', return_value=[
+        {'role': 'target', 'path': str(target)},
+    ]):
+        result = server_boot.validate_dflash_stack(server)
+    assert result['valid'] is True
+    assert result.get('ar_fallback') is True
+    assert result.get('error') != 'dflash_stack_repair_required'
+    assert result['target_path']
+
+
+def test_repair_dflash_servers_keeps_target_only_engine_enabled(tmp_path):
+    target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    target.write_bytes(b'target')
+    cfg = {
+        'servers': [
+            {
+                'id': 'qwen3-8-27b-q6-k-l-dflash',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.8-27b-q6-k-l',
+                'enabled': True,
+                'engine_on': True,
+                'target_path': str(target),
+                'draft_path': str(tmp_path / 'missing.gguf'),
+                'port': 8095,
+                'host': '127.0.0.1',
+            },
+        ],
+    }
+    with patch('core.model_stack.resolve_model_stack', return_value=[
+        {'role': 'target', 'path': str(target)},
+    ]):
+        result = server_boot.repair_dflash_servers(cfg)
+    assert 'qwen3-8-27b-q6-k-l-dflash' not in result['disabled']
+    assert cfg['servers'][0]['enabled'] is True
+
+
+def test_repair_dflash_servers_reenables_target_only_engine(tmp_path):
+    target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
+    target.write_bytes(b'target')
+    cfg = {
+        'servers': [
+            {
+                'id': 'qwen3-8-27b-q6-k-l-dflash',
+                'profile': 'qwen-dflash',
+                'model_id': 'qwen3.8-27b-q6-k-l',
+                'enabled': False,
+                'engine_on': False,
+                'target_path': str(target),
+                'draft_path': str(tmp_path / 'missing.gguf'),
+                'port': 8095,
+                'host': '127.0.0.1',
+            },
+        ],
+    }
+    with patch('core.model_stack.resolve_model_stack', return_value=[
+        {'role': 'target', 'path': str(target)},
+    ]):
+        result = server_boot.repair_dflash_servers(cfg)
+    assert cfg['servers'][0]['enabled'] is True
+    assert result['repaired']
+
+
 def test_validate_dflash_stack_skips_non_stack_adhoc_target(tmp_path):
     translategemma = tmp_path / 'translategemma-12b-it.Q4_K_S.gguf'
     translategemma.write_bytes(b't')

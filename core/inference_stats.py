@@ -133,6 +133,7 @@ def _completion_entry(
     generation_tokens: int,
     prompt_tokens: int | None = None,
     tokens_per_second: float | None = None,
+    peak_tokens_per_second: float | None = None,
 ) -> dict[str, Any]:
     total = None
     if prompt_tokens is not None:
@@ -142,6 +143,7 @@ def _completion_entry(
         'generation_tokens': int(generation_tokens),
         'total_tokens': total,
         'tokens_per_second': round(float(tokens_per_second), 1) if tokens_per_second else None,
+        'peak_tokens_per_second': round(float(peak_tokens_per_second), 1) if peak_tokens_per_second else None,
         'updated_at': time.time(),
     }
 
@@ -267,6 +269,16 @@ def note_completion_stats(
         tpt_ms = timings.get('predicted_per_token_ms')
         if tpt_ms and float(tpt_ms) > 0:
             entry['tokens_per_second'] = round(1000.0 / float(tpt_ms), 1)
+    if entry['tokens_per_second'] is None:
+        predicted_n = timings.get('predicted_n')
+        predicted_ms = timings.get('predicted_ms')
+        if predicted_n is not None and predicted_ms and float(predicted_ms) > 0:
+            entry['tokens_per_second'] = round(
+                float(predicted_n) / (float(predicted_ms) / 1000.0),
+                1,
+            )
+    if entry['tokens_per_second'] is not None and timings.get('predicted_per_second') is not None:
+        entry['peak_tokens_per_second'] = round(float(timings['predicted_per_second']), 1)
     sid = str(server_id)
     _LAST_COMPLETION[sid] = entry
     _remember_completion(sid, entry)
@@ -529,7 +541,7 @@ def _slot_has_activity(slot_stats: dict[str, Any], *, server_id: str = '') -> bo
 
 
 def _apply_slot_last(out: dict[str, Any], last: dict[str, Any]) -> None:
-    for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'updated_at'):
+    for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'peak_tokens_per_second', 'updated_at'):
         if last.get(key) is not None:
             out[key] = last[key]
 
@@ -565,6 +577,7 @@ def _process_slot(server_id: str, slot: dict[str, Any]) -> dict[str, Any]:
                 'started_at': time.time(),
                 'tokens': None,
                 'tps': None,
+                'peak_tps': None,
                 'decode_started_at': None,
                 'decode_base_tokens': 0,
                 'sample_at': None,
@@ -656,6 +669,8 @@ def _process_slot(server_id: str, slot: dict[str, Any]) -> dict[str, Any]:
                 live_tps = _decode_tokens_per_second(track, decoded)
                 if live_tps is not None:
                     track['tps'] = live_tps
+                    prev_peak = track.get('peak_tps')
+                    track['peak_tps'] = max(float(prev_peak or 0), float(live_tps))
             if dt >= 0.5:
                 track['sample_at'] = now
                 track['sample_tokens'] = decoded
@@ -690,7 +705,16 @@ def _process_slot(server_id: str, slot: dict[str, Any]) -> dict[str, Any]:
                 generation_tokens=int(n_decoded),
                 prompt_tokens=slot_prompt,
                 tokens_per_second=decode_tps or ((track or {}).get('tps')),
+                peak_tokens_per_second=(track or {}).get('peak_tps'),
             )
+        track_peak = (track or {}).get('peak_tps')
+        if track_peak is not None:
+            entry['peak_tokens_per_second'] = round(float(track_peak), 1)
+        if entry.get('tokens_per_second') is None and track:
+            decode_tps = _decode_tokens_per_second(track, int(n_decoded))
+            fallback = decode_tps or track.get('tps')
+            if fallback is not None:
+                entry['tokens_per_second'] = round(float(fallback), 1)
         last_by_slot[slot_id] = entry
         _LAST_COMPLETION[sid] = entry
         _remember_completion(sid, entry)
@@ -716,6 +740,7 @@ def _promote_primary_stats(stats: dict[str, Any], slot_rows: list[dict[str, Any]
         'prompt_tokens',
         'generation_tokens',
         'tokens_per_second',
+        'peak_tokens_per_second',
     ):
         if primary.get(key) is not None:
             stats[key] = primary[key]
@@ -723,7 +748,7 @@ def _promote_primary_stats(stats: dict[str, Any], slot_rows: list[dict[str, Any]
         stats['live_updated_at'] = time.time()
     else:
         _clear_live_stats(stats)
-        for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second'):
+        for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'peak_tokens_per_second'):
             if primary.get(key) is not None:
                 stats[key] = primary[key]
 
@@ -853,11 +878,13 @@ def fetch_inference_stats(
         pass
 
     last = _LAST_COMPLETION.get(sid) or {}
-    for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'updated_at'):
+    for key in ('prompt_tokens', 'generation_tokens', 'tokens_per_second', 'peak_tokens_per_second', 'updated_at'):
         if stats.get(key) is None and last.get(key) is not None:
             stats[key] = last[key]
     if stats.get('tokens_per_second') is not None:
         stats['tokens_per_second'] = round(float(stats['tokens_per_second']), 1)
+    if stats.get('peak_tokens_per_second') is not None:
+        stats['peak_tokens_per_second'] = round(float(stats['peak_tokens_per_second']), 1)
     stats['recent_completions'] = _recent_completions(sid)
 
     if sid:

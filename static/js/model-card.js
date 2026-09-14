@@ -200,11 +200,11 @@
     return `<span class="lm-tag gold dflash-logo-label" role="img" aria-label="${safeLabel}" title="${safeLabel}"></span>`;
   }
 
-  function classificationTags(model, { includeReasoning = true, includeLogo = true } = {}) {
+  function classificationTags(model, { includeReasoning = true, includeLogo = true, includeModality = true } = {}) {
     const tags = [];
     const type = modality(model);
     const modalityEntry = MODALITY_BADGES[type];
-    if (modalityEntry) {
+    if (includeModality && modalityEntry) {
       tags.push(tag(modalityEntry[0], modalityEntry[1], `Modality: ${type}`));
     }
     if (isAccelerator(model)) {
@@ -273,6 +273,48 @@
     };
   }
 
+  function compactLibraryCardHtml({
+    title,
+    labelsHtml = '',
+    detailsHtml: detailsBlock = '',
+    diskLabel = '',
+    actionHtml = '',
+    selected = false,
+    external = false,
+    loadedOnGpu = false,
+    dataModelKey = '',
+    dataModelId = '',
+    dataServerId = '',
+  }) {
+    const ext = external ? ' external-gpu' : ' dflash-model';
+    const stateCls = loadedOnGpu ? ' ready' : '';
+    const selectedCls = selected ? ' selected' : '';
+    const foot = diskLabel && diskLabel !== '—'
+      ? `<div class="lm-external-foot-metrics"><span class="lm-external-foot-line lm-external-foot-disk" title="Model size on disk"><span class="lm-external-foot-lbl">Disk</span><span class="lm-external-foot-val">${escapeHtml(diskLabel)}</span></span></div>`
+      : '';
+    const stats = `<div class="lm-external-stats-col">${actionHtml || ''}${foot}</div>`;
+    const tokenRow = '<div class="lm-model-card-center-row lm-model-card-token-row" aria-hidden="true"></div>';
+    const center = `<div class="lm-model-card-center has-token-row${external ? ' lm-external-center' : ''}">
+        <div class="lm-model-card-center-row lm-model-card-title-row${external ? ' lm-external-title-row' : ''}">
+          <span class="lm-model-card-identity">
+            <span class="lm-model-card-name-line">
+              <span class="lm-model-path">${escapeHtml(title)}</span>
+            </span>
+          </span>
+          <span class="lm-model-card-labels">${labelsHtml}</span>
+        </div>
+        ${tokenRow}
+        ${detailsBlock}
+      </div>`;
+    return `<article class="lm-model-card lm-model-card-compact lm-library-card${stateCls}${selectedCls}${ext}" data-model-key="${escapeHtml(dataModelKey)}" data-model-id="${escapeHtml(dataModelId)}" data-server-id="${escapeHtml(dataServerId)}" role="button" tabindex="0">
+      <div class="lm-model-card-top">
+        ${center}
+        <span class="lm-model-card-tags"></span>
+        <div class="lm-model-stats${external ? ' lm-external-stats' : ''}">${stats}</div>
+      </div>
+    </article>`;
+  }
+
   window.DFlashModelCard = {
     MODALITY_BADGES,
     identityText,
@@ -287,5 +329,6 @@
     presentation,
     classificationTags,
     detailsHtml,
+    compactLibraryCardHtml,
   };
 })();

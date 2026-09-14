@@ -176,3 +176,51 @@ def read_gguf_metadata(
             return found
     except (OSError, OverflowError, struct.error):
         return {}
+
+
+def infer_context_length_from_metadata(meta: dict[str, object]) -> int | None:
+    """Best-effort native context length from GGUF header metadata."""
+    if not meta:
+        return None
+    best = 0
+    for key, value in meta.items():
+        if not str(key).endswith('.context_length'):
+            continue
+        try:
+            length = int(value)
+        except (TypeError, ValueError):
+            continue
+        if length >= 2048:
+            best = max(best, length)
+    if best:
+        return best
+
+    hay = ' '.join(
+        str(meta.get(key) or '')
+        for key in (
+            'general.basename',
+            'general.name',
+            'general.base_model.0.name',
+            'general.base_model.0.repo_url',
+        )
+    ).lower()
+    if 'qwen3.8' in hay or 'qwen3-8' in hay or 'qwen3_8' in hay:
+        return 262144
+    if 'qwen3' in hay:
+        return 131072
+    if 'gemma 4' in hay or 'gemma-4' in hay or 'gemma4' in hay:
+        return 131072
+    if 'gemma 3' in hay or 'gemma-3' in hay or 'gemma3' in hay:
+        return 8192
+    if 'llama 3' in hay or 'llama-3' in hay or 'llama3' in hay:
+        return 131072
+    return None
+
+
+def read_gguf_context_length(path: str | Path) -> int | None:
+    """Read the model's reported maximum context length from a GGUF file."""
+    target = Path(path).expanduser()
+    if not target.is_file():
+        return None
+    meta = read_gguf_metadata(target)
+    return infer_context_length_from_metadata(meta)

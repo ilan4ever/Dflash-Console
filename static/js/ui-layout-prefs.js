@@ -9,6 +9,7 @@
     inspector_collapsed: 'dflashConsole.inspectorCollapsed',
   };
   const LEGACY_TABLE_PREFIX = 'dflashConsole.tableCols.';
+  const TABLE_LOCAL_PREFIX = 'dflashConsole.tableCols.';
 
   let cache = {};
   let readyPromise = null;
@@ -136,9 +137,36 @@
     scheduleSave();
   }
 
+  function readTableColumnsLocal(tableKey) {
+    try {
+      const raw = localStorage.getItem(`${TABLE_LOCAL_PREFIX}${tableKey}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeTableColumnsLocal(tableKey, payload) {
+    try {
+      localStorage.setItem(`${TABLE_LOCAL_PREFIX}${tableKey}`, JSON.stringify(payload));
+    } catch {
+      /* ignore */
+    }
+  }
+
   function getTableColumns(tableKey) {
     const cols = cache.table_columns?.[tableKey];
-    return cols && typeof cols === 'object' ? { ...cols } : null;
+    if (cols && typeof cols === 'object') return { ...cols };
+    const local = readTableColumnsLocal(tableKey);
+    if (local) {
+      if (!cache.table_columns || typeof cache.table_columns !== 'object') {
+        cache.table_columns = {};
+      }
+      cache.table_columns[tableKey] = { ...local };
+    }
+    return local ? { ...local } : null;
   }
 
   function setNumber(key, value) {
@@ -165,7 +193,11 @@
     if (!cache.table_columns || typeof cache.table_columns !== 'object') {
       cache.table_columns = {};
     }
-    cache.table_columns[tableKey] = { ...payload };
+    cache.table_columns[tableKey] = {
+      ...(cache.table_columns[tableKey] || {}),
+      ...payload,
+    };
+    writeTableColumnsLocal(tableKey, cache.table_columns[tableKey]);
     scheduleSave();
   }
 

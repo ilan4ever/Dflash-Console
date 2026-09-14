@@ -106,6 +106,8 @@ DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     'gpu_performance_mode': 'balanced',
     # 0 = use mode default (desktop headroom for Windows / Chrome compositor)
     'desktop_vram_reserve_gb': 0.0,
+    # Unload idle Console engines on a saturated GPU when another generation stalls.
+    'gpu_relief_enabled': True,
 }
 
 DEFAULT_DOWNLOAD_SETTINGS: dict[str, Any] = {
@@ -474,6 +476,7 @@ def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
             raw.get('gpu_performance_mode') or DEFAULT_HARDWARE_SETTINGS['gpu_performance_mode']
         ),
         'desktop_vram_reserve_gb': max(0.0, desktop_reserve_gb),
+        'gpu_relief_enabled': raw.get('gpu_relief_enabled') is not False,
     }
 
 
@@ -894,6 +897,9 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
         result['mmproj_path'] = mmproj_path
     if entry.get('vision') is False:
         result['vision'] = False
+    from core.model_presets import clamp_server_context_fields
+
+    result = clamp_server_context_fields(result)
     engine_mode = str(entry.get('engine_mode') or '').strip().lower()
     profile_name = str(result.get('profile') or '').strip().lower()
     if engine_mode:

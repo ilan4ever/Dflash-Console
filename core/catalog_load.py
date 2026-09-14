@@ -15,7 +15,7 @@ from core.config import (
     normalize_load_settings,
     normalize_server,
 )
-from core.engine_state import note_engine_loaded
+from core.engine_state import note_engine_loaded, note_engine_on
 from core.local_models import list_local_models
 from core.memory_guardrails import assess_load
 from core.server_boot import load_server_checkpoint
@@ -82,6 +82,10 @@ def execute_catalog_load(
             status_code=404,
             detail='model not found in the local catalog (use path or model_id from GET /api/models)',
         )
+
+    catalog_server_id = str(server_id or target.get('server_id') or '').strip()
+    if catalog_server_id:
+        note_engine_on(catalog_server_id)
 
     modality = str(target.get('modality') or 'llm')
     runtime_id = str(target.get('runtime_id') or 'llama-server')
@@ -223,6 +227,7 @@ def execute_catalog_load(
         raise HTTPException(status_code=409, detail=f'no enabled server can run a {modality} model — pass server_id')
 
     server = normalize_server(dict(server))
+    note_engine_on(str(server.get('id') or ''))
     candidate = {**server, 'adhoc_model_path': resolved_path}
     if context_size is not None:
         candidate['context_size'] = int(context_size)

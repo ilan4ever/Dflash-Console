@@ -1,5 +1,11 @@
 from core.gpu_processes import _build_external_card
-from core.runtime import _acceleration_metadata, _build_visible_cards, _annotate_model_stack
+from core.runtime import (
+    _acceleration_metadata,
+    _annotate_model_stack,
+    _build_visible_cards,
+    _resolve_card_size_gb,
+    _resolve_card_vram_gb,
+)
 
 
 def test_visible_card_is_single_composite_when_loaded():
@@ -220,3 +226,30 @@ def test_api_base_url_strips_v1():
     from core.runtime import api_base_url
 
     assert api_base_url('http://127.0.0.1:8092/v1') == 'http://127.0.0.1:8092'
+
+
+def test_resolve_card_size_gb_uses_adhoc_model_path(tmp_path):
+    gguf = tmp_path / 'translategemma-12b-it.Q4_K_S.gguf'
+    gguf.write_bytes(b'0' * (64 * 1024 * 1024))
+    card = {'is_adhoc': True, 'plain_llm': True, 'size_gb': None, 'path': ''}
+    server = {
+        'adhoc_model_path': str(gguf),
+        'model_catalog': {'target_path': str(gguf)},
+    }
+    size = _resolve_card_size_gb(card, server)
+    assert size == 0.06
+
+
+def test_resolve_card_vram_gb_estimates_when_unmeasured():
+    card = {
+        'card_state': 'ready',
+        'size_gb': 7.14,
+        'context_size': 65536,
+    }
+    server = {
+        'context_size': 65536,
+        'load_settings': {'gpu_layers': 99},
+    }
+    vram = _resolve_card_vram_gb(card, server, None)
+    assert vram is not None
+    assert vram > 7.0

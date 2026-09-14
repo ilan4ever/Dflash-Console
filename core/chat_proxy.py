@@ -274,12 +274,43 @@ def validate_reasoning_chat_request(
     )
 
 
+def _sse_completion_meta(raw: bytes) -> dict[str, Any]:
+    """Merge ``usage`` and ``timings`` from separate trailing SSE chunks (llama-server)."""
+    usage: dict[str, Any] | None = None
+    timings: dict[str, Any] | None = None
+    if not raw:
+        return {}
+    for line in raw.decode('utf-8', errors='replace').splitlines():
+        if not line.startswith('data:'):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == '[DONE]':
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if isinstance(parsed.get('usage'), dict):
+            usage = parsed['usage']
+        if isinstance(parsed.get('timings'), dict):
+            timings = parsed['timings']
+    out: dict[str, Any] = {}
+    if usage:
+        out['usage'] = usage
+    if timings:
+        out['timings'] = timings
+    return out
+
+
 def aggregate_sse_to_completion(raw: bytes) -> dict[str, Any]:
     """Fold an OpenAI-style SSE chat stream into one completion JSON object."""
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     finish_reason: str | None = None
     usage: dict[str, Any] | None = None
+    timings: dict[str, Any] | None = None
     model: str | None = None
     if not raw:
         return {'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': ''}, 'finish_reason': 'stop'}]}
@@ -316,6 +347,8 @@ def aggregate_sse_to_completion(raw: bytes) -> dict[str, Any]:
                 finish_reason = choice['finish_reason']
         if isinstance(parsed.get('usage'), dict):
             usage = parsed['usage']
+        if isinstance(parsed.get('timings'), dict):
+            timings = parsed['timings']
     message: dict[str, Any] = {'role': 'assistant', 'content': ''.join(content_parts)}
     if reasoning_parts:
         message['reasoning_content'] = ''.join(reasoning_parts)
@@ -330,27 +363,21 @@ def aggregate_sse_to_completion(raw: bytes) -> dict[str, Any]:
         result['model'] = model
     if usage:
         result['usage'] = usage
+    if timings:
+        result['timings'] = timings
+    if not usage or not timings:
+        merged = _sse_completion_meta(raw)
+        if not usage and isinstance(merged.get('usage'), dict):
+            result['usage'] = merged['usage']
+        if not timings and isinstance(merged.get('timings'), dict):
+            result['timings'] = merged['timings']
     return result
 
 
 def extract_stream_completion_stats(raw: bytes) -> dict[str, Any] | None:
-    """Return the last OpenAI-style payload from an SSE stream that includes usage."""
-    if not raw:
-        return None
-    last: dict[str, Any] | None = None
-    for line in raw.decode('utf-8', errors='replace').splitlines():
-        if not line.startswith('data:'):
-            continue
-        payload = line[5:].strip()
-        if not payload or payload == '[DONE]':
-            continue
-        try:
-            parsed = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict) and isinstance(parsed.get('usage'), dict):
-            last = parsed
-    return last
+    """Return usage + timings merged from the tail of an SSE chat stream."""
+    meta = _sse_completion_meta(raw)
+    return meta if meta else None
 
 
 # SSE data lines that are pure reasoning (no content delta).  We drop these

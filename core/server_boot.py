@@ -884,6 +884,27 @@ def _dflash_repair_result(
     return result
 
 
+def _ar_fallback_result(
+    entry: dict[str, Any],
+    target_path: str,
+    *,
+    reason_code: str = 'ar-fallback',
+    message: str = '',
+) -> dict[str, Any]:
+    """Target can load without a DFlash draft — do not block external/JIT chat."""
+    return {
+        'success': True,
+        'valid': True,
+        'required': False,
+        'ar_fallback': True,
+        'reason_code': reason_code,
+        'message': message or 'DFlash draft is not available; loading the target as AR.',
+        'server_id': str(entry.get('id') or ''),
+        'target_path': str(target_path),
+        'draft_path': '',
+    }
+
+
 def _normalized_model_path(path: str | Path) -> str:
     try:
         return str(Path(str(path)).expanduser().resolve()).lower()
@@ -966,6 +987,9 @@ def repair_dflash_servers(cfg: dict[str, Any]) -> dict[str, Any]:
                 ):
                     server['draft_path'] = draft_path
                     persisted = True
+                if server.get('enabled') is False and Path(target_path).expanduser().is_file():
+                    server['enabled'] = True
+                    persisted = True
                 if persisted:
                     repaired.append({
                         'server_id': server_id,
@@ -984,8 +1008,8 @@ def repair_dflash_servers(cfg: dict[str, Any]) -> dict[str, Any]:
             (row for row in discovered if str(row.get('role') or '').startswith('draft')),
             {},
         )
-        target_path = str(target_row.get('path') or '').strip()
-        draft_path = str(draft_row.get('path') or '').strip()
+        target_path = str(target_row.get('path') or server.get('target_path') or '').strip()
+        draft_path = str(draft_row.get('path') or server.get('draft_path') or '').strip()
 
         if (
             target_path
@@ -1010,6 +1034,16 @@ def repair_dflash_servers(cfg: dict[str, Any]) -> dict[str, Any]:
                 'target_path': target_path,
                 'draft_path': draft_path,
             })
+            continue
+
+        if target_path and Path(target_path).expanduser().is_file():
+            if not str(server.get('target_path') or '').strip():
+                server['target_path'] = target_path
+                repaired.append({
+                    'server_id': server_id,
+                    'target_path': target_path,
+                    'draft_path': '',
+                })
             continue
 
         if server.get('enabled', True) is not False or server.get('engine_on'):
@@ -1098,58 +1132,44 @@ def validate_dflash_stack(
             generation=generation,
         )
     if not draft:
-        return _dflash_repair_result(
+        return _ar_fallback_result(
             entry,
-            target_path=str(target_file),
+            str(target_file),
             reason_code='draft-required',
-            message='This DFlash profile requires a matching draft accelerator before it can load.',
-            generation=generation,
         )
     draft_file = Path(draft).expanduser()
     if not draft_file.is_file():
-        return _dflash_repair_result(
+        return _ar_fallback_result(
             entry,
-            target_path=str(target_file),
-            draft_path=draft,
+            str(target_file),
             reason_code='missing-draft',
-            message=f'DFlash draft accelerator file not found: {draft}',
-            generation=generation,
+            message=f'DFlash draft not found; loading target as AR: {draft}',
         )
 
     preflight = preflight_dflash_pair(target_file, draft_file)
     generation = str(preflight.get('dflash_generation') or generation or 'dflash1')
     if not preflight.get('compatible'):
-        return _dflash_repair_result(
+        return _ar_fallback_result(
             entry,
-            target_path=str(target_file),
-            draft_path=str(draft_file),
+            str(target_file),
             reason_code=str(preflight.get('reason_code') or 'incompatible-pair'),
-            message=str(preflight.get('reason') or 'The configured DFlash target and draft are incompatible.'),
-            generation=generation,
-            preflight=preflight,
+            message=str(preflight.get('reason') or 'DFlash pair is incompatible; loading the target as AR.'),
         )
     if not preflight.get('validated'):
-        return _dflash_repair_result(
+        return _ar_fallback_result(
             entry,
-            target_path=str(target_file),
-            draft_path=str(draft_file),
+            str(target_file),
             reason_code='preflight-unavailable',
-            message='The target and draft metadata could not be validated. Choose a verified GGUF pair.',
-            generation=generation,
-            preflight=preflight,
+            message='DFlash pair could not be validated; loading the target as AR.',
         )
     if generation == 'dflash2':
         engine = llama_server_capabilities(cfg=cfg)
         if not engine.get('dflash2'):
-            return _dflash_repair_result(
+            return _ar_fallback_result(
                 entry,
-                target_path=str(target_file),
-                draft_path=str(draft_file),
+                str(target_file),
                 reason_code='engine-update-required',
-                message=str(engine.get('message') or 'This engine cannot load DFlash2.'),
-                generation=generation,
-                preflight=preflight,
-                engine=engine,
+                message=str(engine.get('message') or 'DFlash2 engine missing; loading the target as AR.'),
             )
     return {
         'success': True,

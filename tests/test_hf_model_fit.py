@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from core.hf_model_fit import assess_hf_model_fit, quant_sizes_gb
+from core.hf_model_fit import assess_hf_model_fit, bytes_to_hf_size_label, quant_sizes_gb
+
+
+def test_bytes_to_hf_size_label_matches_hub_decimal_gb():
+    assert bytes_to_hf_size_label(10_300_000_000) == '10.30 GB'
+    assert bytes_to_hf_size_label(9_460_000_000) == '9.46 GB'
+    assert bytes_to_hf_size_label(930_000_000) == '0.93 GB'
 
 
 def test_quant_sizes_gb_sums_shards():

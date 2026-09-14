@@ -7,6 +7,33 @@ intended for one trusted user on one Windows machine.
 
 ---
 
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| **Windows 10+** | **Supported** — desktop installer, portable EXE, `pip install dflash-console`, and git checkout |
+| **Linux** | **Not supported or tested** — no installer; many features assume Windows |
+| **macOS** | **Not supported or tested** — no installer; many features assume Windows |
+
+DFlash Console is built and validated on **Windows**. GPU process tracking,
+external-app detection, system stats, and the Electron desktop shell all target
+Windows. The PyPI package may install on Linux or macOS, but the product is not
+guaranteed to work there.
+
+**Developers on Linux or macOS:** you are welcome to try
+`pip install dflash-console` and `dflash serve`, then report what works and what
+breaks. Please open a
+[Discussion](https://github.com/ilan4ever/Dflash-Console/discussions) or
+[Issue](https://github.com/ilan4ever/Dflash-Console/issues/new?template=bug_report.yml)
+with your OS version, install path (pip vs git), and steps. Feedback helps us
+understand demand and gaps before any future cross-platform work.
+
+**Linux CLI (experimental):** [LINUX-CLI.md](./LINUX-CLI.md) — roadmap, WSL2
+setup, `run.sh`, and `scripts/start_llama_server.sh`. Engine auto-boot from the
+Console is Phase 2 (pending a small platform change in `server_boot.py`).
+
+---
+
 ## 1. First launch
 
 Pick one install path:
@@ -532,6 +559,14 @@ phases the Console emits SSE keep-alive comments every ~15s when reasoning is
 being filtered. Reasoning-capable models (Qwen, etc.) keep `reasoning_content`
 visible by default; send `X-Disable-Reasoning: 1` when you want content-only
 deltas (Copilot-style).
+
+### Connect Cursor IDE
+
+On the **same PC**, Cursor uses `http://127.0.0.1:8001/v1` — **no tunnel**. Start the
+Console (`dflash serve` or the desktop app), turn **Engines → Running** on, copy a model
+`id` from `GET /v1/models`, then in **Cursor Settings → Models** set **Override OpenAI Base URL**
+and add that model. Do **not** use `dflash serve --model … --draft …`. Full steps:
+**Documentation → Connect Cursor IDE** or [CURSOR.md](./CURSOR.md).
 
 Optional config:
 

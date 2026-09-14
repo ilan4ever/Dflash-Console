@@ -798,10 +798,12 @@
         jobs.set(job.id, job);
         seen.add(job.id);
       });
-      for (const id of [...jobs.keys()]) {
-        if (seen.has(id)) continue;
-        if (jobs.get(id)?.status === 'downloading') continue;
-        jobs.delete(id);
+      if (incoming.length) {
+        for (const id of [...jobs.keys()]) {
+          if (seen.has(id)) continue;
+          if (jobs.get(id)?.status === 'downloading') continue;
+          jobs.delete(id);
+        }
       }
       emit();
       if (activeJobs().length) ensurePolling();

@@ -71,6 +71,56 @@ def test_wants_stream_from_body_bytes():
     assert wants_stream(json.dumps({'stream': False}).encode()) is False
 
 
+def test_upstream_error_payload_nested_reason():
+    raw = json.dumps({
+        'detail': {
+            'error': {
+                'message': 'budget too low',
+                'type': 'invalid_request_error',
+                'code': 400,
+                'reason': 'reasoning_budget_too_low',
+            }
+        }
+    }).encode()
+    payload = gateway_module._upstream_error_payload(raw, 400)
+    assert payload['error']['reason'] == 'reasoning_budget_too_low'
+
+
+def test_upstream_error_payload_insufficient_vram():
+    raw = json.dumps({
+        'detail': {
+            'error': 'insufficient_vram',
+            'message': 'not enough VRAM',
+            'vram_free_gb': 4.5,
+            'gpu_required_gb': 24.0,
+        }
+    }).encode()
+    payload = gateway_module._upstream_error_payload(raw, 400)
+    assert payload['error']['reason'] == 'insufficient_vram'
+    assert payload['error']['gpu_required_gb'] == 24.0
+
+
+def test_pick_headers_forwards_harness_integrator_headers():
+    request = Request({
+        'type': 'http',
+        'method': 'POST',
+        'headers': [
+            (b'authorization', b'Bearer local'),
+            (b'x-dflash-client', b'DeepSeek Harness'),
+            (b'x-disable-reasoning', b'1'),
+            (b'x-dflash-load-context', b'32768'),
+            (b'content-type', b'application/json'),
+        ],
+        'path': '/v1/chat/completions',
+    })
+    picked = gateway_module._pick_headers(request)
+    lowered = {k.lower(): v for k, v in picked.items()}
+    assert lowered.get('authorization') == 'Bearer local'
+    assert lowered.get('x-dflash-client') == 'DeepSeek Harness'
+    assert lowered.get('x-disable-reasoning') == '1'
+    assert lowered.get('x-dflash-load-context') == '32768'
+
+
 def test_forward_chat_uses_body_for_stream_flag():
     body = json.dumps({'model': 'demo', 'messages': [], 'stream': True}).encode()
     request = Request({'type': 'http', 'method': 'POST', 'headers': [], 'path': '/v1/chat/completions'})

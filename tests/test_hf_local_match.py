@@ -241,6 +241,48 @@ def test_imatrix_file_does_not_count_as_repo_install(tmp_path, monkeypatch):
     assert row['local_auxiliary_only'] is True
 
 
+def test_find_local_matches_fork_repo_by_filename(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    quant = root / 'ISTA-DASLab' / 'Qwen3.8-27B-GSQ-RCO-GGUF' / 'Qwen3.8-27B-GSQ-RCO-IQ3_XXS+MTP.gguf'
+    quant.parent.mkdir(parents=True)
+    quant.write_bytes(b'x' * 1024)
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(quant),
+                'publisher': 'ISTA-DASLab',
+                'loadable': True,
+            }],
+        },
+    )
+
+    from core.hf_local_match import find_local_matches
+
+    matches = find_local_matches(
+        'cruizba/ISTA-DASLab-Qwen3.8-27B-GSQ-RCO-GGUF-Unsloth-MTP',
+        'Qwen3.8-27B-GSQ-RCO-IQ3_XXS+MTP.gguf',
+        cfg=cfg,
+    )
+    assert matches
+    assert matches[0]['path'].endswith('Qwen3.8-27B-GSQ-RCO-IQ3_XXS+MTP.gguf')
+
+
 def test_local_installs_for_files_skips_imatrix(tmp_path, monkeypatch):
     root = tmp_path / 'models'
     imatrix = root / 'ISTA-DASLab' / 'Qwen3.8-27B-GSQ-RCO-GGUF' / 'imatrix-qwen3.8-27b.gguf'

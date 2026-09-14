@@ -15,17 +15,6 @@ MAX_TOKEN_LADDER = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 BATCH_LADDER = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
 SPEC_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'bonsai-spec'})
 
-PROFILE_CTX_MAX = {
-    'gemma-chat': 262144,
-    'gemma-ar': 262144,
-    'gemma-12-dflash': 262144,
-    'qwen-dflash': 32768,
-    'qwen-ar': 32768,
-    'bonsai': 8192,
-    'bonsai-spec': 16384,
-}
-
-
 def _snap_ladder(value: int, ladder: list[int], *, min_v: int, max_v: int) -> int:
     choices = [v for v in ladder if min_v <= v <= max_v]
     if not choices:
@@ -166,12 +155,12 @@ def build_runtime_recommendations(
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = cfg or load_config()
+    from core.model_presets import context_max_for_server
+
     profile = str(server.get('profile') or '')
-    context_max = int(
-        server.get('context_max')
-        or PROFILE_CTX_MAX.get(profile)
-        or 131072
-    )
+    model_cap = int(server.get('model_context_max') or context_max_for_server(server, cfg=config))
+    saved_cap = int(server.get('context_max') or model_cap)
+    context_max = min(max(2048, saved_cap), model_cap)
     gpu_layers_max = int(server.get('gpu_layers_max') or 128)
     weight_gb, target_gb, speculative = _stack_weight_gb(server, config)
     free_gb, total_gb, gpu_count = _vram_budget(config)

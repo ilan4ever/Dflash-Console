@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.208</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.230</span>
           </div>
         </div>
       </div>
@@ -411,6 +411,7 @@ try {
               <button type="button" class="lm-btn df-btn-accent small lm-models-create-btn" id="stackWizardOpenBtn" title="Create a new DFlash stack — pick a target model, pair it with a DFlash accelerator, and register a runnable engine profile.">+ Create DFlash stack</button>
             </div>
           </div>
+          <div class="lm-models-mobile-cards lm-server-cards hidden" id="modelsMobileCards" aria-label="Model library cards"></div>
           <div class="lm-models-table-wrap">
             <table class="lm-models-table" data-resizable-columns data-resize-key="models-library">
               <thead>
@@ -418,6 +419,7 @@ try {
                   <th class="lm-col-model" data-col-id="model" data-col-min="220" data-col-default="480">Model</th>
                   <th class="lm-col-meta" data-col-id="family" data-col-min="48">Family</th>
                   <th class="lm-col-meta" data-col-id="scale" data-col-min="40">Scale</th>
+                  <th class="lm-col-meta" data-col-id="lab" data-col-min="72">Lab</th>
                   <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
                   <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
                   <th class="lm-col-meta" data-col-id="updated" data-col-min="64">Updated</th>
@@ -426,7 +428,7 @@ try {
               </thead>
               <tbody id="modelsTableBody">
                 <tr class="lm-models-loading-row">
-                  <td colspan="7">
+                  <td colspan="8">
                     <span class="lm-models-loading-spinner" aria-hidden="true"></span>
                     <span>Loading your model library…</span>
                     <small>Scanning configured folders. Your models will appear here shortly.</small>
@@ -524,7 +526,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.208</strong>
+                <strong id="dfAboutVersion">v0.3.230</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1235,7 +1237,13 @@ try {
                   <button class="lm-btn ghost small" type="button" id="settingsMcpCopy">Copy mcp.json</button>
                   </div>
               </div>
-              <p class="lm-setting-desc">Connect Cursor, Claude Desktop, and other tools to your local engines. MCP hosting is not active yet — use the OpenAI-compatible URLs below.</p>
+              <p class="lm-setting-desc">Connect Cursor, Claude Desktop, and other tools to your local engines. MCP hosting is not active yet — use the OpenAI-compatible URLs below. Step-by-step for Cursor: <strong>Documentation → Connect Cursor IDE</strong>.</p>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Cursor IDE (same PC)</strong>
+                  <p class="lm-setting-desc">Start DFlash Console and turn <strong>Engines → Running</strong> on. In Cursor → Settings → Models: enable OpenAI API key (any placeholder), set <strong>Override OpenAI Base URL</strong> to <code>http://127.0.0.1:8001/v1</code>, add custom model <code>gpt-4o-mini</code> (routes to your default gateway engine) or a catalog id without <code>-dflash</code>. If Cursor says <strong>Model name is not valid</strong>, the name was rejected by Cursor — not DFlash. Full guide: Documentation → Connect Cursor IDE.</p>
+                </div>
+              </section>
               <section class="lm-settings-section">
                 <div class="lm-settings-section-head">
                   <strong>Client identity</strong>

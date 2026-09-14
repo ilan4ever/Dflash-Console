@@ -4,9 +4,11 @@ Local Windows control panel for **DFlash speculative-decoding stacks** and a
 unified model runtime. Load GGUF, Hugging Face, speech, and embedding models
 from one UI, then talk to them through a single OpenAI-compatible port.
 
-> **Status:** Public preview for local, single-user Windows use.
+> **Status:** Public preview for local, single-user use. **Windows is the only
+> supported platform**; Linux and macOS are not supported or tested (see
+> [Platform support](#platform-support) below).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.208
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.230
 
 ## Download (Windows)
 
@@ -85,13 +87,14 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.208)
+### Recent improvements (v0.3.230)
 
 - **Engine standby** — Running toggle gates load/chat until you arm the pipeline
 - **External GPU cards** — OneVoice, LM Studio, and other apps on the GPU; compact mobile layout; loading state expires when models are ready
 - **Other GPU processes** — per-process VRAM chips for non-model apps
 - **Unload fix** — engine card Unload works reliably while the list refreshes
 - **Client identity** — `X-DFlash-Client` header shows **Active client** on each card
+- **Cursor IDE** — connect via OpenAI base URL `http://127.0.0.1:8001/v1` ([docs/CURSOR.md](./docs/CURSOR.md))
 - **VRAM preflight** — load plans suggest which engine to unload first; co-resident 12B+31B pairs on one GPU
 - **HF catalog** — local index for instant Model catalog search
 - **GPU performance mode** — Balanced / Performance / Inference / Power in Settings → Hardware
@@ -135,6 +138,9 @@ Engines page shows the **Active client** for each model. The gateway forwards th
 The banner updates on every chat or embed call while the model stays loaded. Without the
 header, callers appear as **Unknown API client**. See [docs/CLIENT-IDENTITY.md](./docs/CLIENT-IDENTITY.md).
 
+**Cursor IDE:** same machine → `http://127.0.0.1:8001/v1`, placeholder API key, model id from
+`GET /v1/models`. Not `dflash serve --model …` and not ngrok for local use. [docs/CURSOR.md](./docs/CURSOR.md)
+
 Selected Console routes (UI/API on port **8900**):
 
 | Method | Endpoint | Purpose |
@@ -171,12 +177,37 @@ Full list: **Documentation** in the app, or Swagger at
 
 ## Requirements
 
-- Windows 10+
+- Windows 10+ (supported platform)
 - Python 3.10+
 - PowerShell 7+ (`pwsh`)
 - NVIDIA GPU recommended for multi-model loads
 - Optional: WSL2 Ubuntu + CUDA for FreeToken
 - Optional: Node.js 22.12+ only if you build the Electron shell from source
+
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| **Windows 10+** | **Supported** — desktop installer, portable EXE, `pip install dflash-console`, and git checkout |
+| **Linux** | **Not supported or tested** — no installer; many features assume Windows |
+| **macOS** | **Not supported or tested** — no installer; many features assume Windows |
+
+DFlash Console is built and validated on **Windows**. GPU process tracking,
+external-app detection, system stats, and the Electron desktop shell all target
+Windows. The PyPI package may install on Linux or macOS, but the product is not
+guaranteed to work there.
+
+**Developers on Linux or macOS:** you are welcome to try
+`pip install dflash-console` and `dflash serve`, then report what works and what
+breaks. Please open a
+[Discussion](https://github.com/ilan4ever/Dflash-Console/discussions) or
+[Issue](https://github.com/ilan4ever/Dflash-Console/issues/new?template=bug_report.yml)
+with your OS version, install path (pip vs git), and steps. Feedback helps us
+understand demand and gaps before any future cross-platform work.
+
+**Linux CLI (experimental):** see [docs/LINUX-CLI.md](./docs/LINUX-CLI.md) for the
+roadmap, WSL2 setup, and `run.sh` / `server.sh` helpers. Engine auto-boot on
+Linux is Phase 2 (requires a small `server_boot.py` platform branch — not shipped yet).
 
 ---
 

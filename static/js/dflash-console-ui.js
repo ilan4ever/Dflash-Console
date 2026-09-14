@@ -277,7 +277,21 @@
   let mobileEngineDropdownsOpen = false;
 
   function isNarrowLayout() {
-    return window.innerWidth < 900;
+    if (window.matchMedia('(max-width: 899px)').matches) return true;
+    const main = document.querySelector('.lm-main');
+    const mainWidth = main?.getBoundingClientRect().width ?? 0;
+    return mainWidth > 0 && mainWidth < 680;
+  }
+
+  const MOBILE_SIDENAV_WIDTH_PX = 48;
+
+  function applyMobileSidenavWidth() {
+    if (!isNarrowLayout()) return;
+    if (document.body.classList.contains('df-sidenav-collapsed')) {
+      document.body.style.setProperty('--sidenav-width', '0px');
+      return;
+    }
+    document.body.style.setProperty('--sidenav-width', `${MOBILE_SIDENAV_WIDTH_PX}px`);
   }
 
   function setMobileEngineDropdownsOpen(open) {
@@ -305,7 +319,12 @@
   function fitLayout() {
     if (!bodyEl) return;
     const narrow = isNarrowLayout();
+    const wasNarrow = document.documentElement.classList.contains('df-narrow');
     document.documentElement.classList.toggle('df-narrow', narrow);
+    if (wasNarrow !== narrow) {
+      window.DFlashServerLive?.refreshEngineCardsLayout?.();
+    }
+    document.body.classList.toggle('df-layout-compact', narrow);
 
     if (narrow) {
       if (!mobileSidenavOpen) {
@@ -313,6 +332,7 @@
       } else {
         setSidenavCollapsed(false, { persist: false });
       }
+      applyMobileSidenavWidth();
       setMobileEngineDropdownsOpen(mobileEngineDropdownsOpen);
     } else {
       mobileSidenavOpen = false;
@@ -369,7 +389,7 @@
   syncSysbarHeightVar();
   window.syncSysbarHeightVar = syncSysbarHeightVar;
 
-  window.DFlashShell = { setView, openModal, closeModal, syncHash };
+  window.DFlashShell = { setView, openModal, closeModal, syncHash, isNarrowLayout };
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -500,6 +520,8 @@
     document.getElementById('sidenavRestoreBtn')?.classList.toggle('hidden', !collapsed);
     if (collapsed) {
       document.body.style.setProperty('--sidenav-width', '0px');
+    } else if (isNarrowLayout()) {
+      document.body.style.setProperty('--sidenav-width', `${MOBILE_SIDENAV_WIDTH_PX}px`);
     } else {
       const storedWidth = layoutPrefs()?.getNumber?.('sidenav_width');
       if (Number.isFinite(storedWidth) && storedWidth >= 140) {
@@ -545,7 +567,7 @@
     if (!sidenav || !handle) return;
 
     const storedWidth = layoutPrefs()?.getNumber?.('sidenav_width');
-    if (Number.isFinite(storedWidth) && storedWidth >= 140) {
+    if (!isNarrowLayout() && Number.isFinite(storedWidth) && storedWidth >= 140) {
       setSidenavWidth(storedWidth);
     }
 

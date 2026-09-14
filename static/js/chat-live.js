@@ -431,7 +431,6 @@
       : label;
     const parts = [title];
     if (model.quant && model.quant !== '—') parts.push(model.quant);
-    if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
     return parts.join(' · ');
   }
 

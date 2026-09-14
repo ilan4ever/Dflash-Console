@@ -1,7 +1,9 @@
 from core.client_identity import (
     LABEL_CONSOLE_UI,
     LABEL_UNKNOWN_API,
+    chat_body_load_context_size,
     display_loaded_by_label,
+    request_load_context_size,
     request_strict_model_match,
     resolve_client_label,
 )
@@ -23,6 +25,18 @@ class _Request:
 def test_resolve_client_label_uses_explicit_header():
     req = _Request({'X-DFlash-Client': 'OneVoice'})
     assert resolve_client_label(req) == 'OneVoice'
+
+
+def test_request_load_context_size_header():
+    assert request_load_context_size(_Request({'X-DFlash-Load-Context': '131072'})) == 131072
+    assert request_load_context_size(_Request({'X-DFlash-Load-Context': '1024'})) is None
+    assert request_load_context_size(_Request({})) is None
+
+
+def test_chat_body_load_context_size():
+    assert chat_body_load_context_size({'context_size': 65536}) == 65536
+    assert chat_body_load_context_size({'context_size': 1024}) is None
+    assert chat_body_load_context_size({}) is None
 
 
 def test_request_strict_model_match_header():

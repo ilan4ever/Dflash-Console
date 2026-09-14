@@ -39,6 +39,11 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'markdown': _load_client_identity_guide(),
             },
             {
+                'id': 'cursor',
+                'title': 'Connect Cursor IDE',
+                'markdown': _load_cursor_guide(),
+            },
+            {
                 'id': 'engines',
                 'title': 'Engine control',
                 'endpoints': _engine_endpoints(),
@@ -96,6 +101,10 @@ def _load_cli_guide() -> str:
 
 def _load_client_identity_guide() -> str:
     return _load_markdown_doc('CLIENT-IDENTITY.md')
+
+
+def _load_cursor_guide() -> str:
+    return _load_markdown_doc('CURSOR.md')
 
 
 def _overview_html(base: str) -> str:
@@ -164,6 +173,7 @@ def _overview_html(base: str) -> str:
     <li><strong>GPU performance mode</strong> — Balanced, Performance, Inference, or Power in Settings → Hardware</li>
     <li><strong>Four LLM engines</strong> — DFlash / llama-server, vLLM, Transformers, and FreeToken</li>
     <li><strong>DFlash 1 and DFlash 2</strong> — architecture-aware draft search, validation, and attach</li>
+    <li><strong>Connect Cursor</strong> — Documentation → Connect Cursor IDE (<code>http://127.0.0.1:8001/v1</code>, no tunnel on one PC)</li>
     <li>Playground <strong>Chat · Speak · Transcribe · Embed</strong> plus the OpenAI gateway on port 8001</li>
   </ul>
 </section>
@@ -180,6 +190,26 @@ def _overview_html(base: str) -> str:
     corresponding source when its distribution or network-use terms apply.
     There is no warranty for the covered work. See the repository license and
     trademark policy for the complete terms.
+  </p>
+</section>
+
+<section class="df-docs-section-block">
+  <h3>Platform support</h3>
+  <p>
+    <strong>Windows 10+</strong> is the only supported platform (desktop installer,
+    portable EXE, <code>pip install dflash-console</code>, or git checkout).
+    <strong>Linux and macOS are not supported or tested.</strong> There is no
+    installer for those systems, and many features (GPU process tracking, external-app
+    detection, system stats, Electron shell) assume Windows.
+  </p>
+  <p>
+    <strong>Developers on Linux or macOS:</strong> you may try
+    <code>pip install dflash-console</code> and <code>dflash serve</code>, then share
+    feedback in a
+    <a href="https://github.com/ilan4ever/Dflash-Console/discussions" target="_blank" rel="noopener">GitHub Discussion</a>
+    or
+    <a href="https://github.com/ilan4ever/Dflash-Console/issues/new?template=bug_report.yml" target="_blank" rel="noopener">Issue</a>
+    with your OS version, install path, and what worked or failed.
   </p>
 </section>
 
@@ -261,7 +291,11 @@ def _engine_endpoints() -> list[dict[str, Any]]:
             'path': f'/api/servers/{sid}/v1/chat/completions',
             'summary': 'Proxy chat to engine; supports stream:true SSE passthrough. Requires status loaded — POST /load first if running idle.',
             'body': {'model': 'model-id', 'messages': [{'role': 'user', 'content': 'Hello'}], 'max_tokens': 512, 'stream': True},
-            'notes': 'JIT-loads the model on first chat if idle. Send X-DFlash-Client: YourApp to attribute use on the Engines card (updates on every chat while loaded). Optional X-DFlash-Strict-Model: 1 rejects chat when model does not match the loaded checkpoint (409 model_mismatch).',
+            'notes': (
+                'JIT-loads the model on first chat if idle. Send X-DFlash-Client: YourApp to attribute use on the Engines card (updates on every chat while loaded). '
+                'Optional X-DFlash-Strict-Model: 1 rejects chat when model does not match the loaded checkpoint (409 model_mismatch). '
+                'Optional X-DFlash-Load-Context: <tokens> or JSON field context_size sets the minimum load context before JIT load / auto-grow (same range as POST /load).'
+            ),
         },
         {'method': 'GET', 'path': f'/api/logs/{sid}?tail=200', 'summary': 'Tail engine logs.'},
         {'method': 'DELETE', 'path': f'/api/logs/{sid}', 'summary': 'Clear engine log file.'},
@@ -404,7 +438,16 @@ def _gateway_endpoints() -> list[dict[str, Any]]:
         {'method': 'GET', 'path': '/health', 'summary': 'Gateway health (checks the Console is reachable).'},
         {'method': 'GET', 'path': '/', 'summary': 'Gateway info banner with the /v1 base URL.'},
         {'method': 'GET', 'path': '/v1/models', 'summary': 'List every enabled engine as an OpenAI model (id = engine id; meta carries engine, embedding, model_id).'},
-        {'method': 'POST', 'path': '/v1/chat/completions', 'summary': 'Chat on the default engine; any model name accepted; streaming when stream=true; JIT-loads the model.', 'body': {'model': 'any-name', 'messages': [{'role': 'user', 'content': 'Hello'}]}, 'notes': 'Optional header X-DFlash-Client: YourApp (forwarded to Console for Engines attribution).'},
+        {
+            'method': 'POST',
+            'path': '/v1/chat/completions',
+            'summary': 'Chat on the default engine; any model name accepted; streaming when stream=true; JIT-loads the model.',
+            'body': {'model': 'any-name', 'messages': [{'role': 'user', 'content': 'Hello'}], 'context_size': 65536},
+            'notes': (
+                'Optional header X-DFlash-Client: YourApp (forwarded to Console for Engines attribution). '
+                'Optional X-DFlash-Load-Context: <tokens> forwarded to Console for minimum load context on JIT load / auto-grow.'
+            ),
+        },
         {'method': 'POST', 'path': '/v1/embeddings', 'summary': 'Embed text on the default embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},
         {'method': 'POST', 'path': '/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
         {'method': 'POST', 'path': '/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1'}},

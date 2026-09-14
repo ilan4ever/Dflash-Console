@@ -4,7 +4,7 @@ const path = require('path');
 const vm = require('vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'static', 'js', 'model-search-live.js'), 'utf8');
-const start = source.indexOf('function formatCatalogFileSize');
+const start = source.indexOf('function formatHfFileSizeLabel');
 const end = source.indexOf('function currentCategory');
 const chunk = `${source.slice(start, end)}
 module.exports = {

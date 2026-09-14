@@ -7,6 +7,9 @@ from typing import Any
 
 CLIENT_HEADER = 'x-dflash-client'
 STRICT_MODEL_HEADER = 'x-dflash-strict-model'
+LOAD_CONTEXT_HEADER = 'x-dflash-load-context'
+MIN_LOAD_CONTEXT = 2048
+MAX_LOAD_CONTEXT = 1_048_576
 LABEL_CONSOLE_UI = 'DFlash Console'
 LABEL_UNKNOWN_API = 'Unknown API client'
 
@@ -63,6 +66,31 @@ def request_strict_model_match(request: Any | None = None) -> bool:
     """True when the client wants chat rejected if ``model`` != loaded checkpoint."""
     value = _header_value(request, STRICT_MODEL_HEADER) or _header_value(request, 'X-DFlash-Strict-Model')
     return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _normalize_load_context_value(raw: Any) -> int | None:
+    if raw is None or raw == '':
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    if value < MIN_LOAD_CONTEXT or value > MAX_LOAD_CONTEXT:
+        return None
+    return value
+
+
+def request_load_context_size(request: Any | None = None) -> int | None:
+    """Minimum engine load context from ``X-DFlash-Load-Context`` (Harness and other integrators)."""
+    raw = _header_value(request, LOAD_CONTEXT_HEADER) or _header_value(request, 'X-DFlash-Load-Context')
+    return _normalize_load_context_value(raw)
+
+
+def chat_body_load_context_size(body: Any) -> int | None:
+    """``context_size`` on the chat JSON body (Runtime JSON shapes — override per chat)."""
+    if not isinstance(body, dict):
+        return None
+    return _normalize_load_context_value(body.get('context_size'))
 
 
 def display_loaded_by_label(raw: Any) -> str:

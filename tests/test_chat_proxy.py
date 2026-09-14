@@ -68,6 +68,32 @@ def test_extract_stream_completion_stats():
     payload = extract_stream_completion_stats(raw)
     assert payload is not None
     assert payload['usage']['completion_tokens'] == 12
+    assert payload['timings']['predicted_per_second'] == 31.2
+
+
+def test_extract_stream_completion_stats_merges_split_tail_chunks():
+    raw = (
+        b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":12,"total_tokens":29}}\n\n'
+        b'data: {"choices":[{"finish_reason":"stop"}],"timings":{"predicted_n":12,"predicted_ms":400,'
+        b'"predicted_per_second":30.0}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    payload = extract_stream_completion_stats(raw)
+    assert payload['usage']['completion_tokens'] == 12
+    assert payload['timings']['predicted_per_second'] == 30.0
+
+
+def test_aggregate_sse_to_completion_keeps_timings_from_tail_chunk():
+    raw = (
+        b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n'
+        b'data: {"choices":[{"finish_reason":"stop"}],"timings":{"predicted_per_second":42.5}}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    payload = aggregate_sse_to_completion(raw)
+    assert payload['usage']['completion_tokens'] == 1
+    assert payload['timings']['predicted_per_second'] == 42.5
 
 
 def test_wants_stream_true():

@@ -35,13 +35,17 @@ from fastapi.responses import StreamingResponse
 from core.chat_proxy import wants_stream
 from core.config import is_embedding_server, list_runtimes, list_servers, load_config, normalize_inference_settings
 from core.gateway_routing import (
+    CURSOR_COMPAT_MODEL_IDS,
     catalog_model_id,
+    default_gateway_chat_server,
     enabled_chat_servers,
     gateway_model_aliases,
+    gateway_public_model_ids,
     resolve_chat_server,
+    _advertised_engine_server,
 )
 from core.local_models import model_has_reasoning
-from core.model_presets import profile_requires_draft
+from core.model_presets import server_target_path_on_disk
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,7 @@ _FORWARD_HEADERS = {
     'authorization',
     'x-disable-reasoning',
     'x-dflash-client',
+    'x-dflash-load-context',
     'user-agent',
     'referer',
 }
@@ -61,6 +66,54 @@ _STREAM_HEADERS = {
     'X-Accel-Buffering': 'no',
     'Connection': 'keep-alive',
 }
+
+
+def _upstream_error_payload(raw: bytes, status_code: int) -> dict[str, Any]:
+    """Normalize Console/FastAPI error bodies for gateway clients (Harness, OpenAI SDK)."""
+    text = raw.decode('utf-8', errors='replace').strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            'error': {
+                'message': text or f'upstream HTTP {status_code}',
+                'type': 'upstream_error',
+                'code': status_code,
+            }
+        }
+    if not isinstance(parsed, dict):
+        return {
+            'error': {
+                'message': text,
+                'type': 'upstream_error',
+                'code': status_code,
+            }
+        }
+    detail = parsed.get('detail')
+    if isinstance(detail, dict):
+        nested = detail.get('error')
+        if isinstance(nested, dict):
+            return {'error': nested}
+        if isinstance(nested, str):
+            return {
+                'error': {
+                    'message': str(detail.get('message') or nested),
+                    'type': 'invalid_request_error',
+                    'code': status_code,
+                    'reason': nested,
+                    **{k: v for k, v in detail.items() if k not in {'error', 'message'}},
+                }
+            }
+        return {'error': detail}
+    if isinstance(parsed.get('error'), dict):
+        return parsed
+    return {
+        'error': {
+            'message': text,
+            'type': 'upstream_error',
+            'code': status_code,
+        }
+    }
 
 
 def _console_base(cfg: dict[str, Any]) -> str:
@@ -145,31 +198,9 @@ async def _console_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _dflash_stack_ready(server: dict[str, Any], *, cfg: dict[str, Any]) -> bool:
-    """Keep incomplete speculative profiles out of the public model list."""
-    if is_embedding_server(server):
-        return True
-    if not profile_requires_draft(server.get('profile')):
-        return True
-    try:
-        from core.model_stack import resolve_model_stack
-
-        stack = resolve_model_stack(server, cfg=cfg)
-    except (OSError, ValueError):
-        stack = []
-    target = next((row for row in stack if row.get('role') == 'target'), {})
-    draft = next(
-        (row for row in stack if str(row.get('role') or '').startswith('draft')),
-        {},
-    )
-    target_path = str(server.get('target_path') or target.get('path') or '').strip()
-    draft_path = str(server.get('draft_path') or draft.get('path') or '').strip()
-    return (
-        bool(target_path)
-        and bool(draft_path)
-        and Path(target_path).expanduser().is_file()
-        and Path(draft_path).expanduser().is_file()
-    )
+def _gateway_lists_server(server: dict[str, Any], *, cfg: dict[str, Any]) -> bool:
+    """Advertise engine profiles whose target checkpoint exists on disk."""
+    return _advertised_engine_server(server, cfg=cfg)
 
 
 async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[str, Any], str]:
@@ -201,63 +232,101 @@ def _require_pipeline_active() -> None:
 @gateway_app.get('/v1/models')
 async def list_models() -> dict[str, Any]:
     cfg = load_config()
-    from core.display_names import build_engine_client_metadata
+    from core.display_names import build_engine_client_metadata, disambiguate_engine_display_names
     from core.model_stack import resolve_model_stack
+    from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
 
-    data: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
     seen_model_ids: set[str] = set()
     for server in list_servers(cfg):
-        if server.get('enabled', True) is False:
+        if not _gateway_lists_server(server, cfg=cfg):
             continue
-        if not _dflash_stack_ready(server, cfg=cfg):
+        client_id = catalog_model_id(server)
+        if client_id in seen_model_ids:
             continue
+        seen_model_ids.add(client_id)
         infer = normalize_inference_settings(server.get('inference_settings'))
         try:
             stack = resolve_model_stack(server, cfg=cfg)
         except ValueError:
             stack = []
         client_meta = build_engine_client_metadata(server, stack)
+        pending.append({
+            **client_meta,
+            'id': str(server.get('id') or ''),
+            'model_id': str(server.get('model_id') or ''),
+            'load_settings': server.get('load_settings'),
+            '_server': server,
+            '_infer': infer,
+            '_client_id': client_id,
+            '_stack': stack,
+        })
+    disambiguate_engine_display_names(pending)
+
+    data: list[dict[str, Any]] = []
+    for item in pending:
+        server = item['_server']
+        infer = item['_infer']
+        client_id = item['_client_id']
         display_name = str(
-            client_meta.get('display_name_full')
-            or client_meta.get('display_name')
+            item.get('display_name_full')
+            or item.get('display_name')
             or server.get('label')
             or server.get('id')
             or '',
         ).strip()
         api_model_id = str(server.get('model_id') or '')
-        from pathlib import Path as _Path
-
-        from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
-
         mmproj_path = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
         supports_vision = server_supports_vision_chat(server, cfg=cfg)
-        client_id = catalog_model_id(server)
-        if client_id in seen_model_ids:
-            continue
-        seen_model_ids.add(client_id)
-        data.append({
-            'id': client_id,
-            'object': 'model',
-            'created': 0,
-            'owned_by': 'dflash-console',
-            'name': display_name,
-            'meta': {
-                'engine': display_name,
-                'display_name': display_name,
-                'server_id': str(server.get('id') or ''),
-                'api_model_id': api_model_id,
-                'aliases': sorted(gateway_model_aliases(server, cfg=cfg)),
-                'embedding': is_embedding_server(server),
-                'model_id': api_model_id,
-                'engine_mode': (client_meta.get('model_catalog') or {}).get('engine_mode') or '',
-                'api_url': str(server.get('api_url') or ''),
-                'reasoning': model_has_reasoning(server),
-                'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
-                'supports_vision': supports_vision,
-                'imageInput': supports_vision,
-                'mmproj_path': mmproj_path if supports_vision else '',
-            },
-        })
+        context_size = max(2048, int(server.get('context_size') or 8192))
+        catalog = item.get('model_catalog') if isinstance(item.get('model_catalog'), dict) else {}
+        from core.model_presets import (
+            effective_server_profile,
+            profile_requires_draft,
+            server_dflash_stack_ready,
+        )
+
+        configured_profile = str(server.get('profile') or '').strip()
+        draft_ready = server_dflash_stack_ready(server, cfg=cfg)
+        effective = effective_server_profile(server, cfg=cfg)
+        requires_draft_for_load = profile_requires_draft(effective)
+        base_meta = {
+            'engine': display_name,
+            'display_name': display_name,
+            'server_id': str(server.get('id') or ''),
+            'api_model_id': api_model_id,
+            'aliases': sorted(gateway_model_aliases(server, cfg=cfg)),
+            'embedding': is_embedding_server(server),
+            'model_id': api_model_id,
+            'engine_mode': catalog.get('engine_mode') or '',
+            'api_url': str(server.get('api_url') or ''),
+            'reasoning': model_has_reasoning(server),
+            'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),
+            'supports_vision': supports_vision,
+            'imageInput': supports_vision,
+            'mmproj_path': mmproj_path if supports_vision else '',
+            'context_size': context_size,
+            'configured_profile': configured_profile,
+            'draft_required': profile_requires_draft(configured_profile),
+            'dflash_ready': draft_ready,
+            'loadable': bool(server_target_path_on_disk(server, cfg=cfg))
+            and (not requires_draft_for_load or draft_ready),
+            'enabled': server.get('enabled', True) is not False,
+            'canonical_id': client_id,
+        }
+        for public_id in gateway_public_model_ids(server, cfg=cfg):
+            row_meta = dict(base_meta)
+            if public_id != client_id:
+                row_meta['alias_of'] = client_id
+            data.append({
+                'id': public_id,
+                'object': 'model',
+                'created': 0,
+                'owned_by': 'dflash-console',
+                'name': display_name,
+                'context_size': context_size,
+                'meta': row_meta,
+            })
     from core.runtimes import get_runtime_adapter
 
     for runtime in list_runtimes(cfg):
@@ -284,6 +353,34 @@ async def list_models() -> dict[str, Any]:
                 'running': health.get('running') is True,
             },
         })
+    listed_ids = {str(row.get('id') or '').lower() for row in data}
+    try:
+        default_server = default_gateway_chat_server(cfg)
+        canonical = catalog_model_id(default_server)
+        default_label = str(default_server.get('label') or default_server.get('id') or canonical)
+        for alias in sorted(CURSOR_COMPAT_MODEL_IDS):
+            if alias in listed_ids:
+                continue
+            data.append({
+                'id': alias,
+                'object': 'model',
+                'created': 0,
+                'owned_by': 'dflash-console',
+                'name': default_label,
+                'context_size': max(2048, int(default_server.get('context_size') or 8192)),
+                'meta': {
+                    'engine': default_label,
+                    'display_name': default_label,
+                    'server_id': str(default_server.get('id') or ''),
+                    'canonical_id': canonical,
+                    'alias_of': canonical,
+                    'cursor_compat': True,
+                    'note': 'Cursor IDE accepts this id; routes to the default gateway chat engine.',
+                },
+            })
+            listed_ids.add(alias)
+    except HTTPException:
+        pass
     return {'object': 'list', 'data': data}
 
 
@@ -310,17 +407,19 @@ async def _forward_chat(
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
         except httpx.HTTPStatusError as exc:
-            logger.warning('gateway chat upstream HTTP %s for %s', exc.response.status_code, url)
+            status = int(exc.response.status_code or 500)
+            logger.warning('gateway chat upstream HTTP %s for %s', status, url)
             try:
-                detail = (await exc.response.aread()).decode('utf-8', errors='replace')
+                raw = await exc.response.aread()
             except Exception:
-                detail = str(exc)
+                raw = b''
+            error_payload = _upstream_error_payload(raw, status)
+            encoded = json.dumps(error_payload).encode('utf-8')
             if stream_requested:
-                payload = json.dumps({'error': {'message': detail, 'type': 'upstream_error'}})
-                yield f'data: {payload}\n\n'.encode('utf-8')
+                yield f'data: {encoded.decode("utf-8")}\n\n'.encode('utf-8')
                 yield b'data: [DONE]\n\n'
             else:
-                yield detail.encode('utf-8', errors='replace')
+                yield encoded
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.WriteError) as exc:
             logger.warning('gateway chat stream drop for %s: %s', url, exc)
             if stream_requested:
@@ -344,7 +443,6 @@ async def _forward_chat(
 
 @gateway_app.post('/v1/chat/completions')
 async def chat_completions(request: Request) -> Response:
-    _require_pipeline_active()
     cfg = load_config()
     model = ''
     payload: Any = None
@@ -358,6 +456,10 @@ async def chat_completions(request: Request) -> Response:
             model = ''
     server, upstream = await _resolve_chat_target(cfg, model)
     sid = str(server.get('id') or '')
+    if sid:
+        from core.engine_state import note_engine_on
+
+        note_engine_on(sid)
     body: bytes | None = None
     if isinstance(payload, dict):
         try:

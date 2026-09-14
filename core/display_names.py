@@ -27,7 +27,12 @@ _LAB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _QUANT_RE = re.compile(
-    r'(?:^|[\-_])(q\d+(?:_[0-9]+)?(?:_[klmxs]+(?:_[klmxs]+)?)?|f16|bf16|iq\d+(?:_[klmxs]+)?)(?:[\-_.]|$)',
+    r'(?:^|[\-_])('
+    r'iq\d+(?:_[a-z0-9]+)+|'
+    r'bq\d+(?:_[a-z0-9]+)+|'
+    r'q\d+(?:_[a-z0-9]+)+|'
+    r'f16|bf16|f32'
+    r')(?:[\-_.]|$)',
     re.I,
 )
 
@@ -93,6 +98,37 @@ def _infer_quantization(*texts: str) -> tuple[str, str]:
             short = full
         return short, full
     return '', ''
+
+
+def label_with_quant_suffix(
+    name: str,
+    *,
+    quant: str = '',
+    filename: str = '',
+    path: str = '',
+) -> str:
+    """Public catalog label: base title plus ``(Q4_K_M)`` when quant is known."""
+    base = str(name or '').strip()
+    if not base:
+        base = str(filename or Path(str(path or '')).name or '').strip()
+    token = ''
+    for text in (filename, path, base):
+        _short, full = _infer_quantization(text)
+        if full:
+            token = full
+            break
+    if not token:
+        token = str(quant or '').strip()
+    if not token or token == '—':
+        return base
+    token = token.upper()
+    compact = re.sub(r'[^A-Z0-9]', '', token)
+    base_compact = re.sub(r'[^A-Z0-9]', '', base.upper())
+    if compact and compact in base_compact:
+        return base
+    if re.search(rf'\(\s*{re.escape(token).replace("_", "[_ ]?")}\s*\)\s*$', base, re.I):
+        return base
+    return f'{base} ({token})'
 
 
 def _infer_variant(model_id: str, target_id: str, filename: str) -> str:
@@ -364,6 +400,124 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
         'profile': str(server.get('profile') or '').strip(),
         'console_label': str(server.get('label') or '').strip(),
     }
+
+
+def _engine_profile_identity(row: dict[str, Any]) -> tuple[Any, ...]:
+    catalog = row.get('model_catalog') if isinstance(row.get('model_catalog'), dict) else {}
+    load = row.get('load_settings')
+    if load is None:
+        server = row.get('server')
+        if isinstance(server, dict):
+            load = server.get('load_settings')
+    load_key = ''
+    if isinstance(load, dict) and load:
+        load_key = repr(sorted((str(k), repr(v)) for k, v in load.items()))
+    return (
+        str(row.get('id') or catalog.get('engine_id') or ''),
+        str(catalog.get('target_path') or row.get('target_path') or ''),
+        str(catalog.get('draft_path') or ''),
+        str(row.get('model_id') or catalog.get('api_model_id') or ''),
+        load_key,
+    )
+
+
+def _engine_id_tail_token(row: dict[str, Any]) -> str:
+    catalog = row.get('model_catalog') if isinstance(row.get('model_catalog'), dict) else {}
+    sid = str(row.get('id') or catalog.get('engine_id') or '').strip()
+    api_id = str(row.get('model_id') or catalog.get('api_model_id') or '').strip()
+    for text in (api_id, sid):
+        match = re.search(r'-(\d+)$', text)
+        if match:
+            return match.group(1)
+    if sid:
+        parts = [part for part in sid.split('-') if part]
+        if parts:
+            tail = parts[-1]
+            if tail.lower() not in {'dflash', 'dspark', 'mtp', 'gsq', 'rco', 'it'}:
+                return tail
+        return sid[-10:] if len(sid) > 10 else sid
+    return ''
+
+
+def _disambiguation_token(row: dict[str, Any]) -> str:
+    catalog = row.get('model_catalog') if isinstance(row.get('model_catalog'), dict) else {}
+    for raw in (
+        catalog.get('quantization_full'),
+        catalog.get('quantization'),
+        catalog.get('target_filename'),
+        catalog.get('api_model_id'),
+        catalog.get('target_model_id'),
+        row.get('model_id'),
+        row.get('id'),
+    ):
+        text = str(raw or '').strip()
+        if not text:
+            continue
+        _short, full = _infer_quantization(text)
+        if full:
+            return full.upper()
+    tail = _engine_id_tail_token(row)
+    return tail or 'profile'
+
+
+def _append_disambiguator(label: str, token: str) -> str:
+    base = str(label or '').strip()
+    token = str(token or '').strip()
+    if not base or not token:
+        return base or token
+    return label_with_quant_suffix(base, quant=token)
+
+
+def disambiguate_engine_display_names(
+    rows: list[dict[str, Any]],
+    *,
+    catalog_key: str = 'model_catalog',
+) -> None:
+    """Make display_name / display_name_full unique when profiles differ (mutates rows)."""
+    if len(rows) < 2:
+        return
+    for field in ('display_name', 'display_name_full'):
+        groups: dict[str, list[int]] = {}
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get(field) or row.get('display_name') or '').strip()
+            if not label:
+                continue
+            groups.setdefault(label.casefold(), []).append(index)
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            identities = {_engine_profile_identity(rows[i]) for i in indices}
+            if len(identities) == 1:
+                continue
+            used: set[str] = set()
+            for index in indices:
+                row = rows[index]
+                token = _disambiguation_token(row)
+                if token.casefold() in used:
+                    alt = _engine_id_tail_token(row)
+                    if alt and alt.casefold() not in used:
+                        token = alt
+                base = token
+                suffix = 2
+                while token.casefold() in used:
+                    token = f'{base}-{suffix}'
+                    suffix += 1
+                used.add(token.casefold())
+                row[field] = _append_disambiguator(str(row.get(field) or ''), token)
+
+
+def sync_visible_card_display_names(server: dict[str, Any]) -> None:
+    dn = server.get('display_name')
+    dnf = server.get('display_name_full')
+    for card in server.get('visible_cards') or []:
+        if not isinstance(card, dict) or card.get('is_adhoc'):
+            continue
+        if dn is not None:
+            card['display_name'] = dn
+        if dnf is not None:
+            card['display_name_full'] = dnf
 
 
 def build_engine_client_metadata(

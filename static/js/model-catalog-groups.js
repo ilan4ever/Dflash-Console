@@ -214,8 +214,28 @@
     return /dflash|dspark/.test(name);
   }
 
+  function extractQuantTokenFromModel(model) {
+    const fromField = String(model?.quant || '').trim().replace(/^-+|-+$/g, '');
+    if (fromField && fromField !== '—') return fromField.toUpperCase();
+    const raw = String(model?.filename || model?.path || model?.label || model?.id || '');
+    const match = raw.match(
+      /(?:^|[._-])((?:IQ\d+(?:_[A-Z0-9]+)+|Q\d+(?:_[A-Z0-9]+)+|BQ\d+(?:_[A-Z0-9]+)+|F16|F32|BF16))(?:[._-]|\.gguf|$)/i,
+    );
+    return match ? match[1].toUpperCase() : '';
+  }
+
+  function withQuantSuffix(name, model) {
+    const token = extractQuantTokenFromModel(model);
+    if (!token) return String(name || '');
+    const base = String(name || '');
+    const compact = token.replace(/_/g, '').toUpperCase();
+    if (base.replace(/_/g, '').toUpperCase().includes(compact)) return base;
+    return `${base} (${token})`;
+  }
+
   function friendlyStackLabel(model) {
     const raw = String(model?.filename || model?.label || model?.id || 'Model').replace(/\.gguf$/i, '');
+    const quantToken = extractQuantTokenFromModel(model);
     let stem = raw.replace(/(?:^|[\s_\-])(?:Q\d(?:[_A-Z0-9]+)?|IQ\d[_A-Z0-9]+|F16|F32|BF16)(?:$|[\s_\-])/gi, ' ');
     stem = stem.replace(/[_-]+/g, ' ');
     stem = stem.replace(/\b(?:gguf|instruct|chat|it|qat|draft|llama|cpp|ud)\b/gi, ' ');
@@ -235,14 +255,17 @@
       if (/^[A-Za-z]\d+[A-Za-z]?$/.test(word)) return word.toUpperCase();
       return word;
     });
-    const label = words.join(' ').trim() || raw;
-    if (!/\bd-?flash\b/i.test(label)) return `${label} D-Flash`;
-    return label;
+    let label = words.join(' ').trim() || raw;
+    if (!/\bd-?flash\b/i.test(label)) label = `${label} D-Flash`;
+    return withQuantSuffix(label, { ...model, quant: quantToken || model?.quant });
   }
 
   function stackDisplayName(model) {
     const apiLabel = String(model?.label || '').trim().replace(/\.gguf$/i, '');
-    if (apiLabel && /\bd-?flash\b/i.test(apiLabel)) return apiLabel;
+    if (apiLabel && /\bd-?flash\b/i.test(apiLabel)) {
+      if (/\([A-Z][A-Z0-9_]*\)\s*$/.test(apiLabel)) return apiLabel;
+      return withQuantSuffix(apiLabel, model);
+    }
     return friendlyStackLabel(model);
   }
 
@@ -255,11 +278,8 @@
     const name = isStack
       ? stackDisplayName(model)
       : String(model.label || model.filename || model.id || 'Model').replace(/\.gguf$/i, '');
-    const parts = [name];
-    const nameHasQuant = /\b(?:Q\d|IQ\d|F16|F32|BF16)\b/i.test(name);
-    if (!isStack && model.quant && model.quant !== '—' && !nameHasQuant) parts.push(model.quant);
-    if (model.size_gb != null) parts.push(`${model.size_gb} GB`);
-    const text = parts.join(' · ');
+    const displayName = withQuantSuffix(name, model);
+    const text = displayName;
     return isStack ? `${text} (DFS)` : text;
   }
 
@@ -457,6 +477,8 @@
     defaultOptionLabel,
     friendlyStackLabel,
     stackDisplayName,
+    withQuantSuffix,
+    extractQuantTokenFromModel,
     isPickerVisibleModel,
     dedupePickerModels,
     isAcceleratorOnlyModel,

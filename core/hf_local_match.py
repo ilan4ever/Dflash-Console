@@ -137,8 +137,43 @@ def find_local_matches(repo_id: str, filename: str, *, cfg: dict[str, Any] | Non
             continue
         if str(row.get('publisher') or '').lower() == author.lower() and repo_slug.replace('-', '') in normalized.replace('-', ''):
             add_match(path, 'publisher_repo', row)
+            continue
+        repo_tokens = {
+            token
+            for token in re.split(r'[^a-z0-9]+', repo_name.lower())
+            if len(token) >= 5 and token not in {'gguf', 'unsloth', 'gsq', 'rco', 'daslab', 'gguf'}
+        }
+        path_flat = normalized.replace('-', '').replace('_', '')
+        if repo_tokens and sum(1 for token in repo_tokens if token.replace('-', '') in path_flat) >= min(2, len(repo_tokens)):
+            add_match(path, 'repo_tokens', row)
 
-    priority = {'exact_path': 0, 'hf_layout': 1, 'repo_path': 2, 'publisher_repo': 3}
+    if not matches:
+        scan_prefixes: list[str] = []
+        for root, *_rest in enabled_scan_roots(config):
+            try:
+                scan_prefixes.append(str(root.expanduser().resolve()).lower())
+            except OSError:
+                continue
+        for row in catalog.get('models') or []:
+            path_text = str(row.get('path') or '').strip()
+            if not path_text:
+                continue
+            path = Path(path_text)
+            if not path.is_file() or path.name.lower() != norm_name:
+                continue
+            resolved = str(path.resolve()).lower()
+            if scan_prefixes and not any(resolved.startswith(prefix) for prefix in scan_prefixes):
+                continue
+            add_match(path, 'filename', row)
+
+    priority = {
+        'exact_path': 0,
+        'hf_layout': 1,
+        'repo_path': 2,
+        'publisher_repo': 3,
+        'repo_tokens': 4,
+        'filename': 5,
+    }
     matches.sort(key=lambda item: (priority.get(str(item.get('match_type')), 99), item.get('path') or ''))
     return matches
 

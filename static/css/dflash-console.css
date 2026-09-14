@@ -2088,11 +2088,11 @@ body.lm-resizing-logs {
   color: inherit;
 }
 
-.lm-model-row.loaded-on-gpu {
+.lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop) {
   box-shadow: inset 0 0 0 1px rgba(110, 196, 184, 0.65);
 }
 
-.lm-model-row.loaded-on-gpu:not(.selected) {
+.lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop):not(.selected) {
   background: rgba(110, 196, 184, 0.06);
 }
 

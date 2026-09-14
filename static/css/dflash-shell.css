@@ -1077,8 +1077,528 @@ body.lm-resizing-sidenav {
   max-height: 96px;
 }
 
+/* Models library — desktop card rows (handle aligns to resizable header columns). */
+html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop {
+  height: auto;
+  max-height: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop td {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  vertical-align: top;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop td.lm-library-handle-meta {
+  font-size: 11px;
+  line-height: 1.25;
+  padding-top: 7px;
+  color: rgba(203, 213, 225, 0.88);
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop td.lm-library-handle-action {
+  padding-top: 4px;
+  padding-right: 10px;
+  vertical-align: top;
+  text-align: right;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-handle {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-title {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-model-pin {
+  flex: 0 0 auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-model-title-text {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-badges {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-badges .lm-tag,
+html:not(.df-narrow) .df-shell .lm-library-handle-badges .lm-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  line-height: 1.2;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-badges .lm-tag.dflash-logo-label {
+  width: 52px;
+  height: 12px;
+  padding: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-paths {
+  min-width: 0;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-foot {
+  margin-top: 1px;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-body .lm-model-card-details {
+  margin-top: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-body .lm-model-card-detail-line {
+  font-size: 10px;
+  line-height: 1.3;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-body .lm-model-path-hint,
+html:not(.df-narrow) .df-shell .lm-library-card-body .lm-model-draft-hint,
+html:not(.df-narrow) .df-shell .lm-library-card-body .lm-model-meta-line {
+  font-size: 10px;
+  line-height: 1.3;
+  color: rgba(148, 163, 184, 0.95);
+  margin-top: 1px;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-body-tags {
+  margin-top: 4px;
+  gap: 3px;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-body-tags .lm-tag,
+html:not(.df-narrow) .df-shell .lm-library-body-tags .lm-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  line-height: 1.2;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1 td {
+  padding-top: 5px;
+  padding-bottom: 2px;
+  vertical-align: top;
+  box-shadow: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line2 td,
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line3 td {
+  padding: 0 12px 3px 12px;
+  vertical-align: top;
+  border: none;
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line3 td {
+  padding-bottom: 6px;
+}
+
+/* Desktop library: line1/2/3 = one card; clear gaps between cards on elevated list surface. */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table {
+  border-spacing: 0;
+  border-collapse: collapse;
+  --lm-library-card-bg: #1a1a22;
+  --lm-library-card-bg-hover: rgba(255, 255, 255, 0.1);
+}
+
+/* Resizable column guides read as cyan stripes inside multi-row cards — off for library desktop. */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table.lm-resizable-table tbody tr.lm-library-card-desktop td {
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-spacer td {
+  height: 0;
+  padding: 4px 0 !important;
+  border: none !important;
+  background: var(--bg) !important;
+  box-shadow: none !important;
+  pointer-events: none;
+  line-height: 0;
+  font-size: 0;
+}
+
+/* Desktop library: three <tr> rows read as one card (shared fill + single outer frame). */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop td {
+  border-radius: 0 !important;
+  border-top: none;
+  border-bottom: none;
+  border-left-color: transparent;
+  border-right-color: transparent;
+  background: var(--lm-library-card-bg);
+}
+
+/* Desktop library: highlight the whole card, not one table row. */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop:not(.ready-to-load):not(.loaded-on-gpu):not(.external-model):hover td {
+  background: var(--lm-library-card-bg);
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop:hover td {
+  background: var(--lm-library-card-bg) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.lm-library-card-hovered:not(.ready-to-load):not(.loaded-on-gpu):not(.external-model) td {
+  background: var(--lm-library-card-bg-hover) !important;
+  border-color: rgba(110, 196, 184, 0.22);
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:not(.selected):hover td {
+  background: var(--lm-library-card-bg) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-hovered:not(.selected) td {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu:hover td {
+  background: var(--lm-library-card-bg) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-hovered:not(.selected) td {
+  background: var(--lm-library-card-bg-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.external-model td {
+  background: var(--lm-library-card-bg) !important;
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.external-model:hover:not(.selected) td {
+  background: var(--lm-library-card-bg) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.external-model.lm-library-card-hovered:not(.selected) td {
+  background: var(--lm-library-card-bg-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line3:has(+ tr.lm-library-card-spacer) td,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line2:has(+ tr.lm-library-card-spacer) td,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.42);
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1 td {
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1 td.lm-col-model {
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--ready-radius) 0 0 0 !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1 td.lm-col-action {
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0 var(--ready-radius) 0 0 !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line2 td.lm-library-card-span,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line3 td.lm-library-card-span {
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-model {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--ready-radius) 0 0 var(--ready-radius) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-action {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 0 var(--ready-radius) var(--ready-radius) 0 !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line2:has(+ tr.lm-library-card-spacer) td.lm-library-card-span {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 0 0 0 var(--ready-radius) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-spacer) td.lm-col-action {
+  border-bottom: none;
+  border-radius: 0 var(--ready-radius) 0 0 !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2) td.lm-library-handle-meta,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2) td.lm-col-model {
+  border-bottom: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line3:has(+ tr.lm-library-card-spacer) td.lm-library-card-span {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0 0 0 var(--ready-radius) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0 0 var(--ready-radius) 0 !important;
+}
+
+/* Gold ready-to-load frame: one card, not three striped rows. */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load td:first-child,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load td:last-child,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load td:not(:first-child):not(:last-child) {
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1 td.lm-col-model {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1 td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1 td.lm-library-handle-meta {
+  box-shadow: inset 0 var(--ready-frame-width) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line2 td.lm-library-card-span,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line3 td.lm-library-card-span {
+  box-shadow: inset var(--ready-frame-width) 0 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-model {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-library-handle-meta {
+  box-shadow:
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line2:has(+ tr.lm-library-card-spacer) td.lm-library-card-span {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line3 td.lm-library-card-span {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover td:first-child,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover td:last-child,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover td:not(:first-child):not(:last-child) {
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1 td.lm-col-model {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame-hover),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1 td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame-hover),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1 td.lm-library-handle-meta {
+  box-shadow: inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line2 td.lm-library-card-span,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line3 td.lm-library-card-span {
+  box-shadow: inset var(--ready-frame-width) 0 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-model {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame-hover),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-library-handle-meta {
+  box-shadow:
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame-hover),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line2:has(+ tr.lm-library-card-spacer) td.lm-library-card-span {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame-hover),
+    inset 0 var(--ready-frame-width) 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line3 td.lm-library-card-span {
+  box-shadow:
+    inset var(--ready-frame-width) 0 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.ready-to-load:hover.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action {
+  box-shadow:
+    inset calc(-1 * var(--ready-frame-width)) 0 0 0 var(--ready-frame-hover),
+    inset 0 calc(-1 * var(--ready-frame-width)) 0 0 var(--ready-frame-hover) !important;
+}
+
+/* Loaded GPU: keep card chrome; teal row borders break the action column (Unload). */
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu td {
+  border-color: transparent !important;
+  background: var(--lm-library-card-bg) !important;
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1 td {
+  border-top: 1px solid rgba(255, 255, 255, 0.14) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1 td.lm-col-model {
+  border-left: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: inset 3px 0 0 rgba(110, 196, 184, 0.85) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1 td.lm-col-action {
+  border: none !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.14) !important;
+  background: var(--lm-library-card-bg) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu td.lm-col-action[rowspan] {
+  border-top: none !important;
+  border-bottom: none !important;
+  border-left: none !important;
+  vertical-align: top;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line2 td.lm-library-card-span,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line3 td.lm-library-card-span {
+  border-left: 1px solid rgba(255, 255, 255, 0.14) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-model,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line2:has(+ tr.lm-library-card-spacer) td.lm-library-card-span,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line3:has(+ tr.lm-library-card-spacer) td.lm-library-card-span {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1:has(+ tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action,
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-line3 + tr.lm-library-card-spacer) td.lm-col-action {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14) !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.lm-library-card-line1:has(+ tr.lm-library-card-line2 + tr.lm-library-card-spacer) td.lm-col-action {
+  border-bottom: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.external-model.selected td {
+  background: var(--lm-library-card-bg) !important;
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-line2) td.lm-col-model,
+html:not(.df-narrow) .df-shell .lm-models-table tbody tr.lm-library-card-desktop.lm-library-card-line1:has(+ tr.lm-library-card-spacer) td.lm-col-model {
+  padding-bottom: 2px;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-span {
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-span .lm-library-card-paths .lm-model-card-detail-line,
+html:not(.df-narrow) .df-shell .lm-library-card-span .lm-model-path-hint {
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-span .lm-model-card-details {
+  margin-top: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-line2 .lm-library-card-paths .lm-model-card-detail-line + .lm-model-card-detail-line {
+  margin-top: 1px;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-card-line3 .lm-library-card-foot {
+  margin-top: 0;
+}
+
 .df-shell .lm-models-table td.lm-col-model {
   overflow: hidden;
+}
+
+html:not(.df-narrow) .df-shell .lm-models-table tr.lm-library-card-desktop td.lm-col-model {
+  overflow: visible;
 }
 
 .df-shell .lm-view[data-view="models"] .lm-model-title-line {
@@ -1539,25 +2059,25 @@ body.lm-resizing-table-col {
   display: none;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop) td {
   border-top-color: rgba(110, 196, 184, 0.72);
   border-bottom-color: rgba(110, 196, 184, 0.72);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td:first-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop) td:first-child {
   border-left-color: rgba(110, 196, 184, 0.72);
   box-shadow: inset 3px 0 0 rgba(110, 196, 184, 0.85);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu td:last-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop) td:last-child {
   border-right-color: rgba(110, 196, 184, 0.72);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.selected) td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop):not(.selected) td {
   background: rgba(110, 196, 184, 0.07);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu:not(.lm-library-card-desktop).selected td {
   background: rgba(110, 196, 184, 0.07);
   border-color: rgba(110, 196, 184, 0.72);
 }
@@ -1567,31 +2087,31 @@ body.lm-resizing-table-col {
    Console). Drawn on the cells (td-level) so it is actually visible — a
    tr-level box-shadow is hidden behind the cell backgrounds. Loaded state is
    shown by the deep-gold Unload button. */
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop) td {
   background-color: var(--external-card-bg);
   border-top-color: var(--external-card-border);
   border-bottom-color: var(--external-card-border);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td:first-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop) td:first-child {
   border-left-color: var(--external-card-border);
   box-shadow: inset 0 0 0 0.5px var(--external-card-border);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td:last-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop) td:last-child {
   border-right-color: var(--external-card-border);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:hover:not(.selected) td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop):hover:not(.selected) td {
   background-color: var(--external-card-hover);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.loaded-on-gpu td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop).loaded-on-gpu td {
   background-color: var(--external-card-bg);
   border-color: var(--external-card-border);
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.selected td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop).selected td {
   background: var(--external-card-bg) !important;
   border-color: var(--external-card-border);
 }
@@ -2168,12 +2688,14 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-card-compact .lm-model-card-title-row {
   width: 100%;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-title-row .lm-model-path {
   display: block;
-  flex: 0 1 42%;
-  max-width: 42%;
+  flex: 1 1 auto;
+  max-width: 100%;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-identity {
@@ -2183,21 +2705,24 @@ body.lm-resizing-table-col {
   justify-content: center;
   gap: 1px;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  overflow: visible;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-name-line {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   max-width: 100%;
+  overflow: visible;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-model-path {
-  display: inline;
-  flex: 0 1 auto;
-  max-width: none;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-tag-kind {
@@ -2331,13 +2856,13 @@ body.lm-resizing-table-col {
 
 .df-shell .lm-model-card-compact .lm-model-card-labels {
   position: static;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
   min-width: 0;
-  max-width: 100%;
+  max-width: 42%;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -2358,6 +2883,41 @@ body.lm-resizing-table-col {
 .df-shell .lm-model-card-compact .lm-model-card-center-row.lm-model-card-token-row {
   gap: 12px;
   position: relative;
+}
+
+.df-shell .lm-token-metrics-live .lm-model-card-token-generating {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.df-shell .lm-token-metrics-live .lm-token-metric-io {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.df-shell .lm-token-metrics-live .lm-token-metric-speed {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0;
+  margin-left: auto;
+  text-align: right;
+  flex: 0 0 auto;
+}
+
+.df-shell .lm-token-metrics-live .val {
+  font-variant-numeric: tabular-nums;
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-token-row.has-dual-metrics {
@@ -2402,8 +2962,9 @@ body.lm-resizing-table-col {
   min-width: 0;
   max-width: none;
   font-size: 13px;
-  /* Show the full model name — never trim it with an ellipsis. */
   white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
   word-break: break-word;
   overflow-wrap: anywhere;
   line-height: 1.35;
@@ -2749,6 +3310,233 @@ body.lm-resizing-table-col {
   gap: 10px;
 }
 
+/* DFlash loaded cards: Unload + disk/VRAM stack on the right, top-aligned (matches external cards). */
+.df-shell .lm-model-card-compact.dflash-model .lm-model-card-top {
+  align-items: flex-start;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-model-stats {
+  align-items: flex-start;
+  align-self: flex-start;
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-external-stats-col {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 1px;
+  margin-left: auto;
+  min-width: 44px;
+  width: max-content;
+  max-width: min(72%, 34rem);
+  flex-shrink: 0;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-stats-top {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-external-foot-pair {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-external-foot-line,
+.df-shell .lm-model-card-compact.dflash-model .lm-ctx-metric,
+.df-shell .lm-model-card-compact.dflash-model .lm-stack-disk {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  justify-content: flex-end;
+  margin-left: 0;
+  flex-shrink: 0;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-stack-disk .lm-stack-disk-parts {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-external-stats-col .lm-btn.ghost.small {
+  width: auto;
+  flex-shrink: 0;
+  align-self: center;
+  box-sizing: border-box;
+}
+
+/* Desktop Engines: compact right rail (unload → sizes → CTX / LAST metrics). */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.lm-model-card-compact .lm-model-card-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-height: 32px;
+  padding: 3px 10px 4px;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.lm-model-card-compact .lm-model-card-center {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.lm-model-card-compact .lm-model-card-tags {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.lm-model-card-compact .lm-model-stats {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  align-self: stretch;
+  margin-left: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop .lm-model-card-details {
+  margin-top: 1px;
+  padding-right: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop .lm-model-card-detail-line {
+  display: block;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.lm-model-card-compact .lm-model-card-top:has(.has-token-row) {
+  min-height: 32px;
+  padding-top: 3px;
+  padding-bottom: 4px;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop .lm-model-card-center {
+  gap: 0;
+  padding: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 2px;
+  min-width: 44px;
+  width: max-content;
+  max-width: min(42%, 22rem);
+  margin-left: 0;
+  flex-shrink: 0;
+  height: 100%;
+  min-height: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-stats .lm-desktop-engine-foot {
+  margin-top: auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-actions {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-sizes {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  font-size: 9px;
+  line-height: 1.15;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-sizes .lm-stack-disk-parts {
+  justify-content: flex-end;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-accel-line {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(148, 163, 184, 0.94);
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics .lm-ctx-metric {
+  flex-shrink: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics .lm-engine-live-metrics-host {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics .lm-model-card-center-row.lm-model-card-token-row {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 0;
+  margin: 0;
+  width: auto;
+  max-width: 100%;
+}
+
+html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-model-card-token-generating {
+  justify-content: flex-end;
+  width: auto;
+  flex-wrap: nowrap;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-engine-foot {
+  justify-content: flex-end;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-engine-foot-metrics {
+  flex: 0 1 auto;
+}
+
 .df-shell .lm-model-card-compact .lm-model-stats .lm-btn {
   min-width: 64px;
   height: 26px;
@@ -2819,21 +3607,81 @@ body.lm-resizing-table-col {
   background: var(--external-card-bg);
 }
 
+.df-shell .lm-engine-head-vram {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.92);
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+}
+
+.df-shell .lm-engine-head-vram .lbl {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.df-shell .lm-engine-head-vram .val {
+  font-weight: 400;
+  color: rgba(241, 245, 249, 0.95);
+}
+
+.df-shell .lm-engine-head-vram-ctx {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.df-shell .lm-engine-head-vram-ctx .lm-engine-head-vram,
+.df-shell .lm-engine-head-vram-ctx .lm-engine-head-ctx {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.df-shell .lm-engine-head-ctx .lbl {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.df-shell .lm-engine-head-ctx .val {
+  font-weight: 400;
+  color: rgba(241, 245, 249, 0.95);
+}
+
+.df-shell .lm-engine-head-vram-ctx.is-empty {
+  display: none;
+}
+
 .df-shell .lm-model-card-external-prompt {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   padding: 4px 8px 4px 10px;
   font-size: 10px;
   color: rgba(203, 213, 225, 0.86);
-  background: rgba(43, 46, 55, 0.72);
+  background: rgba(24, 26, 32, 0.94);
   border-bottom: 1px solid var(--external-card-border);
 }
 
 .df-shell .lm-model-card-loaded-by-prompt {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
   align-items: center;
   gap: 8px;
   padding: 4px 8px 4px 10px;
@@ -2844,7 +3692,46 @@ body.lm-resizing-table-col {
 }
 
 .df-shell .lm-model-card-loaded-by-prompt.has-multi-clients {
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-engine-head-vram-ctx {
+  grid-column: 1;
+  width: 100%;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-engine-head-vram-ctx.is-empty {
+  display: none;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
+  grid-column: 2;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.has-stack-chip {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, max-content);
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.has-stack-chip .lm-engine-head-stack-chip {
+  grid-column: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.has-stack-chip .lm-engine-head-vram-ctx {
+  grid-column: 2;
+}
+
+.df-shell .lm-model-card-loaded-by-prompt.has-stack-chip .lm-loaded-by-badges {
+  grid-column: 3;
+}
+
+.df-shell .lm-engine-head-stack-chip .dflash-logo-label {
+  display: inline-flex !important;
+  width: 44px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 .df-shell .lm-model-card-loaded-by-prompt.is-unknown {
@@ -2950,12 +3837,40 @@ body.lm-resizing-table-col {
   white-space: nowrap;
 }
 
-/* Centered, dynamic label naming the app that loaded the external model
-   (e.g. OneVoice, LM Studio, Ollama).  The actions stay on the right. */
-.df-shell .lm-model-card-external-prompt .lm-external-app-name {
+.df-shell .lm-model-card-external-prompt .lm-external-kind {
   grid-column: 2;
-  justify-self: center;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-external-kind.is-empty {
+  display: none;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-external-kind .lm-tag-kind {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-engine-head-vram-ctx {
+  grid-column: 3;
+  width: 100%;
+}
+
+.df-shell .lm-model-card-external-prompt .lm-engine-head-vram-ctx.is-empty {
+  display: none;
+}
+
+/* App that loaded the external model (e.g. OneVoice, LM Studio). */
+.df-shell .lm-model-card-external-prompt .lm-external-app-name {
+  grid-column: 4;
+  justify-self: end;
+  text-align: right;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -2965,10 +3880,11 @@ body.lm-resizing-table-col {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+  min-width: 0;
 }
 
 .df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
-  grid-column: 3;
+  grid-column: 5;
   justify-self: end;
   display: inline-flex;
   align-items: center;
@@ -6142,7 +7058,7 @@ body.lm-resizing-chat-sidebar {
 
 @media (max-width: 820px) {
   body.df-shell:not(.df-sidenav-collapsed) {
-    --sidenav-width: 56px;
+    --sidenav-width: 48px;
   }
 
   .df-sidenav-resize-handle {
@@ -6345,7 +7261,7 @@ body.lm-resizing-chat-sidebar {
   margin-bottom: 12px;
 }
 
-.df-shell .lm-library-card {
+.df-shell .lm-library-card:not(.lm-model-card-compact) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7131,19 +8047,19 @@ body.lm-resizing-chat-sidebar {
 
 /* External models keep the neutral gray surface even when they are loadable
    (overrides the ready-to-load reddish shading above). */
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load td,
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load:not(.lm-library-card-desktop) td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop) td {
   background: var(--external-card-bg) !important;
   box-shadow: none !important;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load:hover td,
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:hover td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load:not(.lm-library-card-desktop):hover td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop):hover td {
   background: var(--external-card-hover) !important;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load.selected td,
-.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.selected td {
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model.ready-to-load:not(.lm-library-card-desktop).selected td,
+.df-shell .lm-view[data-view="models"] .lm-model-row.external-model:not(.lm-library-card-desktop).selected td {
   background: var(--external-card-bg) !important;
   box-shadow: none !important;
 }
@@ -7193,7 +8109,12 @@ body.lm-resizing-chat-sidebar {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.df-shell .lm-model-card-compact.dflash-model .lm-stack-disk .lm-stack-disk-parts {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
 }
 
 .df-shell .lm-model-card-metric.lm-stack-disk .lm-stack-disk-part {
@@ -7242,33 +8163,33 @@ body.lm-resizing-chat-sidebar {
 }
 
 /* Selected row: thin teal outline only — keep each row's normal surface color. */
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model) td:first-child,
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model) td:first-child,
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model td:first-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model):not(.lm-library-card-desktop) td:first-child,
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model):not(.lm-library-card-desktop) td:first-child,
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model:not(.lm-library-card-desktop) td:first-child {
   box-shadow:
     inset 1px 0 0 0 rgba(110, 196, 184, 0.88),
     inset 0 1px 0 0 rgba(110, 196, 184, 0.88),
     inset 0 -1px 0 0 rgba(110, 196, 184, 0.88) !important;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model) td:last-child,
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model) td:last-child,
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model td:last-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model):not(.lm-library-card-desktop) td:last-child,
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model):not(.lm-library-card-desktop) td:last-child,
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model:not(.lm-library-card-desktop) td:last-child {
   box-shadow:
     inset -1px 0 0 0 rgba(110, 196, 184, 0.88),
     inset 0 1px 0 0 rgba(110, 196, 184, 0.88),
     inset 0 -1px 0 0 rgba(110, 196, 184, 0.88) !important;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model) td:not(:first-child):not(:last-child),
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model) td:not(:first-child):not(:last-child),
-.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model td:not(:first-child):not(:last-child) {
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.ready-to-load:not(.external-model):not(.lm-library-card-desktop) td:not(:first-child):not(:last-child),
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected:not(.ready-to-load):not(.external-model):not(.lm-library-card-desktop) td:not(:first-child):not(:last-child),
+.df-shell .lm-view[data-view="models"] .lm-model-row.selected.external-model:not(.lm-library-card-desktop) td:not(:first-child):not(:last-child) {
   box-shadow:
     inset 0 1px 0 0 rgba(110, 196, 184, 0.88),
     inset 0 -1px 0 0 rgba(110, 196, 184, 0.88) !important;
 }
 
-.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected td:first-child {
+.df-shell .lm-view[data-view="models"] .lm-model-row.loaded-on-gpu.selected:not(.lm-library-card-desktop) td:first-child {
   box-shadow:
     inset 3px 0 0 rgba(110, 196, 184, 0.85),
     inset 1px 0 0 0 rgba(110, 196, 184, 0.88),
@@ -7276,13 +8197,33 @@ body.lm-resizing-chat-sidebar {
     inset 0 -1px 0 0 rgba(110, 196, 184, 0.88) !important;
 }
 
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.selected td {
+  box-shadow: none !important;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-library-card-desktop.loaded-on-gpu.selected.lm-library-card-line1 td.lm-col-model {
+  box-shadow: inset 3px 0 0 rgba(110, 196, 184, 0.85) !important;
+}
+
 /* Portrait/split-window layout. Desktop card geometry stays unchanged above. */
 @media (max-width: 900px) {
-  html.df-narrow body.df-shell:not(.df-sidenav-collapsed) {
-    --sidenav-width: 56px;
+  body.df-shell:not(.df-sidenav-collapsed) {
+    --sidenav-width: 48px;
   }
 
-  html.df-narrow .df-sidenav-resize-handle {
+  body.df-shell:not(.df-sidenav-collapsed) .df-sidenav {
+    width: 48px !important;
+    flex: 0 0 48px !important;
+    max-width: 48px !important;
+    min-width: 48px !important;
+  }
+
+  html.df-narrow body.df-shell:not(.df-sidenav-collapsed) {
+    --sidenav-width: 48px;
+  }
+
+  html.df-narrow .df-sidenav-resize-handle,
+  body.df-shell .df-sidenav-resize-handle {
     display: none;
   }
 
@@ -7290,28 +8231,50 @@ body.lm-resizing-chat-sidebar {
   html.df-narrow .df-app-version,
   html.df-narrow .df-nav-label,
   html.df-narrow .df-downloads-toggle-label,
-  html.df-narrow .df-downloads-toggle-progress {
+  html.df-narrow .df-downloads-toggle-progress,
+  body.df-shell .df-brand-title,
+  body.df-shell .df-app-version,
+  body.df-shell .df-nav-label,
+  body.df-shell .df-downloads-toggle-label,
+  body.df-shell .df-downloads-toggle-progress {
     display: none;
   }
 
-  html.df-narrow .df-sidenav-footer .df-downloads-toggle {
-    justify-content: center;
-    padding: 10px 8px;
+  html.df-narrow .df-sidenav-footer,
+  body.df-shell .df-sidenav-footer {
+    padding: 4px 2px;
   }
 
-  html.df-narrow .df-brand {
-    padding: 12px 8px;
+  html.df-narrow .df-sidenav-footer .df-downloads-toggle,
+  body.df-shell .df-sidenav-footer .df-downloads-toggle {
+    justify-content: center;
+    padding: 6px 2px;
+    min-height: 0;
+  }
+
+  html.df-narrow .df-brand,
+  body.df-shell .df-brand {
+    padding: 6px 2px 4px;
     justify-content: center;
   }
 
-  html.df-narrow .df-brand-logo {
-    width: 64px;
-    height: 64px;
+  html.df-narrow .df-brand-logo,
+  body.df-shell .df-brand-logo {
+    width: 28px;
+    height: 28px;
   }
 
-  html.df-narrow .df-nav-item {
+  html.df-narrow .df-nav,
+  body.df-shell .df-nav {
+    padding: 6px 2px;
+    gap: 1px;
+  }
+
+  html.df-narrow .df-nav-item,
+  body.df-shell .df-nav-item {
     justify-content: center;
-    padding: 10px 8px;
+    padding: 7px 4px;
+    gap: 0;
   }
 
   html.df-narrow .lm-engine-dropdowns-toggle {
@@ -7388,7 +8351,7 @@ body.lm-resizing-chat-sidebar {
     border-top-width: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-details {
+  .df-shell .lm-model-card-details {
     display: none !important;
   }
 
@@ -7470,8 +8433,10 @@ body.lm-resizing-chat-sidebar {
 
   html.df-narrow .df-shell .lm-main,
   html.df-narrow .df-shell .lm-view[data-view="server"],
+  html.df-narrow .df-shell .lm-view[data-view="models"],
   html.df-narrow .df-shell .lm-server-upper,
-  html.df-narrow .df-shell .lm-server-cards {
+  html.df-narrow .df-shell .lm-server-cards,
+  html.df-narrow .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards {
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -7481,12 +8446,17 @@ body.lm-resizing-chat-sidebar {
     display: none;
   }
 
-  .df-shell .lm-server-cards {
+  .df-shell .lm-server-cards,
+  .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards {
     gap: 5px;
   }
 
-  html.df-narrow .df-shell .lm-model-card,
-  html.df-narrow .df-shell .lm-model-card-compact {
+  html.df-narrow .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards:not(.hidden) {
+    gap: 3px;
+  }
+
+  .df-shell .lm-model-card,
+  .df-shell .lm-model-card-compact {
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -7494,7 +8464,7 @@ body.lm-resizing-chat-sidebar {
     margin-bottom: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-top {
+  .df-shell .lm-model-card-compact .lm-model-card-top {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
@@ -7505,14 +8475,14 @@ body.lm-resizing-chat-sidebar {
     padding: 5px 8px 4px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-top:has(.has-token-row) {
+  .df-shell .lm-model-card-compact .lm-model-card-top:has(.has-token-row) {
     min-height: 0;
     padding-top: 5px;
     padding-bottom: 4px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center.has-token-row {
+  .df-shell .lm-model-card-compact .lm-model-card-center,
+  .df-shell .lm-model-card-compact .lm-model-card-center.has-token-row {
     display: contents;
     min-width: 0;
     max-width: 100%;
@@ -7521,11 +8491,11 @@ body.lm-resizing-chat-sidebar {
     gap: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-tags {
+  .df-shell .lm-model-card-compact .lm-model-card-tags {
     display: none;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-title-row {
+  .df-shell .lm-model-card-compact .lm-model-card-title-row {
     grid-column: 1 / -1;
     grid-row: 1;
     display: flex;
@@ -7537,9 +8507,9 @@ body.lm-resizing-chat-sidebar {
     min-height: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-path,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-title-row .lm-model-path,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-model-path {
+  .df-shell .lm-model-card-compact .lm-model-path,
+  .df-shell .lm-model-card-compact .lm-model-card-title-row .lm-model-path,
+  .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-model-path {
     flex: 1 1 auto;
     display: block;
     width: auto;
@@ -7554,8 +8524,8 @@ body.lm-resizing-chat-sidebar {
     line-height: 1.2;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-identity,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-identity {
+  .df-shell .lm-model-card-compact.external-gpu .lm-model-card-identity,
+  .df-shell .lm-model-card-compact .lm-model-card-identity {
     flex: 1 1 auto;
     width: auto;
     max-width: 100%;
@@ -7563,7 +8533,7 @@ body.lm-resizing-chat-sidebar {
     overflow: hidden;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-name-line {
+  .df-shell .lm-model-card-compact .lm-model-card-name-line {
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
@@ -7573,7 +8543,7 @@ body.lm-resizing-chat-sidebar {
     overflow: hidden;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels {
+  .df-shell .lm-model-card-compact .lm-model-card-labels {
     display: inline-flex;
     flex-wrap: nowrap;
     flex-shrink: 0;
@@ -7584,8 +8554,8 @@ body.lm-resizing-chat-sidebar {
     gap: 2px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag {
+  .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge,
+  .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag {
     min-width: 0;
     padding: 1px 3px;
     font-size: 7px;
@@ -7593,14 +8563,14 @@ body.lm-resizing-chat-sidebar {
     flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge.installed,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-model-card-detail,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-tag.dflash-logo-label,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag-kind {
+  .df-shell .lm-model-card-compact .lm-model-card-labels .lm-badge.installed,
+  .df-shell .lm-model-card-compact .lm-model-card-labels .lm-model-card-detail,
+  .df-shell .lm-model-card-compact .lm-tag.dflash-logo-label,
+  .df-shell .lm-model-card-compact .lm-model-card-labels .lm-tag-kind {
     display: none;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-center-row.lm-model-card-token-row {
+  .df-shell .lm-model-card-compact .lm-model-card-center-row.lm-model-card-token-row {
     grid-column: 1;
     grid-row: 2;
     align-self: center;
@@ -7613,7 +8583,7 @@ body.lm-resizing-chat-sidebar {
     white-space: nowrap;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-stats {
+  .df-shell .lm-model-card-compact .lm-model-stats {
     grid-column: 2;
     grid-row: 2;
     display: inline-flex;
@@ -7629,26 +8599,26 @@ body.lm-resizing-chat-sidebar {
     flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric {
+  .df-shell .lm-model-card-compact .lm-model-card-metric {
     font-size: 8px;
     line-height: 1.15;
     max-width: 100%;
     white-space: nowrap;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric .lbl,
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-token-metric .lbl {
+  .df-shell .lm-model-card-compact .lm-model-card-metric .lbl,
+  .df-shell .lm-model-card-compact .lm-model-card-token-metric .lbl {
     font-size: 7px;
     margin-right: 2px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-metric.lm-stack-disk .lm-stack-disk-parts {
+  .df-shell .lm-model-card-compact .lm-model-card-metric.lm-stack-disk .lm-stack-disk-parts {
     flex-wrap: nowrap;
     justify-content: flex-end;
     gap: 4px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-stats .lm-btn {
+  .df-shell .lm-model-card-compact .lm-model-stats .lm-btn {
     min-width: 0;
     min-height: 0;
     height: auto;
@@ -7658,16 +8628,16 @@ body.lm-resizing-chat-sidebar {
     flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-loading-spacer {
+  .df-shell .lm-model-card-compact .lm-model-card-loading-spacer {
     display: none;
     min-height: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact > .lm-model-card-load-shell {
+  .df-shell .lm-model-card-compact > .lm-model-card-load-shell {
     padding: 4px 8px 3px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt {
+  .df-shell .lm-model-card-loaded-by-prompt {
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
@@ -7677,24 +8647,24 @@ body.lm-resizing-chat-sidebar {
     font-size: 8px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-origin {
+  .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-origin {
     font-size: 7px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
+  .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
     justify-content: flex-end;
     flex: 1 1 auto;
     min-width: 0;
     gap: 4px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge {
+  .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-badge {
     padding: 1px 5px;
     font-size: 8px;
     line-height: 1.15;
   }
 
-  html.df-narrow .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-name {
+  .df-shell .lm-model-card-loaded-by-prompt .lm-loaded-by-app-name {
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
@@ -7703,24 +8673,24 @@ body.lm-resizing-chat-sidebar {
     font-size: 8px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-subline {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-subline {
     display: none;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-badge,
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-tag {
+  .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-badge,
+  .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-tag {
     padding: 1px 3px;
     font-size: 7px;
     line-height: 1.15;
     flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-card-top {
+  .df-shell .lm-model-card-compact.external-gpu .lm-model-card-top {
     align-items: center;
     gap: 2px 6px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-model-stats {
+  .df-shell .lm-model-card-compact.external-gpu .lm-model-stats {
     grid-column: 1 / -1;
     grid-row: 2;
     display: inline-flex;
@@ -7735,7 +8705,7 @@ body.lm-resizing-chat-sidebar {
     margin-left: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-stats {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
@@ -7745,7 +8715,7 @@ body.lm-resizing-chat-sidebar {
     margin-left: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col {
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
@@ -7755,7 +8725,7 @@ body.lm-resizing-chat-sidebar {
     min-width: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col .lm-btn.ghost.small {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-stats-col .lm-btn.ghost.small {
     width: auto;
     min-width: 0;
     min-height: 0;
@@ -7767,7 +8737,7 @@ body.lm-resizing-chat-sidebar {
     flex-shrink: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-metrics {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-metrics {
     display: inline-flex;
     flex-direction: row;
     flex-wrap: nowrap;
@@ -7776,14 +8746,14 @@ body.lm-resizing-chat-sidebar {
     width: auto;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-line {
+  .df-shell .lm-model-card-compact.external-gpu .lm-external-foot-line {
     font-size: 8px;
     line-height: 1.15;
     white-space: nowrap;
     width: auto;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-slot-metric-group {
+  .df-shell .lm-model-card-compact .lm-model-card-slot-metric-group {
     min-width: 0;
     max-width: 100%;
     padding-right: 0;
@@ -7792,7 +8762,7 @@ body.lm-resizing-chat-sidebar {
     overflow: hidden;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-token-metric {
+  .df-shell .lm-model-card-compact .lm-model-card-token-metric {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7800,15 +8770,15 @@ body.lm-resizing-chat-sidebar {
     font-size: 9px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-token-last {
+  .df-shell .lm-model-card-compact .lm-model-card-token-last {
     display: inline;
   }
 
-  html.df-narrow .df-shell .lm-model-card-compact .lm-model-card-token-separator {
+  .df-shell .lm-model-card-compact .lm-model-card-token-separator {
     margin: 0 2px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-external-prompt {
+  .df-shell .lm-model-card-external-prompt {
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
@@ -7817,13 +8787,44 @@ body.lm-resizing-chat-sidebar {
     min-width: 0;
   }
 
-  html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-origin {
+  .df-shell .lm-model-card-external-prompt .lm-external-origin {
     flex: 0 0 auto;
     font-size: 7px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-app-name {
+  .df-shell .lm-model-card-external-prompt .lm-external-kind {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .df-shell .lm-model-card-external-prompt .lm-external-kind.is-empty {
+    display: none;
+  }
+
+  .df-shell .lm-model-card-external-prompt .lm-external-kind .lm-tag-kind {
+    font-size: 7px;
+    padding: 1px 4px;
+    max-width: 100%;
+  }
+
+  .df-shell .lm-model-card-external-prompt .lm-engine-head-vram {
     flex: 1 1 auto;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .df-shell .lm-model-card-external-prompt .lm-engine-head-vram.is-empty {
+    flex: 1 1 auto;
+  }
+
+  .df-shell .lm-model-card-external-prompt .lm-external-app-name {
+    flex: 0 1 auto;
     min-width: 0;
     max-width: 100%;
     text-align: right;
@@ -7833,7 +8834,7 @@ body.lm-resizing-chat-sidebar {
     font-size: 8px;
   }
 
-  html.df-narrow .df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
+  .df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
     flex: 0 0 auto;
     min-width: 0;
     max-width: none;
@@ -7906,14 +8907,479 @@ body.lm-resizing-chat-sidebar {
     flex: 1 1 100%;
   }
 
-  .df-shell .lm-view[data-view="models"] .lm-models-table th.lm-col-meta:nth-child(5),
-  .df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-meta:nth-child(5) {
+  .df-shell .lm-view[data-view="models"] .lm-models-table th.lm-col-meta:nth-child(7),
+  .df-shell .lm-view[data-view="models"] .lm-models-table td.lm-col-meta:nth-child(7) {
     display: none;
+  }
+
+  .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0 2px 4px;
+  }
+
+  .df-shell .lm-view[data-view="models"] .lm-models-table-wrap.hidden {
+    display: none !important;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards {
+    gap: 3px;
+  }
+
+  /* Engines mobile: three-line cards (header | meta | tokens). */
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-width: 0;
+    padding: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card > .lm-model-card-load-shell,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card > .lm-model-card-eject-shell {
+    flex: 0 0 auto;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, max-content) auto;
+    align-items: center;
+    column-gap: 4px;
+    row-gap: 0;
+    padding: 2px 6px;
+    min-width: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head.lm-model-card-loaded-by-prompt {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, max-content) auto;
+    background: rgba(20, 83, 45, 0.22);
+    border-bottom: 1px solid rgba(74, 222, 128, 0.28);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head-chip {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-engine-head-vram-ctx {
+    grid-column: 2;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-engine-head-vram-ctx .lm-engine-head-vram,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-engine-head-vram-ctx .lm-engine-head-ctx {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    flex: 0 0 auto;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-engine-head-vram-ctx .lbl {
+    font-size: 8px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-engine-head-vram-ctx.is-empty {
+    display: none;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-loaded-by-badges {
+    grid-column: 3;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-unload {
+    grid-column: 4;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.dflash-model .lm-mobile-engine-head .lm-loaded-by-app-badge {
+    font-size: 7px;
+    padding: 1px 4px;
+    line-height: 1.15;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head.lm-model-card-external-prompt {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+    padding: 2px 6px;
+    column-gap: 4px;
+    background: rgba(24, 26, 32, 0.94);
+    border-bottom: 1px solid var(--external-card-border);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-external-origin {
+    font-size: 7px;
+    line-height: 1;
+    letter-spacing: 0.06em;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-external-kind {
+    grid-column: 2;
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-external-kind .lm-tag-kind {
+    font-size: 7px;
+    padding: 1px 4px;
+    line-height: 1.15;
+    max-width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-engine-head-vram-ctx {
+    grid-column: 3;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-engine-head-vram-ctx .lm-engine-head-vram,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-engine-head-vram-ctx .lm-engine-head-ctx {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    flex: 0 0 auto;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-engine-head-vram-ctx .lbl {
+    font-size: 8px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-engine-head-vram-ctx.is-empty {
+    display: none;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head .lm-external-app-name {
+    grid-column: 4;
+    justify-self: end;
+    font-size: 8px;
+    line-height: 1.1;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-unload {
+    grid-column: 5;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-loaded-by-origin,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-external-origin {
+    grid-column: 1;
+    justify-self: start;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head-chip {
+    grid-column: 2;
+    justify-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    height: 14px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head-chip .lm-tag.dflash-logo-label,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head-chip .dflash-logo-label {
+    display: inline-flex !important;
+    width: 48px;
+    min-width: 48px;
+    height: 14px;
+    margin: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-loaded-by-badges,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-external-app-name {
+    grid-column: 3;
+    justify-self: end;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-external-prompt-actions {
+    display: none;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-unload {
+    grid-column: 4;
+    justify-self: end;
+    flex-shrink: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-unload .lm-btn {
+    min-height: 20px;
+    padding: 1px 8px;
+    font-size: 9px;
+    line-height: 1.15;
+    border-radius: 5px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta {
+    display: block;
+    padding: 4px 8px;
+    min-width: 0;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+    font-size: 10px;
+    line-height: 1.25;
+    color: rgba(203, 213, 225, 0.92);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-title {
+    display: inline;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--lm-text-bright, #f8fafc);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats {
+    display: inline;
+    margin-left: 8px;
+    font-size: 10px;
+    color: rgba(226, 232, 240, 0.82);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lbl {
+    color: rgba(203, 213, 225, 0.78);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lm-stack-disk,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lm-external-foot-metrics {
+    display: inline;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lm-stack-disk-parts {
+    display: inline;
+    gap: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lm-stack-disk-parts > * {
+    margin-left: 8px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-stats .lm-stack-disk-parts > *:first-child {
+    margin-left: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    padding: 4px 8px;
+    min-width: 0;
+    text-align: right;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-mobile-engine-meta-identity {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    min-width: 0;
+    width: 100%;
+    text-align: left;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-mobile-engine-meta-title-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 4px;
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-mobile-engine-meta-title.lm-model-path {
+    flex: 1 1 auto;
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+    overflow-wrap: normal;
+    text-align: left;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-external-subline {
+    display: block;
+    max-width: 100%;
+    font-size: 9px;
+    line-height: 1.2;
+    color: rgba(203, 213, 225, 0.78);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-badge.ready {
+    margin-left: 6px;
+    flex-shrink: 0;
+    font-size: 7px;
+    padding: 1px 4px;
+    vertical-align: middle;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-external-foot-metrics {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 10px 14px;
+    width: 100%;
+    margin: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-external-foot-line {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 5px;
+    width: auto;
+    font-size: 10px;
+    color: rgba(226, 232, 240, 0.82);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-external-foot-lbl {
+    font-size: 9px;
+    color: rgba(203, 213, 225, 0.78);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-meta-external .lm-external-foot-val {
+    color: rgba(226, 232, 240, 0.9);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-external-actions {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-external-actions .lm-btn.tiny {
+    max-width: 100%;
+    white-space: normal;
+    text-align: right;
+    line-height: 1.2;
+    font-size: 9px;
+    padding: 3px 6px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens {
+    padding: 3px 8px 5px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-engine-live-metrics-host {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-token-metrics-live {
+    width: 100%;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-token-metrics-live .lm-model-card-token-generating {
+    font-size: 11px;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 11px;
+    color: rgba(226, 232, 240, 0.9);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric.lm-model-card-token-last {
+    margin-left: 0;
+    color: rgba(226, 232, 240, 0.9);
+    font-weight: 500;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric.is-live {
+    color: rgba(236, 253, 245, 0.92);
+    font-weight: 600;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric .lbl {
+    font-size: 10px;
+    color: rgba(203, 213, 225, 0.82);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric.is-live .lbl {
+    color: rgba(209, 250, 229, 0.78);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-separator {
+    color: rgba(226, 232, 240, 0.42);
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-model-card-compact.selected .lm-mobile-engine-tokens .lm-model-card-token-metric,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-model-card-compact.selected .lm-mobile-engine-tokens .lm-model-card-token-metric.lm-model-card-token-last {
+    color: rgba(226, 232, 240, 0.9);
   }
 }
 
 @media (max-width: 420px) {
   .df-shell .lm-model-card-compact .lm-model-path {
     font-size: 11px;
+  }
+
+  .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-model-card-compact:not(.lm-gpu-overhead-card) .lm-model-path {
+    font-size: 12px;
   }
 }

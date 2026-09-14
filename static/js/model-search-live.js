@@ -348,13 +348,25 @@
     return escapeHtml(raw);
   }
 
+  function formatHfFileSizeLabel(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const gb = n / 1e9;
+    if (gb >= 0.01) return `${gb.toFixed(2)} GB`;
+    const mb = n / 1e6;
+    if (mb >= 0.1) return `${mb.toFixed(2)} MB`;
+    const kb = n / 1e3;
+    return `${Math.max(1, Math.round(kb))} KB`;
+  }
+
   function formatCatalogFileSize(file) {
     if (!file) return '';
+    const explicit = String(file?.size_label || '').trim();
+    if (explicit && explicit !== '—') return explicit;
     const bytes = Number(file.size_bytes);
-    if (Number.isFinite(bytes) && bytes > 0) {
-      return window.DFlashDownloadQueue?.formatBytes?.(bytes) || `${file.size_gb} GB`;
-    }
-    if (file.size_gb != null && file.size_gb !== '') return `${file.size_gb} GB`;
+    if (Number.isFinite(bytes) && bytes > 0) return formatHfFileSizeLabel(bytes);
+    const gb = Number(file?.size_gb);
+    if (Number.isFinite(gb) && gb > 0) return formatHfFileSizeLabel(gb * (1024 ** 3));
     return '';
   }
 
@@ -488,10 +500,10 @@
     const label = String(opt?.label || opt?.filename || '').trim();
     const size = formatCatalogFileSize(opt);
     if (!size) return label;
-    if (opt?.kind === 'sharded' || (opt?.kind === 'quant' && (opt?.shard_count || 0) > 1)) {
-      return `${label} — ${size} total`;
+    if (opt?.kind === 'sharded' || (opt?.shard_count || 0) > 1) {
+      return `${label} [${size} total]`;
     }
-    return `${label} — ${size}`;
+    return `${label} [${size}]`;
   }
 
   function catalogDownloadHint(model, options) {
@@ -1805,7 +1817,11 @@
 
   function getSelectedFilename() {
     const pick = document.getElementById('hfFilePick');
-    return pick?.value || pick?.getAttribute('value') || '';
+    if (!pick) return '';
+    const value = String(pick.value || '').trim();
+    if (value) return value;
+    const active = pick.closest('.df-select-wrap')?.querySelector('.df-select-option.active');
+    return String(active?.dataset?.value || '').trim();
   }
 
   function localInstallFromModel(model, filename) {
@@ -1827,6 +1843,42 @@
       return (data.matches || [])[0] || null;
     } catch {
       return null;
+    }
+  }
+
+  async function hydrateLocalInstalls(model) {
+    if (!model?.id) return;
+    if (!model.local_installs) model.local_installs = {};
+    const fromDetail = model.local_installs;
+    if (fromDetail && typeof fromDetail === 'object') {
+      Object.entries(fromDetail).forEach(([key, rows]) => {
+        if (Array.isArray(rows) && rows.length) model.local_installs[key] = rows;
+      });
+    }
+    const files = model.download_files || model.gguf_files || [];
+    if (files.length <= 32) {
+      for (const file of files) {
+        const name = String(file?.filename || '').trim();
+        if (!name || model.local_installs[name]?.length) continue;
+        try {
+          const data = await api(
+            `/api/hf/local-match?repo_id=${encodeURIComponent(model.id)}&filename=${encodeURIComponent(name)}`,
+          );
+          const matches = data?.matches || [];
+          if (matches.length) model.local_installs[name] = matches;
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+    try {
+      const data = await api(`/api/hf/local-installs?repo_id=${encodeURIComponent(model.id)}`);
+      (data?.matches || []).forEach((match) => {
+        const key = String(match?.filename || '').trim();
+        if (key) model.local_installs[key] = [match];
+      });
+    } catch {
+      /* best effort */
     }
   }
 
@@ -1858,7 +1910,8 @@
     const install = filename ? await resolveLocalInstall(model, filename) : null;
     const selectedIsAuxiliary = isAuxiliaryCatalogFilename(filename);
     const weightInstall = install && !selectedIsAuxiliary ? install : null;
-    const repoInstall = weightInstall || (model.local_ready ? await resolveAnyLocalInstall(model) : null);
+    const repoInstall = weightInstall
+      || (!filename && model.local_ready ? await resolveAnyLocalInstall(model) : null);
     const auxiliaryOnly = selectedIsAuxiliary && Boolean(install);
     const installed = Boolean(repoInstall) && !auxiliaryOnly;
     const stackReady = catalogReadyToLoad(model);
@@ -2212,8 +2265,8 @@
       void startDownload(model.id, filename, libraryId, model);
     });
     updateSelectedFileSize(model);
-    void refreshInstallUI(model);
     window.DFlashSelectTheme?.enhanceAll?.(document.getElementById('hfSearchDetail'));
+    void hydrateLocalInstalls(model).then(() => refreshInstallUI(model));
   }
 
   function renderDetailPlaceholder(message) {

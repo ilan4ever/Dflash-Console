@@ -1,6 +1,23 @@
 from __future__ import annotations
 
-from core.display_names import build_model_catalog, friendly_stack_label
+from core.display_names import (
+    build_engine_client_metadata,
+    build_model_catalog,
+    disambiguate_engine_display_names,
+    friendly_stack_label,
+    label_with_quant_suffix,
+)
+
+
+def test_label_with_quant_suffix_appends_brackets():
+    base = 'Qwen 3.8 27B gsq rco mtp — DFlash 2'
+    out = label_with_quant_suffix(
+        base,
+        quant='IQ3_XXS',
+        filename='Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf',
+    )
+    assert out == f'{base} (IQ3_XXS)'
+    assert label_with_quant_suffix(out, quant='IQ3_XXS') == out
 
 
 def test_friendly_stack_label_keeps_model_name():
@@ -127,3 +144,99 @@ def test_build_model_catalog_ar_profile_distinct_from_dflash():
     assert ar_catalog['display_name'] == 'Gemma 4 12B it qat — AR'
     assert dflash_catalog['display_name'] == 'Gemma 4 12B it qat — DFlash 1'
     assert ar_catalog['display_name'] != dflash_catalog['display_name']
+
+
+def test_disambiguate_colliding_qwen_iq_profiles():
+    shared_stack_tail = {
+        'profile': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+        'label': 'Qwen 27B',
+    }
+    iq3_server = {
+        'id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+        'model_id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+        **shared_stack_tail,
+    }
+    iq2_server = {
+        'id': 'qwen3-8-27b-gsq-rco-iq2-s-mtp-dflash',
+        'model_id': 'qwen3-8-27b-gsq-rco-iq2-s-mtp-dflash',
+        **shared_stack_tail,
+    }
+    iq3_stack = [
+        {'role': 'alias', 'id': iq3_server['model_id'], 'source': 'api'},
+        {
+            'role': 'target',
+            'id': 'qwen3.8-27b-gsq-rco-iq3-xxs-mtp',
+            'path': r'C:\models\Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf',
+            'source': 'dflash',
+        },
+        {
+            'role': 'draft-dflash',
+            'id': 'draft-iq3',
+            'path': r'C:\models\draft-iq3.gguf',
+            'source': 'dflash',
+        },
+    ]
+    iq2_stack = [
+        {'role': 'alias', 'id': iq2_server['model_id'], 'source': 'api'},
+        {
+            'role': 'target',
+            'id': 'qwen3.8-27b-gsq-rco-iq2-s-mtp',
+            'path': r'C:\models\Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf',
+            'source': 'dflash',
+        },
+        {
+            'role': 'draft-dflash',
+            'id': 'draft-iq2',
+            'path': r'C:\models\draft-iq2.gguf',
+            'source': 'dflash',
+        },
+    ]
+    rows = [
+        {**build_engine_client_metadata(iq3_server, iq3_stack), 'id': iq3_server['id'], 'model_id': iq3_server['model_id']},
+        {**build_engine_client_metadata(iq2_server, iq2_stack), 'id': iq2_server['id'], 'model_id': iq2_server['model_id']},
+    ]
+    assert rows[0]['display_name'] == rows[1]['display_name']
+    disambiguate_engine_display_names(rows)
+    assert rows[0]['display_name'] != rows[1]['display_name']
+    assert 'IQ3' in rows[0]['display_name'].upper()
+    assert 'IQ2' in rows[1]['display_name'].upper()
+
+
+def test_disambiguate_colliding_gemma_profiles_by_engine_id():
+    base = {
+        'profile': 'gemma-4-31b-dflash',
+        'label': 'Gemma 31B',
+        'model_id': 'gemma-4-31b-q4-0-it-dflash',
+    }
+    stack = [
+        {'role': 'alias', 'id': 'gemma-4-31b-q4-0-it-dflash', 'source': 'api'},
+        {
+            'role': 'target',
+            'id': 'gemma-4-31b-q4-0-it',
+            'path': r'C:\models\gemma-4-31B_q4_0-it.gguf',
+            'source': 'lmstudio',
+        },
+        {
+            'role': 'draft-dflash',
+            'id': 'draft-a',
+            'path': r'C:\models\draft-a.gguf',
+            'source': 'dflash',
+        },
+    ]
+    stack_b = [
+        *stack[:2],
+        {
+            'role': 'draft-dflash',
+            'id': 'draft-b',
+            'path': r'C:\models\draft-b.gguf',
+            'source': 'dflash',
+        },
+    ]
+    s1 = {'id': 'gemma-4-31b-q4-0-it-dflash', **base}
+    s2 = {'id': 'gemma-4-31b-q4-0-it-dflash-2', **base}
+    rows = [
+        {**build_engine_client_metadata(s1, stack), 'id': s1['id'], 'model_id': s1['model_id']},
+        {**build_engine_client_metadata(s2, stack_b), 'id': s2['id'], 'model_id': s2['model_id']},
+    ]
+    disambiguate_engine_display_names(rows)
+    assert rows[0]['display_name'] != rows[1]['display_name']

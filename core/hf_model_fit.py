@@ -41,6 +41,24 @@ def bytes_to_size_gb(size_bytes: int | float | None) -> float | None:
     return round(gb, 2)
 
 
+def bytes_to_hf_size_label(size_bytes: int | float | None) -> str:
+    """Human size label matching Hugging Face file tables (decimal GB = 10^9 bytes)."""
+    try:
+        nbytes = int(size_bytes or 0)
+    except (TypeError, ValueError):
+        return ''
+    if nbytes <= 0:
+        return ''
+    gb = nbytes / 1_000_000_000
+    if gb >= 0.01:
+        return f'{gb:.2f} GB'
+    mb = nbytes / 1_000_000
+    if mb >= 0.1:
+        return f'{mb:.2f} MB'
+    kb = nbytes / 1_000
+    return f'{int(max(1, round(kb)))} KB'
+
+
 def _file_size_gb(row: dict[str, Any]) -> float | None:
     size_gb = row.get('size_gb')
     if isinstance(size_gb, (int, float)) and float(size_gb) > 0:

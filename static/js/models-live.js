@@ -19,6 +19,7 @@
   const pendingServerUnloads = new Set();
   let runtimePollTimer = null;
   let autoSetupInFlight = null;
+  let catalogRefreshInFlight = null;
   let partialRetryTimer = null;
   let contextModel = null;
   let stackPreflight = { key: '', status: 'idle', result: null };
@@ -102,7 +103,7 @@
       const cached = JSON.parse(localStorage.getItem(LOCAL_CATALOG_CACHE_KEY) || 'null');
       if (
         !cached
-        || cached.version !== 1
+        || cached.version !== 2
         || !Array.isArray(cached.models)
         || !cached.models.length
       ) {
@@ -119,7 +120,7 @@
     try {
       const { models: _models, ...footer } = data;
       localStorage.setItem(LOCAL_CATALOG_CACHE_KEY, JSON.stringify({
-        version: 1,
+        version: 2,
         saved_at: Date.now(),
         models: data.models,
         footer,
@@ -447,9 +448,10 @@
     return model?.is_projector === true || (Array.isArray(model?.capabilities) && model.capabilities.includes('projector'));
   }
 
-  function capTags(model, visibleCount) {
+  function capTags(model, visibleCount, { handleOnly = false, bodyOnly = false } = {}) {
     const classification = window.DFlashModelCard?.classificationTags?.(model)
       || modalityBadge(model);
+    if (handleOnly) return libraryHandleClassification(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const role = modelCatalogRoleTag(model);
     const location = (model.duplicate_group || model.library_file) ? modelLocationTag(model) : '';
@@ -471,10 +473,95 @@
       loadable: (model.loadable || !!(model.draft_path && model.path)) && !isDflashAccelerator(model) && !isProjectorModel(model) && !modelFileMissing(model),
       port: resolveModelPort(model),
     });
-    if (isDflashStack(model)) {
-      return classification + ext + role + location + status + compatibility + hfAccelerator + split + caps + dup + weak;
+    const bodyPrefix = ext + role + location + status + compatibility + hfAccelerator + split;
+    const body = isDflashStack(model)
+      ? (bodyPrefix + caps + dup + weak)
+      : (bodyPrefix + dup + weak + caps);
+    if (bodyOnly) return body;
+    return classification + body;
+  }
+
+  function libraryModelPathsHtml(model) {
+    const stack = isDflashStack(model);
+    if (stack) {
+      const details = window.DFlashModelCard?.detailsHtml?.(model, {
+        includeTarget: true,
+        includeAccelerator: true,
+        alwaysForStack: true,
+      }) || '';
+      if (!details) return '';
+      return `<div class="lm-library-card-paths lm-model-card-details">${details}</div>`;
     }
-    return classification + ext + role + location + status + compatibility + hfAccelerator + split + dup + weak + caps;
+    const path = String(model?.path || '').trim();
+    if (!path) return '';
+    const label = model.draft_path && model.draft_filename
+      ? `Target · ${shortPath(path)}`
+      : shortPath(path);
+    return `<div class="lm-library-card-paths"><div class="lm-model-path-hint" title="${escapeHtml(path)}">${escapeHtml(label)}</div></div>`;
+  }
+
+  function libraryModelFooterHtml(model, visibleCount) {
+    const modalityTags = libraryFooterModalityTags(model);
+    const bodyTags = capTags(model, visibleCount, { bodyOnly: true });
+    const merged = `${modalityTags}${bodyTags}`;
+    if (!merged) return '';
+    return `<div class="lm-library-card-foot lm-library-body-tags lm-model-tags-line">${merged}</div>`;
+  }
+
+  function libraryModelBodyHtml(model, visibleCount) {
+    const paths = libraryModelPathsHtml(model);
+    const foot = libraryModelFooterHtml(model, visibleCount);
+    if (!paths && !foot) return '';
+    return `<div class="lm-library-card-body">${paths}${foot}</div>`;
+  }
+
+  function renderDesktopLibraryCardRows(model, {
+    key,
+    selected,
+    pinned,
+    pinMark,
+    loadBtn,
+    actionStack,
+    actionStackSetup,
+    size,
+    dupVisible,
+    title,
+    handleBadges,
+  }) {
+    const rowClass = `${modelRowClassName(model, { selected, pinned })} lm-library-card-desktop${isExternalModel(model) ? ' external-model' : ''}`;
+    const dataAttrs = `data-model-key="${escapeHtml(key)}" data-model-id="${escapeHtml(model.id || '')}" data-server-id="${escapeHtml(model.server_id || '')}"`;
+    const paths = libraryModelPathsHtml(model);
+    const foot = libraryModelFooterHtml(model, dupVisible);
+    const spanRows = (paths ? 1 : 0) + (foot ? 1 : 0);
+    const actionRowspan = 1 + spanRows;
+    const actionCls = `lm-col-action lm-library-handle-action${actionStack ? ' has-action-stack' : ''}${actionStackSetup ? ' has-action-stack-setup' : ''}`;
+    const rows = [
+      `<tr class="${rowClass} lm-library-card-line1" ${dataAttrs}>
+          <td class="lm-col-model">
+            ${loadedRibbon(model)}
+            <div class="lm-library-handle-title">
+              ${pinMark}
+              <span class="lm-model-title-text" title="${title}">${title}</span>
+              ${handleBadges ? `<span class="lm-library-handle-badges">${handleBadges}</span>` : ''}
+            </div>
+          </td>
+          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.arch || '—')}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.params || '—')}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${modelLabCell(model)}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${modelSourceCell(model)}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(size)}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.modified || '—')}</td>
+          <td class="${actionCls}" rowspan="${actionRowspan}">${loadBtn}</td>
+        </tr>`,
+    ];
+    if (paths) {
+      rows.push(`<tr class="${rowClass} lm-library-card-line2" ${dataAttrs}><td class="lm-library-card-span" colspan="7">${paths}</td></tr>`);
+    }
+    if (foot) {
+      rows.push(`<tr class="${rowClass} lm-library-card-line3" ${dataAttrs}><td class="lm-library-card-span" colspan="7">${foot}</td></tr>`);
+    }
+    rows.push('<tr class="lm-library-card-spacer" aria-hidden="true"><td colspan="8"></td></tr>');
+    return rows;
   }
 
   function actionStackHtml(buttons, { setup = false } = {}) {
@@ -743,6 +830,31 @@
     return `<div class="lm-model-path-hint" title="${escapeHtml(model.path)}">${escapeHtml(shortPath(model.path))}</div>`;
   }
 
+  function modelHfRepoId(model) {
+    const hfRepo = String(model?.hf_repo || model?.repo_id || '').trim();
+    if (hfRepo && hfRepo.includes('/')) return hfRepo;
+    const publisher = String(model?.publisher || '').trim();
+    const label = String(model?.label || '').trim();
+    if (label.includes('/')) return label;
+    if (publisher && label) return `${publisher}/${label}`;
+    return '';
+  }
+
+  function modelLabCell(model) {
+    const publisher = String(model?.publisher || '').trim();
+    if (publisher) return escapeHtml(publisher);
+    const repo = modelHfRepoId(model);
+    if (repo.includes('/')) return escapeHtml(repo.split('/')[0]);
+    const path = String(model?.path || '').replace(/\\/g, '/');
+    const hub = path.match(/\/models\/([^/]+)\//i);
+    if (hub?.[1]) return escapeHtml(hub[1]);
+    return '—';
+  }
+
+  function libraryModelDetailsBlock(model) {
+    return libraryModelBodyHtml(model, 0);
+  }
+
   function isDflashAccelerator(model) {
     if (!model) return false;
     if (model.accelerator_only === true) return true;
@@ -946,6 +1058,44 @@
     );
   }
 
+  function isAudioTokenizerModel(model) {
+    const hay = [
+      model?.label,
+      model?.filename,
+      model?.id,
+      model?.path,
+      model?.arch,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return /audio[_\s-]?tokenizer/.test(hay);
+  }
+
+  function libraryCatalogDeferSortTier(model) {
+    if (isDflashAccelerator(model) || isAudioTokenizerModel(model)) return 1;
+    return 0;
+  }
+
+  function libraryDeferredModality(model) {
+    const modality = window.DFlashModelCard?.modality?.(model)
+      || String(model?.modality || '').trim().toLowerCase();
+    return ['speech-to-text', 'text-to-speech', 'ocr'].includes(modality);
+  }
+
+  function libraryHandleClassification(model) {
+    const deferModality = libraryDeferredModality(model);
+    const shared = window.DFlashModelCard?.classificationTags?.(model, {
+      includeReasoning: false,
+      includeModality: !deferModality,
+    });
+    if (shared) return shared;
+    if (!deferModality) return modalityBadge(model);
+    return '';
+  }
+
+  function libraryFooterModalityTags(model) {
+    if (!libraryDeferredModality(model)) return '';
+    return modalityBadge(model);
+  }
+
   function isExternalModel(model) {
     return !isConsoleModel(model);
   }
@@ -1107,8 +1257,43 @@
     return model.model_id || model.id || model.server_id || model.filename || model.path || '';
   }
 
-  function copyableModelName(model) {
-    const synthetic = /^(stack-capable|library-file|ollama):/i;
+  const SYNTHETIC_ID_RE = /^(stack-capable|library-file|ollama):/i;
+
+  function stripSyntheticCatalogId(raw) {
+    return String(raw || '').trim().replace(SYNTHETIC_ID_RE, '');
+  }
+
+  /** OpenAI gateway / chat `model` field, or engine server id for Console proxy URLs. */
+  function apiModelIdentifier(model) {
+    if (!model) return '';
+    const serverId = stripSyntheticCatalogId(model.server_id);
+    const apiModelId = stripSyntheticCatalogId(model.api_model_id || model.model_id);
+    const source = String(model.source || '');
+    const hasEngine = Boolean(
+      serverId && (model.loadable || source === 'dflash-profile' || Number(model.port) > 0),
+    );
+    if (hasEngine) return serverId;
+    if (apiModelId && !SYNTHETIC_ID_RE.test(String(model.id || ''))) return apiModelId;
+    const hfRepo = String(model.hf_repo || model.repo_id || '').trim();
+    if (hfRepo && hfRepo.includes('/')) return hfRepo;
+    const label = String(model?.label || '').trim();
+    const publisher = String(model?.publisher || '').trim();
+    if ((model?.arch === 'hf' || model?.kind === 'dir') && publisher && label) {
+      if (label.includes('/')) return label;
+      return `${publisher}/${label}`;
+    }
+    if (model?.ollama_model) return String(model.ollama_model).trim();
+    const filename = String(model?.filename || '').trim();
+    if (filename && /\.[a-z0-9]+$/i.test(filename) && !SYNTHETIC_ID_RE.test(filename)) {
+      return filename.replace(/\.[a-z0-9]+$/i, '');
+    }
+    const path = String(model?.path || '').trim();
+    if (path && /\.gguf$/i.test(path)) return path;
+    return stripSyntheticCatalogId(model.id) || filename || label;
+  }
+
+  function displayModelName(model) {
+    const synthetic = SYNTHETIC_ID_RE;
     const label = String(model?.label || '').trim();
     const filename = String(model?.filename || '').trim();
     const publisher = String(model?.publisher || '').trim();
@@ -1121,10 +1306,10 @@
       const stackName = String(window.DFlashModelGroups.stackDisplayName(model) || '').trim();
       if (stackName) return stackName;
     }
-    if (filename && /\.[a-z0-9]+$/i.test(filename) && !synthetic.test(filename)) return filename;
     if (label && !synthetic.test(label)) return label;
+    if (filename && /\.[a-z0-9]+$/i.test(filename) && !synthetic.test(filename)) return filename;
     const raw = String(model?.model_id || model?.id || '').trim();
-    return raw.replace(synthetic, '') || filename || label || raw;
+    return stripSyntheticCatalogId(raw) || filename || label || raw;
   }
 
   function stackTargetIssue(model) {
@@ -1339,15 +1524,15 @@
 
   function modelTitleLine(model) {
     const isStack = !!(model?.dflash_stack && model?.draft_path);
+    const rawLabel = String(model?.label || model?.id || '—');
     const name = isStack && window.DFlashModelGroups?.stackDisplayName
       ? window.DFlashModelGroups.stackDisplayName(model)
-      : (model.label || model.id || '—');
-    const parts = [name];
-    const nameHasQuant = /\b(?:Q\d|IQ\d|F16|F32|BF16)\b/i.test(name);
-    if (!isStack && model.quant && model.quant !== '—' && !nameHasQuant) parts.push(model.quant);
-    const sizeLabel = formatModelDiskSize(model);
-    if (sizeLabel !== '—') parts.push(sizeLabel);
-    return parts.join(' · ');
+      : /\([A-Z][A-Z0-9_]*\)\s*$/.test(rawLabel)
+        ? rawLabel
+        : window.DFlashModelGroups?.withQuantSuffix
+          ? window.DFlashModelGroups.withQuantSuffix(rawLabel, model)
+          : rawLabel;
+    return name;
   }
 
   function modelFileMissing(model) {
@@ -1424,7 +1609,8 @@
         </td>
         <td class="lm-col-meta">—</td>
         <td class="lm-col-meta">—</td>
-        <td class="lm-col-meta">${escapeHtml(repo.split('/')[0] || 'HF')}</td>
+        <td class="lm-col-meta">${escapeHtml(repo.split('/')[0] || '—')}</td>
+        <td class="lm-col-meta">Hugging Face</td>
         <td class="lm-col-meta">${escapeHtml(sizeCell)}</td>
         <td class="lm-col-meta">${incomplete ? 'Paused' : 'Now'}</td>
         <td class="lm-col-action">${action}</td>
@@ -1610,12 +1796,22 @@
   }
 
   function modelSearchHaystack(model) {
+    const path = String(model?.path || '');
+    const repoFromPath = (() => {
+      const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+      const modelsIdx = parts.findIndex((part) => part.toLowerCase() === 'models');
+      if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
+        return `${parts[modelsIdx + 1]}/${parts[modelsIdx + 2]}`;
+      }
+      return '';
+    })();
     return normalizeSearchText([
       model?.label,
       model?.id,
       model?.path,
       model?.publisher,
       model?.hf_repo,
+      repoFromPath,
       model?.arch,
       model?.quant,
       model?.draft_label,
@@ -1686,22 +1882,131 @@
     return 'External';
   }
 
-  // Source cell: origin label with HF publisher as a muted suffix when useful.
   function modelSourceCell(model) {
-    const label = modelSourceLabel(model);
-    const publisher = String(model?.publisher || '').trim();
-    if (!publisher || publisher.toLowerCase() === label.toLowerCase()) {
-      return escapeHtml(label);
-    }
-    return `${escapeHtml(label)}<span class="lm-col-sub"> · ${escapeHtml(publisher)}</span>`;
+    return escapeHtml(modelSourceLabel(model));
   }
 
   function loadingRowHtml(message = 'Loading your model library…', note = 'Scanning configured folders. Your models will appear here shortly.') {
-    return `<tr class="lm-models-loading-row"><td colspan="7">
+    return `<tr class="lm-models-loading-row"><td colspan="8">
       <span class="lm-models-loading-spinner" aria-hidden="true"></span>
       <span>${escapeHtml(message)}</span>
       <small>${escapeHtml(note)}</small>
     </td></tr>`;
+  }
+
+  function isLibraryCompactLayout() {
+    if (typeof window.DFlashShell?.isNarrowLayout === 'function') {
+      return window.DFlashShell.isNarrowLayout();
+    }
+    return window.matchMedia('(max-width: 899px)').matches;
+  }
+
+  function libraryMobileCardLabels(model) {
+    const tags = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false }) || '';
+    const status = isDflashStack(model) ? stackStatusTag(model) : '';
+    return `${tags}${status}`;
+  }
+
+  function libraryMobileActionHtml(model) {
+    if (isStackUnloading(model) || isStackBooting(model)) {
+      return stackActionButton(model).replace(/\btiny\b/g, 'small');
+    }
+    if (isStackLoadedOnGpu(model)) {
+      return actionButton('unload-model', 'Unload', 'Remove model from GPU', 'lm-btn-unload-active')
+        .replace(/\btiny\b/g, 'small')
+        .replace('lm-action-btn', 'ghost small');
+    }
+    if (canLoadInConsole(model)) {
+      return '<button class="lm-btn ghost small" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
+    }
+    const raw = stackActionButton(model);
+    if (raw.includes('lm-action-stack')) {
+      const match = raw.match(/<button[^>]*data-action="load-model"[^>]*>[\s\S]*?<\/button>/i);
+      if (match) return match[0].replace(/\btiny\b/g, 'small').replace('lm-action-btn', 'ghost small');
+    }
+    return raw.replace(/\btiny\b/g, 'small').replace(/\blm-action-btn\b/g, 'ghost small');
+  }
+
+  function syncLibraryLayoutMode(compact) {
+    const tableWrap = document.querySelector('.lm-view[data-view="models"] .lm-models-table-wrap');
+    const cards = document.getElementById('modelsMobileCards');
+    tableWrap?.classList.toggle('hidden', compact);
+    cards?.classList.toggle('hidden', !compact);
+  }
+
+  function libraryRowSelector() {
+    return '.lm-model-row, .lm-library-card, .lm-library-card-line1, .lm-library-card-line2, .lm-library-card-line3';
+  }
+
+  function bindLibraryCardHover(body) {
+    if (!body || document.documentElement.classList.contains('df-narrow')) return;
+
+    body.querySelectorAll('tr.lm-library-card-desktop').forEach((row) => {
+      if (row.dataset.libraryHoverRowBound === '1') return;
+      row.dataset.libraryHoverRowBound = '1';
+
+      row.addEventListener('mouseenter', () => {
+        const key = row.dataset.modelKey;
+        if (!key) return;
+        body.querySelectorAll('tr.lm-library-card-hovered').forEach((match) => {
+          match.classList.remove('lm-library-card-hovered');
+        });
+        body.querySelectorAll(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`).forEach((match) => {
+          match.classList.add('lm-library-card-hovered');
+        });
+      });
+
+      row.addEventListener('mouseleave', (event) => {
+        const key = row.dataset.modelKey;
+        if (!key) return;
+        const related = event.relatedTarget;
+        if (related && related.closest && related.closest(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`)) {
+          return;
+        }
+        body.querySelectorAll(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`).forEach((match) => {
+          match.classList.remove('lm-library-card-hovered');
+        });
+      });
+    });
+  }
+
+  function renderLibraryCompactCards({
+    visibleRows,
+    visibleDownloads,
+    visibleNameCounts,
+    pinned,
+  }) {
+    const container = document.getElementById('modelsMobileCards');
+    if (!container) return;
+
+    const cardHtml = window.DFlashModelCard?.compactLibraryCardHtml;
+    if (!cardHtml) return;
+
+    container.innerHTML = [
+      ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
+      ...visibleRows.map((model) => {
+        const key = modelKey(model);
+        const selected = key === selectedKey;
+        const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
+        const actionHtml = libraryMobileActionHtml(model);
+        const size = formatModelDiskSize(model);
+        return cardHtml({
+          title: modelTitleLine(model),
+          labelsHtml: libraryMobileCardLabels(model),
+          detailsHtml: '',
+          diskLabel: size,
+          actionHtml,
+          selected,
+          external: isExternalModel(model),
+          loadedOnGpu: isStackLoadedOnGpu(model),
+          dataModelKey: key,
+          dataModelId: model.id || '',
+          dataServerId: model.server_id || '',
+        });
+      }),
+    ].join('');
+
+    bindModelRowInteractions(container);
   }
 
   function renderTable(filterText, { force = false } = {}) {
@@ -1738,6 +2043,11 @@
         const bStack = STACK_SORT[b.stack_status || (b.loadable ? 'ready' : 'unregistered')] ?? 3;
         if (aStack !== bStack) return aStack - bStack;
       }
+      if (typeFilter === 'all' && modelTypeFilter === 'all') {
+        const aTier = libraryCatalogDeferSortTier(a);
+        const bTier = libraryCatalogDeferSortTier(b);
+        if (aTier !== bTier) return aTier - bTier;
+      }
       return compareModelLabels(a, b);
     });
     // Hide redundant external copies when the Console already has the model.
@@ -1751,10 +2061,17 @@
       visibleNameCounts.set(file, (visibleNameCounts.get(file) || 0) + 1);
     }
 
+    const compact = isLibraryCompactLayout();
+    syncLibraryLayoutMode(compact);
+
     if (!visibleRows.length && !(typeFilter === 'loaded' ? [] : visibleDownloads).length) {
       if (catalogLoading) {
         // Catalog is still being fetched — show progress, not an empty state.
         body.innerHTML = loadingRowHtml();
+        if (compact) {
+          const cards = document.getElementById('modelsMobileCards');
+          if (cards) cards.innerHTML = '<div class="lm-models-empty">Loading your model library…</div>';
+        }
         return;
       }
       const emptyLabel = modelTypeFilter === 'hf-accelerator'
@@ -1778,37 +2095,50 @@
           : typeFilter === 'loaded'
             ? 'No models are loaded on the GPU right now. Use Load on a model row or the Engines tab.'
             : 'No models match this filter.';
-      body.innerHTML = `<tr><td colspan="7" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="8" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
+      if (compact) {
+        const cards = document.getElementById('modelsMobileCards');
+        if (cards) cards.innerHTML = `<div class="lm-models-empty">${escapeHtml(emptyLabel)}</div>`;
+      }
+      return;
+    }
+
+    if (compact) {
+      renderLibraryCompactCards({
+        visibleRows,
+        visibleDownloads,
+        visibleNameCounts,
+        pinned,
+      });
       return;
     }
 
     body.innerHTML = [
       ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
-      ...visibleRows.map((model) => {
+      ...visibleRows.flatMap((model) => {
       const key = modelKey(model);
       const selected = key === selectedKey;
-      const pinnedClass = pinned.has(key) ? ' pinned' : '';
       const pinMark = pinned.has(key) ? '<span class="lm-model-pin" title="Pinned">📌</span>' : '';
       const loadBtn = stackActionButton(model);
       const actionStack = loadBtn.includes('lm-action-stack');
       const actionStackSetup = loadBtn.includes('is-setup-row');
       const size = formatModelDiskSize(model);
       const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
-      return `
-        <tr class="${modelRowClassName(model, { selected, pinned: pinned.has(key) })}${isExternalModel(model) ? ' external-model' : ''}" data-model-key="${escapeHtml(key)}" data-model-id="${escapeHtml(model.id || '')}" data-server-id="${escapeHtml(model.server_id || '')}">
-          <td class="lm-col-model">
-            ${loadedRibbon(model)}
-            <div class="lm-model-title-line"><span class="lm-model-title-text" title="${escapeHtml(modelTitleLine(model))}">${escapeHtml(modelTitleLine(model))}</span>${pinMark}</div>
-            <div class="lm-model-tags-line">${capTags(model, dupVisible)}</div>
-            ${window.DFlashModelCard?.detailsHtml?.(model) || `${modelPathHint(model)}${draftHint(model)}`}
-          </td>
-          <td class="lm-col-meta">${escapeHtml(model.arch || '—')}</td>
-          <td class="lm-col-meta">${escapeHtml(model.params || '—')}</td>
-          <td class="lm-col-meta">${modelSourceCell(model)}</td>
-          <td class="lm-col-meta">${escapeHtml(size)}</td>
-          <td class="lm-col-meta">${escapeHtml(model.modified || '—')}</td>
-          <td class="lm-col-action${actionStack ? ' has-action-stack' : ''}${actionStackSetup ? ' has-action-stack-setup' : ''}">${loadBtn}</td>
-        </tr>`;
+      const title = escapeHtml(modelTitleLine(model));
+      const handleBadges = capTags(model, dupVisible, { handleOnly: true });
+      return renderDesktopLibraryCardRows(model, {
+        key,
+        selected,
+        pinned: pinned.has(key),
+        pinMark,
+        loadBtn,
+        actionStack,
+        actionStackSetup,
+        size,
+        dupVisible,
+        title,
+        handleBadges,
+      });
     }),
     ].join('');
 
@@ -1820,7 +2150,14 @@
       actionHeader.classList.toggle('has-action-stack-setup', Boolean(anyActionStackSetup));
     }
 
-    body.querySelectorAll('.lm-model-row:not(.downloading-model)').forEach((row) => {
+    bindModelRowInteractions(body);
+  }
+
+  function bindModelRowInteractions(root) {
+    if (!root) return;
+    bindLibraryCardHover(root);
+    const rowSel = libraryRowSelector();
+    root.querySelectorAll(`${rowSel}:not(.downloading-model)`).forEach((row) => {
       row.addEventListener('click', (event) => {
         if (event.target.closest('[data-action="load-model"]')) return;
         if (event.target.closest('[data-action="load-llm"]')) return;
@@ -1842,76 +2179,84 @@
         const model = modelForRow(row);
         if (model) openContextMenu(event, model);
       });
+      if (row.classList.contains('lm-library-card')) {
+        row.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          if (event.target.closest('[data-action]')) return;
+          void selectModel(row.dataset.modelKey);
+        });
+      }
     });
-    body.querySelectorAll('[data-action="load-model"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="load-model"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void loadModel(model);
       });
     });
-    body.querySelectorAll('[data-engine-pick]').forEach((pick) => {
+    root.querySelectorAll('[data-engine-pick]').forEach((pick) => {
       pick.addEventListener('change', () => {
-        const model = modelForRow(pick.closest('.lm-model-row'));
+        const model = modelForRow(pick.closest(rowSel));
         const runtime = String(pick.value || '').toLowerCase();
         if (model && requiresFreeToken(model) && runtime !== 'freetoken') {
           toast(freeTokenRequirementMessage(model, runtime), false);
         }
       });
     });
-    body.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
         const jobId = btn.dataset.downloadJobId || btn.closest('[data-download-job-id]')?.dataset.downloadJobId;
         if (jobId) void window.DFlashDownloadQueue?.resumeDownloadJob?.(jobId);
       });
     });
-    body.querySelectorAll('[data-action="load-llm"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="load-llm"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void loadModel(model, { llmOnly: true });
       });
     });
-    body.querySelectorAll('[data-action="open-folder"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="open-folder"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void browseModel(model);
       });
     });
-    body.querySelectorAll('[data-action="browse-model"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="browse-model"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void browseModel(model);
       });
     });
-    body.querySelectorAll('[data-action="enable-stack"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="enable-stack"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void enableStack(model);
       });
     });
-    body.querySelectorAll('[data-action="auto-setup-stack"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="auto-setup-stack"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void finishStackSetup(model);
       });
     });
-    body.querySelectorAll('[data-action="setup-stack"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="setup-stack"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void setupStack(model);
       });
     });
-    body.querySelectorAll('[data-action="unload-model"]').forEach((btn) => {
+    root.querySelectorAll('[data-action="unload-model"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
-        const model = modelForRow(btn.closest('.lm-model-row'));
+        const model = modelForRow(btn.closest(rowSel));
         if (model) void unloadModel(model);
       });
     });
@@ -2108,7 +2453,17 @@
     });
   }
 
+  function isAuxiliaryGgufModel(model) {
+    const leaf = String(model?.filename || model?.path || '').split(/[\\/]/).pop().toLowerCase();
+    if (!leaf.endsWith('.gguf')) return false;
+    return leaf.includes('imatrix')
+      || leaf.startsWith('mmproj')
+      || leaf.includes('.mmproj')
+      || leaf.startsWith('mtp-');
+  }
+
   function isSuppressedLibraryModel(model) {
+    if (isAuxiliaryGgufModel(model)) return true;
     if (suppressedLibrary.keys.has(modelKey(model))) return true;
     const repo = String(model.hf_repo || '').trim().toLowerCase();
     if (repo && suppressedLibrary.keys.has(`hf:${repo}`)) return true;
@@ -2152,7 +2507,8 @@
 
     menu.innerHTML = `
       <button type="button" data-cmd="pin">${isPinned ? 'Unpin' : 'Pin'}</button>
-      <button type="button" data-cmd="copy-id">Copy identifier</button>
+      <button type="button" data-cmd="copy-id"${apiModelIdentifier(model) ? '' : ' disabled'} title="Engine id for API clients (gateway model field or /api/servers/…/v1)">Copy API identifier</button>
+      <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="Friendly title shown in the Model library">Copy display name</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="Download vision projector from Hugging Face and wire it to this model">Add vision support…</button>
@@ -2236,10 +2592,17 @@
       return;
     }
     if (cmd === 'copy-id') {
-      const id = copyableModelName(model);
+      const id = apiModelIdentifier(model);
       if (!id) return;
       await navigator.clipboard.writeText(id);
-      toast('Model name copied');
+      toast('API identifier copied');
+      return;
+    }
+    if (cmd === 'copy-name') {
+      const name = displayModelName(model);
+      if (!name) return;
+      await navigator.clipboard.writeText(name);
+      toast('Display name copied');
       return;
     }
     if (cmd === 'metadata') {
@@ -3081,6 +3444,13 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') hideContextMenu();
     });
+    let libraryLayoutTimer = null;
+    window.addEventListener('resize', () => {
+      window.clearTimeout(libraryLayoutTimer);
+      libraryLayoutTimer = window.setTimeout(() => {
+        renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+      }, 120);
+    });
   }
 
   function startPolling() {
@@ -3541,6 +3911,8 @@
   }
 
   window.DFlashModelsLive = {
+    apiModelIdentifier,
+    displayModelName,
     refresh,
     selectModel,
     loadModel,

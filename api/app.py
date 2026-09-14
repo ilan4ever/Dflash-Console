@@ -309,11 +309,31 @@ def _raise_if_pipeline_standby(cfg: dict[str, Any]) -> None:
         raise HTTPException(status_code=503, detail=engine_standby_http_error())
 
 
-def _raise_if_server_engine_off(server_id: str, cfg: dict[str, Any]) -> None:
-    from core.engine_state import engine_standby_http_error, get_engine_state
+def _arm_server_engine_for_api(server_id: str, cfg: dict[str, Any]) -> None:
+    """Persist engine on when an API client loads or chats — no manual toggle."""
+    from core.engine_state import note_engine_on
 
-    if not get_engine_state(server_id, cfg=cfg).get('engine_on'):
-        raise HTTPException(status_code=503, detail=engine_standby_http_error())
+    sid = str(server_id or '').strip()
+    if sid:
+        note_engine_on(sid)
+
+
+def _ensure_api_pipeline_armed(cfg: dict[str, Any], *, server_id: str | None = None) -> None:
+    """Arm at least one engine for catalog/runtime API calls (replaces global standby gate)."""
+    from core.engine_state import console_pipeline_active, engine_standby_http_error, note_engine_on
+    from core.gateway_routing import enabled_chat_servers
+
+    sid = str(server_id or '').strip()
+    if sid:
+        note_engine_on(sid)
+        return
+    if console_pipeline_active(cfg):
+        return
+    servers = enabled_chat_servers(cfg)
+    if servers:
+        note_engine_on(str(servers[0].get('id') or ''))
+        return
+    raise HTTPException(status_code=503, detail=engine_standby_http_error())
 
 
 @app.middleware('http')
@@ -503,6 +523,16 @@ def _start_background_tasks() -> None:
             logger.exception('download resume failed: %s', exc)
 
     threading.Thread(target=resume_downloads, daemon=True, name='hf-download-resume').start()
+
+    def gpu_relief_watchdog() -> None:
+        try:
+            from core.gpu_relief import start_gpu_relief_watchdog
+
+            start_gpu_relief_watchdog()
+        except Exception as exc:
+            logger.exception('gpu relief watchdog start failed: %s', exc)
+
+    gpu_relief_watchdog()
 
 
 def _release_gpu_on_shutdown() -> None:
@@ -1659,7 +1689,7 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
     from core.catalog_load import execute_catalog_load
 
     cfg = load_config()
-    _raise_if_pipeline_standby(cfg)
+    _ensure_api_pipeline_armed(cfg, server_id=body.server_id)
     result = execute_catalog_load(
         path=body.path,
         model_id=body.model_id,
@@ -2113,7 +2143,7 @@ def runtime_voices(runtime_id: str) -> dict[str, Any]:
 @app.post('/api/runtimes/{runtime_id}/load')
 def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
     cfg = load_config()
-    _raise_if_pipeline_standby(cfg)
+    _ensure_api_pipeline_armed(cfg)
     adapter = _require_runtime_adapter(runtime_id)
     load_fn = getattr(adapter, 'load', None)
     if not callable(load_fn):
@@ -2589,7 +2619,11 @@ def _grow_context_for_chat(
     configured_ctx = max(2048, int(server.get('context_size') or 8192))
     # Per-server hard limit: API requests may never grow the context beyond
     # this.  Falls back to the global context_max, then the default.
-    max_total = max(2048, int(server.get('context_max') or cfg.get('context_max') or 131072))
+    from core.model_presets import context_max_for_server
+
+    model_cap = context_max_for_server(server, cfg=cfg)
+    max_total = max(2048, int(server.get('context_max') or cfg.get('context_max') or model_cap))
+    max_total = min(max_total, model_cap)
     current_per_slot = _loaded_per_slot_context(server)
     per_slot = max(required, current_per_slot, configured_ctx // parallel)
     total = per_slot * parallel
@@ -2651,6 +2685,7 @@ def _vram_load_block_detail(check: dict[str, Any]) -> dict[str, Any]:
         'message': str(check.get('message') or 'insufficient VRAM'),
         'unload_first': check.get('unload_first') or [],
         'vram_free_gb': check.get('vram_free_gb'),
+        'gpu_required_gb': check.get('gpu_required_gb') or check.get('estimated_gb'),
         'level': check.get('level'),
     }
 
@@ -2946,7 +2981,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
-    _raise_if_server_engine_off(server_id, cfg)
+    _arm_server_engine_for_api(server_id, cfg)
     model_path = None
     model_id = None
     if body:
@@ -3198,9 +3233,14 @@ async def proxy_chat_completions(server_id: str, request: Request):
                     )
                 cfg = load_config()
                 server = _require_server(cfg, server_id)
-        required_context = (
+        from core.client_identity import chat_body_load_context_size, request_load_context_size
+
+        estimated_context = (
             estimate_request_context(body_json) if isinstance(body_json, dict) else 0
         )
+        header_context = request_load_context_size(request) or 0
+        body_context = chat_body_load_context_size(body_json) or 0
+        required_context = max(estimated_context or 0, header_context or 0, body_context or 0)
         live = _ensure_server_ready_for_chat(
             server_id,
             server,
@@ -3285,6 +3325,8 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 )
             try:
                 body_json['model'] = upstream_model_id
+                # Console-only load hint; llama-server OpenAI chat does not accept it.
+                body_json.pop('context_size', None)
                 raw = json.dumps(body_json).encode('utf-8')
             except Exception:
                 pass
@@ -3439,7 +3481,7 @@ def _ensure_server_ready_for_embed(
     from core.engine_state import note_engine_active_client
     from core.runtime import build_server_status
 
-    _raise_if_server_engine_off(server_id, cfg)
+    _arm_server_engine_for_api(server_id, cfg)
 
     def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
         deadline = time.time() + timeout_seconds

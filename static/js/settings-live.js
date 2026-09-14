@@ -890,7 +890,7 @@
     return {
       mcpServers: {},
       dflashConsole: {
-        note: 'MCP host is not active in DFlash Console yet. Point OpenAI-compatible clients at openai_base_url (the Console OpenAI gateway); send "model" = the engine id. Send header X-DFlash-Client: YourApp on load/chat so Engines shows who loaded each model.',
+        note: 'MCP host is not active in DFlash Console yet. For Cursor: Override OpenAI Base URL = openai_base_url below; model id from GET /v1/models (not engine id). dflash serve starts the Console only — no --model/--draft flags. Send X-DFlash-Client: YourApp when your client supports custom headers.',
         engines,
       },
     };

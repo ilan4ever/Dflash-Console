@@ -41,7 +41,10 @@ _CATALOG_REFRESH_LOOP_STARTED = False
 _HF_REPO_SIZE_CACHE: dict[str, tuple[float, float]] = {}
 _HF_REPO_SIZE_CACHE_TTL = 24 * 60 * 60
 
-_QUANT_RE = re.compile(r'Q\d[_A-Z0-9]+', re.I)
+_QUANT_RE = re.compile(
+    r'(?:^|[._-])(IQ\d+(?:_[A-Z0-9]+)+|Q\d+(?:_[A-Z0-9]+)+|BQ\d+(?:_[A-Z0-9]+)+|F16|F32|BF16)(?:[._-]|\.gguf|$)',
+    re.I,
+)
 _PARAM_RE = re.compile(r'(?<![0-9A-Fa-f])(\d+(?:\.\d+)?)\s*[Bb](?![0-9A-Fa-f])')
 _SPLIT_SHARD_RE = re.compile(r'^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})(?P<suffix>\.gguf)$', re.I)
 _WEIGHT_SHARD_RE = re.compile(
@@ -281,8 +284,13 @@ def _guess_params(name: str) -> str:
 
 
 def _guess_quant(name: str) -> str:
+    from core.display_names import _infer_quantization
+
+    _short, full = _infer_quantization(name)
+    if full:
+        return full
     match = _QUANT_RE.search(name)
-    return match.group(0).upper() if match else '—'
+    return match.group(1).upper() if match else '—'
 
 
 def _publisher(path: Path) -> str:
@@ -1050,10 +1058,14 @@ def _scan_gguf(
         return []
     rows: list[dict[str, Any]] = []
     try:
+        from core.hf_local_match import is_auxiliary_gguf_filename
+
         for path in root.rglob('*.gguf'):
             if len(rows) >= max_files:
                 break
             name = path.name
+            if is_auxiliary_gguf_filename(name):
+                continue
             row = {
                 'id': path.stem.replace('_', '-').lower()[:120],
                 'path': str(path),
@@ -1075,6 +1087,7 @@ def _scan_gguf(
                 _append_reasoning_capability(caps, name)
             row['reasoning'] = 'reasoning' in caps
             _annotate_projector_row(row)
+            row['context_max'] = _context_max_for_path(path)
             annotate_discovered_from(
                 row,
                 source=source,
@@ -1420,12 +1433,14 @@ def _server_catalog_row(
     path = Path(str(target.get('path') or '')) if target else None
     caps = ['instruct']
     profile = str(server.get('profile') or '')
-    from core.model_presets import profile_requires_draft
+    from core.model_presets import effective_server_profile, profile_requires_draft
 
-    requires_draft = profile_requires_draft(profile)
+    effective_profile = effective_server_profile(server, cfg=cfg)
+    configured_requires_draft = profile_requires_draft(profile)
+    requires_draft = profile_requires_draft(effective_profile)
     if draft:
         caps.append('dflash')
-    elif requires_draft:
+    elif configured_requires_draft:
         # Keep incomplete legacy DFlash profiles identifiable, but do not
         # pretend they are ready models.  The loadable flag below is the
         # authoritative readiness signal used by the Playground.
@@ -1449,7 +1464,7 @@ def _server_catalog_row(
     has_dflash = 'dflash' in caps
     target_ready = bool(path and path.is_file())
     draft_ready = bool(draft_path_obj and draft_path_obj.is_file())
-    if has_dflash:
+    if requires_draft:
         loadable = is_enabled and target_ready and draft_ready
     else:
         loadable = is_enabled and target_ready
@@ -1489,7 +1504,7 @@ def _server_catalog_row(
         'source': 'dflash-profile',
         'capabilities': caps,
         'reasoning': 'reasoning' in caps,
-        'context_max': _context_max_for_profile(str(server.get('profile') or '')),
+        'context_max': _context_max_for_path(path if path and path.is_file() else None),
         'draft_label': draft.get('label') if draft else '',
         'draft_path': draft_path,
         'draft_filename': draft_path_obj.name if draft_path_obj else '',
@@ -1560,7 +1575,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
         'source': source,
         'capabilities': caps,
         'reasoning': 'reasoning' in caps,
-        'context_max': 131072,
+        'context_max': _context_max_for_path(path),
         'draft_label': target.get('draft_filename') or '',
         'draft_path': draft_path,
         'draft_filename': draft_path_obj.name if draft_path_obj else str(target.get('draft_filename') or ''),
@@ -2163,16 +2178,20 @@ def _mark_stack_path_access(models: list[dict[str, Any]], config: dict[str, Any]
             row['stack_path_allowed'] = False
 
 
-def _context_max_for_profile(profile: str) -> int:
-    if profile in ('gemma-chat', 'gemma-ar', 'gemma-12-ar', 'gemma-12-dflash'):
-        return 262144
-    if profile in ('qwen-dflash', 'qwen-ar'):
-        return 32768
-    if profile == 'bonsai-spec':
-        return 16384
-    if profile == 'bonsai':
-        return 8192
-    return 131072
+def _context_max_for_path(path: str | Path | None) -> int:
+    from core.model_presets import context_max_for_gguf_path
+
+    text = str(path or '').strip()
+    if text:
+        try:
+            resolved = Path(text).expanduser()
+            if resolved.is_file():
+                return context_max_for_gguf_path(resolved)
+        except OSError:
+            pass
+    from core.model_presets import DEFAULT_MODEL_CONTEXT_MAX
+
+    return DEFAULT_MODEL_CONTEXT_MAX
 
 
 def _profile_catalog(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -2218,6 +2237,21 @@ def _build_models_payload(
         _annotate_projector_row(row)
         _annotate_accelerator_only(row)
     models = _collapse_logical_duplicates(models)
+    from core.hf_local_match import is_auxiliary_gguf_filename
+
+    models = [
+        row for row in models
+        if not is_auxiliary_gguf_filename(str(row.get('filename') or Path(str(row.get('path') or '')).name))
+    ]
+    from core.display_names import label_with_quant_suffix
+
+    for row in models:
+        row['label'] = label_with_quant_suffix(
+            str(row.get('label') or row.get('filename') or row.get('id') or ''),
+            quant=str(row.get('quant') or ''),
+            filename=str(row.get('filename') or ''),
+            path=str(row.get('path') or ''),
+        )
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))
@@ -2398,7 +2432,7 @@ def list_local_models(
                 caps.append('llm')
             row['capabilities'] = caps
             row['loadable'] = not bool(row.get('incomplete'))
-        row['context_max'] = 131072
+        row['context_max'] = _context_max_for_path(row.get('path'))
         row['context_size'] = 8192
         row['load_settings'] = {}
         row['inference_settings'] = {}

@@ -219,6 +219,46 @@ def test_write_server_preset_includes_mmproj_for_gemma_chat_31b(tmp_path, monkey
     assert 'gemma-chat' in SPECULATIVE_PROFILES
 
 
+def test_write_server_preset_falls_back_to_ar_when_draft_incompatible(tmp_path, monkeypatch):
+    target = tmp_path / 'qwen.gguf'
+    draft = tmp_path / 'wrong-family-dflash.gguf'
+    target.write_bytes(b'target')
+    draft.write_bytes(b'draft')
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', tmp_path / 'presets')
+    monkeypatch.setattr(
+        'core.model_presets._dflash_pair_preflight',
+        lambda target_path, draft_path: {'compatible': False, 'validated': False},
+    )
+    path = write_server_preset(
+        {
+            'id': 'qwen-incompatible-draft',
+            'model_id': 'qwen-target',
+            'profile': 'qwen-dflash',
+            'target_path': str(target),
+            'draft_path': str(draft),
+        },
+    )
+    text = path.read_text(encoding='utf-8')
+    assert 'model-draft' not in text
+
+
+def test_write_server_preset_falls_back_to_ar_without_draft(tmp_path, monkeypatch):
+    target = tmp_path / 'qwen.gguf'
+    target.write_bytes(b'target')
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', tmp_path / 'presets')
+    path = write_server_preset(
+        {
+            'id': 'qwen-ar-fallback',
+            'model_id': 'qwen-target',
+            'profile': 'qwen-dflash',
+            'target_path': str(target),
+            'draft_path': str(tmp_path / 'missing-draft.gguf'),
+        },
+    )
+    text = path.read_text(encoding='utf-8')
+    assert 'model-draft' not in text
+
+
 def test_write_server_preset_cannot_disable_required_draft(tmp_path, monkeypatch):
     target = tmp_path / 'target.gguf'
     draft = tmp_path / 'target-DFlash2.gguf'

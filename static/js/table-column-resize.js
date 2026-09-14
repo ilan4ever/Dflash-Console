@@ -16,14 +16,20 @@
     return 36;
   }
 
+  function resolveWidths(headers, saved) {
+    return headers.map((th) => {
+      const id = th.dataset.colId || '';
+      const value = saved?.[id];
+      const min = colMinWidth(th);
+      if (Number.isFinite(value) && value >= min) return value;
+      return defaultWidthFor(th);
+    });
+  }
+
   function loadWidths(storageKey, headers) {
     const saved = layout()?.getTableColumns?.(storageKey);
-    if (!saved) return null;
-    return headers.map((th, index) => {
-      const id = th.dataset.colId || String(index);
-      const value = saved[id];
-      return Number.isFinite(value) && value > 0 ? value : null;
-    });
+    if (!saved || typeof saved !== 'object') return null;
+    return resolveWidths(headers, saved);
   }
 
   function saveWidths(storageKey, headers, widths) {
@@ -32,7 +38,9 @@
       const id = th.dataset.colId || String(index);
       payload[id] = Math.round(widths[index]);
     });
-    layout()?.setTableColumns?.(storageKey, payload);
+    const ui = layout();
+    ui?.setTableColumns?.(storageKey, payload);
+    void ui?.flush?.();
   }
 
   function applyWidths(colEls, widths) {
@@ -52,14 +60,6 @@
     if (th.dataset.colId === 'source') return 84;
     if (th.dataset.colId === 'updated') return 48;
     return 44;
-  }
-
-  function widthsUsable(widths, headers) {
-    if (!widths || widths.length !== headers.length) return false;
-    return widths.every((value, index) => (
-      Number.isFinite(value)
-      && value >= colMinWidth(headers[index])
-    ));
   }
 
   function queueRemeasure(table, headers, colEls, storageKey) {
@@ -141,8 +141,20 @@
     return next;
   }
 
+  function isCompactTableLayout() {
+    if (window.matchMedia('(max-width: 899px)').matches) return true;
+    const main = document.querySelector('.lm-main');
+    const mainWidth = main?.getBoundingClientRect().width ?? 0;
+    return mainWidth > 0 && mainWidth < 680;
+  }
+
   function initTable(table) {
-    if (!table || table.dataset.colsReady === '1') return;
+    if (!table) return;
+    if (isCompactTableLayout()) {
+      table.classList.remove('lm-resizable-table');
+      table.dataset.colsReady = '1';
+      return;
+    }
 
     const headers = Array.from(table.querySelectorAll('thead th'));
     if (headers.length < 2) return;
@@ -151,15 +163,18 @@
     table.classList.add('lm-resizable-table');
 
     let colgroup = table.querySelector('colgroup');
-    if (!colgroup) {
+    if (!colgroup || colgroup.children.length !== headers.length) {
       colgroup = document.createElement('colgroup');
       headers.forEach(() => colgroup.appendChild(document.createElement('col')));
       table.insertBefore(colgroup, table.firstChild);
+      table.dataset.colsReady = '0';
     }
+    if (table.dataset.colsReady === '1') return;
+
     const colEls = Array.from(colgroup.children);
 
     let widths = loadWidths(storageKey, headers);
-    if (!widthsUsable(widths, headers)) {
+    if (!widths) {
       if (table.getBoundingClientRect().width > 0) {
         widths = measureWidths(table, headers);
       } else {
@@ -243,6 +258,23 @@
   } else {
     boot();
   }
+
+  window.addEventListener('resize', () => {
+    document.querySelectorAll('[data-resizable-columns]').forEach((table) => {
+      if (isCompactTableLayout()) {
+        table.classList.remove('lm-resizable-table');
+        table.dataset.colsReady = '1';
+        table.querySelectorAll('col').forEach((col) => {
+          col.style.width = '';
+        });
+        return;
+      }
+      if (!table.classList.contains('lm-resizable-table')) {
+        table.dataset.colsReady = '0';
+        initTable(table);
+      }
+    });
+  });
 
   window.DFlashTableColumnResize = { init: initTable, initAll };
 })();

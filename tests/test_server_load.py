@@ -109,7 +109,7 @@ def test_server_load_still_blocks_different_model_without_vram(monkeypatch):
         raise AssertionError('expected HTTPException')
 
 
-def test_dflash_missing_draft_returns_repair_before_already_loaded(monkeypatch, tmp_path):
+def test_dflash_missing_draft_loads_as_ar_instead_of_repair(monkeypatch, tmp_path):
     target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
     target.write_bytes(b'target')
     cfg = _cfg()
@@ -124,16 +124,20 @@ def test_dflash_missing_draft_returns_repair_before_already_loaded(monkeypatch, 
         'core.server_boot.checkpoint_already_loaded',
         lambda *args, **kwargs: checkpoint_called.update(value=True) or None,
     )
+    monkeypatch.setattr(
+        'core.server_boot.find_target_loaded_elsewhere',
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        'core.memory_guardrails.assess_load',
+        lambda *args, **kwargs: {'level': 'ok'},
+    )
+    monkeypatch.setattr(app, 'load_server_checkpoint', lambda *args, **kwargs: {'success': True, 'ar_fallback': True, 'port': 8096})
+    monkeypatch.setattr('core.engine_state.note_engine_loaded', lambda *args, **kwargs: None)
 
-    try:
-        app.server_load('qwen-engine', request=type('Req', (), {'headers': {}})())
-    except HTTPException as exc:
-        assert exc.status_code == 409
-        assert exc.detail['reason_code'] == 'draft-required'
-        assert exc.detail['repair']['action'] == 'attach_draft'
-    else:
-        raise AssertionError('expected DFlash repair response')
-    assert checkpoint_called['value'] is False
+    result = app.server_load('qwen-engine', request=type('Req', (), {'headers': {}})())
+    assert result['success'] is True
+    assert checkpoint_called['value'] is True
 
 
 def test_dflash_already_loaded_is_reused_only_with_live_draft(monkeypatch):

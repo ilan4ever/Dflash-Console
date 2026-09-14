@@ -42,6 +42,123 @@ def profile_requires_draft(profile: str | None) -> bool:
     )
 
 
+def server_draft_path_on_disk(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
+    """Return a draft GGUF path when the configured stack has one on disk."""
+    draft_path = str(server.get('draft_path') or '').strip()
+    if draft_path and Path(draft_path).expanduser().is_file():
+        return str(Path(draft_path).expanduser().resolve())
+    if not profile_requires_draft(server.get('profile')):
+        return ''
+    try:
+        stack = resolve_model_stack(server, cfg=cfg)
+    except (OSError, ValueError):
+        stack = []
+    draft = next(
+        (row for row in stack if str(row.get('role') or '').startswith('draft')),
+        {},
+    )
+    path = str(draft.get('path') or '').strip()
+    if path and Path(path).expanduser().is_file():
+        return str(Path(path).expanduser().resolve())
+    return ''
+
+
+DEFAULT_MODEL_CONTEXT_MAX = 131072
+
+
+def context_max_for_gguf_path(path: str | Path) -> int:
+    """Maximum context tokens the GGUF model reports (or a conservative identity guess)."""
+    from core.gguf_meta import read_gguf_context_length
+
+    reported = read_gguf_context_length(path)
+    if reported and reported >= 2048:
+        return int(reported)
+    return DEFAULT_MODEL_CONTEXT_MAX
+
+
+def context_max_for_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> int:
+    """Context ceiling for this engine's on-disk target model."""
+    target = server_target_path_on_disk(server, cfg=cfg)
+    if target:
+        return context_max_for_gguf_path(target)
+    path = str(server.get('path') or server.get('adhoc_model_path') or '').strip()
+    if path and Path(path).expanduser().is_file():
+        return context_max_for_gguf_path(path)
+    return DEFAULT_MODEL_CONTEXT_MAX
+
+
+def server_target_path_on_disk(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
+    """Return the target GGUF path when it exists on disk."""
+    target_path = str(server.get('target_path') or '').strip()
+    if target_path and Path(target_path).expanduser().is_file():
+        return str(Path(target_path).expanduser().resolve())
+    try:
+        stack = resolve_model_stack(server, cfg=cfg)
+    except (OSError, ValueError):
+        stack = []
+    target = next((row for row in stack if row.get('role') == 'target'), {})
+    path = str(target.get('path') or '').strip()
+    if path and Path(path).expanduser().is_file():
+        return str(Path(path).expanduser().resolve())
+    return ''
+
+
+def _dflash_pair_preflight(
+    target: str,
+    draft: str,
+) -> dict[str, Any] | None:
+    if not target or not draft:
+        return None
+    from core.stack_match import preflight_dflash_pair
+
+    return preflight_dflash_pair(Path(target), Path(draft))
+
+
+def server_dflash_draft_usable(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
+    """True when a draft file can be attached without blocking load (including unverified fixtures)."""
+    if not profile_requires_draft(server.get('profile')):
+        return False
+    target = server_target_path_on_disk(server, cfg=cfg)
+    draft = server_draft_path_on_disk(server, cfg=cfg)
+    preflight = _dflash_pair_preflight(target, draft)
+    return bool(preflight and preflight.get('compatible'))
+
+
+def server_dflash_stack_ready(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
+    """True only when a compatible, metadata-validated DFlash draft is on disk."""
+    if not profile_requires_draft(server.get('profile')):
+        return False
+    target = server_target_path_on_disk(server, cfg=cfg)
+    draft = server_draft_path_on_disk(server, cfg=cfg)
+    preflight = _dflash_pair_preflight(target, draft)
+    return bool(preflight and preflight.get('compatible') and preflight.get('validated'))
+
+
+def ar_fallback_profile(profile: str | None) -> str:
+    lowered = str(profile or '').strip().lower()
+    if lowered == 'qwen-dflash':
+        return 'qwen-ar'
+    if lowered == 'gemma-12-dflash':
+        return 'gemma-12-ar'
+    if lowered == 'gemma-chat':
+        return 'gemma-ar'
+    if lowered == 'bonsai-spec':
+        return 'bonsai'
+    if profile_requires_draft(lowered):
+        return 'generic-ar'
+    return str(profile or 'generic-ar').strip() or 'generic-ar'
+
+
+def effective_server_profile(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
+    """Profile used for load/preset when a DFlash draft cannot load — fall back to AR."""
+    profile = str(server.get('profile') or infer_profile_from_path(server.get('target_path') or '')).strip()
+    if not profile_requires_draft(profile):
+        return profile
+    if server_dflash_draft_usable(server, cfg=cfg):
+        return profile
+    return ar_fallback_profile(profile)
+
+
 def _kv_offload_enabled(server: dict[str, Any], hardware: dict[str, Any]) -> bool:
     raw = server.get('load_settings')
     if isinstance(raw, dict) and 'kv_offload' in raw:
@@ -102,7 +219,7 @@ def write_server_preset(
         model_id or server.get('model_id'),
         target_path or server.get('target_path') or server.get('adhoc_model_path'),
     )
-    preset_profile = str(profile or server.get('profile') or 'gemma-chat').strip()
+    preset_profile = str(profile or effective_server_profile(server, cfg=cfg) or 'gemma-chat').strip()
     if not server_id or not preset_model_id:
         raise ValueError('server id and model_id required')
 
@@ -130,6 +247,8 @@ def write_server_preset(
     if target_path_resolved and not Path(target_path_resolved).expanduser().is_file():
         target_path_resolved = ''
     if draft_path_resolved and not Path(draft_path_resolved).expanduser().is_file():
+        draft_path_resolved = ''
+    if not profile_requires_draft(preset_profile):
         draft_path_resolved = ''
     if target_path_resolved:
         target = {
@@ -167,17 +286,27 @@ def write_server_preset(
     if not target or not target.get('path'):
         raise ValueError(f'target model path missing for profile {preset_profile}')
 
+    configured_profile = str(server.get('profile') or preset_profile).strip()
+    if draft and str(draft.get('path') or '').strip():
+        pair = _dflash_pair_preflight(str(target.get('path') or ''), str(draft.get('path') or ''))
+        if not pair or not pair.get('compatible'):
+            draft = None
+
     if use_draft is False:
+        if profile_requires_draft(preset_profile) and server_dflash_draft_usable(server, cfg=cfg):
+            raise ValueError(
+                f'DFlash profile {configured_profile} cannot disable its required draft accelerator.'
+            )
         draft = None
 
+    if not draft and profile_requires_draft(preset_profile):
+        preset_profile = ar_fallback_profile(configured_profile)
+        cache_k, cache_v = PROFILE_CACHE_TYPES.get(preset_profile, ('q4_0', 'q4_0'))
+
     if profile_requires_draft(preset_profile):
-        if use_draft is False:
-            raise ValueError(
-                f'DFlash profile {preset_profile} cannot disable its required draft accelerator.'
-            )
         if not draft or not str(draft.get('path') or '').strip():
             raise ValueError(
-                f'DFlash profile {preset_profile} requires a target model and a draft accelerator.'
+                f'DFlash profile {configured_profile} requires a target model and a draft accelerator.'
             )
         if not Path(str(draft['path'])).expanduser().is_file():
             raise ValueError(
@@ -242,6 +371,18 @@ def write_server_preset(
     path = preset_path_for(server_id)
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return path
+
+
+def clamp_server_context_fields(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Clamp saved context fields to the target model's reported maximum."""
+    cap = context_max_for_server(server, cfg=cfg)
+    out = dict(server)
+    ctx_max = max(2048, int(out.get('context_max') or cap))
+    out['context_max'] = min(ctx_max, cap)
+    ctx_size = max(2048, int(out.get('context_size') or 8192))
+    out['context_size'] = min(ctx_size, out['context_max'])
+    out['model_context_max'] = cap
+    return out
 
 
 def gpu_layers_max_for(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> int:

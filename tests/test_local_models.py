@@ -748,6 +748,17 @@ def test_scanned_gguf_reasoning_capability(tmp_path: Path):
     assert by_name['nomic-embed-text-v1.5.gguf']['reasoning'] is False
 
 
+def test_scanned_gguf_skips_imatrix_sidecar(tmp_path: Path):
+    from core.local_models import _scan_gguf
+
+    root = tmp_path / 'models' / 'repo'
+    root.mkdir(parents=True)
+    (root / 'imatrix-qwen3.8-27b.gguf').write_bytes(b'gguf' * 100)
+    (root / 'Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf').write_bytes(b'gguf' * 100)
+    rows = _scan_gguf(root, source='library')
+    assert [row['filename'] for row in rows] == ['Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf']
+
+
 def test_scanned_gguf_is_loadable(tmp_path: Path):
     from core.local_models import _scan_gguf
 

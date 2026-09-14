@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from core.config import ROOT, load_config, normalize_download_settings
+from core.config import PACKAGE_ROOT, ROOT, load_config, normalize_download_settings
 from core.dflash_generation import dflash_generation_label, repo_dflash_generation
 from core.model_paths import allowed_model_roots, get_download_dir, get_library_by_id
 
@@ -497,13 +497,14 @@ def _model_files(siblings: list[Any] | None, *, gguf_only: bool = True) -> list[
         if not name or not any(lower.endswith(ext) for ext in allowed):
             continue
         size = _entry_size_bytes(entry)
-        from core.hf_model_fit import bytes_to_size_gb
+        from core.hf_model_fit import bytes_to_hf_size_label, bytes_to_size_gb
 
         size_gb = bytes_to_size_gb(size)
         files.append({
             'filename': name,
             'size_bytes': size if isinstance(size, int) and size > 0 else None,
             'size_gb': size_gb,
+            'size_label': bytes_to_hf_size_label(size) if size else '',
             'label': name.split('/')[-1],
             'format': Path(name).suffix.lower().lstrip('.') or 'file',
         })
@@ -783,6 +784,24 @@ def _siblings_with_sizes(siblings: list[Any] | None, tree: list[dict[str, Any]] 
     return merged
 
 
+def _siblings_for_download_list(
+    repo: str,
+    siblings: list[Any] | None,
+    *,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
+    """Ensure GGUF/download siblings include on-disk sizes for catalog quant labels."""
+    rows = [entry for entry in (siblings or []) if isinstance(entry, dict)]
+    if not rows:
+        return rows
+    merged = _siblings_with_sizes(rows, [])
+    if _siblings_have_file_sizes(merged):
+        return merged
+    tree = _resolve_repo_tree(repo, rows, deadline=deadline)
+    enriched = _siblings_with_sizes(rows, tree)
+    return enriched if enriched else merged
+
+
 def _quant_rank(filename: str) -> int:
     """Lower rank = better default download. Prefer Q4_K_M, then nearby Q4/Q5 quants."""
     lower = str(filename or '').lower()
@@ -895,7 +914,7 @@ def build_download_options(files: list[dict[str, Any]] | None) -> list[dict[str,
     """Collapse shard groups into download rows with summed on-disk totals."""
     from collections import defaultdict
 
-    from core.hf_model_fit import _SHARD_RE, _shard_group_key, bytes_to_size_gb
+    from core.hf_model_fit import _SHARD_RE, _shard_group_key, bytes_to_hf_size_label, bytes_to_size_gb
 
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     singles: list[dict[str, Any]] = []
@@ -934,6 +953,7 @@ def build_download_options(files: list[dict[str, Any]] | None) -> list[dict[str,
             'file_count': file_count,
             'size_bytes': total_bytes if total_bytes > 0 else None,
             'size_gb': bytes_to_size_gb(total_bytes) if total_bytes > 0 else None,
+            'size_label': bytes_to_hf_size_label(total_bytes) if total_bytes > 0 else '',
             'format': fmt,
             'incomplete': incomplete,
         })
@@ -2383,10 +2403,22 @@ def get_model_files(repo_id: str, *, category: str = 'all', timeout: float = 100
     repo = str(repo_id or '').strip().strip('/')
     if not repo or '/' not in repo:
         return {'success': False, 'error': 'invalid repo id'}
+    budget = max(0.5, float(timeout))
+    size_deadline = time.monotonic() + min(14.0, budget)
+
+    def _finalize(siblings: list[Any] | None) -> dict[str, Any]:
+        rows = list(siblings or [])
+        if not rows:
+            _schedule_siblings_background(repo)
+            return _files_payload(repo, [], category=category, pending=True)
+        enriched = _siblings_for_download_list(repo, rows, deadline=size_deadline)
+        if enriched:
+            _store_siblings(repo, enriched)
+        return _files_payload(repo, enriched or rows, category=category, pending=False)
+
     cached = _cached_siblings(repo)
     if cached:
-        return _files_payload(repo, cached, category=category, pending=False)
-    budget = max(0.5, float(timeout))
+        return _finalize(cached)
     try:
         siblings = _run_with_timeout(
             lambda: _siblings_from_hub(repo),
@@ -2400,10 +2432,7 @@ def get_model_files(repo_id: str, *, category: str = 'all', timeout: float = 100
         payload = _files_payload(repo, [], category=category, pending=True)
         payload['error'] = str(exc)
         return payload
-    if not siblings:
-        _schedule_siblings_background(repo)
-        return _files_payload(repo, [], category=category, pending=True)
-    return _files_payload(repo, siblings, category=category, pending=False)
+    return _finalize(siblings)
 
 
 def _fetch_detail_sources(repo: str, url: str, hub_timeout: float) -> tuple[Any, Exception | None, str, bool]:
@@ -2480,8 +2509,8 @@ def get_model_detail(
             blobs = []
         if blobs:
             siblings = _siblings_with_sizes(siblings, _blob_tree_from_siblings(blobs))
-    else:
-        siblings = _siblings_with_sizes(siblings, [])
+    size_deadline = time.monotonic() + min(12.0, float(hub_timeout) + 2.0)
+    siblings = _siblings_for_download_list(repo, siblings, deadline=size_deadline)
     if siblings:
         _store_siblings(repo, siblings)
     gguf_files = _gguf_files(siblings)
@@ -3431,17 +3460,39 @@ def _merge_disk_download_history(*, force: bool = False) -> int:
     return added
 
 
-def _ensure_download_history_loaded() -> None:
-    global _history_loaded
-    if _history_loaded:
-        return
-    _history_loaded = True
-    if not _HISTORY_PATH.is_file():
-        return
+def _supplemental_history_paths() -> list[Path]:
+    """Other Console data roots may hold HF download history (split Electron install)."""
+    from core.config import default_user_data_root
+
+    paths: list[Path] = []
     try:
-        payload = json.loads(_HISTORY_PATH.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        return
+        primary = _HISTORY_PATH.resolve()
+    except OSError:
+        primary = _HISTORY_PATH
+    candidates: list[Path] = [
+        PACKAGE_ROOT / 'logs' / 'hf-download-history.json',
+        default_user_data_root() / 'logs' / 'hf-download-history.json',
+    ]
+    try:
+        cfg = load_config()
+        dflash_root = str(cfg.get('dflash_root') or '').strip()
+        if dflash_root:
+            candidates.append(Path(dflash_root).expanduser() / 'logs' / 'hf-download-history.json')
+    except (OSError, TypeError, ValueError):
+        pass
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved == primary or not resolved.is_file():
+            continue
+        if resolved not in paths:
+            paths.append(resolved)
+    return paths
+
+
+def _ingest_history_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         return
     cleared = payload.get('cleared_ids')
@@ -3460,6 +3511,23 @@ def _ensure_download_history_loaded() -> None:
             if str(row.get('status') or '') == 'downloading':
                 continue
             _download_jobs[job_id] = dict(row)
+
+
+def _ensure_download_history_loaded() -> None:
+    global _history_loaded
+    if _history_loaded:
+        return
+    _history_loaded = True
+    if _HISTORY_PATH.is_file():
+        try:
+            _ingest_history_payload(json.loads(_HISTORY_PATH.read_text(encoding='utf-8')))
+        except (OSError, json.JSONDecodeError):
+            pass
+    for alt_path in _supplemental_history_paths():
+        try:
+            _ingest_history_payload(json.loads(alt_path.read_text(encoding='utf-8')))
+        except (OSError, json.JSONDecodeError):
+            continue
 
 
 def _save_download_history() -> None:

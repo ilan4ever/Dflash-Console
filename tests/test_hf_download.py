@@ -174,8 +174,9 @@ def test_disk_models_fill_last_downloads(tmp_path):
     assert again['count'] == 0
 
 
-def test_console_only_downloads_exclude_disk_scan(tmp_path):
+def test_console_only_downloads_exclude_disk_scan(tmp_path, monkeypatch):
     _reset_download_state(tmp_path)
+    monkeypatch.setattr(hf, '_supplemental_history_paths', lambda: [])
     model = tmp_path / 'unsloth' / 'Qwen3-8B-GGUF' / 'qwen.gguf'
     model.parent.mkdir(parents=True)
     model.write_bytes(b'0' * 20_000)
@@ -191,6 +192,25 @@ def test_console_only_downloads_exclude_disk_scan(tmp_path):
     assert listed['jobs'][0]['id'] == 'console-1'
     with_disk = list_download_jobs(discover=True, console_only=False)
     assert with_disk['count'] == 2
+
+
+def test_supplemental_history_merges_console_jobs(tmp_path, monkeypatch):
+    _reset_download_state(tmp_path)
+    primary = tmp_path / 'hf-download-history.json'
+    supplemental = tmp_path / 'alt-history.json'
+    primary.write_text(
+        '{"version": 2, "cleared_ids": [], "jobs": [{"id": "disk-1", "origin": "disk", "kind": "disk", "status": "done", "repo_id": "org/disk", "filename": "a.gguf", "finished_at": 1.0}]}',
+        encoding='utf-8',
+    )
+    supplemental.write_text(
+        '{"version": 2, "cleared_ids": [], "jobs": [{"id": "hf-1", "status": "done", "repo_id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "filename": "weights.gguf", "finished_at": 2.0}]}',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(hf, '_supplemental_history_paths', lambda: [supplemental])
+    hf._history_loaded = False
+    listed = list_download_jobs(console_only=True)
+    assert listed['count'] == 1
+    assert listed['jobs'][0]['id'] == 'hf-1'
 
 
 def test_pending_downloads_persist_for_resume(tmp_path, monkeypatch):

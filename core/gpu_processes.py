@@ -360,13 +360,22 @@ def vram_gb_for_port(
     host: str = '127.0.0.1',
     *,
     vram_map: dict[int, float] | None = None,
+    gpu_index: int | None = None,
 ) -> float | None:
     pid = _pid_listening_on_port(port, host)
     if pid is None:
         return None
     if vram_map is None:
         vram_map = query_compute_vram_map()
-    return vram_map.get(int(pid))
+    vram = vram_map.get(int(pid))
+    if vram is not None and float(vram) > 0:
+        return float(vram)
+    try:
+        from core.gpu_process_memory_windows import lookup_windows_process_vram_gb
+
+        return lookup_windows_process_vram_gb(int(pid), int(gpu_index or 0))
+    except Exception:
+        return None
 
 
 def _size_gb_from_path(path: str) -> float | None:
