@@ -120,6 +120,7 @@
     if (HW_PANELS.has(panelId)) renderHardwareForPanel(panelId);
     if (GW_PANELS.has(panelId)) renderGatewayPanel();
     if (panelId === 'int-mcp') void renderMcpPanel();
+    if (panelId === 'int-api-providers') void renderApiProvidersPanel();
     if (panelId === 'rt-runtimes') void refreshRuntimesPanel();
     if (panelId === 'dl-components') void refreshComponentsPanel();
     if (panelId === 'app-settings') void window.DFlashAppSettingsLive?.render?.();
@@ -143,6 +144,7 @@
     if (HW_PANELS.has(panel)) renderHardwareForPanel(panel);
     if (GW_PANELS.has(panel)) renderGatewayPanel();
     if (panel === 'int-mcp') void renderMcpPanel();
+    if (panel === 'int-api-providers') void renderApiProvidersPanel();
     if (panel === 'rt-runtimes') void refreshRuntimesPanel();
     if (panel === 'dl-components') void refreshComponentsPanel();
     if (panel === 'app-settings') void window.DFlashAppSettingsLive?.render?.();
@@ -1983,6 +1985,785 @@
     pollTimer = null;
   }
 
+  let apiProvidersState = { providers: [], catalog: [], gatewayPort: 8001 };
+  let apiProviderWizard = null;
+
+  function providerStatusMeta(provider) {
+    if (!provider) return { text: 'Not configured', cls: 'gray' };
+    if (provider.ready) {
+      return {
+        text: provider.env_api_key_present ? 'Ready (env key)' : 'Ready',
+        cls: 'green',
+      };
+    }
+    if (provider.enabled && !provider.api_key_set && !provider.env_api_key_present) {
+      return { text: 'Enabled — add API key', cls: 'yellow' };
+    }
+    if (provider.api_key_set || provider.env_api_key_present) {
+      return { text: 'Key saved — enable to advertise', cls: 'yellow' };
+    }
+    return { text: 'Not configured', cls: 'gray' };
+  }
+
+  function shortBaseUrl(url) {
+    const text = String(url || '').trim();
+    if (text.length <= 48) return text;
+    return `${text.slice(0, 45)}…`;
+  }
+
+  const DEEPSEEK_MODEL_LABELS = {
+    'deepseek-flash': 'DeepSeek-V4.1-Flash',
+    'deepseek-v4-pro': 'DeepSeek-V4-Pro',
+  };
+
+  function defaultModelLabel(modelId) {
+    const token = String(modelId || '').trim();
+    if (!token) return '';
+    return DEEPSEEK_MODEL_LABELS[token.toLowerCase()] || token;
+  }
+
+  function resolveModelLabel(row) {
+    if (row && typeof row === 'object') {
+      const custom = String(row.label || '').trim();
+      if (custom) return custom;
+      return defaultModelLabel(row.id || '');
+    }
+    return defaultModelLabel(row);
+  }
+
+  function modelEntriesFromProvider(provider) {
+    const models = Array.isArray(provider?.models) ? provider.models : [];
+    if (!models.length && Array.isArray(provider?.available_models)) {
+      const active = new Set((provider.active_models || []).map((id) => String(id).toLowerCase()));
+      return provider.available_models.map((id) => ({
+        id: String(id),
+        active: active.has(String(id).toLowerCase()),
+        label: defaultModelLabel(id),
+      }));
+    }
+    return models.map((row) => {
+      if (row && typeof row === 'object') {
+        const entry = { id: String(row.id || ''), active: row.active === true };
+        if (row.manual === true) entry.manual = true;
+        const custom = String(row.label || '').trim();
+        entry.label = custom || defaultModelLabel(entry.id);
+        return entry;
+      }
+      const id = String(row || '');
+      return { id, active: true, label: defaultModelLabel(id) };
+    }).filter((row) => row.id);
+  }
+
+  function renderApiProviderCards() {
+    const listEl = document.getElementById('settingsApiProvidersList');
+    const gwEl = document.getElementById('settingsApiProvidersGatewayUrl');
+    if (gwEl) gwEl.textContent = `http://127.0.0.1:${Number(apiProvidersState.gatewayPort) || 8001}/v1`;
+    if (!listEl) return;
+    const providers = apiProvidersState.providers || [];
+    if (!providers.length) {
+      listEl.innerHTML = `
+        <div class="lm-api-providers-empty">
+          <p class="lm-setting-desc">No API providers yet. Click <strong>Add provider</strong> to connect DeepSeek, OpenAI, Groq, OpenRouter, or a custom OpenAI-compatible endpoint.</p>
+        </div>`;
+      return;
+    }
+    listEl.innerHTML = providers.map((provider) => {
+      const status = providerStatusMeta(provider);
+      const activeCount = Number(provider.active_model_count ?? (provider.active_models || []).length) || 0;
+      const totalKnown = (provider.available_models || modelEntriesFromProvider(provider).map((m) => m.id)).length;
+      const docs = provider.docs_url
+        ? `<a class="lm-settings-path" href="${escapeHtml(provider.docs_url)}" target="_blank" rel="noreferrer">Docs</a>`
+        : '';
+      return `
+        <article class="lm-api-provider-card" data-provider-id="${escapeHtml(provider.id)}">
+          <div class="lm-api-provider-card-main">
+            <div class="lm-api-provider-card-title">
+              <strong>${escapeHtml(provider.label || provider.id)}</strong>
+              <span class="lm-tag ${status.cls}">${escapeHtml(status.text)}</span>
+            </div>
+            <code class="lm-settings-path" title="${escapeHtml(provider.base_url || '')}">${escapeHtml(shortBaseUrl(provider.base_url || ''))}</code>
+            <div class="lm-api-provider-card-meta">
+              ${activeCount} active model${activeCount === 1 ? '' : 's'}${totalKnown ? ` · ${totalKnown} fetched` : ''}
+              ${provider.env_api_key ? ` · Env: ${escapeHtml(provider.env_api_key)}` : ''}
+              ${docs ? ` · ${docs}` : ''}
+            </div>
+          </div>
+          <div class="lm-api-provider-card-aside">
+            <label class="lm-toggle small" title="Enable provider">
+              <input type="checkbox" data-provider-action="toggle-enabled" data-provider-id="${escapeHtml(provider.id)}" ${provider.enabled ? 'checked' : ''}>
+              <span class="lm-toggle-track"></span>
+            </label>
+            <div class="lm-api-provider-card-actions">
+              <button class="lm-btn ghost small" type="button" data-provider-action="edit" data-provider-id="${escapeHtml(provider.id)}">Edit</button>
+              <button class="lm-btn ghost small danger" type="button" data-provider-action="delete" data-provider-id="${escapeHtml(provider.id)}">Delete</button>
+            </div>
+          </div>
+        </article>`;
+    }).join('');
+  }
+
+  async function renderApiProvidersPanel() {
+    try {
+      const [providersData, cfgData] = await Promise.all([
+        api('/api/api-providers', { timeoutMs: 8000 }),
+        api('/api/config', { timeoutMs: 8000 }).catch(() => ({ config: {} })),
+      ]);
+      apiProvidersState = {
+        providers: providersData?.providers || [],
+        catalog: providersData?.catalog || [],
+        gatewayPort: Number(cfgData?.config?.gateway_port) || 8001,
+      };
+      renderApiProviderCards();
+    } catch (err) {
+      toast(err.message || 'Could not load API providers', false);
+      const listEl = document.getElementById('settingsApiProvidersList');
+      if (listEl) {
+        listEl.innerHTML = `<p class="lm-setting-desc lm-settings-load-err">${escapeHtml(err.message || 'Could not load API providers')}</p>`;
+      }
+    }
+  }
+
+  function closeApiProviderWizard() {
+    const modal = document.getElementById('apiProviderWizardModal');
+    if (!modal) return;
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+    if (!document.querySelector('.lm-modal.open')) document.body.classList.remove('modal-open');
+    apiProviderWizard = null;
+  }
+
+  function openApiProviderWizardShell() {
+    const modal = document.getElementById('apiProviderWizardModal');
+    if (!modal) return;
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+  }
+
+  function wizardPresetOptionsHtml() {
+    const configured = new Set((apiProvidersState.providers || []).map((p) => String(p.id || '').toLowerCase()));
+    const catalog = (apiProvidersState.catalog || []).filter((row) => !configured.has(String(row.id || '').toLowerCase()) || apiProviderWizard?.mode === 'edit');
+    const presets = catalog.length
+      ? catalog
+      : (apiProvidersState.catalog || []);
+    const cards = presets.map((row) => {
+      const already = configured.has(String(row.id || '').toLowerCase()) && apiProviderWizard?.mode !== 'edit';
+      return `
+        <button type="button" class="lm-api-provider-pick" data-provider-pick="${escapeHtml(row.id)}" ${already ? 'disabled' : ''}>
+          <strong>${escapeHtml(row.label || row.id)}</strong>
+          <span class="lm-setting-desc">${escapeHtml(row.default_base_url || '')}</span>
+          ${already ? '<span class="lm-tag gray">Already added</span>' : ''}
+        </button>`;
+    }).join('');
+    return `
+      <div class="lm-api-provider-pick-grid">
+        ${cards}
+        <button type="button" class="lm-api-provider-pick" data-provider-pick="__custom__">
+          <strong>Custom provider</strong>
+          <span class="lm-setting-desc">Your own OpenAI-compatible base URL</span>
+        </button>
+      </div>`;
+  }
+
+  function modelSubtitleFromMeta(id, metaMap) {
+    const meta = metaMap && typeof metaMap === 'object' ? metaMap[id] : null;
+    if (!meta || typeof meta !== 'object') return '';
+    const parts = [];
+    const name = meta.name || meta.display_name;
+    if (name && String(name) !== String(id)) parts.push(String(name));
+    if (meta.owned_by) parts.push(`owned_by: ${meta.owned_by}`);
+    if (meta.description) parts.push(String(meta.description));
+    return parts.join(' · ');
+  }
+
+  function wizardModelsChecklistHtml(models, metaMap) {
+    const rows = Array.isArray(models) ? models : [];
+    if (!rows.length) {
+      return `<p class="lm-setting-desc" id="apiProviderWizardModelsEmpty">No models yet. Enter an API key and click <strong>Test &amp; fetch models</strong>, or add a model id manually below.</p>`;
+    }
+    return `
+      <div class="lm-api-provider-models" id="apiProviderWizardModels">
+        ${rows.map((row) => {
+          const id = String(row.id || row || '');
+          const active = row && typeof row === 'object' ? row.active === true : false;
+          const manual = row && typeof row === 'object' ? row.manual === true : false;
+          const friendly = resolveModelLabel(row && typeof row === 'object' ? row : { id });
+          const subtitle = modelSubtitleFromMeta(id, metaMap);
+          const tags = [
+            manual ? '<span class="lm-tag gray" title="Manually added / not in last fetch">manual</span>' : '',
+            active ? '<span class="lm-tag dim">Active</span>' : '',
+          ].filter(Boolean).join('');
+          const removeBtn = manual
+            ? `<button type="button" class="lm-icon-btn lm-api-provider-model-remove" data-model-remove="${escapeHtml(id)}" title="Remove custom model" aria-label="Remove ${escapeHtml(id)}">&times;</button>`
+            : '';
+          return `
+            <div class="lm-api-provider-model-row">
+              <label class="lm-api-provider-model-check" title="Active in library / gateway">
+                <input type="checkbox" data-model-id="${escapeHtml(id)}" ${active ? 'checked' : ''}>
+              </label>
+              <input type="text" class="lm-input lm-api-provider-model-label" data-model-label="${escapeHtml(id)}" value="${escapeHtml(friendly)}" placeholder="${escapeHtml(defaultModelLabel(id) || id)}" autocomplete="off" spellcheck="false" title="Friendly display name">
+              <code class="lm-api-provider-model-id" title="API model id (sent to provider)">${escapeHtml(id)}</code>
+              <span class="lm-api-provider-model-aside">${tags}${removeBtn}</span>
+              ${subtitle ? `<span class="lm-api-provider-model-sub">${escapeHtml(subtitle)}</span>` : ''}
+            </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function renderApiProviderWizard() {
+    const body = document.getElementById('apiProviderWizardBody');
+    const titleEl = document.getElementById('apiProviderWizardTitle');
+    const subEl = document.getElementById('apiProviderWizardSubtitle');
+    const backBtn = document.getElementById('apiProviderWizardBack');
+    const testBtn = document.getElementById('apiProviderWizardTest');
+    const saveBtn = document.getElementById('apiProviderWizardSave');
+    const enableWrap = document.getElementById('apiProviderWizardEnableWrap');
+    const enableEl = document.getElementById('apiProviderWizardEnabled');
+    if (!body || !apiProviderWizard) return;
+
+    const step = apiProviderWizard.step || 'pick';
+    const isEdit = apiProviderWizard.mode === 'edit';
+    if (titleEl) titleEl.textContent = isEdit ? `Edit ${apiProviderWizard.label || apiProviderWizard.id}` : (step === 'pick' ? 'Add provider' : `Configure ${apiProviderWizard.label || 'provider'}`);
+    if (subEl) {
+      subEl.textContent = step === 'pick'
+        ? 'Choose a known OpenAI-compatible provider or add a custom endpoint.'
+        : 'Set the API key, test the connection to pull live models, then mark which models are active.';
+    }
+    if (backBtn) backBtn.style.display = (!isEdit && step === 'configure') ? '' : 'none';
+    if (testBtn) testBtn.style.display = step === 'configure' ? '' : 'none';
+    if (saveBtn) {
+      saveBtn.style.display = step === 'configure' ? '' : 'none';
+      saveBtn.textContent = isEdit ? 'Save changes' : 'Save provider';
+    }
+    if (enableWrap) enableWrap.hidden = step !== 'configure';
+    if (enableEl && step === 'configure') enableEl.checked = !!apiProviderWizard.enabled;
+
+    if (step === 'pick') {
+      body.innerHTML = wizardPresetOptionsHtml();
+      return;
+    }
+
+    const keyHint = apiProviderWizard.env_api_key_present
+      ? `Using ${apiProviderWizard.env_api_key} from the environment (overrides a saved key). Leave blank to keep the saved key.`
+      : (apiProviderWizard.api_key_set
+        ? `Saved key ${apiProviderWizard.api_key_preview || '••••'}. Leave blank to keep it, or paste a new key to replace.`
+        : 'Paste your API key, then Test & fetch models.');
+
+    let statusText = apiProviderWizard.fetchStatus || '';
+    if (!statusText && !apiProviderWizard.models_fetched && (apiProviderWizard.models || []).length) {
+      statusText = 'Run Test & fetch models to refresh from the provider.';
+    }
+
+    const metaMap = apiProviderWizard.available_models_meta || {};
+
+    body.innerHTML = `
+      <div class="lm-api-provider-fields-row">
+        <div class="lm-field">
+          <label for="apiProviderWizardLabel">Label</label>
+          <input type="text" class="lm-input" id="apiProviderWizardLabel" value="${escapeHtml(apiProviderWizard.label || '')}" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="lm-field">
+          <label for="apiProviderWizardBaseUrl">Base URL</label>
+          <input type="text" class="lm-input" id="apiProviderWizardBaseUrl" value="${escapeHtml(apiProviderWizard.base_url || '')}" autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+        </div>
+        <div class="lm-field">
+          <label for="apiProviderWizardApiKey">API key</label>
+          <input type="password" class="lm-input" id="apiProviderWizardApiKey" value="" placeholder="${escapeHtml(apiProviderWizard.api_key_set ? (apiProviderWizard.api_key_preview || '•••• saved') : 'sk-…')}" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      ${apiProviderWizard.isCustom ? `
+      <div class="lm-field">
+        <label for="apiProviderWizardId">Provider id</label>
+        <input type="text" class="lm-input" id="apiProviderWizardId" value="${escapeHtml(apiProviderWizard.id || '')}" ${isEdit ? 'readonly' : ''} autocomplete="off" spellcheck="false" placeholder="my-provider">
+      </div>` : ''}
+      <p class="lm-setting-desc" id="apiProviderWizardKeyHint">${escapeHtml(keyHint)}</p>
+      <div class="lm-field">
+        <div class="lm-api-provider-models-head">
+          <label>Models</label>
+          <span class="lm-setting-desc">Friendly name is editable; the real API id stays visible and is what chat/gateway send. Only checked models appear in the Models library / gateway.${apiProviderWizard.id === 'deepseek' ? ' After a first successful fetch, official DeepSeek ids present in the response are pre-checked.' : ''}</span>
+        </div>
+        ${wizardModelsChecklistHtml(apiProviderWizard.models || [], metaMap)}
+        <div class="lm-api-provider-manual-add">
+          <input type="text" class="lm-input" id="apiProviderWizardManualModel" placeholder="Add model id" autocomplete="off" spellcheck="false">
+          <button type="button" class="lm-btn ghost small" id="apiProviderWizardManualAdd">Add</button>
+        </div>
+      </div>
+      <p class="lm-setting-desc ${apiProviderWizard.fetchError ? 'lm-settings-load-err' : ''}" id="apiProviderWizardStatus">${escapeHtml(statusText)}</p>
+    `;
+  }
+
+  function readWizardFormIntoState() {
+    if (!apiProviderWizard || apiProviderWizard.step !== 'configure') return;
+    const labelEl = document.getElementById('apiProviderWizardLabel');
+    const idEl = document.getElementById('apiProviderWizardId');
+    const baseEl = document.getElementById('apiProviderWizardBaseUrl');
+    const keyEl = document.getElementById('apiProviderWizardApiKey');
+    const enabledEl = document.getElementById('apiProviderWizardEnabled');
+    if (labelEl) apiProviderWizard.label = String(labelEl.value || '').trim();
+    if (idEl && apiProviderWizard.isCustom && apiProviderWizard.mode !== 'edit') {
+      apiProviderWizard.id = String(idEl.value || '').trim().toLowerCase().replace(/_/g, '-');
+    }
+    if (baseEl) apiProviderWizard.base_url = String(baseEl.value || '').trim();
+    if (keyEl) {
+      const typed = String(keyEl.value || '');
+      apiProviderWizard.typedKey = typed;
+      apiProviderWizard.keyDirty = typed.length > 0 || apiProviderWizard.keyDirty;
+    }
+    if (enabledEl) apiProviderWizard.enabled = !!enabledEl.checked;
+    const checks = document.querySelectorAll('#apiProviderWizardModels input[data-model-id]');
+    if (checks.length) {
+      const prevById = new Map((apiProviderWizard.models || []).map((row) => [String(row.id || '').toLowerCase(), row]));
+      apiProviderWizard.models = Array.from(checks).map((input) => {
+        const id = String(input.getAttribute('data-model-id') || '');
+        const prev = prevById.get(id.toLowerCase()) || {};
+        const rowEl = input.closest('.lm-api-provider-model-row');
+        const labelEl = rowEl?.querySelector('input[data-model-label]');
+        const typedLabel = labelEl ? String(labelEl.value || '').trim() : String(prev.label || '').trim();
+        const entry = { id, active: !!input.checked };
+        if (prev.manual === true) entry.manual = true;
+        if (typedLabel) entry.label = typedLabel;
+        return entry;
+      }).filter((row) => row.id);
+    }
+  }
+
+  function openAddApiProviderWizard() {
+    apiProviderWizard = {
+      mode: 'add',
+      step: 'pick',
+      id: '',
+      label: '',
+      base_url: '',
+      enabled: true,
+      models: [],
+      available_models: [],
+      available_models_meta: {},
+      models_fetched: false,
+      isCustom: false,
+      api_key_set: false,
+      keyDirty: false,
+      typedKey: '',
+      fetchStatus: '',
+      fetchError: false,
+    };
+    openApiProviderWizardShell();
+    renderApiProviderWizard();
+  }
+
+  function openEditApiProviderWizard(providerId) {
+    const provider = (apiProvidersState.providers || []).find((row) => row.id === providerId);
+    if (!provider) {
+      toast('Provider not found', false);
+      return;
+    }
+    const entries = modelEntriesFromProvider(provider).map((row) => {
+      const src = (provider.models || []).find((m) => m && String(m.id || '').toLowerCase() === String(row.id).toLowerCase());
+      if (src && src.manual === true) row.manual = true;
+      return row;
+    });
+    apiProviderWizard = {
+      mode: 'edit',
+      step: 'configure',
+      id: provider.id,
+      label: provider.label || provider.id,
+      base_url: provider.base_url || '',
+      enabled: !!provider.enabled,
+      models: entries,
+      available_models: provider.available_models || [],
+      available_models_meta: provider.available_models_meta || {},
+      models_fetched: !!provider.models_fetched,
+      isCustom: !provider.is_catalog,
+      api_key_set: !!provider.api_key_set,
+      api_key_preview: provider.api_key_preview || '',
+      env_api_key: provider.env_api_key || '',
+      env_api_key_present: !!provider.env_api_key_present,
+      docs_url: provider.docs_url || '',
+      keyDirty: false,
+      typedKey: '',
+      fetchStatus: '',
+      fetchError: false,
+    };
+    openApiProviderWizardShell();
+    renderApiProviderWizard();
+  }
+
+  function selectWizardPreset(pickId) {
+    if (pickId === '__custom__') {
+      apiProviderWizard = {
+        ...(apiProviderWizard || {}),
+        mode: 'add',
+        step: 'configure',
+        id: '',
+        label: 'Custom provider',
+        base_url: 'https://api.openai.com/v1',
+        enabled: true,
+        models: [],
+        available_models: [],
+        available_models_meta: {},
+        models_fetched: false,
+        isCustom: true,
+        api_key_set: false,
+        keyDirty: false,
+        typedKey: '',
+        fetchStatus: '',
+        fetchError: false,
+      };
+      renderApiProviderWizard();
+      return;
+    }
+    const preset = (apiProvidersState.catalog || []).find((row) => row.id === pickId);
+    if (!preset) {
+      toast('Unknown provider preset', false);
+      return;
+    }
+    apiProviderWizard = {
+      mode: 'add',
+      step: 'configure',
+      id: preset.id,
+      label: preset.label || preset.id,
+      base_url: preset.default_base_url || '',
+      enabled: true,
+      models: [],
+      available_models: [],
+      available_models_meta: {},
+      models_fetched: false,
+      isCustom: false,
+      api_key_set: false,
+      env_api_key: preset.env_api_key || '',
+      env_api_key_present: false,
+      docs_url: preset.docs_url || '',
+      keyDirty: false,
+      typedKey: '',
+      fetchStatus: 'Enter an API key and click Test & fetch models.',
+      fetchError: false,
+    };
+    renderApiProviderWizard();
+  }
+
+  async function testWizardProvider() {
+    readWizardFormIntoState();
+    if (!apiProviderWizard) return;
+    const baseUrl = String(apiProviderWizard.base_url || '').trim();
+    const typedKey = String(apiProviderWizard.typedKey || '').trim();
+    if (!baseUrl) {
+      toast('Base URL is required', false);
+      return;
+    }
+    const body = { base_url: baseUrl };
+    if (typedKey) body.api_key = typedKey;
+    const statusEl = document.getElementById('apiProviderWizardStatus');
+    if (statusEl) {
+      statusEl.classList.remove('lm-settings-load-err');
+      statusEl.textContent = 'Testing connection…';
+    }
+    try {
+      let result;
+      if (apiProviderWizard.mode === 'edit' && apiProviderWizard.id && (typedKey || apiProviderWizard.api_key_set || apiProviderWizard.env_api_key_present)) {
+        result = await api(`/api/api-providers/${encodeURIComponent(apiProviderWizard.id)}/test`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+          timeoutMs: 25000,
+        });
+      } else {
+        if (!typedKey) {
+          toast('Enter an API key to test', false);
+          if (statusEl) statusEl.textContent = '';
+          return;
+        }
+        result = await api('/api/api-providers/fetch-models', {
+          method: 'POST',
+          body: JSON.stringify({
+            api_key: typedKey,
+            base_url: baseUrl,
+            provider_id: apiProviderWizard.id || 'custom',
+          }),
+          timeoutMs: 25000,
+        });
+      }
+      const suggested = result?.suggested_models;
+      const fetched = result?.models || result?.upstream_models || [];
+      const upstream = Array.isArray(result?.upstream) ? result.upstream : [];
+      const meta = result?.available_models_meta || {};
+      if (upstream.length && !Object.keys(meta).length) {
+        upstream.forEach((row) => {
+          if (!row || typeof row !== 'object' || !row.id) return;
+          const extras = { ...row };
+          delete extras.id;
+          if (Object.keys(extras).length) meta[String(row.id)] = extras;
+        });
+      }
+      const prevById = new Map((apiProviderWizard.models || []).map((m) => [String(m.id).toLowerCase(), m]));
+      if (Array.isArray(suggested) && suggested.length) {
+        apiProviderWizard.models = suggested.map((row) => {
+          const id = String(row.id || '');
+          const prev = prevById.get(id.toLowerCase()) || {};
+          const entry = {
+            id,
+            active: row.active === true,
+          };
+          if (row.manual === true || prev.manual === true) entry.manual = true;
+          const label = String(row.label || prev.label || '').trim() || defaultModelLabel(id);
+          if (label) entry.label = label;
+          return entry;
+        }).filter((row) => row.id);
+      } else {
+        const prevActive = new Set((apiProviderWizard.models || []).filter((m) => m.active).map((m) => String(m.id).toLowerCase()));
+        if (apiProviderWizard.id === 'deepseek' && !prevActive.size) {
+          ['deepseek-flash', 'deepseek-v4-pro'].forEach((id) => {
+            if (fetched.some((f) => String(f).toLowerCase() === id)) prevActive.add(id);
+          });
+        }
+        const fetchedKeys = new Set(fetched.map((id) => String(id).toLowerCase()));
+        apiProviderWizard.models = fetched.map((id) => {
+          const token = String(id);
+          const prev = prevById.get(token.toLowerCase()) || {};
+          const entry = {
+            id: token,
+            active: prevActive.has(token.toLowerCase()),
+          };
+          const label = String(prev.label || '').trim() || defaultModelLabel(token);
+          if (label) entry.label = label;
+          if (prev.manual === true) entry.manual = true;
+          return entry;
+        });
+        // Keep previously active / manual ids not returned by provider.
+        prevById.forEach((prev, key) => {
+          if (fetchedKeys.has(key)) return;
+          if (prev.active || prev.manual) {
+            const entry = {
+              id: String(prev.id),
+              active: prev.active === true,
+              manual: true,
+            };
+            const label = String(prev.label || '').trim() || defaultModelLabel(prev.id);
+            if (label) entry.label = label;
+            apiProviderWizard.models.push(entry);
+          }
+        });
+      }
+      apiProviderWizard.available_models = fetched.map(String);
+      apiProviderWizard.available_models_meta = meta;
+      apiProviderWizard.models_fetched = true;
+      apiProviderWizard.fetchError = false;
+      const modelsUrl = result?.models_url ? ` · ${result.models_url}` : '';
+      apiProviderWizard.fetchStatus = `Connected · ${fetched.length} model(s) from provider${modelsUrl}`;
+      toast(`Connected · ${fetched.length} model(s)`, true);
+      renderApiProviderWizard();
+    } catch (err) {
+      apiProviderWizard.fetchError = true;
+      apiProviderWizard.fetchStatus = err.message || 'Test failed';
+      toast(err.message || 'Provider test failed', false);
+      if (statusEl) {
+        statusEl.classList.add('lm-settings-load-err');
+        statusEl.textContent = apiProviderWizard.fetchStatus;
+      }
+    }
+  }
+
+  async function saveWizardProvider() {
+    readWizardFormIntoState();
+    if (!apiProviderWizard) return;
+    let providerId = String(apiProviderWizard.id || '').trim().toLowerCase();
+    if (!providerId) {
+      toast('Provider id is required', false);
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(providerId)) {
+      toast('Provider id must be lowercase letters, numbers, or dashes', false);
+      return;
+    }
+    const baseUrl = String(apiProviderWizard.base_url || '').trim();
+    if (!baseUrl) {
+      toast('Base URL is required', false);
+      return;
+    }
+    const patch = {
+      id: providerId,
+      label: String(apiProviderWizard.label || providerId).trim() || providerId,
+      enabled: !!apiProviderWizard.enabled,
+      base_url: baseUrl,
+      models: (apiProviderWizard.models || []).map((row) => {
+        const entry = {
+          id: String(row.id || ''),
+          active: row.active === true,
+        };
+        if (row.manual === true) entry.manual = true;
+        const label = String(row.label || '').trim();
+        if (label) entry.label = label;
+        return entry;
+      }).filter((row) => row.id),
+      available_models: (apiProviderWizard.available_models || []).map(String),
+      available_models_meta: apiProviderWizard.available_models_meta || {},
+      models_fetched: !!apiProviderWizard.models_fetched,
+    };
+    const typedKey = String(apiProviderWizard.typedKey || '').trim();
+    if (typedKey) patch.api_key = typedKey;
+
+    // If adding with a new key and no models fetched yet, auto-test first.
+    if (typedKey && !(apiProviderWizard.models || []).length) {
+      try {
+        await testWizardProvider();
+        readWizardFormIntoState();
+        patch.models = (apiProviderWizard.models || []).map((row) => {
+          const entry = {
+            id: String(row.id || ''),
+            active: row.active === true,
+          };
+          if (row.manual === true) entry.manual = true;
+          const label = String(row.label || '').trim();
+          if (label) entry.label = label;
+          return entry;
+        }).filter((row) => row.id);
+        patch.available_models = (apiProviderWizard.available_models || []).map(String);
+        patch.available_models_meta = apiProviderWizard.available_models_meta || {};
+        patch.models_fetched = !!apiProviderWizard.models_fetched;
+      } catch (_) {
+        /* toast already shown */
+      }
+    }
+
+    try {
+      const result = await api('/api/api-providers', {
+        method: 'PUT',
+        body: JSON.stringify({ providers: [patch] }),
+      });
+      toast(result?.success ? 'Provider saved' : 'Could not save provider', !!result?.success);
+      closeApiProviderWizard();
+      await renderApiProvidersPanel();
+    } catch (err) {
+      toast(err.message || 'Could not save provider', false);
+    }
+  }
+
+  async function toggleProviderEnabled(providerId, enabled) {
+    try {
+      await api('/api/api-providers', {
+        method: 'PUT',
+        body: JSON.stringify({ providers: [{ id: providerId, enabled: !!enabled }] }),
+      });
+      await renderApiProvidersPanel();
+    } catch (err) {
+      toast(err.message || 'Could not update provider', false);
+      await renderApiProvidersPanel();
+    }
+  }
+
+  async function deleteApiProvider(providerId) {
+    const provider = (apiProvidersState.providers || []).find((row) => row.id === providerId);
+    const label = provider?.label || providerId;
+    const confirmed = await openComponentConfirm({
+      title: `Delete ${label}?`,
+      message: `Remove provider "${label}" from Settings? Active models will disappear from the gateway and Models library.`,
+      sub: 'The API key stored for this provider will be deleted from config.json.',
+      confirmLabel: 'Delete provider',
+      kicker: 'API providers',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api(`/api/api-providers/${encodeURIComponent(providerId)}`, {
+        method: 'DELETE',
+      });
+      toast(result?.success ? `Deleted ${label}` : 'Could not delete provider', !!result?.success);
+      await renderApiProvidersPanel();
+    } catch (err) {
+      toast(err.message || 'Could not delete provider', false);
+    }
+  }
+
+  function bindApiProviderUi() {
+    document.getElementById('settingsApiProviderAdd')?.addEventListener('click', () => openAddApiProviderWizard());
+    document.getElementById('settingsApiProvidersList')?.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-provider-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-provider-action');
+      const providerId = btn.getAttribute('data-provider-id');
+      if (!providerId) return;
+      if (action === 'edit') openEditApiProviderWizard(providerId);
+      if (action === 'delete') void deleteApiProvider(providerId);
+    });
+    document.getElementById('settingsApiProvidersList')?.addEventListener('change', (event) => {
+      const input = event.target.closest('input[data-provider-action="toggle-enabled"]');
+      if (!input) return;
+      void toggleProviderEnabled(input.getAttribute('data-provider-id'), input.checked);
+    });
+
+    document.getElementById('apiProviderWizardClose')?.addEventListener('click', () => closeApiProviderWizard());
+    document.getElementById('apiProviderWizardCancel')?.addEventListener('click', () => closeApiProviderWizard());
+    document.getElementById('apiProviderWizardBack')?.addEventListener('click', () => {
+      if (!apiProviderWizard || apiProviderWizard.mode === 'edit') return;
+      apiProviderWizard.step = 'pick';
+      renderApiProviderWizard();
+    });
+    document.getElementById('apiProviderWizardTest')?.addEventListener('click', () => void testWizardProvider());
+    document.getElementById('apiProviderWizardSave')?.addEventListener('click', () => void saveWizardProvider());
+    document.getElementById('apiProviderWizardBody')?.addEventListener('click', (event) => {
+      const pick = event.target.closest('[data-provider-pick]');
+      if (pick) {
+        selectWizardPreset(pick.getAttribute('data-provider-pick'));
+        return;
+      }
+      const removeBtn = event.target.closest('[data-model-remove]');
+      if (removeBtn) {
+        event.preventDefault();
+        removeWizardManualModel(removeBtn.getAttribute('data-model-remove'));
+        return;
+      }
+      if (event.target.closest('#apiProviderWizardManualAdd')) {
+        event.preventDefault();
+        addWizardManualModel();
+      }
+    });
+    document.getElementById('apiProviderWizardBody')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.target?.id === 'apiProviderWizardManualModel') {
+        event.preventDefault();
+        addWizardManualModel();
+      }
+    });
+    document.getElementById('apiProviderWizardEnabled')?.addEventListener('change', (event) => {
+      if (!apiProviderWizard) return;
+      apiProviderWizard.enabled = !!event.target.checked;
+    });
+    document.getElementById('apiProviderWizardModal')?.querySelector('.lm-modal-backdrop')?.addEventListener('click', (event) => {
+      if (event.target?.classList?.contains('lm-modal-backdrop')) closeApiProviderWizard();
+    });
+  }
+
+  function addWizardManualModel() {
+    if (!apiProviderWizard || apiProviderWizard.step !== 'configure') return;
+    readWizardFormIntoState();
+    const input = document.getElementById('apiProviderWizardManualModel');
+    const raw = String(input?.value || '').trim();
+    if (!raw) {
+      toast('Enter a model id', false);
+      return;
+    }
+    const key = raw.toLowerCase();
+    const existing = (apiProviderWizard.models || []).find((row) => String(row.id).toLowerCase() === key);
+    if (existing) {
+      existing.active = true;
+      existing.manual = true;
+      if (!String(existing.label || '').trim()) existing.label = defaultModelLabel(existing.id);
+      toast(`Activated ${existing.id}`, true);
+    } else {
+      apiProviderWizard.models = [
+        ...(apiProviderWizard.models || []),
+        { id: raw, active: true, manual: true, label: defaultModelLabel(raw) },
+      ];
+      toast(`Added ${raw}`, true);
+    }
+    if (input) input.value = '';
+    renderApiProviderWizard();
+  }
+
+  function removeWizardManualModel(modelId) {
+    if (!apiProviderWizard) return;
+    readWizardFormIntoState();
+    const key = String(modelId || '').toLowerCase();
+    apiProviderWizard.models = (apiProviderWizard.models || []).filter((row) => String(row.id).toLowerCase() !== key);
+    renderApiProviderWizard();
+  }
+
   function bind() {
     document.querySelectorAll('[data-action="open-settings-panel"]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -2109,6 +2890,7 @@
     document.getElementById('llamaSettingsPick')?.addEventListener('change', () => {
       renderGatewayPanel();
     });
+    bindApiProviderUi();
   }
 
   document.addEventListener('DOMContentLoaded', () => {

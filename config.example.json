@@ -94,5 +94,28 @@
         "action": 72
       }
     }
-  }
+  },
+  "api_providers": [
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "enabled": false,
+      "api_key": "",
+      "base_url": "https://api.deepseek.com",
+      "models": [
+        {
+          "id": "deepseek-flash",
+          "active": true
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "active": true
+        }
+      ],
+      "available_models": [
+        "deepseek-flash",
+        "deepseek-v4-pro"
+      ]
+    }
+  ]
 }

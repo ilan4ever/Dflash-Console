@@ -2211,6 +2211,30 @@ body.lm-resizing-table-col {
   padding: 0 6px;
 }
 
+
+/* Cloud API provider section labels in the Models library */
+.df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-provider-section td,
+.df-shell .lm-view[data-view="models"] .lm-models-table tbody tr.lm-library-provider-section td.lm-library-provider-section-cell {
+  padding: 14px 12px 6px;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  vertical-align: bottom;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-library-provider-section-label,
+.df-shell .lm-library-provider-section-compact .lm-library-provider-section-label {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.df-shell .lm-library-provider-section-compact {
+  padding: 12px 4px 4px;
+}
+
 .df-shell .lm-view[data-view="models"] .lm-action-stack {
   display: flex;
   flex-direction: row;
@@ -3527,6 +3551,12 @@ html:not(.df-narrow) .df-shell .lm-desktop-engine-foot-metrics .lm-token-metrics
   justify-content: flex-end;
   width: auto;
   flex-wrap: nowrap;
+}
+
+/* Desktop: hide LAST completion metrics while card is generating (live-only foot). */
+.df-shell .lm-model-card-compact.generating [data-engine-live-metrics] .lm-model-card-token-last,
+.df-shell .lm-model-card-compact.generating .lm-model-card-token-metric.lm-model-card-token-last {
+  display: none !important;
 }
 
 html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-engine-foot {
@@ -5213,7 +5243,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   min-height: 0;
   height: 100%;
   max-height: none;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 182px minmax(0, 1fr);
 }
 
 .df-shell .lm-view[data-view="settings"] .lm-settings-nav,
@@ -5224,8 +5254,12 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
 }
 
 .df-shell .lm-view[data-view="settings"] .lm-settings-nav {
-  padding: 10px 8px;
+  padding: 8px 6px;
   gap: 1px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-settings-nav-section {
+  padding: 8px 8px 3px;
 }
 
 .df-shell .lm-view[data-view="settings"] .lm-settings-nav-item {
@@ -5233,6 +5267,35 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   font-size: 12px;
   border-radius: 3px;
   line-height: 1.35;
+  min-height: 28px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-settings-panel {
+  padding: 14px 16px 16px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-settings-header {
+  margin-bottom: 10px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-settings-header h2 {
+  font-size: 17px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-settings-section {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-setting-row {
+  padding: 5px 0;
+  gap: 12px;
+  flex-wrap: nowrap;
+  min-height: 28px;
+}
+
+.df-shell .lm-view[data-view="settings"] .lm-setting-row-path {
+  flex-wrap: wrap;
 }
 
 .df-shell .lm-view[data-view="catalog"] .df-catalog-shell {
@@ -6733,9 +6796,9 @@ body.lm-resizing-chat-sidebar {
 .df-shell .df-chat-composer {
   flex: 0 0 auto;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
-  padding: 12px 14px;
+  padding: 8px 12px 10px;
   border-top: 1px solid var(--border-soft);
   background: rgba(0, 0, 0, 0.18);
 }
@@ -6743,13 +6806,98 @@ body.lm-resizing-chat-sidebar {
 .df-shell .df-chat-input-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.df-shell .df-chat-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.df-shell .df-chat-active-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  max-width: min(240px, 36%);
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(91, 170, 137, 0.28);
+  border-radius: 999px;
+  background: rgba(16, 54, 43, 0.55);
+  color: #cfe9db;
+  font-size: 11px;
+  line-height: 1.3;
+  align-self: center;
+}
+
+.df-shell .df-chat-active-model.is-empty {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-muted, #8b8b98);
+}
+
+.df-shell .df-chat-active-model[hidden] {
+  display: none !important;
+}
+
+.df-shell .df-chat-active-model-title {
+  font-weight: 600;
+  color: #e7f6ee;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.df-shell .df-chat-active-model.is-empty .df-chat-active-model-title {
+  font-weight: 500;
+  color: var(--text-muted, #8b8b98);
+}
+
+.df-shell .df-chat-active-model-id {
+  color: var(--text-muted, #8b8b98);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 42%;
+}
+
+.df-shell .df-chat-active-model-id:empty,
+.df-shell .df-chat-active-model-tag:empty,
+.df-shell .df-chat-active-model-tag[hidden] {
+  display: none;
+}
+
+.df-shell .df-chat-active-model-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 170, 137, 0.35);
+  background: rgba(61, 143, 111, 0.22);
+  color: #bfe8d2;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.df-shell .df-chat-active-model-tag.is-api {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(37, 99, 235, 0.22);
+  color: #bfdbfe;
 }
 
 .df-shell .df-chat-attachment-tray {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
 .df-shell .df-chat-attachment-tray.hidden {
@@ -6801,6 +6949,7 @@ body.lm-resizing-chat-sidebar {
 
 .df-shell .df-chat-input-shell {
   position: relative;
+  flex: 1;
   min-width: 0;
 }
 
@@ -7000,7 +7149,7 @@ body.lm-resizing-chat-sidebar {
 }
 
 .df-shell .lm-settings-panel {
-  padding-bottom: 48px;
+  padding-bottom: 20px;
 }
 
 .df-shell .lm-mcp-engine-list {
@@ -7592,8 +7741,8 @@ body.lm-resizing-chat-sidebar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 10px;
+  margin-bottom: 6px;
 }
 
 .df-shell .lm-settings-inline-actions {
@@ -9348,6 +9497,11 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
     margin-left: 0;
     color: rgba(226, 232, 240, 0.9);
     font-weight: 500;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-model-card-compact.generating .lm-mobile-engine-tokens .lm-model-card-token-last,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-model-card-compact.generating .lm-mobile-engine-tokens .lm-model-card-token-metric.lm-model-card-token-last {
+    display: none !important;
   }
 
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric.is-live {

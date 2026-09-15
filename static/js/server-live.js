@@ -2862,9 +2862,12 @@
   function liveMetricsSlotForEntry(server, row) {
     const stats = row?.inference_stats || server?.inference_stats || {};
     const slots = slotInferenceStats(stats);
-    const visibleSlots = slots.length
-      ? slots
+    let visibleSlots = slots.length
+      ? slots.map((slot) => ({ ...slot }))
       : [{ slot_id: 0, ...stats, generating: !!stats.generating }];
+    if (inferenceIsGenerating(stats) && !visibleSlots.some((slot) => slot?.generating)) {
+      visibleSlots[0] = { ...visibleSlots[0], generating: true };
+    }
     const generatingSlots = visibleSlots.filter((slot) => slot?.generating);
     if (generatingSlots.length > 1) {
       return generatingSlots[0];
@@ -2874,13 +2877,28 @@
 
   function ensureLiveTokenMetricsDom(host) {
     if (!host) return;
-    if (host.querySelector('.lm-token-metrics-live')) return;
+    const hasLive = !!host.querySelector('.lm-token-metrics-live');
+    const hasLast = !!host.querySelector('.lm-model-card-token-last');
+    // Pure live shell only: keep. Any last, missing live, or both -> replace with live-only HTML.
+    if (hasLive && !hasLast) return;
     host.innerHTML = liveTokenMetricsRowHtml();
   }
 
-  function patchLiveTokenMetricsHost(host, server, row) {
-    const slot = liveMetricsSlotForEntry(server, row);
-    if (!slot?.generating) return false;
+  function patchLiveTokenMetricsHost(host, server, row, opts = {}) {
+    const forceLiveShell = !!(opts && opts.forceLiveShell);
+    const stats = row?.inference_stats || server?.inference_stats || {};
+    let slot = liveMetricsSlotForEntry(server, row);
+    if (!slot?.generating && inferenceIsGenerating(stats)) {
+      slot = { slot_id: 0, ...stats, generating: true, ...(slot || {}) };
+    }
+    // When the card is known generating, install/clear to a live shell even if slot detection fails,
+    // so LAST metrics never remain visible under .generating.
+    if (!slot?.generating) {
+      if (forceLiveShell) {
+        ensureLiveTokenMetricsDom(host);
+      }
+      return false;
+    }
     ensureLiveTokenMetricsDom(host);
     const root = host.querySelector('.lm-token-metrics-live');
     if (!root) return false;
@@ -3187,7 +3205,15 @@
 
       let hasMetrics = false;
       if (generating) {
-        hasMetrics = patchLiveTokenMetricsHost(host, server, row);
+        // Desktop + mobile: never leave LAST metrics visible while generating (overlap bug on desktop).
+        host.querySelectorAll('.lm-model-card-token-last').forEach((el) => el.remove());
+        if (!host.querySelector('.lm-token-metrics-live')) {
+          host.innerHTML = liveTokenMetricsRowHtml();
+        }
+        hasMetrics = patchLiveTokenMetricsHost(host, server, row, { forceLiveShell: true });
+        if (!hasMetrics && host.querySelector('.lm-token-metrics-live')) {
+          hasMetrics = true;
+        }
       } else {
         const tokenHtml = cardTokenMetricsRow({ server, row }) || '';
         hasMetrics = !!tokenHtml;
@@ -3216,11 +3242,11 @@
   function cardTokenMetricsRow({ server, row }) {
     const isExternal = !!(row?.external || server?.external);
     const stats = row?.inference_stats || server?.inference_stats || {};
+    if (inferenceIsGenerating(stats)) return '';
     if (
       !isExternal
       && row?.card_state !== 'ready'
       && server?.status !== 'loaded'
-      && !inferenceIsGenerating(stats)
     ) return '';
     const slots = slotInferenceStats(stats);
     if (!slots.length && isExternal) return '';

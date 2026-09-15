@@ -53,7 +53,53 @@
       .replace(/[/._\-\s\\]+/g, '');
   }
 
+  function isCloudApiModel(model) {
+    if (!model) return false;
+    if (model.cloud === true || model.always_ready === true) return true;
+    if (model.cloud_provider || model.provider_id) return true;
+    const source = String(model.source || '').trim().toLowerCase();
+    return source === 'cloud' || source === 'api';
+  }
+
+  function knownCloudProviderLabel(providerId) {
+    const id = String(providerId || '').trim().toLowerCase();
+    const known = {
+      deepseek: 'DeepSeek',
+    };
+    return known[id] || '';
+  }
+
+  function cloudProviderLabel(model) {
+    const sourceLabel = String(model?.source_label || '').trim();
+    if (sourceLabel) return sourceLabel;
+    const provider = String(model?.provider || '').trim();
+    if (provider) return provider;
+    const providerId = String(model?.cloud_provider || model?.provider_id || model?.source || '').trim();
+    const mapped = knownCloudProviderLabel(providerId);
+    if (mapped) return mapped;
+    if (providerId && providerId !== 'cloud' && providerId !== 'api') {
+      return providerId.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    return '';
+  }
+
+  function apiProviderTag(model) {
+    if (!isCloudApiModel(model)) return '';
+    const label = cloudProviderLabel(model);
+    if (!label) return '';
+    return `<span class="lm-tag teal" title="Cloud API provider">${escapeHtml(label)}</span>`;
+  }
+
   function modelKey(model) {
+    // Cloud API rows share server_id per provider (cloud:deepseek); use a
+    // per-model key so library cards do not collide.
+    if (isCloudApiModel(model)) {
+      const chatKey = String(model?.chat_model_key || '').trim();
+      if (chatKey) return chatKey;
+      const provider = String(model?.cloud_provider || model?.provider_id || model?.source || 'cloud').trim();
+      const id = String(model?.id || model?.model_id || '').trim();
+      if (id) return `cloud::${provider}::${id}`;
+    }
     if (model?.server_id) return String(model.server_id);
     const pathKey = normalizeModelPath(model?.path);
     if (model?.library_file && pathKey) return `library-file::${pathKey}`;
@@ -473,7 +519,8 @@
       loadable: (model.loadable || !!(model.draft_path && model.path)) && !isDflashAccelerator(model) && !isProjectorModel(model) && !modelFileMissing(model),
       port: resolveModelPort(model),
     });
-    const bodyPrefix = ext + role + location + status + compatibility + hfAccelerator + split;
+    const apiProv = apiProviderTag(model);
+    const bodyPrefix = ext + apiProv + role + location + status + compatibility + hfAccelerator + split;
     const body = isDflashStack(model)
       ? (bodyPrefix + caps + dup + weak)
       : (bodyPrefix + dup + weak + caps);
@@ -482,6 +529,11 @@
   }
 
   function libraryModelPathsHtml(model) {
+    if (isCloudApiModel(model)) {
+      const apiId = String(model?.model_id || model?.id || model?.filename || '').trim();
+      if (!apiId) return '';
+      return `<div class="lm-library-card-paths"><div class="lm-model-path-hint" title="${escapeHtml(apiId)}">${escapeHtml(apiId)}</div></div>`;
+    }
     const stack = isDflashStack(model);
     if (stack) {
       const details = window.DFlashModelCard?.detailsHtml?.(model, {
@@ -545,12 +597,12 @@
               ${handleBadges ? `<span class="lm-library-handle-badges">${handleBadges}</span>` : ''}
             </div>
           </td>
-          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.arch || '—')}</td>
-          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.params || '—')}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${libraryFamilyCell(model)}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${libraryScaleCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelLabCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelSourceCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(size)}</td>
-          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(model.modified || '—')}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${libraryUpdatedCell(model)}</td>
           <td class="${actionCls}" rowspan="${actionRowspan}">${loadBtn}</td>
         </tr>`,
     ];
@@ -719,6 +771,12 @@
     if (model.stack_status === 'disabled' && model.server_id) {
       return actionButton('enable-stack', 'Enable', 'Enable this engine profile');
     }
+    if (isCloudApiModel(model)) {
+      // Mirror local engine-label + Load layout: muted Ready status + Chat (no fake Load).
+      const ready = '<span class="lm-engine-pick-label" title="Cloud API model — ready to chat (no local load)">Ready</span>';
+      const chat = actionButton('open-chat', 'Chat', 'Open Playground with this model');
+      return actionStackHtml([ready, chat]);
+    }
     if (canLoadInConsole(model)) {
       const control = rowEngineControl(model);
       if (control) {
@@ -840,9 +898,38 @@
     return '';
   }
 
-  function modelLabCell(model) {
+  function libraryFamilyCell(model) {
+    const arch = String(model?.arch || model?.family || '').trim();
+    if (arch) return escapeHtml(arch);
+    if (isCloudApiModel(model)) {
+      return escapeHtml(String(model?.backend || model?.runtime_label || 'Cloud API'));
+    }
+    return '—';
+  }
+
+  function libraryScaleCell(model) {
+    const params = String(model?.params || '').trim();
+    if (params) return escapeHtml(params);
+    if (isCloudApiModel(model)) return 'API';
+    return '—';
+  }
+
+  function libraryUpdatedCell(model) {
+    const modified = String(model?.modified || '').trim();
+    if (modified) return escapeHtml(modified);
+    if (isCloudApiModel(model)) return 'Cloud';
+    return '—';
+  }
+
+    function modelLabCell(model) {
     const publisher = String(model?.publisher || '').trim();
     if (publisher) return escapeHtml(publisher);
+    const owned = String(model?.owned_by || model?.author || '').trim();
+    if (owned) return escapeHtml(owned);
+    if (isCloudApiModel(model)) {
+      const providerId = String(model?.cloud_provider || model?.provider_id || '').trim();
+      if (providerId) return escapeHtml(providerId);
+    }
     const repo = modelHfRepoId(model);
     if (repo.includes('/')) return escapeHtml(repo.split('/')[0]);
     const path = String(model?.path || '').replace(/\\/g, '/');
@@ -1097,6 +1184,8 @@
   }
 
   function isExternalModel(model) {
+    // Cloud API rows are not scanned-folder externals — keep console card chrome.
+    if (isCloudApiModel(model)) return false;
     return !isConsoleModel(model);
   }
 
@@ -1118,7 +1207,10 @@
   // tag; LM Studio / Ollama already have clear source labels.
   function needsExternalTag(model) {
     if (isConsoleModel(model)) return false;
+    // Known API / local-app providers already have clear source labels.
+    if (isCloudApiModel(model)) return false;
     const source = String(model?.source || '').trim().toLowerCase();
+    if (source === 'lmstudio' || source === 'ollama') return false;
     return source === 'local' || source === 'other' || source === 'unknown' || !source;
   }
 
@@ -1523,6 +1615,10 @@
   }
 
   function modelTitleLine(model) {
+    // Cloud API cards: friendly label as title; API id is the path subtitle.
+    if (isCloudApiModel(model)) {
+      return String(model?.label || model?.id || model?.model_id || model?.filename || '—').trim() || '—';
+    }
     const isStack = !!(model?.dflash_stack && model?.draft_path);
     const rawLabel = String(model?.label || model?.id || '—');
     const name = isStack && window.DFlashModelGroups?.stackDisplayName
@@ -1819,6 +1915,10 @@
       model?.draft_path,
       model?.stack_status,
       model?.filename,
+      model?.source_label,
+      model?.provider,
+      model?.cloud_provider,
+      model?.provider_id,
     ].join(' '));
   }
 
@@ -1873,12 +1973,16 @@
     if (discovered) return discovered;
     const libLabel = String(model?.library_label || '').trim();
     if (libLabel) return libLabel;
+    const cloudLabel = cloudProviderLabel(model);
+    if (cloudLabel) return cloudLabel;
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'lmstudio') return 'LM Studio';
     if (source === 'dflash' || source === 'dflash-profile' || source === 'dflash-stack') return 'DFlash';
     if (source === 'ollama') return 'Ollama';
     const app = externalAppLabel(model);
     if (app) return app;
+    // Never show bare External for enabled API provider rows.
+    if (isCloudApiModel(model)) return cloudLabel || 'API';
     return 'External';
   }
 
@@ -1904,10 +2008,15 @@
   function libraryMobileCardLabels(model) {
     const tags = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false }) || '';
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
-    return `${tags}${status}`;
+    const apiProv = apiProviderTag(model);
+    return `${tags}${apiProv}${status}`;
   }
 
   function libraryMobileActionHtml(model) {
+    if (isCloudApiModel(model)) {
+      return actionButton('open-chat', 'Chat', 'Open Playground with this model')
+        .replace(/\btiny\b/g, 'small');
+    }
     if (isStackUnloading(model) || isStackBooting(model)) {
       return stackActionButton(model).replace(/\btiny\b/g, 'small');
     }
@@ -1982,34 +2091,55 @@
     const cardHtml = window.DFlashModelCard?.compactLibraryCardHtml;
     if (!cardHtml) return;
 
-    container.innerHTML = [
-      ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
-      ...visibleRows.map((model) => {
-        const key = modelKey(model);
-        const selected = key === selectedKey;
-        const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
-        const actionHtml = libraryMobileActionHtml(model);
-        const size = formatModelDiskSize(model);
-        return cardHtml({
-          title: modelTitleLine(model),
-          labelsHtml: libraryMobileCardLabels(model),
-          detailsHtml: '',
-          diskLabel: size,
-          actionHtml,
-          selected,
-          external: isExternalModel(model),
-          loadedOnGpu: isStackLoadedOnGpu(model),
-          dataModelKey: key,
-          dataModelId: model.id || '',
-          dataServerId: model.server_id || '',
-        });
-      }),
-    ].join('');
+    const compactParts = typeFilter === 'loaded'
+      ? []
+      : visibleDownloads.map((job) => renderDownloadingRow(job));
+    let lastCloudProvider = null;
+    for (const model of visibleRows) {
+      if (isCloudApiModel(model)) {
+        const prov = cloudProviderLabel(model) || 'API';
+        if (prov !== lastCloudProvider) {
+          compactParts.push(providerSectionCompactHtml(prov));
+          lastCloudProvider = prov;
+        }
+      }
+      const key = modelKey(model);
+      const selected = key === selectedKey;
+      const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
+      const actionHtml = libraryMobileActionHtml(model);
+      const size = formatModelDiskSize(model);
+      compactParts.push(cardHtml({
+        title: modelTitleLine(model),
+        labelsHtml: libraryMobileCardLabels(model),
+        detailsHtml: isCloudApiModel(model)
+          ? `<div class="lm-model-path-hint">${escapeHtml(String(model?.model_id || model?.id || ''))}</div>`
+          : '',
+        diskLabel: size,
+        actionHtml,
+        selected,
+        external: isExternalModel(model),
+        loadedOnGpu: isStackLoadedOnGpu(model),
+        dataModelKey: key,
+        dataModelId: model.id || '',
+        dataServerId: model.server_id || '',
+      }));
+    }
+    container.innerHTML = compactParts.join('');
 
     bindModelRowInteractions(container);
   }
 
-  function renderTable(filterText, { force = false } = {}) {
+  function providerSectionHeaderHtml(label) {
+    const text = String(label || 'API').trim() || 'API';
+    return `<tr class="lm-library-provider-section"><td class="lm-library-provider-section-cell" colspan="8"><span class="lm-library-provider-section-label">${escapeHtml(text)}</span></td></tr>`;
+  }
+
+  function providerSectionCompactHtml(label) {
+    const text = String(label || 'API').trim() || 'API';
+    return `<div class="lm-library-provider-section-compact"><span class="lm-library-provider-section-label">${escapeHtml(text)}</span></div>`;
+  }
+
+    function renderTable(filterText, { force = false } = {}) {
     const body = document.getElementById('modelsTableBody');
     if (!body) return;
     const signature = modelsRenderSignature(filterText);
@@ -2035,6 +2165,19 @@
       const aPin = pinned.has(modelKey(a)) ? 0 : 1;
       const bPin = pinned.has(modelKey(b)) ? 0 : 1;
       if (aPin !== bPin) return aPin - bPin;
+      // All local library models first; cloud API provider cards below (never interleaved).
+      const aCloud = isCloudApiModel(a) ? 1 : 0;
+      const bCloud = isCloudApiModel(b) ? 1 : 0;
+      if (aCloud !== bCloud) return aCloud - bCloud;
+      if (aCloud && bCloud) {
+        const byProv = cloudProviderLabel(a).localeCompare(
+          cloudProviderLabel(b),
+          undefined,
+          { sensitivity: 'base' },
+        );
+        if (byProv !== 0) return byProv;
+        return compareModelLabels(a, b);
+      }
       const aConsole = isConsoleModel(a) ? 0 : 1;
       const bConsole = isConsoleModel(b) ? 0 : 1;
       if (aConsole !== bConsole) return aConsole - bConsole;
@@ -2048,6 +2191,10 @@
         const bTier = libraryCatalogDeferSortTier(b);
         if (aTier !== bTier) return aTier - bTier;
       }
+      const aSource = modelSourceLabel(a);
+      const bSource = modelSourceLabel(b);
+      const bySource = aSource.localeCompare(bSource, undefined, { sensitivity: 'base' });
+      if (bySource !== 0) return bySource;
       return compareModelLabels(a, b);
     });
     // Hide redundant external copies when the Console already has the model.
@@ -2113,9 +2260,18 @@
       return;
     }
 
-    body.innerHTML = [
-      ...(typeFilter === 'loaded' ? [] : visibleDownloads.map((job) => renderDownloadingRow(job))),
-      ...visibleRows.flatMap((model) => {
+        const tableParts = typeFilter === 'loaded'
+      ? []
+      : visibleDownloads.map((job) => renderDownloadingRow(job));
+    let lastCloudProvider = null;
+    for (const model of visibleRows) {
+      if (isCloudApiModel(model)) {
+        const prov = cloudProviderLabel(model) || 'API';
+        if (prov !== lastCloudProvider) {
+          tableParts.push(providerSectionHeaderHtml(prov));
+          lastCloudProvider = prov;
+        }
+      }
       const key = modelKey(model);
       const selected = key === selectedKey;
       const pinMark = pinned.has(key) ? '<span class="lm-model-pin" title="Pinned">📌</span>' : '';
@@ -2126,7 +2282,7 @@
       const dupVisible = visibleNameCounts.get(String(model?.filename || model?.label || '').trim().toLowerCase()) || 0;
       const title = escapeHtml(modelTitleLine(model));
       const handleBadges = capTags(model, dupVisible, { handleOnly: true });
-      return renderDesktopLibraryCardRows(model, {
+      tableParts.push(...renderDesktopLibraryCardRows(model, {
         key,
         selected,
         pinned: pinned.has(key),
@@ -2138,9 +2294,9 @@
         dupVisible,
         title,
         handleBadges,
-      });
-    }),
-    ].join('');
+      }));
+    }
+    body.innerHTML = tableParts.join('');
 
     const actionHeader = document.querySelector('.lm-view[data-view="models"] .lm-models-table thead .lm-col-action');
     const anyActionStack = body.querySelector('.lm-col-action.has-action-stack');
@@ -2167,12 +2323,18 @@
         if (event.target.closest('[data-action="auto-setup-stack"]')) return;
         if (event.target.closest('[data-action="setup-stack"]')) return;
         if (event.target.closest('[data-action="unload-model"]')) return;
+        if (event.target.closest('[data-action="open-chat"]')) return;
         if (event.target.closest('[data-engine-pick]')) return;
         void selectModel(row.dataset.modelKey);
       });
       row.addEventListener('dblclick', () => {
         const model = modelForRow(row);
-        if (model?.loadable && !isDflashAccelerator(model)) void loadModel(model);
+        if (!model) return;
+        if (isCloudApiModel(model)) {
+          openCloudModelInPlayground(model);
+          return;
+        }
+        if (model.loadable && !isDflashAccelerator(model)) void loadModel(model);
       });
       row.addEventListener('contextmenu', (event) => {
         event.preventDefault();
@@ -2260,6 +2422,35 @@
         if (model) void unloadModel(model);
       });
     });
+    root.querySelectorAll('[data-action="open-chat"]').forEach((btn) => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const model = modelForRow(btn.closest(rowSel));
+        if (model) openCloudModelInPlayground(model);
+      });
+    });
+  }
+
+
+  function openCloudModelInPlayground(model) {
+    if (!isCloudApiModel(model)) return;
+    const key = String(model?.chat_model_key || modelKey(model) || '').trim();
+    if (key) {
+      try { localStorage.setItem('dflashConsole.chatCheckpointKey', key); } catch (_) { /* ignore */ }
+    }
+    window.DFlashShell?.setView?.('chat');
+    const apply = () => {
+      if (!key) return;
+      if (typeof window.DFlashChatLive?.selectCheckpoint === 'function') {
+        window.DFlashChatLive.selectCheckpoint(key);
+      }
+    };
+    // Catalog refresh on Playground enter is async — retry briefly until the option exists.
+    apply();
+    setTimeout(apply, 50);
+    setTimeout(apply, 200);
+    setTimeout(apply, 500);
+    setTimeout(apply, 1200);
   }
 
   async function unloadModel(model) {
@@ -2518,8 +2709,10 @@
       <div id="modelsStackAction">${stackMenuActionHtml(model)}</div>
       ${isDflashAccelerator(model)
         ? '<div class="df-stack-preflight df-model-stack-preflight is-unavailable">Accelerators are loaded only with a full target model.</div>'
-        : `<button type="button" data-cmd="load"${model.loadable ? '' : ' disabled'}>Load to Server</button>`}
-      <button type="button" data-cmd="delete"${canDelete ? '' : ' disabled'}>Delete</button>`;
+        : isCloudApiModel(model)
+          ? '<button type="button" data-cmd="open-chat">Chat in Playground</button>'
+          : `<button type="button" data-cmd="load"${model.loadable ? '' : ' disabled'}>Load to Server</button>`}
+      <button type="button" data-cmd="delete"${(canDelete && !isCloudApiModel(model)) ? '' : ' disabled'}>Delete</button>`;
 
     menu.classList.remove('hidden');
     menu.setAttribute('aria-hidden', 'false');
@@ -2687,6 +2880,10 @@
         currentDraftLabel: model.draft_filename || model.draft_label,
         label: model.label,
       });
+      return;
+    }
+    if (cmd === 'open-chat') {
+      openCloudModelInPlayground(model);
       return;
     }
     if (cmd === 'load') {

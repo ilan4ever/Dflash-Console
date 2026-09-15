@@ -339,6 +339,7 @@
   }
 
   function modelLoadState(model) {
+    if (isCloudCatalogModel(model)) return 'loaded';
     const loaded = findLoadedServerForModel(model);
     if (loaded) {
       if (loaded.status === 'booting' || loaded.booting || loaded.load_progress != null) return 'loading';
@@ -378,7 +379,8 @@
 
   function appendLoadedChatModels(models) {
     const result = models.filter((model) => (
-      !model.chat_model_key
+      isCloudCatalogModel(model)
+      || !model.chat_model_key
       || modelMatchesLoadedServer(model, serverById.get(String(model.server_id || '')))
     ));
     const catalogServerIds = new Set(
@@ -442,8 +444,29 @@
     return 'stopped';
   }
 
+  function isCloudCatalogModel(model) {
+    return !!(model && (model.cloud === true || model.always_ready === true || model.source === 'cloud' || model.cloud_provider || model.provider_id));
+  }
+
   function chatReadyEngine() {
     const selected = selectedCatalogModel();
+    if (isCloudCatalogModel(selected)) {
+      const modelId = String(selected.id || selected.model_id || '').trim();
+      const providerId = String(selected.cloud_provider || selected.provider_id || '').trim();
+      if (!modelId || !providerId) return null;
+      return {
+        id: `cloud:${providerId}`,
+        label: selected.label || modelId,
+        port: 0,
+        modelId,
+        inference: {},
+        supportsVision: false,
+        mmprojPath: '',
+        capabilities: Array.isArray(selected.capabilities) ? selected.capabilities : [],
+        cloud: true,
+        cloudProvider: providerId,
+      };
+    }
     const live = findLoadedServerForModel(selected);
     const pick = document.getElementById('chatEnginePick');
     if (live && pick && pick.value !== live.id) {
@@ -580,7 +603,7 @@
     const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
     const hfFilter = window.DFlashModelsLive?.isHfEngineModel;
     const readyModels = catalogModels.filter((model) => (
-      model.loadable !== false
+      (isCloudCatalogModel(model) || model.loadable !== false)
       && model.path_missing !== true
       && model.draft_path_missing !== true
     ));
@@ -768,6 +791,10 @@
     const pick = document.getElementById('chatCheckpointPick');
     if (!pick) return;
 
+    const storedKey = readCheckpointKeyFromStorage();
+    if (storedKey && storedKey !== selectedCheckpointKey) {
+      selectedCheckpointKey = storedKey;
+    }
     const prev = pick.value || selectedCheckpointKey || '';
     const sourceKey = String(selectedSource || '').trim().toLowerCase();
     const loadEngine = window.DFlashModelsLive?.getLoadEngine?.() || 'dflash';
@@ -834,7 +861,7 @@
     const pick = document.getElementById('chatSourcePick');
     if (!pick) return;
     const loadableModels = playgroundLoadableModels();
-    const options = ['<option value="">All sources</option>'];
+    const options = ['<option value="">All providers</option>'];
     for (const [id, label] of sourceOptionsFor(loadableModels)) {
       options.push(`<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`);
     }
@@ -1055,6 +1082,81 @@
     if (el) el.textContent = text || '';
   }
 
+
+  function pathLeafHint(value) {
+    const raw = String(value || '').trim().replace(/[\\/]+$/, '');
+    if (!raw) return '';
+    const parts = raw.split(/[\\/]/);
+    return parts[parts.length - 1] || raw;
+  }
+
+  function activeModelSecondaryHint(model, engine) {
+    if (!model) return '';
+    if (isCloudCatalogModel(model)) {
+      return String(model.id || model.model_id || engine?.modelId || '').trim();
+    }
+    const filename = String(model.filename || '').trim();
+    const pathHint = pathLeafHint(model.path || model.model_path || filename);
+    if (filename && pathHint && pathLeafHint(filename) !== pathHint) {
+      return pathHint;
+    }
+    return pathHint || pathLeafHint(filename) || String(model.id || model.model_id || engine?.modelId || '').trim();
+  }
+
+  function renderActiveModelChip() {
+    const chip = document.getElementById('chatActiveModel');
+    const titleEl = document.getElementById('chatActiveModelTitle');
+    const idEl = document.getElementById('chatActiveModelId');
+    const tagEl = document.getElementById('chatActiveModelTag');
+    if (!chip || !titleEl || !idEl || !tagEl) return;
+
+    const model = selectedCatalogModel();
+    const engine = chatReadyEngine();
+    const cloud = isCloudCatalogModel(model);
+
+    if (!model) {
+      chip.hidden = false;
+      chip.classList.add('is-empty');
+      titleEl.textContent = 'Select a model above';
+      idEl.textContent = '';
+      tagEl.textContent = '';
+      tagEl.hidden = true;
+      tagEl.classList.remove('is-api');
+      return;
+    }
+
+    const title = String(
+      (window.DFlashModelGroups?.defaultOptionLabel?.(model)
+        || model.label
+        || model.filename
+        || model.id
+        || 'Model')
+    ).trim() || 'Model';
+    const secondary = activeModelSecondaryHint(model, engine);
+    const showSecondary = secondary
+      && secondary.localeCompare(title, undefined, { sensitivity: 'base' }) !== 0;
+
+    chip.hidden = false;
+    chip.classList.remove('is-empty');
+    titleEl.textContent = title;
+    idEl.textContent = showSecondary ? secondary : '';
+
+    let tag = '';
+    if (cloud) {
+      tag = 'API';
+    } else if (engine) {
+      const loadEngine = String(window.DFlashModelsLive?.getLoadEngine?.() || '').trim().toLowerCase();
+      const engineHints = new Set(['vllm', 'transformers', 'exllama', 'exllamav2', 'ollama']);
+      tag = engineHints.has(loadEngine) ? loadEngine : 'Loaded';
+    } else if (modelLoadState(model) === 'loading' || loadingCheckpoint) {
+      tag = 'Loading';
+    }
+
+    tagEl.textContent = tag;
+    tagEl.hidden = !tag;
+    tagEl.classList.toggle('is-api', cloud && !!tag);
+  }
+
   function updateComposerState() {
     const input = document.getElementById('chatInput');
     const sendBtn = document.getElementById('chatSendBtn');
@@ -1063,6 +1165,7 @@
     const attachBtn = document.getElementById('chatAttachBtn');
     const session = activeSession();
     renderStandbyBanner();
+    renderActiveModelChip();
 
     if (!consolePipelineActive()) {
       if (input) {
@@ -1095,7 +1198,21 @@
       if (loadingCheckpoint) input.placeholder = 'Loading model…';
       else if (!ready) input.placeholder = 'Load a model above to start chatting…';
       else if (sending) input.placeholder = 'Waiting for reply…';
-      else input.placeholder = 'Message the model… (Enter to send, Shift+Enter for newline)';
+      else {
+        const friendly = String(
+          selectedModel
+            ? (window.DFlashModelGroups?.defaultOptionLabel?.(selectedModel)
+              || selectedModel.label
+              || selectedModel.filename
+              || selectedModel.id
+              || '')
+            : '',
+        ).trim();
+        const shortName = friendly.length > 28 ? `${friendly.slice(0, 28)}…` : friendly;
+        input.placeholder = shortName
+          ? `Message ${shortName}…`
+          : 'Message the model… (Enter to send, Shift+Enter for newline)';
+      }
     }
     if (sendBtn) sendBtn.disabled = !ready || (!String(input?.value || '').trim() && !pendingAttachments.length);
     if (loadBtn) {
@@ -1534,11 +1651,6 @@
     const session = activeSession();
     if (!input || !session || sending) return;
 
-    if (!consolePipelineActive()) {
-      toast(ENGINE_STANDBY_MSG, false);
-      return;
-    }
-
     const text = String(input.value || '').trim();
     const attachments = pendingAttachments.slice();
     if (!text && !attachments.length) return;
@@ -1546,6 +1658,10 @@
     const engine = chatReadyEngine();
     if (!engine) {
       toast('Load a model first', false);
+      return;
+    }
+    if (!engine.cloud && !consolePipelineActive()) {
+      toast(ENGINE_STANDBY_MSG, false);
       return;
     }
     if (attachments.some((attachment) => attachment.kind === 'image') && !imageInputSupported(engine)) {
@@ -1590,9 +1706,12 @@
       stream: true,
     };
 
-    startGenerationPolling(engine.id);
+    if (!engine.cloud) startGenerationPolling(engine.id);
     try {
-      const resp = await fetch(`/api/servers/${encodeURIComponent(engine.id)}/v1/chat/completions`, {
+      const chatUrl = engine.cloud
+        ? `/api/providers/${encodeURIComponent(engine.cloudProvider)}/v1/chat/completions`
+        : `/api/servers/${encodeURIComponent(engine.id)}/v1/chat/completions`;
+      const resp = await fetch(chatUrl, {
         method: 'POST',
         headers: window.ConsoleApi?.requestHeaders?.() || {
           'Content-Type': 'application/json',
@@ -1726,6 +1845,8 @@
   }
 
   async function onViewEnter() {
+    const storedKey = readCheckpointKeyFromStorage();
+    if (storedKey) selectedCheckpointKey = storedKey;
     await refreshCatalog({ force: !catalogLoaded });
     syncEngineToModel();
     syncSessionEngine();
@@ -1740,5 +1861,37 @@
     if (document.body.dataset.activeView === 'chat') void onViewEnter();
   });
 
-  window.DFlashChatLive = { onViewEnter, refreshEngines: () => refreshCatalog({ force: true }) };
+
+  function readCheckpointKeyFromStorage() {
+    try {
+      return String(localStorage.getItem(CHECKPOINT_KEY) || '').trim();
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  function selectCheckpoint(key, { persistSelection = true } = {}) {
+    const next = String(key || '').trim();
+    if (!next) return false;
+    selectedCheckpointKey = next;
+    try { localStorage.setItem(CHECKPOINT_KEY, next); } catch (_err) { /* ignore */ }
+    if (persistSelection) persist();
+    renderPickers();
+    syncEngineToModel();
+    syncSessionEngine();
+    updateComposerState();
+    const pick = document.getElementById('chatCheckpointPick');
+    if (pick && [...pick.options].some((opt) => opt.value === next)) {
+      pick.value = next;
+      return true;
+    }
+    return false;
+  }
+
+  window.DFlashChatLive = {
+    onViewEnter,
+    refreshEngines: () => refreshCatalog({ force: true }),
+    selectCheckpoint,
+  };
+
 })();

@@ -609,6 +609,7 @@ class ConfigPatch(BaseModel):
     context_max: int | None = Field(default=None, ge=2048, le=1048576)
     download_settings: dict[str, Any] | None = None
     remote_nodes: list[dict[str, Any]] | None = None
+    api_providers: list[dict[str, Any]] | None = None
 
 
 class DownloadSettingsPatch(BaseModel):
@@ -632,6 +633,37 @@ class RemoteNodePatch(BaseModel):
     base_url: str | None = Field(default=None, min_length=8, max_length=512)
     api_token: str | None = Field(default=None, max_length=512)
     enabled: bool | None = None
+
+
+class ApiProviderModelEntry(BaseModel):
+    id: str = Field(..., min_length=1, max_length=256)
+    active: bool = False
+
+
+class ApiProviderPatch(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    enabled: bool | None = None
+    api_key: str | None = Field(default=None, max_length=2048)
+    base_url: str | None = Field(default=None, max_length=512)
+    # Accept legacy string ids or {id, active} objects.
+    models: list[Any] | None = None
+    available_models: list[str] | None = None
+    label: str | None = Field(default=None, max_length=120)
+
+
+class ApiProvidersPut(BaseModel):
+    providers: list[ApiProviderPatch] = Field(default_factory=list)
+
+
+class ApiProviderFetchModels(BaseModel):
+    api_key: str = Field(..., min_length=1, max_length=2048)
+    base_url: str = Field(..., min_length=8, max_length=512)
+    provider_id: str | None = Field(default=None, max_length=64)
+
+
+class ApiProviderTestBody(BaseModel):
+    api_key: str | None = Field(default=None, max_length=2048)
+    base_url: str | None = Field(default=None, max_length=512)
 
 
 class NodeConnectTest(BaseModel):
@@ -923,7 +955,10 @@ async def system_stats() -> dict[str, Any]:
 
 @app.get('/api/config')
 def get_config() -> dict[str, Any]:
-    return {'success': True, 'config': load_config()}
+    from core.api_providers import redact_api_providers_in_config
+
+    cfg = load_config()
+    return {'success': True, 'config': redact_api_providers_in_config(cfg)}
 
 
 @app.get('/api/gateway')
@@ -949,6 +984,238 @@ def gateway_status() -> dict[str, Any]:
     }
 
 
+@app.get('/api/api-providers')
+def get_api_providers() -> dict[str, Any]:
+    from core.api_providers import list_provider_catalog, list_public_api_providers
+
+    cfg = load_config()
+    providers = list_public_api_providers(cfg)
+    configured_ids = {str(row.get('id') or '') for row in providers}
+    catalog = list_provider_catalog(configured_ids=configured_ids)
+    return {
+        'success': True,
+        'providers': providers,
+        'count': len(providers),
+        'catalog': catalog,
+    }
+
+
+@app.put('/api/api-providers')
+def put_api_providers(body: ApiProvidersPut) -> dict[str, Any]:
+    from core.api_providers import list_provider_catalog, list_public_api_providers, upsert_api_providers
+
+    cfg = load_config()
+    patches = [row.model_dump(exclude_none=False) for row in (body.providers or [])]
+    upsert_api_providers(cfg, patches)
+    _save_config_checked(cfg)
+    providers = list_public_api_providers(cfg)
+    configured_ids = {str(row.get('id') or '') for row in providers}
+    return {
+        'success': True,
+        'providers': providers,
+        'count': len(providers),
+        'catalog': list_provider_catalog(configured_ids=configured_ids),
+    }
+
+
+@app.delete('/api/api-providers/{provider_id}')
+def delete_api_provider_route(provider_id: str) -> dict[str, Any]:
+    from core.api_providers import delete_api_provider, list_provider_catalog, list_public_api_providers
+
+    cfg = load_config()
+    wanted = str(provider_id or '').strip().lower()
+    if not delete_api_provider(cfg, wanted):
+        raise HTTPException(status_code=404, detail='provider not found')
+    _save_config_checked(cfg)
+    providers = list_public_api_providers(cfg)
+    configured_ids = {str(row.get('id') or '') for row in providers}
+    return {
+        'success': True,
+        'deleted': wanted,
+        'providers': providers,
+        'count': len(providers),
+        'catalog': list_provider_catalog(configured_ids=configured_ids),
+    }
+
+
+async def _fetch_openai_compatible_models(base_url: str, api_key: str) -> dict[str, Any]:
+    """GET {base}/models (and /v1/models fallback).
+
+    Returns exact model ``id`` strings plus an ``upstream`` list of each
+    ``data[]`` row (id + any extra fields the provider returned).
+    """
+    import httpx
+
+    from core.api_providers import models_endpoint_candidates
+
+    candidates = models_endpoint_candidates(base_url)
+    if not candidates:
+        raise HTTPException(status_code=400, detail='base_url is required')
+    last_error = ''
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for url in candidates:
+            try:
+                resp = await client.get(url, headers={'Authorization': f'Bearer {api_key}'})
+                if resp.status_code < 400:
+                    content_type = resp.headers.get('content-type', '')
+                    payload = resp.json() if 'application/json' in content_type else {}
+                    model_ids: list[str] = []
+                    upstream: list[dict[str, Any]] = []
+                    if isinstance(payload, dict):
+                        for row in payload.get('data') or []:
+                            if not isinstance(row, dict) or not row.get('id'):
+                                continue
+                            model_id = str(row['id'])
+                            model_ids.append(model_id)
+                            # Preserve provider fields; always expose id as string.
+                            entry = {k: v for k, v in row.items()}
+                            entry['id'] = model_id
+                            upstream.append(entry)
+                    return {
+                        'ok': True,
+                        'models_url': url,
+                        'models': model_ids,
+                        'upstream_models': model_ids,
+                        'upstream': upstream,
+                    }
+                last_error = f'HTTP {resp.status_code}'
+            except Exception as exc:
+                last_error = str(exc)
+    raise HTTPException(status_code=502, detail=f'provider test failed: {last_error or "unknown"}')
+
+
+@app.post('/api/api-providers/fetch-models')
+async def fetch_api_provider_models(body: ApiProviderFetchModels) -> dict[str, Any]:
+    """Test draft credentials and pull live model ids (wizard, before save)."""
+    from core.api_providers import apply_fetched_models, normalize_api_provider
+
+    api_key = str(body.api_key or '').strip()
+    base_url = str(body.base_url or '').strip().rstrip('/')
+    if not api_key:
+        raise HTTPException(status_code=400, detail='API key is required')
+    if not base_url:
+        raise HTTPException(status_code=400, detail='base_url is required')
+    result = await _fetch_openai_compatible_models(base_url, api_key)
+    provider_id = str(body.provider_id or 'custom').strip().lower() or 'custom'
+    draft = normalize_api_provider({
+        'id': provider_id,
+        'base_url': base_url,
+        'api_key': '',
+        'enabled': False,
+        'models': [],
+    })
+    upstream = list(result.get('upstream') or [])
+    merged = apply_fetched_models(
+        draft,
+        list(result.get('models') or []),
+        upstream=upstream,
+    )
+    return {
+        'success': True,
+        'ok': True,
+        'models_url': result.get('models_url'),
+        'models': list(result.get('models') or []),
+        'upstream_models': list(result.get('models') or []),
+        'upstream': upstream,
+        'available_models_meta': merged.get('available_models_meta') or {},
+        'suggested_models': merged.get('models') or [],
+        'provider_id': provider_id,
+    }
+
+
+@app.post('/api/api-providers/{provider_id}/test')
+async def test_api_provider(provider_id: str, body: ApiProviderTestBody | None = None) -> dict[str, Any]:
+    """Connectivity check + live model list (saved provider or draft overrides)."""
+    from core.api_providers import (
+        active_model_ids,
+        apply_fetched_models,
+        ensure_api_providers,
+        normalize_api_provider,
+        resolve_provider_api_key,
+    )
+
+    cfg = load_config()
+    wanted = str(provider_id or '').strip().lower()
+    provider = next((row for row in ensure_api_providers(cfg) if row.get('id') == wanted), None)
+    if not provider and not (body and (body.api_key or body.base_url)):
+        raise HTTPException(status_code=404, detail='provider not found')
+
+    draft_key = str((body.api_key if body else None) or '').strip()
+    draft_base = str((body.base_url if body else None) or '').strip().rstrip('/')
+    api_key = draft_key or (resolve_provider_api_key(provider) if provider else '')
+    base = draft_base or (str(provider.get('base_url') or '').rstrip('/') if provider else '')
+    if not api_key:
+        raise HTTPException(status_code=400, detail='API key not configured (set key or env override)')
+    if not base:
+        raise HTTPException(status_code=400, detail='base_url is required')
+
+    result = await _fetch_openai_compatible_models(base, api_key)
+    model_ids = list(result.get('models') or [])
+    upstream = list(result.get('upstream') or [])
+    # Persist available_models cache when provider exists (do not clobber active flags).
+    if provider is not None:
+        merged = apply_fetched_models(provider, model_ids, upstream=upstream)
+        for row in cfg.get('api_providers') or []:
+            if isinstance(row, dict) and str(row.get('id') or '') == wanted:
+                row['available_models'] = list(merged.get('available_models') or model_ids)
+                row['available_models_meta'] = dict(merged.get('available_models_meta') or {})
+                row['models_fetched'] = True
+                # Keep user's active selection; only refresh available cache + meta here.
+                break
+        _save_config_checked(cfg)
+        configured = active_model_ids(provider)
+        suggested = merged.get('models') or []
+        meta = merged.get('available_models_meta') or {}
+    else:
+        configured = []
+        draft = normalize_api_provider({'id': wanted, 'base_url': base, 'models': []})
+        merged = apply_fetched_models(draft, model_ids, upstream=upstream)
+        suggested = merged.get('models') or []
+        meta = merged.get('available_models_meta') or {}
+
+    return {
+        'success': True,
+        'provider_id': wanted,
+        'ok': True,
+        'models_url': result.get('models_url'),
+        'models': model_ids,
+        'upstream_models': model_ids,
+        'upstream': upstream,
+        'available_models_meta': meta,
+        'suggested_models': suggested,
+        'configured_models': configured,
+    }
+
+
+@app.post('/api/providers/{provider_id}/v1/chat/completions')
+async def proxy_provider_chat(provider_id: str, request: Request):
+    """Playground / console proxy for cloud providers (avoids browser CORS to gateway)."""
+    from api.gateway import _forward_cloud_chat
+    from core.api_providers import ensure_api_providers, resolve_cloud_provider_for_model
+
+    cfg = load_config()
+    wanted = str(provider_id or '').strip().lower()
+    provider = next((row for row in ensure_api_providers(cfg) if row.get('id') == wanted), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail='provider not found')
+    if provider.get('enabled') is not True:
+        raise HTTPException(status_code=400, detail='provider is disabled')
+    raw = await request.body()
+    # Ensure requested model belongs to this provider when specified.
+    try:
+        import json as _json
+
+        payload = _json.loads(raw.decode('utf-8') or '{}')
+    except Exception:
+        payload = {}
+    model = str(payload.get('model') or '') if isinstance(payload, dict) else ''
+    if model:
+        matched = resolve_cloud_provider_for_model(cfg, model)
+        if matched is None or str(matched.get('id') or '') != wanted:
+            raise HTTPException(status_code=404, detail=f"model '{model}' is not enabled for this provider")
+    return await _forward_cloud_chat(request, provider=provider, body=raw)
+
+
 @app.put('/api/config')
 def put_config(body: ConfigPatch) -> dict[str, Any]:
     cfg = load_config()
@@ -971,6 +1238,11 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
     if 'remote_nodes' in data and isinstance(data['remote_nodes'], list):
         cfg['remote_nodes'] = normalize_remote_nodes(data['remote_nodes'])
         data.pop('remote_nodes')
+    if 'api_providers' in data and isinstance(data['api_providers'], list):
+        from core.api_providers import upsert_api_providers
+
+        upsert_api_providers(cfg, data['api_providers'])
+        data.pop('api_providers')
     if 'model_libraries' in data and isinstance(data['model_libraries'], list):
         cfg['model_libraries'] = normalize_model_libraries(data['model_libraries'], cfg=cfg)
         data.pop('model_libraries')
@@ -994,7 +1266,9 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
         data.pop('ui_layout')
     cfg.update(data)
     _save_config_checked(cfg)
-    return {'success': True, 'config': cfg}
+    from core.api_providers import redact_api_providers_in_config
+
+    return {'success': True, 'config': redact_api_providers_in_config(cfg)}
 
 
 @app.get('/api/presets/export')
@@ -1670,6 +1944,18 @@ def models_catalog(
         payload['source'] = source_key.lower()
     for row in models:
         row['load_route'] = _model_load_route(row)
+    if not source_key or source_key.lower() in {'cloud', 'api', 'provider'}:
+        from core.api_providers import catalog_rows_for_providers
+
+        cloud_rows = catalog_rows_for_providers(cfg)
+        if source_key and source_key.lower() in {'cloud', 'api', 'provider'}:
+            models = cloud_rows
+        else:
+            existing = {str(row.get('id') or '').lower() for row in models}
+            for row in cloud_rows:
+                if str(row.get('id') or '').lower() in existing:
+                    continue
+                models.append(row)
     payload['models'] = models
     payload['total_count'] = len(models)
     return payload

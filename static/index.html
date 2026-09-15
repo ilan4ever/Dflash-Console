@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.230</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.231</span>
           </div>
         </div>
       </div>
@@ -155,9 +155,9 @@ try {
                       <option value="transformers">Transformers</option>
                       <option value="freetoken">FreeToken (WSL / NVIDIA)</option>
                     </select>
-                    <label class="df-chat-engine-label" for="chatSourcePick">Source</label>
-                    <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by source" disabled>
-                      <option value="">All sources</option>
+                    <label class="df-chat-engine-label" for="chatSourcePick">Provider</label>
+                    <select class="lm-select is-loading" id="chatSourcePick" title="Filter models by provider / source" disabled>
+                      <option value="">All providers</option>
                     </select>
                     <select id="chatEnginePick" hidden aria-hidden="true"></select>
                     <div class="df-chat-model-load">
@@ -188,13 +188,20 @@ try {
               <footer class="df-chat-composer">
                 <div class="df-chat-input-main">
                   <div class="df-chat-attachment-tray hidden" id="chatAttachmentTray" aria-live="polite"></div>
-                  <div class="df-chat-input-shell">
+                  <div class="df-chat-composer-row">
+                    <div class="df-chat-active-model" id="chatActiveModel" aria-live="polite" hidden>
+                      <span class="df-chat-active-model-title" id="chatActiveModelTitle"></span>
+                      <span class="df-chat-active-model-id" id="chatActiveModelId"></span>
+                      <span class="df-chat-active-model-tag" id="chatActiveModelTag" hidden></span>
+                    </div>
+                    <div class="df-chat-input-shell">
                     <input id="chatFilePick" type="file" accept="image/*,.txt,.md,.markdown,.json,.csv,.tsv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.xml,.yaml,.yml,.toml,.ini,.cfg,.sql,.sh,.ps1" multiple hidden>
                     <textarea id="chatInput" class="df-chat-input" rows="1" placeholder="Message the model… (Enter to send, Shift+Enter for newline)" disabled></textarea>
                     <div class="df-chat-input-actions">
                       <button type="button" class="df-chat-input-icon df-chat-attach-btn" id="chatAttachBtn" title="Attach images or text files" aria-label="Attach files">📎</button>
                       <button type="button" class="df-chat-input-icon df-chat-clear-btn" id="chatClearBtn" title="Clear this chat" aria-label="Clear this chat" disabled>×</button>
                     </div>
+                  </div>
                   </div>
                 </div>
                 <button type="button" class="lm-btn primary df-chat-send" id="chatSendBtn" disabled aria-label="Send message">Send</button>
@@ -526,7 +533,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.230</strong>
+                <strong id="dfAboutVersion">v0.3.231</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -734,6 +741,7 @@ try {
 
             <div class="lm-settings-nav-section">Integrations</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="int-mcp">API clients</button>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="int-api-providers">API providers</button>
           </nav>
 
           <div class="lm-settings-content">
@@ -1272,7 +1280,30 @@ try {
               </section>
             </div>
 
-            <div class="lm-settings-panel" data-settings-panel="rt-runtimes">
+            <div class="lm-settings-panel" data-settings-panel="int-api-providers">
+              <div class="lm-settings-header">
+                <h2>API providers</h2>
+                <div class="lm-settings-header-actions">
+                  <button class="lm-btn primary small" type="button" id="settingsApiProviderAdd">Add provider</button>
+                </div>
+              </div>
+              <p class="lm-setting-desc" data-settings-search="deepseek openai groq openrouter together fireworks mistral api provider cloud key">Connect cloud OpenAI-compatible APIs. Each provider is a card — enable it, pick active models, and they appear on the Console gateway alongside local engines. Keys stay in local <code>config.json</code> (never committed) and can be overridden with env vars.</p>
+              <div class="lm-api-providers-list" id="settingsApiProvidersList">
+                <p class="lm-setting-desc">Loading providers…</p>
+              </div>
+              <section class="lm-settings-section">
+                <div class="lm-settings-section-head">
+                  <strong>Gateway</strong>
+                  <p class="lm-setting-desc">Cloud models use the same OpenAI base URL as local engines.</p>
+                </div>
+                <div class="lm-setting-row lm-setting-row-path">
+                  <div><strong>OpenAI base URL</strong></div>
+                  <code class="lm-settings-path" id="settingsApiProvidersGatewayUrl">http://127.0.0.1:8001/v1</code>
+                </div>
+              </section>
+            </div>
+
+<div class="lm-settings-panel" data-settings-panel="rt-runtimes">
               <div class="lm-settings-header"><h2>Speech &amp; runtimes</h2></div>
               <p class="lm-setting-desc">Device policy, CPU fallback, and memory budget for Piper, Whisper, and other non-llama runtimes. FreeToken runs through WSL2/Linux with NVIDIA/CUDA. Install vLLM, Transformers, or FreeToken from Downloads &amp; engines.</p>
 
@@ -1791,7 +1822,42 @@ try {
     </div>
   </div>
 
-  <!-- Dark in-app delete confirmation (no native Windows confirm box). -->
+  
+    <!-- API provider add / edit wizard -->
+    <div class="lm-modal" id="apiProviderWizardModal" aria-hidden="true">
+      <div class="lm-modal-backdrop">
+        <div class="lm-modal-dialog lm-api-provider-dialog" role="dialog" aria-modal="true" aria-labelledby="apiProviderWizardTitle">
+          <div class="lm-modal-head df-confirm-head lm-api-provider-head">
+            <div class="lm-api-provider-head-text">
+              <div class="df-update-kicker" id="apiProviderWizardKicker">API providers</div>
+              <h2 id="apiProviderWizardTitle">Add provider</h2>
+              <p class="lm-setting-desc" id="apiProviderWizardSubtitle">Choose a known OpenAI-compatible provider or add a custom endpoint.</p>
+            </div>
+            <div class="lm-api-provider-head-actions">
+              <div class="lm-api-provider-enable-toggle" id="apiProviderWizardEnableWrap" hidden>
+                <span class="lm-api-provider-enable-label">Enable</span>
+                <label class="lm-toggle small" title="Enable provider">
+                  <input type="checkbox" id="apiProviderWizardEnabled">
+                  <span class="lm-toggle-track"></span>
+                </label>
+              </div>
+              <button class="lm-icon-btn" type="button" id="apiProviderWizardClose" aria-label="Close">&times;</button>
+            </div>
+          </div>
+          <div class="lm-modal-scroll" id="apiProviderWizardBody">
+          </div>
+          <div class="lm-modal-footer">
+            <button class="lm-btn ghost" type="button" id="apiProviderWizardBack">Back</button>
+            <div style="flex:1"></div>
+            <button class="lm-btn ghost" type="button" id="apiProviderWizardCancel">Cancel</button>
+            <button class="lm-btn ghost" type="button" id="apiProviderWizardTest">Test &amp; fetch models</button>
+            <button class="lm-btn primary" type="button" id="apiProviderWizardSave">Save provider</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+<!-- Dark in-app delete confirmation (no native Windows confirm box). -->
   <div class="lm-modal df-confirm-modal" id="deleteModelConfirmModal" aria-hidden="true" data-no-dismiss>
     <div class="lm-modal-backdrop">
       <div class="lm-modal-dialog df-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="deleteModelConfirmTitle">

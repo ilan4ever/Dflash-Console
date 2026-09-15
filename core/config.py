@@ -273,6 +273,15 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     else:
         cfg['remote_nodes'] = normalize_remote_nodes(remote_nodes)
 
+    try:
+        from core.api_providers import normalize_api_providers
+
+        cfg['api_providers'] = normalize_api_providers(cfg.get('api_providers'))
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f'api_providers: {exc}') from exc
+
     return cfg
 
 
@@ -558,6 +567,7 @@ def normalize_ui_layout(raw: Any) -> dict[str, Any]:
         'gw-engines', 'gw-network', 'gw-behavior', 'gw-preset',
         'rt-runtimes',
         'int-mcp',
+        'int-api-providers',
     }
     if 'settings_panel' in raw:
         panel = str(raw.get('settings_panel') or '').strip()
@@ -596,6 +606,9 @@ def load_config() -> dict[str, Any]:
     data['download_settings'] = normalize_download_settings(data.get('download_settings'))
     if 'remote_nodes' in data:
         data['remote_nodes'] = normalize_remote_nodes(data.get('remote_nodes'))
+    from core.api_providers import normalize_api_providers
+
+    data['api_providers'] = normalize_api_providers(data.get('api_providers'))
     if 'ui_layout' in data:
         data['ui_layout'] = normalize_ui_layout(data.get('ui_layout'))
     return validate_config(data)

@@ -8,7 +8,7 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 > supported platform**; Linux and macOS are not supported or tested (see
 > [Platform support](#platform-support) below).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.230
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.231
 
 ## Download (Windows)
 
@@ -87,7 +87,7 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.230)
+### Recent improvements (v0.3.231)
 
 - **Engine standby** — Running toggle gates load/chat until you arm the pipeline
 - **External GPU cards** — OneVoice, LM Studio, and other apps on the GPU; compact mobile layout; loading state expires when models are ready

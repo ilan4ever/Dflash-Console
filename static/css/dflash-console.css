@@ -2338,6 +2338,259 @@ body.lm-resizing-logs {
   text-align: center;
 }
 
+
+.lm-api-providers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0 20px;
+}
+
+.lm-api-providers-empty {
+  padding: 20px 16px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.lm-api-provider-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.lm-api-provider-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.lm-api-provider-card-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.lm-api-provider-card-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.lm-api-provider-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+
+.lm-api-provider-dialog .lm-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px 8px;
+}
+
+.lm-api-provider-dialog .lm-modal-scroll {
+  padding-top: 8px;
+}
+
+.lm-api-provider-dialog {
+  max-width: min(760px, calc(100vw - 32px));
+}
+
+.lm-api-provider-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.lm-api-provider-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: inherit;
+  cursor: pointer;
+}
+
+.lm-api-provider-pick:hover:not(:disabled) {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.lm-api-provider-pick:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.lm-api-provider-models-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.lm-api-provider-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.lm-api-provider-head {
+  align-items: flex-start;
+}
+
+.lm-api-provider-head-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.lm-api-provider-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.lm-api-provider-enable-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.lm-api-provider-enable-toggle[hidden] {
+  display: none !important;
+}
+
+.lm-api-provider-enable-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted, rgba(255, 255, 255, 0.72));
+}
+
+.lm-api-provider-fields-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 1.2fr);
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 720px) {
+  .lm-api-provider-fields-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lm-api-provider-fields-row .lm-field {
+  margin-bottom: 0;
+}
+
+.lm-api-provider-manual-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.lm-api-provider-manual-add .lm-input {
+  flex: 1;
+}
+
+.lm-api-provider-model-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.lm-api-provider-model-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.lm-api-provider-model-check {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.lm-api-provider-model-label {
+  flex: 1 1 140px;
+  min-width: 120px;
+  max-width: 260px;
+  height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lm-api-provider-model-id {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  word-break: break-all;
+  background: transparent;
+  padding: 0;
+}
+
+.lm-api-provider-model-sub {
+  flex: 1 0 100%;
+  padding-left: 28px;
+  font-size: 11px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.55));
+  line-height: 1.35;
+}
+
+.lm-api-provider-model-aside {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.lm-api-provider-model-remove {
+  width: 24px;
+  height: 24px;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.lm-api-provider-model-remove:hover {
+  opacity: 1;
+}
+
 .lm-node-card {
   display: flex;
   align-items: flex-start;
@@ -3125,14 +3378,14 @@ body.lm-resizing-logs {
 
 .lm-settings-layout {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: 182px minmax(0, 1fr);
   min-height: 480px;
   max-height: min(85vh, 700px);
 }
 
 .lm-settings-search-bar {
   position: relative;
-  padding: 12px 16px 0;
+  padding: 8px 12px 0;
 }
 
 .lm-settings-search-input {
@@ -3439,23 +3692,23 @@ body.lm-resizing-logs {
 
 .lm-settings-nav {
   border-right: 1px solid var(--border-soft);
-  padding: 16px 10px;
+  padding: 10px 8px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .lm-settings-nav-title {
   font-weight: 600;
-  padding: 0 10px 12px;
+  padding: 0 8px 8px;
   color: var(--text-muted);
 }
 
 .lm-settings-nav-section {
   font-size: 11px;
   color: var(--text-dim);
-  padding: 16px 10px 6px;
+  padding: 10px 8px 4px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -3465,10 +3718,12 @@ body.lm-resizing-logs {
   border: none;
   color: var(--text-muted);
   text-align: left;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
+  line-height: 1.35;
+  min-height: 28px;
 }
 
 .lm-settings-nav-item:hover {
@@ -3486,8 +3741,8 @@ body.lm-resizing-logs {
 }
 
 .lm-settings-note {
-  margin: 0 0 16px;
-  padding: 12px 14px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.03);
@@ -3498,7 +3753,7 @@ body.lm-resizing-logs {
 
 .lm-settings-account {
   margin-top: auto;
-  padding: 12px 10px 4px;
+  padding: 8px 8px 4px;
   color: var(--text-dim);
   font-size: 12px;
 }
@@ -3510,7 +3765,7 @@ body.lm-resizing-logs {
 
 .lm-settings-panel {
   display: none;
-  padding: 20px 24px 32px;
+  padding: 14px 18px 18px;
 }
 
 .lm-settings-panel.active {
@@ -3690,41 +3945,68 @@ body.lm-resizing-logs {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .lm-settings-header h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 17px;
 }
 
 .lm-settings-section {
-  margin-bottom: 24px;
-  padding-bottom: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--border-soft);
 }
 
 .lm-settings-section h3 {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   font-size: 12px;
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
+.lm-settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
 .lm-setting-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  padding: 10px 0;
+  gap: 12px;
+  padding: 6px 0;
+  flex-wrap: nowrap;
+  min-height: 28px;
+}
+
+.lm-setting-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.lm-setting-row > :not(:first-child) {
+  flex-shrink: 0;
+}
+
+.lm-setting-row-path {
   flex-wrap: wrap;
 }
 
+.lm-setting-row-path > :first-child {
+  flex: 0 0 auto;
+}
+
 .lm-setting-desc {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   font-size: 11px;
   color: var(--text-dim);
+  line-height: 1.35;
 }
 
 .lm-segment {
@@ -4418,6 +4700,16 @@ body.lm-resizing-hf-search .lm-search-split-handle {
     flex-wrap: wrap;
     border-right: none;
     border-bottom: 1px solid var(--border-soft);
+  }
+
+  .lm-setting-row {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 700px) {
+  .lm-setting-row {
+    flex-wrap: wrap;
   }
 }
 

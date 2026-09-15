@@ -73,7 +73,50 @@
     return path.includes('huggingface') && !path.endsWith('.gguf');
   }
 
+  function isCloudApiModel(model) {
+    if (!model) return false;
+    if (model.cloud === true || model.always_ready === true) return true;
+    if (model.cloud_provider || model.provider_id) return true;
+    const source = String(model.source || '').trim().toLowerCase();
+    return source === 'cloud' || source === 'api';
+  }
+
+  function withApiGroupSuffix(label) {
+    const text = String(label || '').trim();
+    if (!text) return 'API';
+    if (/\(\s*API\s*\)\s*$/i.test(text)) return text;
+    return `${text} (API)`;
+  }
+
+  function cloudProviderDisplayLabel(model) {
+    const sourceLabel = String(model?.source_label || '').trim().replace(/\s*\(\s*API\s*\)\s*$/i, '').trim();
+    if (sourceLabel) return sourceLabel;
+    const provider = String(model?.provider || '').trim().replace(/\s*\(\s*API\s*\)\s*$/i, '').trim();
+    if (provider) return provider;
+    const id = String(model?.cloud_provider || model?.provider_id || model?.source || '').trim();
+    const known = {
+      deepseek: 'DeepSeek',
+      openai: 'OpenAI',
+      groq: 'Groq',
+      openrouter: 'OpenRouter',
+      together: 'Together',
+      fireworks: 'Fireworks',
+      mistral: 'Mistral',
+    };
+    const lower = id.toLowerCase();
+    if (known[lower]) return known[lower];
+    if (id && lower !== 'cloud' && lower !== 'api') {
+      return id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    return 'API';
+  }
+
   function externalGroupLabelFor(model) {
+    if (isCloudApiModel(model)) {
+      return withApiGroupSuffix(cloudProviderDisplayLabel(model));
+    }
+    const sourceLabel = String(model?.source_label || '').trim();
+    if (sourceLabel) return sourceLabel;
     const source = String(model?.source || '').trim().toLowerCase();
     if (source === 'lmstudio') return 'LM Studio';
     if (source === 'ollama') return 'Ollama';
@@ -85,11 +128,28 @@
   }
 
   function sourceIdFor(model) {
-    return String(model?.source || model?.provider || model?.library_label || model?.library || 'Local').trim() || 'Local';
+    if (isCloudApiModel(model)) {
+      const providerId = String(model?.cloud_provider || model?.provider_id || '').trim();
+      if (providerId) return providerId;
+      const source = String(model?.source || '').trim();
+      if (source && !['cloud', 'api'].includes(source.toLowerCase())) return source;
+    }
+    return String(model?.source || model?.cloud_provider || model?.provider_id || model?.provider || model?.library_label || model?.library || 'Local').trim() || 'Local';
   }
 
   function sourceLabelFor(model) {
-    return sourceIdFor(model).replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    if (isCloudApiModel(model)) {
+      return withApiGroupSuffix(cloudProviderDisplayLabel(model));
+    }
+    const sourceLabel = String(model?.source_label || '').trim();
+    if (sourceLabel) return sourceLabel;
+    const provider = String(model?.provider || '').trim();
+    if (provider) return provider;
+    const id = sourceIdFor(model);
+    const known = { deepseek: 'DeepSeek', lmstudio: 'LM Studio', ollama: 'Ollama' };
+    const lower = id.toLowerCase();
+    if (known[lower]) return known[lower];
+    return id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   function sourceOptions(models) {
@@ -274,6 +334,9 @@
   }
 
   function defaultOptionLabel(model) {
+    if (isCloudApiModel(model)) {
+      return String(model.label || model.id || model.model_id || 'Model').trim() || 'Model';
+    }
     const isStack = isDflashStack(model);
     const name = isStack
       ? stackDisplayName(model)
@@ -468,6 +531,7 @@
     familyLabelFor,
     isConsoleRegisteredModel,
     isConsoleDiskPath,
+    isCloudApiModel,
     sourceIdFor,
     sourceLabelFor,
     sourceOptions,

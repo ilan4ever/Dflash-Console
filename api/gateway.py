@@ -381,6 +381,35 @@ async def list_models() -> dict[str, Any]:
             listed_ids.add(alias)
     except HTTPException:
         pass
+    from core.api_providers import cloud_model_entries, with_api_label
+
+    for entry in cloud_model_entries(cfg):
+        mid = str(entry.get('id') or '').strip()
+        if not mid or mid.lower() in listed_ids:
+            continue
+        provider_label = str(entry.get('provider_label') or entry.get('provider_id') or 'cloud')
+        model_label = str(entry.get('label') or mid).strip() or mid
+        public_name = with_api_label(model_label)
+        owned_by = with_api_label(provider_label)
+        data.append({
+            'id': mid,
+            'object': 'model',
+            'created': 0,
+            'owned_by': owned_by,
+            'name': public_name,
+            'meta': {
+                'engine': owned_by,
+                'display_name': public_name,
+                'provider_id': str(entry.get('provider_id') or ''),
+                'provider_label': provider_label,
+                'cloud': True,
+                'source': 'api',
+                'api': True,
+                'canonical_id': mid,
+                'model_label': model_label,
+            },
+        })
+        listed_ids.add(mid.lower())
     return {'object': 'list', 'data': data}
 
 
@@ -441,6 +470,72 @@ async def _forward_chat(
     return Response(content=content, status_code=status, media_type=media_type)
 
 
+async def _forward_cloud_chat(
+    request: Request,
+    *,
+    provider: dict[str, Any],
+    body: bytes,
+) -> Response:
+    """Proxy chat completions to an external OpenAI-compatible provider."""
+    from core.api_providers import chat_completions_url, resolve_provider_api_key
+
+    api_key = resolve_provider_api_key(provider)
+    if not api_key:
+        raise HTTPException(status_code=401, detail='cloud provider API key is not configured')
+    url = chat_completions_url(provider)
+    provider_id = str(provider.get('id') or 'cloud')
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}',
+        'Accept': request.headers.get('accept') or 'application/json',
+    }
+    stream_requested = wants_stream(body)
+    # Never log api_key or Authorization.
+    logger.info('gateway cloud chat -> provider=%s stream=%s', provider_id, stream_requested)
+
+    async def stream() -> AsyncIterator[bytes]:
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream('POST', url, content=body, headers=headers) as upstream:
+                    if upstream.status_code >= 400:
+                        raw = await upstream.aread()
+                        error_payload = _upstream_error_payload(raw, int(upstream.status_code))
+                        encoded = json.dumps(error_payload).encode('utf-8')
+                        if stream_requested:
+                            yield f'data: {encoded.decode("utf-8")}\n\n'.encode('utf-8')
+                            yield b'data: [DONE]\n\n'
+                        else:
+                            yield encoded
+                        return
+                    async for chunk in upstream.aiter_bytes():
+                        yield chunk
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.WriteError) as exc:
+            logger.warning('gateway cloud stream drop provider=%s: %s', provider_id, exc)
+            if stream_requested:
+                payload = json.dumps({'error': {'message': str(exc), 'type': 'stream_error'}})
+                yield f'data: {payload}\n\n'.encode('utf-8')
+                yield b'data: [DONE]\n\n'
+            else:
+                yield json.dumps({'error': {'message': str(exc), 'type': 'stream_error'}}).encode('utf-8')
+
+    if stream_requested:
+        response = StreamingResponse(stream(), media_type='text/event-stream', headers=_STREAM_HEADERS)
+        response.headers['X-DFlash-Provider-Id'] = provider_id
+        return response
+    async with httpx.AsyncClient(timeout=None) as client:
+        upstream = await client.post(url, content=body, headers=headers)
+        content = upstream.content
+        media_type = upstream.headers.get('content-type', 'application/json')
+        status = upstream.status_code
+    if status >= 400:
+        error_payload = _upstream_error_payload(content, status)
+        content = json.dumps(error_payload).encode('utf-8')
+        media_type = 'application/json'
+    response = Response(content=content, status_code=status, media_type=media_type)
+    response.headers['X-DFlash-Provider-Id'] = provider_id
+    return response
+
+
 @gateway_app.post('/v1/chat/completions')
 async def chat_completions(request: Request) -> Response:
     cfg = load_config()
@@ -454,6 +549,19 @@ async def chat_completions(request: Request) -> Response:
         model = payload.get('model')
         if not isinstance(model, str):
             model = ''
+    from core.api_providers import resolve_cloud_provider_for_model
+
+    cloud_provider = resolve_cloud_provider_for_model(cfg, model)
+    if cloud_provider is not None:
+        body: bytes | None = None
+        if isinstance(payload, dict):
+            try:
+                body = json.dumps(payload).encode('utf-8')
+            except Exception:
+                body = None
+        if body is None:
+            body = await request.body()
+        return await _forward_cloud_chat(request, provider=cloud_provider, body=body)
     server, upstream = await _resolve_chat_target(cfg, model)
     sid = str(server.get('id') or '')
     if sid:
