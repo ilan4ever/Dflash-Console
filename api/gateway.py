@@ -442,6 +442,17 @@ async def _forward_chat(
                 raw = await exc.response.aread()
             except Exception:
                 raw = b''
+            try:  # DFLASH_LOG_400_BODIES (stream path)
+                from pathlib import Path as _P
+                _log = _P(__file__).resolve().parents[1] / 'logs' / 'gateway-400-bodies.log'
+                _log.parent.mkdir(parents=True, exist_ok=True)
+                with _log.open('a', encoding='utf-8') as _fh:
+                    _fh.write(
+                        f"stream status={status} url={url} "
+                        f"req={body[:2000]!r} resp={raw[:4000]!r}\n"
+                    )
+            except Exception:
+                pass
             error_payload = _upstream_error_payload(raw, status)
             encoded = json.dumps(error_payload).encode('utf-8')
             if stream_requested:
@@ -466,6 +477,14 @@ async def _forward_chat(
         media_type = upstream.headers.get('content-type', 'application/json')
         status = upstream.status_code
     if status >= 400:
+        try:  # DFLASH_LOG_400_BODIES
+            from pathlib import Path as _P
+            _log = _P(__file__).resolve().parents[1] / 'logs' / 'gateway-400-bodies.log'
+            _log.parent.mkdir(parents=True, exist_ok=True)
+            with _log.open('a', encoding='utf-8') as _fh:
+                _fh.write(f"status={status} url={url} body={content[:4000]!r}\n")
+        except Exception:
+            pass
         return Response(content=content, status_code=status, media_type=media_type)
     return Response(content=content, status_code=status, media_type=media_type)
 
@@ -576,17 +595,32 @@ async def chat_completions(request: Request) -> Response:
             body = json.dumps(payload).encode('utf-8')
         except Exception:
             body = None
+    disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
     if body is not None:
-        from core.chat_proxy import apply_reasoning_policy, validate_reasoning_chat_request
+        from core.chat_proxy import apply_reasoning_policy, resolve_disable_reasoning_for_chat
+        from core.client_identity import resolve_client_label, LABEL_UNKNOWN_API
 
-        disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
         reasoning_model = model_has_reasoning(server)
-        reasoning_error = validate_reasoning_chat_request(
+        client_label = resolve_client_label(request)
+        attributed = bool(client_label) and client_label != LABEL_UNKNOWN_API
+        disable_reasoning, reasoning_error = resolve_disable_reasoning_for_chat(
             body,
             reasoning=reasoning_model,
-            disable_reasoning=disable_reasoning,
+            disable_header=disable_reasoning,
+            attributed_client=attributed,
         )
         if reasoning_error:
+            try:  # DFLASH_LOG_400_BODIES (gateway reject)
+                from pathlib import Path as _P
+                _log = _P(__file__).resolve().parents[1] / 'logs' / 'gateway-400-bodies.log'
+                _log.parent.mkdir(parents=True, exist_ok=True)
+                with _log.open('a', encoding='utf-8') as _fh:
+                    _fh.write(
+                        f"gateway_reject reason=reasoning_budget_too_low "
+                        f"client={client_label!r} body={body[:2000]!r}\n"
+                    )
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -604,7 +638,7 @@ async def chat_completions(request: Request) -> Response:
             disable_reasoning=disable_reasoning,
         )
     url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
-    filter_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
+    filter_reasoning = disable_reasoning
     response = await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
     if isinstance(response, Response):
         response.headers['X-DFlash-Server-Id'] = sid

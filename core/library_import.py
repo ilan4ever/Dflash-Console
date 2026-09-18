@@ -349,10 +349,26 @@ def find_existing_in_console_library(
     *,
     cfg: dict[str, Any] | None = None,
     preset: str = 'dflash',
+    repo_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return GGUF files with the same basename already stored in the Console library."""
+    """Return files with the same basename already stored in the Console library.
+
+    Generic shared weight names (``model.safetensors``, etc.) never match by
+    basename alone unless ``repo_id`` is provided and the path contains
+    ``author/repo``.
+    """
+    from core.hf_local_match import is_generic_weight_filename
+
     name = Path(str(filename or '').strip()).name
     if not name:
+        return []
+    repo = str(repo_id or '').strip().strip('/')
+    author = repo_name = ''
+    if repo and '/' in repo:
+        author, repo_name = repo.split('/', 1)
+    generic = is_generic_weight_filename(name)
+    if generic and (not author or not repo_name):
+        # Basename-only scan would collide across unrelated HF repos.
         return []
     root = _console_import_root(preset, cfg=cfg or load_config())
     if not root.is_dir():
@@ -363,6 +379,11 @@ def find_existing_in_console_library(
         for path in root.rglob(name):
             if not path.is_file() or path.name.lower() != name.lower():
                 continue
+            if generic:
+                normalized = path.as_posix().lower()
+                needle = f'{author.lower()}/{repo_name.lower()}'.replace('\\', '/')
+                if needle not in normalized.replace('\\', '/'):
+                    continue
             key = str(path.resolve()).lower()
             if key in seen:
                 continue

@@ -1481,7 +1481,7 @@
     const state = stackMenuState(model);
     const result = state.result || {};
     const findDraftAction = canFindCompatibleDraft(model)
-      ? `<button type="button" data-cmd="find-attach-draft" title="Find, validate, and attach the correct DFlash accelerator">Find and attach compatible DFlash draft…</button>`
+      ? `<button type="button" data-cmd="find-attach-draft" title="Finds and downloads the right speed-up draft for this model">Get matching draft…</button>`
       : '';
     if (result.reason_code === 'already-stack' && canReplaceStackDraft(model)) {
       return `
@@ -2757,20 +2757,56 @@
       const job = data?.job || data;
       if (job?.status === 'done') {
         if (job.post_action_error || job.attach_result?.success === false) {
-          throw new Error(job.post_action_error || 'The downloaded draft failed compatibility validation.');
+          throw new Error(job.post_action_error || 'The downloaded draft could not be attached.');
         }
         await refresh({ rebindInspector: true });
         await window.DFlashServerLive?.refresh?.();
         return;
       }
       if (job?.status === 'error') {
-        throw new Error(job.error || 'DFlash draft download failed.');
+        throw new Error(job.error || 'Draft download failed.');
       }
       const progress = job?.progress;
-      toast(progress != null ? `Downloading compatible DFlash draft… ${progress}%` : 'Downloading compatible DFlash draft…');
+      toast(progress != null ? `Downloading the matching draft… ${progress}%` : 'Downloading the matching draft…');
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }
-    throw new Error('Timed out waiting for the compatible DFlash draft download.');
+    throw new Error('Timed out waiting for the draft download.');
+  }
+
+  async function findAndAttachDraftForTarget({
+    targetPath,
+    serverId = null,
+    currentDraft = null,
+    dflashGeneration = 'auto',
+    model = null,
+  } = {}) {
+    const path = String(targetPath || model?.path || '').trim();
+    if (!path) {
+      throw new Error('Choose the full model first so we can find its matching draft.');
+    }
+    toast('Looking for the matching draft…');
+    const result = await api('/api/stacks/find-and-attach-draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      timeoutMs: 30000,
+      body: JSON.stringify({
+        target_path: path,
+        server_id: serverId || model?.server_id || null,
+        current_draft: currentDraft || model?.draft_path || null,
+        dflash_generation: dflashGeneration || model?.dflash_generation || 'auto',
+        attach: true,
+      }),
+    });
+    if (result.pending_attach && result.download?.job_id) {
+      toast('Downloading the matching draft…');
+      await waitForDraftAttach(result.download.job_id, model || { path });
+      toast('Draft ready');
+      return result;
+    }
+    await refresh({ rebindInspector: true });
+    await window.DFlashServerLive?.refresh?.();
+    toast('Draft ready');
+    return result;
   }
 
   async function runContextCommand(cmd, model) {
@@ -2819,34 +2855,19 @@
     }
     if (cmd === 'find-attach-draft') {
       if (!canFindCompatibleDraft(model)) {
-        toast('Choose the full target model to find its DFlash draft.', false);
+        toast('Choose the full model first so we can find its matching draft.', false);
         return;
       }
-      toast('Searching local files and Hugging Face for a compatible DFlash draft…');
       try {
-        const result = await api('/api/stacks/find-and-attach-draft', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          timeoutMs: 30000,
-          body: JSON.stringify({
-            target_path: model.path,
-            server_id: model.server_id || null,
-            current_draft: model.draft_path || null,
-            dflash_generation: model.dflash_generation || 'auto',
-            attach: true,
-          }),
+        await findAndAttachDraftForTarget({
+          targetPath: model.path,
+          serverId: model.server_id || null,
+          currentDraft: model.draft_path || null,
+          dflashGeneration: model.dflash_generation || 'auto',
+          model,
         });
-        if (result.pending_attach && result.download?.job_id) {
-          toast('Compatible draft found. Download started…');
-          await waitForDraftAttach(result.download.job_id, model);
-        } else {
-          await refresh({ rebindInspector: true });
-          await window.DFlashServerLive?.refresh?.();
-          const candidate = result.candidate?.filename || result.candidate?.title || 'compatible draft';
-          toast(`Attached ${candidate}`);
-        }
       } catch (err) {
-        toast(err.message || 'Could not find a compatible DFlash draft.', false);
+        toast(err.message || 'Could not get the matching draft.', false);
       }
       return;
     }
@@ -4110,6 +4131,8 @@
   window.DFlashModelsLive = {
     apiModelIdentifier,
     displayModelName,
+    findAndAttachDraftForTarget,
+    waitForDraftAttach,
     refresh,
     selectModel,
     loadModel,

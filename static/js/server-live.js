@@ -1544,7 +1544,12 @@
       || row.model_kind === 'embedding'
       || EMBEDDING_PROFILES.has(server.profile);
 
+    const needsDraft = cardNeedsMatchingDraft(server, row);
+    const draftMenu = needsDraft
+      ? `<button type="button" data-cmd="get-matching-draft" class="is-primary" title="Finds and downloads the right speed-up draft for this model">Get matching draft…</button><hr>`
+      : '';
     menu.innerHTML = `
+      ${draftMenu}
       <button type="button" data-cmd="details">Show details</button>
       <button type="button" data-cmd="runtime">Show runtime settings</button>
       <button type="button" data-cmd="copy-url"${url ? '' : ' disabled'}>Copy API URL</button>
@@ -1586,6 +1591,10 @@
   }
 
   async function runCardContextCommand(cmd, server, row) {
+    if (cmd === 'get-matching-draft') {
+      await getMatchingDraftForCard(server, row);
+      return;
+    }
     if (cmd === 'details') {
       await selectLoadedCard(server, row, { tab: 'info' });
       return;
@@ -2322,10 +2331,111 @@
       : (unknown
         ? 'This external llama-server did not expose its draft argument; the live draft state cannot be verified.'
         : (needsRepair
-          ? 'This DFlash profile cannot load until a matching draft accelerator is attached.'
+          ? 'Click to find and download the matching speed-up draft for this model.'
           : 'This DFlash profile has a matching draft accelerator ready for its next load.'));
     const tone = active ? 'green' : (needsRepair ? 'orange' : 'yellow');
+    if (needsRepair) {
+      return `<span class="lm-tag ${tone} lm-engine-get-draft-badge" role="button" tabindex="0" data-action="get-matching-draft" title="${escapeHtml(title)}" style="cursor:pointer">${label}</span>`;
+    }
     return `<span class="lm-tag ${tone}" title="${escapeHtml(title)}">${label}</span>`;
+  }
+
+  function cardNeedsMatchingDraft(server, row) {
+    if (row?.draft_status === 'repair_required' || server?.draft_status === 'repair_required') return true;
+    const accelExpected = !!(row?.acceleration_expected || server?.acceleration_expected);
+    if (!accelExpected) return false;
+    const draftLoaded = row?.draft_loaded === true || server?.draft_loaded === true;
+    if (draftLoaded) return false;
+    const status = String(row?.draft_status || server?.draft_status || '').toLowerCase();
+    if (status === 'missing' || status === 'repair_required') return true;
+    const draftPath = String(row?.draft_path || server?.draft_path || '').trim();
+    return !draftPath;
+  }
+
+  function draftTargetPathForCard(server, row) {
+    const presentation = cardModelPresentation(row || {});
+    return String(
+      presentation?.path
+      || row?.path
+      || row?.model_path
+      || row?.target_path
+      || server?.target_path
+      || server?.model_path
+      || '',
+    ).trim();
+  }
+
+  async function getMatchingDraftForCard(server, row) {
+    const targetPath = draftTargetPathForCard(server, row);
+    const serverId = server?.id || row?.server_id || '';
+    const currentDraft = String(row?.draft_path || server?.draft_path || '').trim() || null;
+    const targetLabel = row?.label || row?.title || server?.label || targetPath.split(/[/\\]/).pop() || 'model';
+    const openWizard = async () => {
+      if (serverId && targetPath && window.DFlashStackWizard?.openReplaceDraft) {
+        await window.DFlashStackWizard.openReplaceDraft({
+          serverId,
+          targetPath,
+          targetLabel,
+          currentDraftPath: currentDraft || '',
+          currentDraftLabel: (currentDraft || '').split(/[/\\]/).pop() || '',
+          label: targetLabel,
+          allowHfAccelerator: true,
+        });
+        return;
+      }
+      if (targetPath && window.DFlashStackWizard?.open) {
+        await window.DFlashStackWizard.open({
+          targetPath,
+          targetLabel,
+          allowHfAccelerator: true,
+        });
+        return;
+      }
+      toast('Could not open the draft picker for this model.', false);
+    };
+
+    if (!targetPath) {
+      toast('Could not tell which model needs a draft.', false);
+      await openWizard();
+      return;
+    }
+
+    const helper = window.DFlashModelsLive?.findAndAttachDraftForTarget;
+    if (typeof helper === 'function') {
+      try {
+        await helper({
+          targetPath,
+          serverId: serverId || null,
+          currentDraft,
+          model: {
+            path: targetPath,
+            server_id: serverId || null,
+            draft_path: currentDraft,
+            label: targetLabel,
+          },
+        });
+        return;
+      } catch (err) {
+        const detail = err?.apiDetail || err?.detail || err?.data?.detail || null;
+        const code = detail?.reason_code || detail?.error || '';
+        const msg = String(err?.message || detail?.error || detail || '').toLowerCase();
+        const needsWizard = code === 'no-match'
+          || code === 'no-downloadable-candidate'
+          || msg.includes('no compatible')
+          || msg.includes('could not find')
+          || msg.includes('no matching');
+        if (needsWizard) {
+          toast('Opening the draft picker…');
+          await openWizard();
+          return;
+        }
+        toast(err?.message || 'Could not get the matching draft.', false);
+        return;
+      }
+    }
+
+    toast('Opening the draft picker…');
+    await openWizard();
   }
 
   function cardUsesDflashStack(row) {
@@ -2875,12 +2985,17 @@
     return visibleSlots.find((slot) => slot?.generating) || null;
   }
 
+  function isPureLiveTokenMetricsShell(host) {
+    if (!host) return false;
+    return host.children.length === 1
+      && !!host.firstElementChild?.classList?.contains('lm-token-metrics-live')
+      && !host.querySelector('.lm-model-card-token-last');
+  }
+
   function ensureLiveTokenMetricsDom(host) {
     if (!host) return;
-    const hasLive = !!host.querySelector('.lm-token-metrics-live');
-    const hasLast = !!host.querySelector('.lm-model-card-token-last');
-    // Pure live shell only: keep. Any last, missing live, or both -> replace with live-only HTML.
-    if (hasLive && !hasLast) return;
+    // Pure single-child live shell only. Any LAST remnant, mixed siblings, or missing live -> wipe.
+    if (isPureLiveTokenMetricsShell(host)) return;
     host.innerHTML = liveTokenMetricsRowHtml();
   }
 
@@ -3205,9 +3320,14 @@
 
       let hasMetrics = false;
       if (generating) {
-        // Desktop + mobile: never leave LAST metrics visible while generating (overlap bug on desktop).
-        host.querySelectorAll('.lm-model-card-token-last').forEach((el) => el.remove());
-        if (!host.querySelector('.lm-token-metrics-live')) {
+        // Nuclear: every generating sync must be a pure single-child live shell.
+        // Never leave LAST HTML as siblings of live (desktop foot overlap).
+        const needsLiveWipe = !isPureLiveTokenMetricsShell(host)
+          || !!host.querySelector('.lm-model-card-token-last')
+          || !host.querySelector('.lm-token-metrics-live')
+          || host.children.length !== 1
+          || (host.textContent || '').includes('LAST');
+        if (needsLiveWipe) {
           host.innerHTML = liveTokenMetricsRowHtml();
         }
         hasMetrics = patchLiveTokenMetricsHost(host, server, row, { forceLiveShell: true });
@@ -3215,6 +3335,7 @@
           hasMetrics = true;
         }
       } else {
+        // Idle: clear live-only shell and show last-only completion metrics.
         const tokenHtml = cardTokenMetricsRow({ server, row }) || '';
         hasMetrics = !!tokenHtml;
         if (host.innerHTML !== tokenHtml) {
@@ -5055,11 +5176,16 @@
     const target = event.target?.closest?.('[data-action]');
     if (!target || !event.currentTarget?.contains?.(target)) return;
     const action = target.getAttribute('data-action');
-    if (!['eject', 'stop', 'cancel-load', 'copy-to-console'].includes(action)) return;
+    if (!['eject', 'stop', 'cancel-load', 'copy-to-console', 'get-matching-draft'].includes(action)) return;
     event.stopPropagation();
     event.preventDefault();
 
     const card = target.closest('[data-server-id]');
+    if (action === 'get-matching-draft') {
+      const entry = entryForCard(card);
+      if (entry) void getMatchingDraftForCard(entry.server, entry.row);
+      return;
+    }
     if (action === 'eject') {
       const pid = card?.getAttribute('data-external-pid');
       if (pid) void ejectExternalLoad(Number(pid));

@@ -2256,12 +2256,15 @@ body.lm-resizing-logs {
 .lm-tag.dflash-logo-label {
   width: 78px;
   height: 15px;
-  padding: 0;
+  padding: 0 4px 0 5px;
+  box-sizing: border-box;
   background-color: rgba(5, 9, 22, 0.9);
   background-image: url('/assets/dflash_txt_logo.png');
-  background-position: center;
+  background-position: left center;
   background-repeat: no-repeat;
-  background-size: 88px auto;
+  background-size: contain;
+  background-origin: content-box;
+  background-clip: content-box;
   border: none;
   vertical-align: middle;
   overflow: hidden;

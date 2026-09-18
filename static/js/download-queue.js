@@ -62,18 +62,25 @@
     if (job?.retrying) {
       return elapsed ? `Reconnecting… · ${elapsed}` : 'Reconnecting…';
     }
+    const detail = String(job?.detail || '').trim();
     const total = Number(job?.bytes_total);
     const read = Number(job?.bytes_read);
     const shardTotal = Number(job?.shard_total);
     const shardPresent = Number(job?.shard_present);
     const done = job?.status === 'done';
+    const kind = String(job?.kind || '').toLowerCase();
+    const finishing = kind === 'repo-complete' || kind === 'finishing';
     let main = 'Starting…';
+    let pctNum = null;
     if (shardTotal > 1 && shardPresent >= 0) {
       const shardPct = Math.max(0, Math.min(done ? 100 : 99, Math.round((shardPresent / shardTotal) * 100)));
+      pctNum = shardPct;
       main = `${shardPresent}/${shardTotal} shards (${shardPct}%)`;
     } else if (total > 0 && read > 0) {
       const raw = (read / total) * 100;
+      // Show real combined progress while bytes are still moving; hard-cap 99 only until done.
       const pct = done ? Math.min(100, Math.round(raw)) : Math.max(0, Math.min(99, Math.round(raw)));
+      pctNum = pct;
       main = `${pct}%`;
     } else if (read > 0) {
       main = formatBytes(read);
@@ -82,8 +89,19 @@
     } else {
       const pct = Number(job?.progress);
       if (Number.isFinite(pct) && pct > 0) {
-        main = `${done ? Math.min(100, Math.round(pct)) : Math.min(99, Math.round(pct))}%`;
+        pctNum = done ? Math.min(100, Math.round(pct)) : Math.min(99, Math.round(pct));
+        main = `${pctNum}%`;
       }
+    }
+    if (!done && job?.status === 'downloading' && detail) {
+      if (finishing || (pctNum != null && pctNum >= 99) || (total > 0 && read > 0 && read >= total)) {
+        // Avoid a silent 99% plateau during companion/finalize work.
+        main = pctNum != null ? `${detail} · ${Math.min(99, pctNum)}%` : detail;
+      } else {
+        main = `${detail} · ${main}`;
+      }
+    } else if (!done && job?.status === 'downloading' && pctNum != null && pctNum >= 99 && !(total > 0 && read < total)) {
+      main = 'Finishing download…';
     }
     return elapsed ? `${main} · ${elapsed}` : main;
   }

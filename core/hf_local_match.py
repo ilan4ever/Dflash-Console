@@ -12,6 +12,53 @@ from core.model_paths import enabled_scan_roots, get_model_libraries
 from core.stack_match import _param_token
 
 
+
+_GENERIC_WEIGHT_FILENAMES = frozenset({
+    'model.safetensors',
+    'model.safetensors.index.json',
+    'pytorch_model.bin',
+    'pytorch_model.bin.index.json',
+    'tf_model.h5',
+    'flax_model.msgpack',
+    'model.ckpt',
+    'diffusion_pytorch_model.safetensors',
+    'adapter_model.safetensors',
+    'consolidated.safetensors',
+    'config.json',
+    'tokenizer.json',
+    'tokenizer.model',
+    'vocab.json',
+    'merges.txt',
+})
+
+_QUANT_TOKEN_RE = re.compile(
+    r'(?:^|[._+-])(?:q[2-8]_[0-9a-z_]+|iq[1-4]_[0-9a-z_]+|f16|f32|bf16|k_m|k_s|xxs|xs|xl)(?:$|[._+-])',
+    re.I,
+)
+
+
+def is_generic_weight_filename(filename: str) -> bool:
+    """True for shared HF weight/config names that must never match by basename alone."""
+    name = Path(str(filename or '').strip()).name.lower()
+    return bool(name) and name in _GENERIC_WEIGHT_FILENAMES
+
+
+def allows_basename_only_match(filename: str) -> bool:
+    """True when a basename-only local match is distinctive enough to be safe."""
+    name = Path(str(filename or '').strip()).name
+    if not name or is_generic_weight_filename(name):
+        return False
+    lower = name.lower()
+    stem = Path(lower).stem
+    if lower.endswith('.gguf'):
+        if len(stem) > 16 and (_QUANT_TOKEN_RE.search(stem) or re.search(r'\d', stem)):
+            return True
+        return len(stem) > 24
+    if len(name) > 24 and re.search(r'\d', name) and _QUANT_TOKEN_RE.search(lower):
+        return True
+    return False
+
+
 def is_auxiliary_gguf_filename(filename: str) -> bool:
     """GGUF sidecars that should not count as an installed model weight file."""
     lower = str(filename or '').strip().lower()
@@ -147,7 +194,9 @@ def find_local_matches(repo_id: str, filename: str, *, cfg: dict[str, Any] | Non
         if repo_tokens and sum(1 for token in repo_tokens if token.replace('-', '') in path_flat) >= min(2, len(repo_tokens)):
             add_match(path, 'repo_tokens', row)
 
-    if not matches:
+    # Basename-only fallback: never for generic shared weight names (model.safetensors etc.).
+    # Keep only for distinctive names (GGUF quants / long unique stems) so fork rematches still work.
+    if not matches and allows_basename_only_match(target_name):
         scan_prefixes: list[str] = []
         for root, *_rest in enabled_scan_roots(config):
             try:

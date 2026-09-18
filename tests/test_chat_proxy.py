@@ -394,3 +394,73 @@ def test_build_server_status_running_not_ready(monkeypatch):
     assert live['status'] == 'running'
     assert live['loaded_models'] == []
     assert live['ready_for_chat'] is False
+
+def test_resolve_disable_reasoning_autoheals_attributed_low_max_tokens():
+    from core.chat_proxy import resolve_disable_reasoning_for_chat
+
+    raw = json.dumps({
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 16,
+        'reasoning_effort': 'high',
+    }).encode()
+    disable, err = resolve_disable_reasoning_for_chat(
+        raw,
+        reasoning=True,
+        disable_header=False,
+        attributed_client=True,
+    )
+    assert err is None
+    assert disable is True
+
+
+def test_resolve_disable_reasoning_still_blocks_unknown_client():
+    from core.chat_proxy import resolve_disable_reasoning_for_chat
+
+    raw = json.dumps({
+        'messages': [{'role': 'user', 'content': 'hi'}],
+        'max_tokens': 16,
+        'reasoning_effort': 'high',
+    }).encode()
+    disable, err = resolve_disable_reasoning_for_chat(
+        raw,
+        reasoning=True,
+        disable_header=False,
+        attributed_client=False,
+    )
+    assert disable is False
+    assert err and 'thinking phase' in err
+
+def test_effective_output_token_budget_prefers_max_tokens():
+    from core.chat_proxy import effective_output_token_budget
+    assert effective_output_token_budget({"max_tokens": 32, "max_completion_tokens": 99}) == 32
+
+
+def test_effective_output_token_budget_falls_back_to_max_completion_tokens():
+    from core.chat_proxy import effective_output_token_budget
+    assert effective_output_token_budget({"max_completion_tokens": 16}) == 16
+
+
+def test_validate_reasoning_blocks_low_max_completion_tokens():
+    from core.chat_proxy import validate_reasoning_chat_request
+    import json
+    raw = json.dumps({
+        "model": "m",
+        "messages": [{"role": "user", "content": "."}],
+        "max_completion_tokens": 16,
+    }).encode()
+    assert validate_reasoning_chat_request(raw, reasoning=True, disable_reasoning=False)
+
+
+def test_resolve_disable_autoheals_attributed_low_max_completion_tokens():
+    from core.chat_proxy import resolve_disable_reasoning_for_chat
+    import json
+    raw = json.dumps({
+        "model": "m",
+        "messages": [{"role": "user", "content": "."}],
+        "max_completion_tokens": 16,
+    }).encode()
+    disable, err = resolve_disable_reasoning_for_chat(
+        raw, reasoning=True, disable_header=False, attributed_client=True,
+    )
+    assert disable is True
+    assert err is None

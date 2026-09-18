@@ -322,3 +322,175 @@ def test_local_installs_for_files_skips_imatrix(tmp_path, monkeypatch):
         cfg=cfg,
     )
     assert installs == {}
+
+
+def test_generic_model_safetensors_does_not_basename_collide(tmp_path, monkeypatch):
+    """Unrelated repo's model.safetensors must not mark another HF repo as installed."""
+    root = tmp_path / 'models'
+    breeze = root / 'BreezeBlue' / 'Breeze-TTS-2' / 'audio_tokenizer' / 'model.safetensors'
+    breeze.parent.mkdir(parents=True)
+    breeze.write_bytes(b'weights')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(breeze),
+                'publisher': 'BreezeBlue',
+                'loadable': False,
+            }],
+        },
+    )
+
+    from core.hf_local_match import find_local_matches, is_generic_weight_filename
+
+    assert is_generic_weight_filename('model.safetensors') is True
+    matches = find_local_matches(
+        'Aniemore/wav2vec2-xlsr-53-emotion-v1-crosslingual',
+        'model.safetensors',
+        cfg=cfg,
+    )
+    assert matches == []
+
+
+def test_generic_model_safetensors_exact_hf_layout_still_matches(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    target = (
+        root / 'Aniemore' / 'wav2vec2-xlsr-53-emotion-v1-crosslingual' / 'model.safetensors'
+    )
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'weights')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(target),
+                'publisher': 'Aniemore',
+                'loadable': False,
+            }],
+        },
+    )
+
+    from core.hf_local_match import find_local_matches
+
+    matches = find_local_matches(
+        'Aniemore/wav2vec2-xlsr-53-emotion-v1-crosslingual',
+        'model.safetensors',
+        cfg=cfg,
+    )
+    assert len(matches) >= 1
+    assert matches[0]['path'] == str(target.resolve())
+    assert matches[0]['match_type'] in {'exact_path', 'hf_layout'}
+
+
+def test_distinctive_gguf_basename_only_match_still_works(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    # Distinctive quant name under an unrelated path; repo id shares no tokens with the file.
+    quant = root / 'downloads' / 'SuperUniqueDraft-27B-Q4_K_M.gguf'
+    quant.parent.mkdir(parents=True)
+    quant.write_bytes(b'x' * 1024)
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(quant),
+                'publisher': '',
+                'loadable': True,
+            }],
+        },
+    )
+
+    from core.hf_local_match import allows_basename_only_match, find_local_matches
+
+    assert allows_basename_only_match('SuperUniqueDraft-27B-Q4_K_M.gguf') is True
+    assert allows_basename_only_match('model.safetensors') is False
+    matches = find_local_matches(
+        'example-org/totally-different-catalog-entry',
+        'SuperUniqueDraft-27B-Q4_K_M.gguf',
+        cfg=cfg,
+    )
+    assert matches
+    assert matches[0]['match_type'] == 'filename'
+    assert matches[0]['path'].endswith('SuperUniqueDraft-27B-Q4_K_M.gguf')
+
+
+def test_console_library_skips_generic_basename_without_repo(tmp_path, monkeypatch):
+    root = tmp_path / 'models'
+    breeze = root / 'BreezeBlue' / 'Breeze-TTS-2' / 'audio_tokenizer' / 'model.safetensors'
+    breeze.parent.mkdir(parents=True)
+    breeze.write_bytes(b'weights')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'models_root': str(root),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'DFlash models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.library_import.load_config', lambda: cfg)
+    monkeypatch.setattr('core.config.load_config', lambda: cfg)
+
+    from core.library_import import find_existing_in_console_library
+
+    assert find_existing_in_console_library('model.safetensors', cfg=cfg) == []
+    assert find_existing_in_console_library(
+        'model.safetensors',
+        cfg=cfg,
+        repo_id='Aniemore/wav2vec2-xlsr-53-emotion-v1-crosslingual',
+    ) == []
+    hits = find_existing_in_console_library(
+        'model.safetensors',
+        cfg=cfg,
+        repo_id='BreezeBlue/Breeze-TTS-2',
+    )
+    assert len(hits) == 1
+    assert hits[0]['path'] == str(breeze.resolve())

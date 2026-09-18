@@ -3429,14 +3429,15 @@ async def proxy_chat_completions(server_id: str, request: Request):
         extract_stream_completion_stats,
         is_reasoning_only_chunk,
         open_upstream_chat_stream,
+        resolve_disable_reasoning_for_chat,
         sse_had_content_delta,
         sse_stream_complete,
         sse_stream_error_chunk,
         SSE_KEEPALIVE_COMMENT,
         upstream_chat_completion,
-        validate_reasoning_chat_request,
         wants_stream,
     )
+    from core.client_identity import LABEL_UNKNOWN_API
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
     from core.local_models import model_has_reasoning
     from core.runtime import api_base_url, build_server_status
@@ -3541,12 +3542,13 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=400, detail='engine api_url not configured')
     # Non-reasoning models never negotiate reasoning: strip reasoning_effort and
     # thinking toggles so the API returns the regular chat behaviour.
-    disable_reasoning = request.headers.get('X-Disable-Reasoning') == '1'
     reasoning_model = model_has_reasoning(server)
-    reasoning_error = validate_reasoning_chat_request(
+    attributed = bool(client_label) and client_label != LABEL_UNKNOWN_API
+    disable_reasoning, reasoning_error = resolve_disable_reasoning_for_chat(
         raw,
         reasoning=reasoning_model,
-        disable_reasoning=disable_reasoning,
+        disable_header=request.headers.get('X-Disable-Reasoning') == '1',
+        attributed_client=attributed,
     )
     if reasoning_error:
         raise HTTPException(

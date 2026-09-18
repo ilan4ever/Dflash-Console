@@ -218,12 +218,15 @@ def apply_reasoning_policy(
                 if key in body:
                     body.pop(key, None)
                     changed = True
-            try:
-                max_tokens = int(body.get('max_tokens') or 0)
-            except (TypeError, ValueError):
-                max_tokens = 0
+            max_tokens = effective_output_token_budget(body)
             if 0 < max_tokens < 64:
                 body['max_tokens'] = 64
+                if 'max_completion_tokens' in body:
+                    body['max_completion_tokens'] = 64
+                changed = True
+            elif max_tokens > 0 and not body.get('max_tokens'):
+                # Upstream llama engines expect max_tokens; mirror OpenAI field.
+                body['max_tokens'] = max_tokens
                 changed = True
         if not changed:
             return raw
@@ -251,6 +254,27 @@ def reasoning_disabled_for_request(raw: bytes, *, disable_header: bool = False) 
     return str(body.get('reasoning_effort') or '').strip().lower() == 'none'
 
 
+
+def effective_output_token_budget(body: dict[str, Any]) -> int:
+    """Return the client's output budget from max_tokens or max_completion_tokens.
+
+    OpenAI-compatible clients (including pi-ai against localhost) often send
+    ``max_completion_tokens`` and omit ``max_tokens``. Reasoning budget checks
+    must treat both the same way.
+    """
+    for key in ("max_tokens", "max_completion_tokens"):
+        raw = body.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
 def validate_reasoning_chat_request(
     raw: bytes,
     *,
@@ -261,10 +285,7 @@ def validate_reasoning_chat_request(
     if not reasoning or reasoning_disabled_for_request(raw, disable_header=disable_reasoning):
         return None
     body = parse_chat_body(raw)
-    try:
-        max_tokens = int(body.get('max_tokens') or 0)
-    except (TypeError, ValueError):
-        max_tokens = 0
+    max_tokens = effective_output_token_budget(body)
     if max_tokens <= 0 or max_tokens >= 128:
         return None
     return (
@@ -272,6 +293,35 @@ def validate_reasoning_chat_request(
         'Set reasoning_effort to "none", send header X-Disable-Reasoning: 1, '
         'or raise max_tokens to at least 128.'
     )
+
+
+def resolve_disable_reasoning_for_chat(
+    raw: bytes,
+    *,
+    reasoning: bool,
+    disable_header: bool,
+    attributed_client: bool = False,
+) -> tuple[bool, str | None]:
+    """Decide whether to disable reasoning for one chat request.
+
+    Returns ``(disable_reasoning, error_message)``. When ``error_message`` is
+    set, the caller should reject with HTTP 400 ``reasoning_budget_too_low``.
+
+    Integrators that send ``X-DFlash-Client`` (DeepSeek Harness and similar)
+    often use low ``max_tokens`` for warmup / title calls. For those attributed
+    clients, a too-small reasoning budget auto-heals to disable-reasoning
+    instead of failing the turn — the same outcome as sending
+    ``X-Disable-Reasoning: 1``.
+    """
+    disable = bool(disable_header)
+    err = validate_reasoning_chat_request(
+        raw,
+        reasoning=reasoning,
+        disable_reasoning=disable,
+    )
+    if err and attributed_client:
+        return True, None
+    return disable, err
 
 
 def _sse_completion_meta(raw: bytes) -> dict[str, Any]:

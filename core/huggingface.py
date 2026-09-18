@@ -2596,12 +2596,249 @@ def get_model_detail(
     }
 
 
-def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: str = '') -> None:
-    """Finish a SafeTensors repo after one weight file lands.
+_TRANSFORMERS_COMPANION_FILES = (
+    'config.json',
+    'tokenizer.json',
+    'tokenizer.model',
+    'tokenizer_config.json',
+    'special_tokens_map.json',
+    'preprocessor_config.json',
+    'generation_config.json',
+    'vocab.json',
+    'vocab.txt',
+    'merges.txt',
+    'recipe.yaml',
+    'model.safetensors.index.json',
+    'pytorch_model.bin.index.json',
+)
 
-    Early versions only fetched config/tokenizer companions and skipped when
-    those already existed — leaving sharded models (1-of-N) marked done.
-    Always pull remaining weight shards when the local set is incomplete.
+_TRANSFORMERS_QUANT_DIR_RE = re.compile(
+    r'^(?:fp\d+|bf16|int\d+|nf\d+|awq|gptq|gguf|onnx|bnb|exl2|hqq|mxfp\d+)$',
+    re.IGNORECASE,
+)
+
+_TRANSFORMERS_QUANT_DIR_NAMES = (
+    'fp8', 'fp16', 'bf16', 'int2', 'int3', 'int4', 'int8', 'nf4', 'awq', 'gptq', 'gguf', 'onnx',
+)
+
+
+def _transformers_remote_prefix(dest_dir: Path, *, filename: str = '') -> str:
+    """Remote path prefix for companions of weights living in *dest_dir*.
+
+    Examples: ``fp8/`` when dest is ``.../repo/fp8``; ``''`` for the repo root.
+    When the weight was flattened to the repo root but the selected Hub path was
+    nested (``fp8/model.safetensors``), fall back to the filename parent.
+    """
+    try:
+        target = Path(dest_dir).expanduser().resolve()
+    except OSError:
+        target = Path(dest_dir)
+    name = str(target.name or '').strip()
+    if name and _TRANSFORMERS_QUANT_DIR_RE.match(name):
+        return f'{name}/'
+    if name:
+        try:
+            parent = target.parent
+            if parent.is_dir():
+                sibling_quants = {
+                    p.name
+                    for p in parent.iterdir()
+                    if p.is_dir() and _TRANSFORMERS_QUANT_DIR_RE.match(p.name)
+                }
+                if name in sibling_quants:
+                    return f'{name}/'
+        except OSError:
+            pass
+    remote_name = str(filename or '').replace('\\', '/').strip().strip('/')
+    if '/' in remote_name:
+        return remote_name.rsplit('/', 1)[0] + '/'
+    return ''
+
+
+def _transformers_hub_local_dir(dest_dir: Path, prefix: str) -> Path:
+    """Directory passed to hf_hub_download so a remote prefix maps onto dest_dir."""
+    folder = str(prefix or '').strip().strip('/')
+    if folder and dest_dir.name == folder:
+        return dest_dir.parent
+    return dest_dir
+
+
+def _transformers_companion_allow_patterns(prefix: str) -> list[str]:
+    """Allow-list paths/patterns for companions under the selected weight prefix."""
+    p = str(prefix or '')
+    patterns = [f'{p}{name}' for name in _TRANSFORMERS_COMPANION_FILES]
+    patterns.append(f'{p}tokenizer*')
+    patterns.append(f'{p}*.py')
+    patterns.append(f'{p}model-*-of-*.safetensors')
+    return patterns
+
+
+def _transformers_ignore_patterns(prefix: str) -> list[str]:
+    """Ignore sibling quant packs and unrelated large alternate weights."""
+    selected = str(prefix or '').strip().strip('/').lower()
+    ignores: list[str] = []
+    for name in _TRANSFORMERS_QUANT_DIR_NAMES:
+        if name.lower() == selected:
+            continue
+        ignores.append(f'{name}/**')
+        ignores.append(f'{name}/*')
+    if selected:
+        # Scoped to a quant folder: do not pull root / other-pack weights.
+        ignores.append('model.safetensors')
+        ignores.append('model-*-of-*.safetensors')
+        ignores.append('pytorch_model.bin')
+        ignores.append('*.gguf')
+    else:
+        # Root selection: never pull nested quant weight trees.
+        ignores.append('*/model.safetensors')
+        ignores.append('*/model-*-of-*.safetensors')
+        ignores.append('**/*.gguf')
+    return ignores
+
+
+def _ensure_companion_beside_weights(dest_dir: Path, downloaded: Path, remote_path: str) -> Path:
+    """Make sure the companion basename sits next to the selected weight file."""
+    target = dest_dir / Path(str(remote_path).replace('\\', '/')).name
+    try:
+        src = Path(downloaded)
+    except OSError:
+        return target
+    try:
+        if src.is_file() and src.resolve() != target.resolve():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if (not target.is_file()) or target.stat().st_size != src.stat().st_size:
+                import shutil
+
+                shutil.copy2(src, target)
+    except OSError:
+        pass
+    return target
+
+
+def _local_weight_bytes(dest_dir: Path) -> int:
+    total = 0
+    try:
+        for path in dest_dir.iterdir():
+            if not path.is_file():
+                continue
+            lower = path.name.lower()
+            if lower == 'model.safetensors' or (
+                lower.startswith('model-') and lower.endswith('.safetensors')
+            ):
+                try:
+                    total += int(path.stat().st_size)
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+def _transformers_completion_remote_files(
+    repo_id: str,
+    dest_dir: Path,
+    *,
+    prefix: str,
+) -> list[tuple[str, int]]:
+    """Missing companion + same-prefix shard paths with estimated byte sizes.
+
+    Never includes unrelated quant folders (other of fp8/int4/int8/root packs).
+    """
+    prefix_norm = str(prefix or '')
+    siblings: list[dict[str, Any]] = []
+    try:
+        siblings = _fetch_repo_siblings_with_blobs(str(repo_id), timeout=20.0) or []
+    except Exception:
+        siblings = []
+
+    sibling_by_name: dict[str, dict[str, Any]] = {}
+    for entry in siblings:
+        name = _entry_name(entry).replace('\\', '/').lstrip('/')
+        if name:
+            sibling_by_name[name] = entry
+
+    def under_prefix(remote: str) -> bool:
+        remote = remote.replace('\\', '/').lstrip('/')
+        if prefix_norm:
+            return remote.startswith(prefix_norm)
+        # Root selection: only top-level paths (no quant subfolders).
+        return '/' not in remote
+
+    candidates: list[str] = []
+    for base in _TRANSFORMERS_COMPANION_FILES:
+        candidates.append(f'{prefix_norm}{base}')
+
+    for name, entry in sibling_by_name.items():
+        if not under_prefix(name):
+            continue
+        rest = name[len(prefix_norm):] if prefix_norm else name
+        if '/' in rest:
+            continue
+        lower = rest.lower()
+        size = int(_entry_size_bytes(entry) or 0)
+        if lower.startswith('tokenizer'):
+            candidates.append(name)
+        elif lower.endswith('.py') and 0 < size <= 512_000:
+            candidates.append(name)
+
+    for shard_name in _missing_weight_shard_filenames(dest_dir):
+        candidates.append(f'{prefix_norm}{shard_name}')
+
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for remote in candidates:
+        remote = str(remote or '').replace('\\', '/').lstrip('/')
+        if not remote or remote in seen:
+            continue
+        if not under_prefix(remote):
+            continue
+        # Hard guard: never schedule another quant pack's weights.
+        parts = remote.split('/')
+        if len(parts) > 1:
+            top = parts[0].lower()
+            selected = prefix_norm.strip('/').lower()
+            if _TRANSFORMERS_QUANT_DIR_RE.match(top) and top != selected:
+                continue
+            if not selected and parts[-1].lower().endswith(('.safetensors', '.bin', '.gguf')):
+                # Nested large weights when selecting root — skip.
+                if parts[-1].lower().startswith('model') or parts[-1].lower().endswith('.gguf'):
+                    continue
+        seen.add(remote)
+        local_name = remote.rsplit('/', 1)[-1]
+        local_path = dest_dir / local_name
+        if local_path.is_file():
+            continue
+        entry = sibling_by_name.get(remote)
+        if siblings and entry is None and not local_name.endswith('.safetensors'):
+            # Optional companion not present on the Hub for this prefix.
+            continue
+        size = int(_entry_size_bytes(entry) or 0) if entry else 0
+        if size <= 0:
+            if local_name.endswith('.safetensors'):
+                try:
+                    present = [
+                        p for p in dest_dir.glob('model-*-of-*.safetensors') if p.is_file()
+                    ]
+                    if present:
+                        size = max(int(p.stat().st_size) for p in present)
+                except OSError:
+                    size = 0
+            elif local_name.endswith(('.json', '.txt', '.yaml', '.model')):
+                size = 64_000
+            elif local_name.endswith('.py'):
+                size = 8_000
+            else:
+                size = 16_000
+        out.append((remote, size))
+    return out
+
+
+def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: str = '') -> None:
+    """Finish a SafeTensors download with same-prefix companions only.
+
+    Fetches config/tokenizer/preprocessor helpers and missing shards for the
+    selected weight folder — never an unfiltered whole-repo snapshot (which
+    would pull sibling fp8/int4/int8 packs and giant alternate weights).
     """
     try:
         target = dest_dir.expanduser().resolve()
@@ -2621,36 +2858,125 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
     has_tokenizer = (target / 'tokenizer.json').is_file() or (target / 'tokenizer.model').is_file()
     if has_config and has_tokenizer and not incomplete_shards:
         return
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
+
+    filename = ''
+    with _jobs_lock:
+        job = _download_jobs.get(job_id)
+        if job:
+            filename = str(job.get('filename') or '')
+
+    prefix = _transformers_remote_prefix(target, filename=filename)
+    pending = _transformers_completion_remote_files(str(repo_id), target, prefix=prefix)
+    if not pending and not incomplete_shards:
         return
-    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+
+    weight_bytes = _local_weight_bytes(target)
+    companion_estimate = sum(max(0, int(size)) for _, size in pending)
     with _jobs_lock:
         job = _download_jobs.get(job_id)
         if job:
             job['status'] = 'downloading'
-            job['progress'] = max(float(job.get('progress') or 0), 95.0)
             job['kind'] = 'repo-complete'
-            if incomplete_shards:
-                present = int(shard_status.get('shard_present') or 0)
-                total = int(shard_status.get('shard_total') or 0)
-                job['detail'] = f'Fetching remaining weight shards ({present}/{total})…'
+            job['detail'] = 'Downloading model files…'
+            read0 = int(job.get('bytes_read') or 0)
+            if read0 <= 0:
+                read0 = weight_bytes
+            old_total = int(job.get('bytes_total') or 0)
+            new_total = max(old_total, read0) + companion_estimate
+            job['bytes_read'] = read0
+            job['bytes_total'] = new_total
+            job['disk_bytes'] = read0
+            if new_total > 0 and read0 > 0:
+                job['progress'] = round(min(99.0, (read0 / new_total) * 100), 1)
+            base_read = read0
+        else:
+            base_read = weight_bytes
+
+    if not pending:
+        final_status = _weight_shard_status(target)
+        with _jobs_lock:
+            job = _download_jobs.get(job_id)
+            if job:
+                job['path'] = str(target)
+                if final_status.get('incomplete'):
+                    job['incomplete'] = True
+                    present = int(final_status.get('shard_present') or 0)
+                    total = int(final_status.get('shard_total') or 0)
+                    job['error'] = f'Incomplete model: {present}/{total} weight shards on disk'
+                    job['progress'] = max(float(job.get('progress') or 0), 99.0)
+                    job['detail'] = f'Fetching remaining files ({present}/{total})…'
+                else:
+                    job['progress'] = 100.0
+                    job.pop('incomplete', None)
+                    job.pop('detail', None)
+        return
+
     try:
-        snapshot_download(
-            repo_id=str(repo_id),
-            local_dir=str(target),
-            local_dir_use_symlinks=False,
-            token=token.strip() if token else None,
-        )
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        return
+
+    token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    hub_local = _transformers_hub_local_dir(target, prefix)
+    total_n = len(pending)
+    downloaded_extra = 0
+
+    try:
+        for index, (remote, size) in enumerate(pending, start=1):
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if not job or str(job.get('status') or '') != 'downloading':
+                    return
+                job['kind'] = 'repo-complete'
+                job['detail'] = f'Fetching remaining files ({index}/{total_n})…'
+            try:
+                downloaded = hf_hub_download(
+                    repo_id=str(repo_id),
+                    filename=remote,
+                    local_dir=str(hub_local),
+                    local_dir_use_symlinks=False,
+                    token=token.strip() if token else None,
+                )
+                local_path = _ensure_companion_beside_weights(target, Path(str(downloaded)), remote)
+            except Exception as exc:
+                is_shard = remote.rsplit('/', 1)[-1].lower().endswith('.safetensors')
+                if is_shard:
+                    with _jobs_lock:
+                        job = _download_jobs.get(job_id)
+                        if job:
+                            job['post_action_error'] = f'companion files: {exc}'
+                            job['incomplete'] = True
+                    raise
+                # Optional companion missing — keep going.
+                continue
+
+            added = int(size or 0)
+            try:
+                if local_path.is_file():
+                    added = int(local_path.stat().st_size)
+            except OSError:
+                pass
+            downloaded_extra += max(0, added)
+            with _jobs_lock:
+                job = _download_jobs.get(job_id)
+                if not job or str(job.get('status') or '') != 'downloading':
+                    return
+                job['bytes_read'] = int(base_read) + downloaded_extra
+                job['disk_bytes'] = int(job['bytes_read'])
+                total = int(job.get('bytes_total') or 0)
+                if total > 0 and job['bytes_read'] > 0:
+                    job['progress'] = round(min(99.0, (job['bytes_read'] / total) * 100), 1)
+                _refresh_job_speed(job)
+            _sync_repo_shard_fields(job_id, target)
     except Exception as exc:
         with _jobs_lock:
             job = _download_jobs.get(job_id)
             if job:
                 job['post_action_error'] = f'companion files: {exc}'
-                if incomplete_shards:
+                if incomplete_shards or _missing_weight_shard_filenames(target):
                     job['incomplete'] = True
         return
+
     final_status = _weight_shard_status(target)
     with _jobs_lock:
         job = _download_jobs.get(job_id)
@@ -2662,9 +2988,12 @@ def _complete_transformers_repo_files(repo_id: str, dest_dir: Path, *, job_id: s
                 total = int(final_status.get('shard_total') or 0)
                 job['error'] = f'Incomplete model: {present}/{total} weight shards on disk'
                 job['progress'] = max(float(job.get('progress') or 0), 99.0)
+                job['detail'] = f'Fetching remaining files ({present}/{total})…'
             else:
                 job['progress'] = 100.0
                 job.pop('incomplete', None)
+                job.pop('detail', None)
+
 
 _DOWNLOAD_CHUNK = 8 * 1024 * 1024
 _MIN_PARALLEL_BYTES = 32 * 1024 * 1024
@@ -4204,7 +4533,7 @@ def start_download(
             }
         from core.library_import import find_existing_in_console_library
 
-        console_existing = find_existing_in_console_library(name, cfg=config)
+        console_existing = find_existing_in_console_library(name, cfg=config, repo_id=repo)
         if console_existing:
             return {
                 'success': False,
