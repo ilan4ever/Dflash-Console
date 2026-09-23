@@ -112,8 +112,19 @@ def repo_disk_size_gb(files: list[dict[str, Any]] | None, *, has_gguf: bool) -> 
     if not files:
         return None
     if has_gguf:
-        sizes = quant_sizes_gb(files)
-        return float(sizes[0]) if sizes else None
+        from core.hf_local_match import is_auxiliary_gguf_filename
+
+        weight_files = [
+            row for row in files
+            if not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
+        ]
+        sizes = quant_sizes_gb(weight_files or files)
+        if sizes:
+            # Prefer a mid-size quant (typical Q4) over the tiniest sidecar leftover.
+            mid = sizes[len(sizes) // 2]
+            pick = next((size for size in reversed(sizes) if size >= 6), None)
+            return float(pick or mid or sizes[0])
+        return None
     total_bytes = 0
     for row in files:
         try:
@@ -322,6 +333,9 @@ def annotate_hf_models_fit(
                 budget=budget,
             ),
         )
+        from core.hf_catalog_draft import catalog_draft_primary_row
+
+        row['catalog_draft_primary'] = catalog_draft_primary_row(row, gguf_files=gguf_files)
         label = str(row.get('size_label') or '').strip()
         if label in ('0 GB', '0.0 GB'):
             label = ''

@@ -307,6 +307,14 @@ def test_vision_detects_mmproj_sibling(tmp_path: Path):
     assert _has_vision_support(target) is True
 
 
+def test_vision_detects_hf_vision_sidecar(tmp_path: Path):
+    target = tmp_path / 'Qwen3.8-27B-gsq-rco-mtp-IQ3_XXS.gguf'
+    projector = tmp_path / 'Qwen3.8-27B-Uncensored-vision-Q4_K_S.gguf'
+    target.write_bytes(b'g' * 4000)
+    projector.write_bytes(b'p' * 200)
+    assert _has_vision_support(target) is True
+
+
 def test_projector_rows_are_marked_non_loadable(tmp_path: Path):
     from core.local_models import _annotate_projector_row, _scan_gguf
 

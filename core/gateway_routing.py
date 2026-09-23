@@ -25,12 +25,27 @@ def is_cursor_compat_model_id(model: str) -> bool:
 
 def default_gateway_chat_server(cfg: dict[str, Any]) -> dict[str, Any]:
     """Default chat engine for empty model or Cursor-compat aliases."""
+    wanted = str(cfg.get('gateway_server_id') or '').strip()
+    if wanted:
+        from core.api_providers import cloud_model_entries, with_api_label
+
+        for entry in cloud_model_entries(cfg):
+            if str(entry.get('id') or '').strip().lower() != wanted.lower():
+                continue
+            label = str(entry.get('label') or wanted).strip() or wanted
+            return {
+                'id': wanted,
+                'model_id': wanted,
+                'label': with_api_label(label),
+                'cloud': True,
+                'enabled': True,
+                'context_size': 8192,
+            }
     servers = enabled_chat_servers(cfg)
     if not servers:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=503, detail='no enabled chat engine available')
-    wanted = str(cfg.get('gateway_server_id') or '').strip()
     if wanted:
         for server in servers:
             if str(server.get('id') or '') == wanted:

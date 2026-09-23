@@ -3067,10 +3067,57 @@ def _ensure_server_ready_for_chat(
             },
         )
 
+    from core.inference_stats import is_proxy_generating
+
+    def _status_as_loaded(status: dict[str, Any]) -> dict[str, Any]:
+        if status.get('status') != 'loaded':
+            status = {**status, 'status': 'loaded'}
+        return status
+
+    def _synthetic_loaded_from_config() -> dict[str, Any]:
+        """When a probe fails under concurrent load, trust the configured id."""
+        model_id = str(server.get('model_id') or '').strip()
+        loaded = [model_id] if model_id else []
+        return {
+            **server,
+            'running': True,
+            'status': 'loaded' if loaded else 'running',
+            'booting': False,
+            'loaded_models': loaded,
+            'active_model_id': loaded[0] if loaded else '',
+            'ready_for_chat': bool(loaded),
+        }
+
     live = build_server_status(server, cfg=cfg)
+
+    # Another chat is already mid-flight on this engine: never JIT-load (that
+    # path raises model_already_loaded_elsewhere / stack-repair 409s and can
+    # stop_server under DFlash draft profiles). Share the live or configured id.
+    if is_proxy_generating(server_id):
+        if not live.get('loaded_models'):
+            live = _synthetic_loaded_from_config()
+        live = _status_as_loaded(live)
+        if required_context and cfg.get('context_auto_grow') is not False:
+            loaded_ctx = _loaded_per_slot_context(server)
+            if loaded_ctx and required_context > loaded_ctx:
+                # Growing reloads the engine — wait until the active turn ends.
+                deadline = time.time() + 180.0
+                while time.time() < deadline and is_proxy_generating(server_id):
+                    time.sleep(0.05)
+                if not is_proxy_generating(server_id):
+                    return _ensure_server_ready_for_chat(
+                        server_id,
+                        server,
+                        cfg,
+                        client_label=client_label,
+                        required_context=required_context,
+                    )
+                # Still busy after wait: serve with current context rather than 409.
+        note_engine_active_client(server_id, client_label=client_label)
+        return live
+
     if live.get('loaded_models'):
-        if live.get('status') != 'loaded':
-            live = {**live, 'status': 'loaded'}
+        live = _status_as_loaded(live)
         # Already loaded.  Auto-grow if this request needs more context than
         # the loaded model provides; otherwise share the model as-is.
         if required_context and cfg.get('context_auto_grow') is not False:
@@ -3079,6 +3126,23 @@ def _ensure_server_ready_for_chat(
                 return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
         note_engine_active_client(server_id, client_label=client_label)
         return live
+
+    # Probe can return empty loaded_models while llama is busy serving another
+    # client. Retry briefly before treating the engine as idle for JIT load.
+    host = str(server.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+    port = int(server.get('port') or 0)
+    if port > 0 and tcp_port_open(host, port):
+        for _ in range(6):
+            time.sleep(0.05)
+            live = build_server_status(server, cfg=cfg)
+            if live.get('loaded_models') or is_proxy_generating(server_id):
+                break
+        if is_proxy_generating(server_id) and not live.get('loaded_models'):
+            live = _synthetic_loaded_from_config()
+        if live.get('loaded_models'):
+            live = _status_as_loaded(live)
+            note_engine_active_client(server_id, client_label=client_label)
+            return live
 
     if live.get('status') == 'booting':
         return _wait_until_loaded()
@@ -3421,6 +3485,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
     import json
     import urllib.error
 
+    _chat_gate = None
+    _chat_gate_held = False
+
     from core.chat_proxy import (
         apply_reasoning_policy,
         chat_upstream_read_timeout,
@@ -3482,6 +3549,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
         required_context = 0
     else:
         server = _require_server(cfg, server_id)
+        _arm_server_engine_for_api(server_id, cfg)
+        cfg = load_config()
+        server = _require_server(cfg, server_id)
         raw = await request.body()
         try:
             body_json = json.loads(raw.decode('utf-8', errors='replace'))
@@ -3528,17 +3598,31 @@ async def proxy_chat_completions(server_id: str, request: Request):
         header_context = request_load_context_size(request) or 0
         body_context = chat_body_load_context_size(body_json) or 0
         required_context = max(estimated_context or 0, header_context or 0, body_context or 0)
-        live = _ensure_server_ready_for_chat(
-            server_id,
-            server,
-            cfg,
-            client_label=_request_client_label(request),
-            required_context=required_context or None,
-        )
+        from core.chat_queue import chat_server_gate
+
+        _chat_gate = chat_server_gate(server_id)
+        await _chat_gate.acquire()
+        _chat_gate_held = True
+        try:
+            live = _ensure_server_ready_for_chat(
+                server_id,
+                server,
+                cfg,
+                client_label=_request_client_label(request),
+                required_context=required_context or None,
+            )
+        except Exception:
+            if _chat_gate_held:
+                _chat_gate.release()
+                _chat_gate_held = False
+            raise
 
     api_url = str(server.get('api_url') or '')
     base = api_base_url(api_url)
     if not base:
+        if _chat_gate_held and _chat_gate is not None:
+            _chat_gate.release()
+            _chat_gate_held = False
         raise HTTPException(status_code=400, detail='engine api_url not configured')
     # Non-reasoning models never negotiate reasoning: strip reasoning_effort and
     # thinking toggles so the API returns the regular chat behaviour.
@@ -3551,6 +3635,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
         attributed_client=attributed,
     )
     if reasoning_error:
+        if _chat_gate_held and _chat_gate is not None:
+            _chat_gate.release()
+            _chat_gate_held = False
         raise HTTPException(
             status_code=400,
             detail={
@@ -3595,6 +3682,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 and requested_model
                 and not model_ids_compatible(requested_model, upstream_model_id)
             ):
+                if _chat_gate_held and _chat_gate is not None:
+                    _chat_gate.release()
+                    _chat_gate_held = False
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -3640,11 +3730,20 @@ async def proxy_chat_completions(server_id: str, request: Request):
             )
         except urllib.error.HTTPError as exc:
             mark_inference_end(server_id, client_label=client_label)
+            if _chat_gate_held and _chat_gate is not None:
+                _chat_gate.release()
+                _chat_gate_held = False
             detail = exc.read().decode('utf-8', errors='replace')
             raise HTTPException(status_code=exc.code, detail=detail) from exc
         except Exception as exc:
             mark_inference_end(server_id, client_label=client_label)
+            if _chat_gate_held and _chat_gate is not None:
+                _chat_gate.release()
+                _chat_gate_held = False
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if _chat_gate_held and _chat_gate is not None:
+            _chat_gate.release()
+            _chat_gate_held = False
 
         keepalive_interval = 15.0
 
@@ -3717,6 +3816,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
         client_label=client_label,
     )
+    if _chat_gate_held and _chat_gate is not None:
+        _chat_gate.release()
+        _chat_gate_held = False
     active_model = str(live.get('active_model_id') or server.get('model_id') or '')
     disconnect_task = asyncio.create_task(
         _abort_upstream_when_client_disconnects(

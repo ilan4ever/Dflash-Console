@@ -92,6 +92,13 @@ def _downloads(row: dict[str, Any]) -> int:
         return 0
 
 
+def _looks_like_sidecar_catalog_row(row: dict[str, Any]) -> bool:
+    """Repo card size/name suggests draft/MTP sidecar only, not a full target."""
+    from core.hf_catalog_draft import catalog_draft_primary_row
+
+    return catalog_draft_primary_row(row)
+
+
 def catalog_recommendation_score(row: dict[str, Any]) -> int:
     """Higher is a better pick for this machine."""
     if not isinstance(row, dict):
@@ -198,7 +205,9 @@ def apply_catalog_recommendations(
     for row in ranked:
         if len(picked) >= max(1, min(int(limit), _MAX_RECOMMENDED)):
             break
-        if skip_accel and row.get('accelerator_only'):
+        if skip_accel and (row.get('accelerator_only') or _looks_like_sidecar_catalog_row(row)):
+            continue
+        if not row.get('has_gguf') and not row.get('has_files') and _downloads(row) <= 0:
             continue
         if require_fit and row.get('fits_machine') is not True:
             continue

@@ -839,17 +839,26 @@
     const serverEl = document.getElementById('settingsGatewayServer');
     if (!portEl || !serverEl) return;
     try {
-      const [cfgData, serversData] = await Promise.all([
+      const [cfgData, serversData, cloudModelsData] = await Promise.all([
         api('/api/config', { timeoutMs: 8000 }),
         api('/api/servers/profiles', { timeoutMs: 10000 }),
+        api('/api/models?source=cloud&quick=1', { timeoutMs: 10000 }).catch(() => ({ models: [] })),
       ]);
       const cfg = cfgData?.config || {};
       const servers = (Array.isArray(serversData?.all_servers) ? serversData.all_servers : [])
         .filter((s) => s.enabled !== false);
+      const cloudModels = (Array.isArray(cloudModelsData?.models) ? cloudModelsData.models : [])
+        .filter((model) => model && model.cloud === true && model.id);
       portEl.value = cfg.gateway_port || 8001;
       const current = String(cfg.gateway_server_id || '');
+      const localOptions = servers.map((s) => `<option value="${escapeHtml(s.id)}" ${current === s.id ? 'selected' : ''}>${escapeHtml(s.label || s.id)}</option>`).join('');
+      const cloudOptions = cloudModels.map((model) => {
+        const label = model.name || model.label || model.id;
+        return `<option value="${escapeHtml(model.id)}" ${current === String(model.id) ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+      }).join('');
       serverEl.innerHTML = '<option value="">Auto (first enabled)</option>' +
-        servers.map((s) => `<option value="${escapeHtml(s.id)}" ${current === s.id ? 'selected' : ''}>${escapeHtml(s.label || s.id)}</option>`).join('');
+        localOptions +
+        (cloudOptions ? `<optgroup label="Cloud API">${cloudOptions}</optgroup>` : '');
       updateGatewayUrl();
     } catch (_err) { /* keep defaults */ }
   }

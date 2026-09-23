@@ -42,8 +42,15 @@ def profile_requires_draft(profile: str | None) -> bool:
     )
 
 
+def dflash_draft_disabled(server: dict[str, Any]) -> bool:
+    """Return whether runtime marked this stack's draft accelerator unusable."""
+    return bool(server.get('dflash_draft_disabled') is True)
+
+
 def server_draft_path_on_disk(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
     """Return a draft GGUF path when the configured stack has one on disk."""
+    if dflash_draft_disabled(server):
+        return ''
     draft_path = str(server.get('draft_path') or '').strip()
     if draft_path and Path(draft_path).expanduser().is_file():
         return str(Path(draft_path).expanduser().resolve())
@@ -116,7 +123,7 @@ def _dflash_pair_preflight(
 
 def server_dflash_draft_usable(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
     """True when a draft file can be attached without blocking load (including unverified fixtures)."""
-    if not profile_requires_draft(server.get('profile')):
+    if not profile_requires_draft(server.get('profile')) or dflash_draft_disabled(server):
         return False
     target = server_target_path_on_disk(server, cfg=cfg)
     draft = server_draft_path_on_disk(server, cfg=cfg)
@@ -126,7 +133,7 @@ def server_dflash_draft_usable(server: dict[str, Any], *, cfg: dict[str, Any] | 
 
 def server_dflash_stack_ready(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
     """True only when a compatible, metadata-validated DFlash draft is on disk."""
-    if not profile_requires_draft(server.get('profile')):
+    if not profile_requires_draft(server.get('profile')) or dflash_draft_disabled(server):
         return False
     target = server_target_path_on_disk(server, cfg=cfg)
     draft = server_draft_path_on_disk(server, cfg=cfg)
@@ -154,6 +161,8 @@ def effective_server_profile(server: dict[str, Any], *, cfg: dict[str, Any] | No
     profile = str(server.get('profile') or infer_profile_from_path(server.get('target_path') or '')).strip()
     if not profile_requires_draft(profile):
         return profile
+    if dflash_draft_disabled(server):
+        return ar_fallback_profile(profile)
     if server_dflash_draft_usable(server, cfg=cfg):
         return profile
     return ar_fallback_profile(profile)
@@ -220,6 +229,8 @@ def write_server_preset(
         target_path or server.get('target_path') or server.get('adhoc_model_path'),
     )
     preset_profile = str(profile or effective_server_profile(server, cfg=cfg) or 'gemma-chat').strip()
+    if dflash_draft_disabled(server):
+        preset_profile = ar_fallback_profile(preset_profile)
     if not server_id or not preset_model_id:
         raise ValueError('server id and model_id required')
 

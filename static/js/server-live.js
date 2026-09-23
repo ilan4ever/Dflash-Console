@@ -2926,44 +2926,44 @@
     return [];
   }
 
-  function tokenSpeedSummary(speed, peakSpeed, { last = false } = {}) {
-    const num = Number(speed);
-    if (!Number.isFinite(num)) return '—';
-    const peak = Number(peakSpeed);
-    const base = `${num} t/s`;
-    if (!Number.isFinite(peak)) return base;
-    if (last ? peak >= num : peak > num) return `${base} (peak ${peak} t/s)`;
-    return base;
-  }
-
-  function tokenSpeedHtml(speed, peakSpeed, { last = false } = {}) {
-    const num = Number(speed);
-    if (!Number.isFinite(num)) return '—';
-    const peak = Number(peakSpeed);
-    const base = `${num} t/s`;
-    if (!Number.isFinite(peak)) return escapeHtml(base);
-    if (!(last ? peak >= num : peak > num)) return escapeHtml(base);
-    return `${escapeHtml(base)} (<span class="lbl peak">peak</span>${escapeHtml(String(peak))} t/s)`;
+  function formatTokenCount(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    return Math.max(0, Math.round(num));
   }
 
   function formatLiveTokenSpeed(speed) {
-    const num = Number(speed);
-    if (!Number.isFinite(num)) return '—';
-    return `${num} t/s`;
+    return `${formatTokenCount(speed)} t/s`;
+  }
+
+  function formatInTokenDisplay(inputTok) {
+    if (inputTok == null || inputTok === '') return '0';
+    if (typeof inputTok === 'string' && inputTok.includes('/')) {
+      return inputTok.split('/').map((part) => String(formatTokenCount(part))).join('/');
+    }
+    return String(formatTokenCount(inputTok));
+  }
+
+  function tokenSpeedSummary(speed, peakSpeed, { last = false } = {}) {
+    const num = formatTokenCount(speed);
+    const peak = formatTokenCount(peakSpeed);
+    const base = `${num} t/s`;
+    if (last ? peak >= num : peak > num) return `${base} (peak ${peak} t/s)`;
+    return base;
   }
 
   function liveTokenMetricsRowHtml() {
     return `<div class="lm-model-card-center-row lm-model-card-token-row lm-token-metrics-live">
       <span class="lm-model-card-token-metric is-live lm-model-card-token-generating">
         <span class="lm-token-metric-io">
-          <span class="lbl">IN</span><span class="val" data-live-metric="in">—</span>
+          <span class="lbl">IN</span><span class="val" data-live-metric="in">0</span>
           <span class="lm-model-card-token-separator">·</span>
           <span class="lbl">OUT</span><span class="val" data-live-metric="out">0</span>
         </span>
         <span class="lm-token-metric-speed">
-          <span class="lbl">DECODE</span><span class="val" data-live-metric="decode">—</span>
+          <span class="lbl">DECODE</span><span class="val" data-live-metric="decode">0 t/s</span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl peak">PEAK</span><span class="val" data-live-metric="peak">—</span>
+          <span class="lbl peak">PEAK</span><span class="val" data-live-metric="peak">0 t/s</span>
         </span>
       </span>
     </div>`;
@@ -3019,7 +3019,7 @@
     if (!root) return false;
     const metricKey = loadedCardKey(server, row);
     const cacheKey = slotMetricCacheKey(metricKey, slot);
-    const outTok = Number(slot.generating_tokens ?? 0) || 0;
+    const outTok = formatTokenCount(slot.generating_tokens);
     const inPrefill = outTok <= 0;
     const promptTok = slot.prompt_tokens;
     const prefillTok = slot.prefill_tokens;
@@ -3031,16 +3031,31 @@
       ? slot.prefill_tokens_per_second
       : slot.generating_tokens_per_second;
     const peakSpeed = updatePeakSpeed(cacheKey, inPrefill, liveSpeed);
+    const stickyKey = peakSpeedCacheKey(cacheKey, inPrefill);
+    const prev = lastLiveSpeeds.get(stickyKey) || {};
+    const inText = (promptTok == null && prefillTok == null && prev.in != null)
+      ? prev.in
+      : formatInTokenDisplay(inputTok);
+    const outText = (slot.generating_tokens == null && prev.out != null)
+      ? prev.out
+      : String(outTok);
+    const decodeText = (liveSpeed == null && prev.decode != null)
+      ? prev.decode
+      : formatLiveTokenSpeed(liveSpeed);
+    const peakText = (peakSpeed == null && prev.peak != null)
+      ? prev.peak
+      : formatLiveTokenSpeed(peakSpeed);
+    lastLiveSpeeds.set(stickyKey, { in: inText, out: outText, decode: decodeText, peak: peakText });
     const setMetric = (name, value) => {
       const el = root.querySelector(`[data-live-metric="${name}"]`);
       if (!el) return;
       const text = String(value);
       if (el.textContent !== text) el.textContent = text;
     };
-    setMetric('in', inputTok);
-    setMetric('out', outTok);
-    setMetric('decode', formatLiveTokenSpeed(liveSpeed));
-    setMetric('peak', formatLiveTokenSpeed(peakSpeed));
+    setMetric('in', inText);
+    setMetric('out', outText);
+    setMetric('decode', decodeText);
+    setMetric('peak', peakText);
     if (outTok > 0 && cacheKey) {
       lastTokenMetrics.set(cacheKey, mergePeakMetric({
         prompt_tokens: slot.prompt_tokens,
@@ -3053,13 +3068,11 @@
 
   function tokenSummary(entry) {
     if (!entry) return '';
-    const parts = [];
-    if (entry.prompt_tokens != null) parts.push(`IN ${entry.prompt_tokens}`);
-    if (entry.generation_tokens != null) parts.push(`OUT ${entry.generation_tokens}`);
-    if (entry.tokens_per_second != null) {
-      parts.push(`DECODE ${tokenSpeedSummary(entry.tokens_per_second, entry.peak_tokens_per_second, { last: true })}`);
-    }
-    return parts.join(' · ');
+    return [
+      `IN ${formatTokenCount(entry.prompt_tokens)}`,
+      `OUT ${formatTokenCount(entry.generation_tokens)}`,
+      `DECODE ${tokenSpeedSummary(entry.tokens_per_second, entry.peak_tokens_per_second, { last: true })}`,
+    ].join(' · ');
   }
 
   function recentCompletionsTitle(history) {
@@ -3070,6 +3083,7 @@
 
   const lastTokenMetrics = new Map();
   const peakTokenSpeeds = new Map();
+  const lastLiveSpeeds = new Map();
 
   function peakSpeedCacheKey(cacheKey, inPrefill) {
     return `${cacheKey}:${inPrefill ? 'prefill' : 'decode'}`;
@@ -3089,6 +3103,8 @@
     if (!cacheKey) return;
     peakTokenSpeeds.delete(peakSpeedCacheKey(cacheKey, true));
     peakTokenSpeeds.delete(peakSpeedCacheKey(cacheKey, false));
+    lastLiveSpeeds.delete(peakSpeedCacheKey(cacheKey, true));
+    lastLiveSpeeds.delete(peakSpeedCacheKey(cacheKey, false));
   }
 
   function tokenMetricSnapshot(entry) {
@@ -3126,7 +3142,7 @@
 
   function cardTokenMetricGroup(slot, { live = false, recent = [], peakSpeed = null } = {}) {
     if (live) {
-      const outTok = Number(slot.generating_tokens ?? 0) || 0;
+      const outTok = formatTokenCount(slot.generating_tokens);
       const inPrefill = !!slot.generating && outTok <= 0;
       const promptTok = slot.prompt_tokens;
       const prefillTok = slot.prefill_tokens;
@@ -3137,30 +3153,28 @@
       const speed = inPrefill
         ? slot.prefill_tokens_per_second
         : slot.generating_tokens_per_second;
-      const speedLabel = inPrefill ? 'PREFILL' : 'DECODE';
       const title = inPrefill ? 'Reading the prompt into context' : 'Live generation';
-      const speedHtml = (speed == null || !Number.isFinite(Number(speed)))
-        ? '—'
-        : tokenSpeedHtml(speed, peakSpeed);
       return `
         <span class="lm-model-card-token-metric is-live lm-model-card-token-generating" title="${escapeHtml(title)}">
-          <span class="lbl">IN</span>${escapeHtml(String(inputTok))}
+          <span class="lbl">IN</span>${escapeHtml(formatInTokenDisplay(inputTok))}
           <span class="lm-model-card-token-separator">·</span>
           <span class="lbl">OUT</span>${escapeHtml(String(outTok))}
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl">${speedLabel}</span>${speedHtml}
+          <span class="lbl">DECODE</span>${escapeHtml(formatLiveTokenSpeed(speed))}
+          <span class="lm-model-card-token-separator">·</span>
+          <span class="lbl peak">PEAK</span>${escapeHtml(formatLiveTokenSpeed(peakSpeed))}
         </span>`;
     }
-    const segments = [];
-    if (slot.prompt_tokens != null) segments.push(`<span class="lbl">IN</span>${escapeHtml(String(slot.prompt_tokens))}`);
-    if (slot.generation_tokens != null) segments.push(`<span class="lbl">OUT</span>${escapeHtml(String(slot.generation_tokens))}`);
-    if (slot.tokens_per_second != null) {
-      segments.push(`<span class="lbl">DECODE</span>${tokenSpeedHtml(slot.tokens_per_second, slot.peak_tokens_per_second, { last: true })}`);
-    }
-    if (!segments.length) return '';
-    const body = segments.map((part, index) => (
-      index === 0 ? part : `<span class="lm-model-card-token-separator">·</span>${part}`
-    )).join('');
+    const inTok = formatTokenCount(slot?.prompt_tokens);
+    const outTok = formatTokenCount(slot?.generation_tokens);
+    const decode = formatLiveTokenSpeed(slot?.tokens_per_second);
+    const peak = formatLiveTokenSpeed(slot?.peak_tokens_per_second);
+    const body = [
+      `<span class="lbl">IN</span>${escapeHtml(String(inTok))}`,
+      `<span class="lbl">OUT</span>${escapeHtml(String(outTok))}`,
+      `<span class="lbl">DECODE</span>${escapeHtml(decode)}`,
+      `<span class="lbl peak">PEAK</span>${escapeHtml(peak)}`,
+    ].join('<span class="lm-model-card-token-separator">·</span>');
     return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="${escapeHtml(recentCompletionsTitle(recent))}"><span class="lbl">LAST</span>${body}</span>`;
   }
 
@@ -4429,6 +4443,64 @@
 
   function renderInspectorEmptyState() {
     renderInspectorSelectionState(false);
+    const note = document.getElementById('inspectorExternalRuntimeNote');
+    if (note) {
+      note.textContent = 'This model runs outside DFlash Console. Runtime settings here apply only when you load through this app.';
+      note.classList.add('hidden');
+    }
+  }
+
+  function applyDownloadJobInspector(job, meta = {}) {
+    if (!job) {
+      renderInspectorEmptyState();
+      return;
+    }
+    inspectorDirty = false;
+    inspectorPendingReload = false;
+    inspectorBound = null;
+    const title = String(job.filename || job.repo_id || 'Download').trim();
+    document.getElementById('inspectorHeadTitle')?.replaceChildren(document.createTextNode(title));
+    fillInspectorInfo({
+      label: title,
+      filename: job.filename || '',
+      path: job.path || '',
+      repo_id: job.repo_id || '',
+      modality: meta.modality || 'llm',
+      quant: meta.quant || '',
+      external: false,
+    });
+    const runtimeReady = job.status === 'done' && !!String(job.path || '').trim();
+    const note = document.getElementById('inspectorExternalRuntimeNote');
+    if (note) {
+      if (runtimeReady) {
+        note.classList.add('hidden');
+      } else {
+        note.textContent = job.status === 'downloading'
+          ? 'Download in progress — runtime settings unlock when the file is complete. Click this card again after it finishes.'
+          : 'Complete or resume this download before runtime settings are available.';
+        note.classList.remove('hidden');
+      }
+    }
+    document.querySelectorAll('.lm-inspector-tab').forEach((tab) => {
+      const isLoad = tab.dataset.inspectorTab === 'load';
+      tab.disabled = isLoad && !runtimeReady;
+    });
+    const empty = document.getElementById('inspectorEmptyState');
+    if (empty) empty.classList.add('hidden');
+    document.querySelectorAll('.lm-inspector-panel').forEach((panel) => {
+      const isLoad = panel.dataset.inspectorPanel === 'load';
+      const hide = isLoad && !runtimeReady;
+      panel.classList.toggle('hidden', hide);
+      panel.classList.toggle('active', !hide && panel.classList.contains('active'));
+    });
+    focusInspectorTab(runtimeReady ? 'load' : 'info');
+    document.querySelectorAll('.lm-inspector-panel').forEach((panel) => {
+      const panelId = panel.dataset.inspectorPanel;
+      const isActive = runtimeReady ? panelId === 'load' : panelId === 'info';
+      panel.classList.toggle('active', isActive);
+    });
+    syncInspectorLoadedState(null);
+    syncInspectorReasoningVisibility(null);
   }
 
   async function applyModelSelection(model) {
@@ -5562,6 +5634,8 @@
     stopActive,
     activeServer,
     applyModelSelection,
+    renderInspectorEmptyState,
+    applyDownloadJobInspector,
     loadSelectedModel,
     loadModelOnServer,
     checkLoadPlan: fetchLoadPlan,

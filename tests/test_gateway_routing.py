@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from api.gateway import list_models
 from core.gateway_routing import (
     catalog_model_id,
+    default_gateway_chat_server,
     gateway_public_model_ids,
     model_ids_compatible,
     normalize_model_token,
@@ -153,6 +154,20 @@ def test_resolve_chat_server_empty_uses_first_enabled():
     cfg = _cfg()
     server = resolve_chat_server(cfg, '')
     assert server['id'] == 'gemma-12b-ar'
+
+
+def test_default_gateway_can_select_active_cloud_model():
+    cfg = _cfg()
+    cfg['gateway_server_id'] = 'deepseek-flash'
+    cfg['api_providers'] = [{
+        'id': 'deepseek',
+        'enabled': True,
+        'api_key': 'sk-test',
+        'models': [{'id': 'deepseek-flash', 'active': True}],
+    }]
+    server = default_gateway_chat_server(cfg)
+    assert server['id'] == 'deepseek-flash'
+    assert server['cloud'] is True
 
 
 def test_catalog_model_id_prefers_model_id():

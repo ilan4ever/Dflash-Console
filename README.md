@@ -8,7 +8,7 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 > supported platform**; Linux and macOS are not supported or tested (see
 > [Platform support](#platform-support) below).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.232
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.239
 
 ## Download (Windows)
 
@@ -87,7 +87,7 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.232)
+### Recent improvements (v0.3.239)
 
 - **Engine standby** — Running toggle gates load/chat until you arm the pipeline
 - **External GPU cards** — OneVoice, LM Studio, and other apps on the GPU; compact mobile layout; loading state expires when models are ready
@@ -131,6 +131,8 @@ http://127.0.0.1:8001/v1
 ```
 
 The gateway routes chat, embeddings, TTS, and STT to the loaded engine.
+
+**Concurrent chat:** multiple OpenAI-compatible clients may call `chat/completions` on the same loaded model at once (Harness agent turn + title, or two UI actions). The Console serializes ready/JIT per engine, then lets llama-server use parallel slots. You should not see `upstream HTTP 409` for that steady-state overlap. HTTP 409 is still used for strict model mismatch (`X-DFlash-Strict-Model`), a checkpoint already loaded on a *different* engine, and stack/vision repair.
 Model names are tolerant (engine id, file name, or an alias such as `gpt-4o`).
 
 **Client identity:** send `X-DFlash-Client: YourApp` on load and chat requests so the

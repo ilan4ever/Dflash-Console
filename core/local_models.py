@@ -733,20 +733,14 @@ def _collapse_hf_hub_repos(models: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def _has_vision_support(path: Path | None) -> bool:
     """True when a multimodal projector (mmproj) or VL naming indicates vision."""
-    from core.vision_setup import _is_mmproj_name
+    from core.vision_setup import _mmproj_siblings
 
     if not path or not path.is_file():
         return False
     lower = path.name.lower()
     if any(token in lower for token in ('-vl-', '_vl_', 'vision', 'multimodal')):
         return True
-    try:
-        for sibling in path.parent.glob('*.gguf'):
-            if _is_mmproj_name(sibling.name):
-                return True
-    except OSError:
-        pass
-    return False
+    return bool(_mmproj_siblings(path))
 
 
 def _append_vision_capability(caps: list[str], path: Path | None, *, mmproj_path: str | None = None) -> None:
@@ -2082,11 +2076,19 @@ def _annotate_accelerator_only(row: dict[str, Any]) -> None:
 
 def _annotate_projector_row(row: dict[str, Any]) -> None:
     """Mark vision projector (mmproj) GGUF companions — not standalone load targets."""
-    from core.vision_setup import _is_mmproj_name
+    from core.vision_setup import _is_mmproj_name, _is_vision_projector_leaf
 
     path_text = str(row.get('path') or '').strip()
     name = str(row.get('filename') or (Path(path_text).name if path_text else '')).strip()
-    if not _is_mmproj_name(name):
+    size = row.get('size_gb')
+    small_vision_sidecar = (
+        _is_vision_projector_leaf(name)
+        and isinstance(size, (int, float))
+        and 0 < float(size) < 3.0
+        and not _is_mmproj_name(name)
+        and '/mmproj/' not in path_text.replace('\\', '/').lower()
+    )
+    if not (_is_mmproj_name(name) or _is_mmproj_name(path_text) or small_vision_sidecar):
         row.setdefault('is_projector', False)
         return
     row['is_projector'] = True

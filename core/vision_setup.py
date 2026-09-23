@@ -12,8 +12,15 @@ from core.model_presets import write_server_preset
 from core.model_paths import allowed_model_roots
 
 _MMPROJ_RE = re.compile(r'mmproj', re.I)
+_VISION_PROJECTOR_LEAF_RE = re.compile(r'(?:^|[._-])vision(?:[._-])', re.I)
 
-VISION_CHAT_PROFILES = frozenset({'gemma-chat', 'gemma-12-dflash', 'qwen-dflash', 'gemma-12-ar'})
+VISION_CHAT_PROFILES = frozenset({
+    'gemma-chat',
+    'gemma-12-dflash',
+    'qwen-dflash',
+    'qwen-ar',
+    'gemma-12-ar',
+})
 
 
 def server_supports_vision_chat(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
@@ -28,8 +35,60 @@ def server_supports_vision_chat(server: dict[str, Any], *, cfg: dict[str, Any] |
 
 
 def _is_mmproj_name(name: str) -> bool:
-    lower = str(name or '').lower()
+    lower = str(name or '').replace('\\', '/').lower()
     return lower.endswith('.gguf') and bool(_MMPROJ_RE.search(lower))
+
+
+def _is_vision_projector_leaf(name: str) -> bool:
+    leaf = Path(str(name or '').replace('\\', '/')).name.lower()
+    if not leaf.endswith('.gguf'):
+        return False
+    if _MMPROJ_RE.search(leaf):
+        return True
+    return bool(_VISION_PROJECTOR_LEAF_RE.search(leaf))
+
+
+def local_mmproj_filename(hf_filename: str) -> str:
+    """Keep the mmproj identity when Hugging Face stores projectors under mmproj/."""
+    raw = str(hf_filename or '').replace('\\', '/').strip()
+    leaf = Path(raw).name
+    if not leaf:
+        return leaf
+    if _is_mmproj_name(leaf):
+        return leaf
+    if _is_mmproj_name(raw) or _is_vision_projector_leaf(leaf):
+        return f'mmproj-{leaf}'
+    return leaf
+
+
+def _is_vision_projector_path(path: Path, *, target: Path | None = None, require_smaller: bool = True) -> bool:
+    try:
+        projector = path.expanduser()
+    except OSError:
+        return False
+    if not projector.is_file():
+        return False
+    if _is_mmproj_name(projector.name) or _is_mmproj_name(str(projector)):
+        return True
+    if projector.parent.name.lower() == 'mmproj' and projector.suffix.lower() == '.gguf':
+        return True
+    if not _is_vision_projector_leaf(projector.name):
+        return False
+    if target is None:
+        return True
+    try:
+        target_path = target.expanduser()
+        if projector.resolve() == target_path.resolve():
+            return False
+        if not require_smaller:
+            return True
+        if projector.stat().st_size >= target_path.stat().st_size:
+            return False
+        if projector.stat().st_size >= 3 * 1024 ** 3:
+            return False
+    except OSError:
+        return False
+    return True
 
 
 def infer_hf_repo_from_path(path: str | Path) -> str | None:
@@ -72,14 +131,27 @@ def _guess_vision_repo_from_hint(folder_hint: str, filename: str = '') -> str | 
 def _mmproj_siblings(model_path: Path) -> list[Path]:
     if not model_path.is_file():
         return []
+    parent = model_path.parent
+    found: list[Path] = []
     try:
-        return sorted(
-            sibling
-            for sibling in model_path.parent.glob('*.gguf')
-            if _is_mmproj_name(sibling.name)
-        )
+        candidates = list(parent.glob('*.gguf'))
+        nested = parent / 'mmproj'
+        if nested.is_dir():
+            candidates.extend(nested.glob('*.gguf'))
+        for sibling in candidates:
+            if not sibling.is_file():
+                continue
+            try:
+                if sibling.resolve() == model_path.resolve():
+                    continue
+            except OSError:
+                continue
+            if _is_vision_projector_path(sibling, target=model_path):
+                found.append(sibling)
     except OSError:
         return []
+    found.sort(key=lambda item: (0 if _is_mmproj_name(item.name) else 1, item.name.lower()))
+    return found
 
 
 def _fetch_mmproj_filenames(repo_id: str) -> list[str]:
@@ -226,7 +298,7 @@ def vision_plan(*, model_path: str, server_id: str | None = None, cfg: dict[str,
 
     repo_id = infer_hf_repo_from_path(path)
     mmproj_filename = pick_mmproj_filename(repo_id, path) if repo_id else None
-    dest = path.parent / Path(mmproj_filename).name if mmproj_filename else None
+    dest = path.parent / local_mmproj_filename(mmproj_filename) if mmproj_filename else None
 
     if not repo_id or not mmproj_filename:
         return {
@@ -268,10 +340,15 @@ def wire_vision(
         return {'success': False, 'error': f'projector file not found: {mmproj_path}'}
     if not _is_allowed_model_path(projector, config):
         return {'success': False, 'error': 'projector path not under an allowed model directory'}
-    if projector.parent != target.parent:
+    same_folder = projector.parent == target.parent
+    nested_folder = (
+        projector.parent.name.lower() == 'mmproj'
+        and projector.parent.parent == target.parent
+    )
+    if not same_folder and not nested_folder:
         return {'success': False, 'error': 'projector must be next to the model'}
-    if not _is_mmproj_name(projector.name):
-        return {'success': False, 'error': 'projector filename must contain mmproj and use GGUF format'}
+    if not _is_vision_projector_path(projector, target=target, require_smaller=False):
+        return {'success': False, 'error': 'projector filename must be a GGUF vision projector'}
 
     if server_id:
         servers = config.get('servers') or []
@@ -307,11 +384,13 @@ def wire_vision(
 
 
 def wire_vision_after_download(post_action: dict[str, Any]) -> None:
-    wire_vision(
+    result = wire_vision(
         model_path=str(post_action.get('model_path') or ''),
         mmproj_path=str(post_action.get('mmproj_path') or post_action.get('dest_path') or ''),
         server_id=str(post_action.get('server_id') or '').strip() or None,
     )
+    if not result.get('success'):
+        raise RuntimeError(result.get('error') or 'failed to wire vision projector')
 
 
 def ensure_server_vision(

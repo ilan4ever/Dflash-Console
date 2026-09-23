@@ -84,6 +84,7 @@
   function onViewLeave(tab) {
     if (tab === 'settings') window.DFlashSettingsLive?.onViewLeave?.();
     if (tab === 'devices') window.DFlashNodesLive?.onViewLeave?.();
+    if (tab === 'downloads') window.DFlashDownloadsLive?.onViewLeave?.();
   }
 
   let activeTab = 'server';

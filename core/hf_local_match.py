@@ -64,13 +64,21 @@ def is_auxiliary_gguf_filename(filename: str) -> bool:
     lower = str(filename or '').strip().lower()
     if not lower.endswith('.gguf'):
         return lower.endswith('.part')
-    return (
+    if (
         'imatrix' in lower
         or lower.startswith('mmproj')
+        or '/mmproj/' in lower.replace('\\', '/')
         or '.mmproj' in lower
         or lower.startswith('mtp-')
         or lower.endswith('.part')
-    )
+    ):
+        return True
+    # llama.cpp MTP / draft sidecars (not DFlash accelerators, but not loadable targets).
+    if re.search(r'(?:^|[._-])draft(?:[._-]|\.gguf$)', lower):
+        return True
+    if re.search(r'(?:^|[._-])fastmtp(?:[._-]|\.gguf$)', lower):
+        return True
+    return False
 
 
 def _repo_parts(repo_id: str) -> tuple[str, str] | None:

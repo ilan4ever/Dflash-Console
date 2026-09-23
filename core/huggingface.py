@@ -932,6 +932,21 @@ def build_download_options(files: list[dict[str, Any]] | None) -> list[dict[str,
 
     options: list[dict[str, Any]] = []
 
+    def _sharded_label(filename: str, expected: int) -> str:
+        parts = filename.replace('\\', '/').split('/')
+        component = parts[-2].strip().lower() if len(parts) > 1 else ''
+        names = {
+            'text_encoder': 'Text encoder',
+            'text-encoder': 'Text encoder',
+            'transformer': 'Transformer weights',
+            'transformers': 'Transformer weights',
+            'vae': 'VAE',
+            'unet': 'UNet weights',
+            'tokenizer': 'Tokenizer',
+        }
+        title = names.get(component)
+        return f'{title} ({expected} files)' if title else f'Full model ({expected} files)'
+
     def _append_option(
         *,
         filename: str,
@@ -979,7 +994,7 @@ def build_download_options(files: list[dict[str, Any]] | None) -> list[dict[str,
                 title = f'{label} ({expected} files)'
                 kind = 'quant'
             else:
-                title = f'Full model ({expected} files)'
+                title = _sharded_label(filename, expected)
                 kind = 'sharded'
         else:
             title = prefix or base
@@ -1082,7 +1097,12 @@ def _is_accelerator_only_repo(
 
 
 def _largest_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]:
-    gguf_files = _gguf_files(siblings)
+    from core.hf_local_match import is_auxiliary_gguf_filename
+
+    gguf_files = [
+        row for row in _gguf_files(siblings)
+        if not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
+    ]
     sized = [row for row in gguf_files if isinstance(row.get('size_gb'), (int, float))]
     if not sized:
         return None, '—'
@@ -1511,15 +1531,25 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
             size_gb = disk_gb
             size_label = f'{disk_gb:g} GB'
     if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
-        stored_gb, stored_label = _size_from_hub_storage(raw)
-        if stored_gb:
-            size_gb = stored_gb
-            size_label = stored_label
-    if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
         est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=has_gguf)
         if est_gb:
             size_gb = est_gb
             size_label = est_label
+    elif has_gguf and len(gguf_files) > 1:
+        # usedStorage is the sum of every quant in the repo — not the file you download.
+        stored_gb, _stored_label = _size_from_hub_storage(raw)
+        if stored_gb and size_gb and float(stored_gb) == float(size_gb):
+            est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=True)
+            if est_gb:
+                size_gb = est_gb
+                size_label = est_label
+    if has_gguf and isinstance(size_gb, (int, float)):
+        param = _PARAM_B_RE.search(repo_label.replace('_', '-'))
+        if param and float(param.group(1)) >= 7 and float(size_gb) < 6:
+            est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=True)
+            if est_gb:
+                size_gb = est_gb
+                size_label = est_label
     if isinstance(size_gb, (int, float)) and float(size_gb) <= 0:
         size_gb = None
         size_label = '—'
@@ -1679,12 +1709,34 @@ def _normalize_repo_slug(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', str(value or '').strip().lower()).strip('-')
 
 
+_FILENAME_TAIL_RE = re.compile(
+    r'(?:[\s|]+-?\s*|\s+)[^\s/]+\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$',
+    re.I,
+)
+_CLEAN_REPO_RE = re.compile(r'^[\w][\w.-]*/[\w][\w.-]*$')
+
+
+def normalize_hf_search_query(query: str) -> str:
+    """Turn pasted download identifiers into a Hub search string.
+
+    Last-downloads copy often looks like ``org/repo - file.gguf``. Hugging Face
+    has no such repo; strip the filename and keep ``org/repo``.
+    """
+    text = str(query or '').replace('\u2013', '-').replace('\u2014', '-').strip()
+    text = text.replace('\n', ' ').replace('\t', ' ')
+    text = _FILENAME_TAIL_RE.sub('', text).strip(' -|')
+    text = re.sub(r'\s+', ' ', text).strip()
+    first = text.split(' ', 1)[0] if text else ''
+    if _CLEAN_REPO_RE.match(first):
+        return first
+    return text
+
+
 def _is_repo_id_query(query: str) -> bool:
-    needle = str(query or '').strip().strip('/')
-    if '/' not in needle:
+    needle = normalize_hf_search_query(query).strip().strip('/')
+    if ' ' in needle or needle.count('/') != 1:
         return False
-    parts = [part for part in needle.split('/') if part]
-    return len(parts) >= 2
+    return bool(_CLEAN_REPO_RE.match(needle))
 
 
 def _fetch_repo_summary_light(repo_id: str, *, category: str = 'dflash') -> dict[str, Any] | None:
@@ -2094,7 +2146,7 @@ def search_models(
     gguf_only: bool | None = None,
     enrich_sizes: bool = True,
 ) -> dict[str, Any]:
-    needle = str(query or '').strip()
+    needle = normalize_hf_search_query(query)
     cat_key = str(category or 'dflash').strip().lower()
     response_limit = max(1, min(int(limit), 50))
     if cat_key == 'supported':
@@ -2115,7 +2167,6 @@ def search_models(
         'sort': sort if sort in ('downloads', 'likes', 'lastModified', 'createdAt') else 'downloads',
         'direction': '-1',
         'full': 'true',
-        'expand': 'usedStorage',
     }
     if needle:
         if use_gguf_only and 'gguf' not in needle.lower():
@@ -2177,7 +2228,6 @@ def search_models(
             'sort': params['sort'],
             'direction': '-1',
             'full': 'true',
-            'expand': 'usedStorage',
             'search': needle,
         }
         if use_gguf_only:
@@ -2199,6 +2249,13 @@ def search_models(
     # Exact repo-id lookup: when the user types a full "org/repo" id (e.g.
     # deepseek/deepseek-v4-flash) the search may still miss it — resolve directly.
     models = _prepend_repo_lookup(models, needle, category=cat_key, supported_only=False)
+    # Hugging Face orders search hits mostly by popularity. Apply the same
+    # name-aware ranking as the local index so a versioned model query such as
+    # "Qwen Image 2.1" is not led by unrelated, more popular Qwen models.
+    if needle:
+        from core.hf_catalog_index import _rank_rows
+
+        models = _rank_rows(needle, models)
     models.sort(
         key=lambda row: (
             0 if 'dflash' in str(row.get('id') or '').lower() else 1,
@@ -2478,8 +2535,8 @@ def get_model_detail(
     category: str = 'dflash',
     hub_timeout: float = 8.0,
 ) -> dict[str, Any]:
-    repo = str(repo_id or '').strip().strip('/')
-    if not repo or '/' not in repo:
+    repo = normalize_hf_search_query(repo_id).strip().strip('/')
+    if not repo or '/' not in repo or ' ' in repo:
         return {'success': False, 'error': 'invalid repo id'}
     use_gguf_only = _use_gguf_only(category)
     url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
@@ -3508,6 +3565,52 @@ def _incomplete_repo_job_id(repo_id: str) -> str:
     """Stable job id without '/' so path routes and encodeURIComponent stay valid."""
     repo = str(repo_id or '').strip().strip('/').lower()
     return f'incomplete::{repo.replace("/", "--")}'
+
+
+def _same_download_path(left: str | Path | None, right: str | Path | None) -> bool:
+    """Compare download destinations without making same-repo jobs collide."""
+    left_text = str(left or '').strip()
+    right_text = str(right or '').strip()
+    if not left_text or not right_text:
+        return False
+    try:
+        return Path(left_text).expanduser().resolve() == Path(right_text).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return os.path.normcase(os.path.normpath(left_text)) == os.path.normcase(os.path.normpath(right_text))
+
+
+def _infer_repo_id_from_download_path(
+    repo_id: str,
+    dest: str | Path,
+    cfg: dict[str, Any],
+) -> str:
+    """Recover the parent repo for a component folder with a stale repo id."""
+    current = str(repo_id or '').strip().strip('/')
+    try:
+        target = Path(str(dest)).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return current
+    for root in allowed_model_roots(cfg):
+        try:
+            relative = target.relative_to(root.expanduser().resolve())
+        except (OSError, ValueError):
+            continue
+        parts = relative.parts
+        if len(parts) < 3:
+            continue
+        candidate_root = root.joinpath(*parts[:2])
+        if not candidate_root.is_dir():
+            continue
+        if not any((candidate_root / marker).is_file() for marker in (
+            'config.json',
+            'model_index.json',
+            'README.md',
+        )):
+            continue
+        candidate = '/'.join(parts[:2])
+        if current.lower() != candidate.lower():
+            return candidate
+    return current
 
 
 def _incomplete_repo_job_id_candidates(job_id: str | None = None, repo_id: str | None = None) -> list[str]:
@@ -4717,6 +4820,8 @@ def start_repo_download(
         author, repo_name = repo.split('/', 1)
         dest = root / author / repo_name
 
+    repo = _infer_repo_id_from_download_path(repo, dest, config)
+
     # Resume incomplete shard folders instead of treating them as fully installed.
     incomplete_local = False
     if dest.is_dir():
@@ -4739,19 +4844,30 @@ def start_repo_download(
     resume_job_id = ''
     prior: dict[str, Any] = {}
     with _jobs_lock:
-        for job_id, job in _download_jobs.items():
-            if str(job.get('status') or '') != 'incomplete':
-                continue
-            same_repo = str(job.get('repo_id') or '').strip().lower() == repo.lower()
-            same_path = str(Path(str(job.get('path') or '')).expanduser()) == str(dest)
-            if same_repo or same_path:
-                resume_job_id = str(job_id)
-                prior = dict(job)
-                break
+        incomplete_matches = [
+            (str(job_id), job)
+            for job_id, job in _download_jobs.items()
+            if str(job.get('status') or '') == 'incomplete'
+            and _same_download_path(job.get('path'), dest)
+        ]
+        if incomplete_matches:
+            preferred = next(
+                (
+                    item for item in incomplete_matches
+                    if str(item[1].get('repo_id') or '').strip().lower() == repo.lower()
+                ),
+                incomplete_matches[0],
+            )
+            resume_job_id, prior = preferred[0], dict(preferred[1])
+            # A discovered component folder can leave a stale history row with
+            # a malformed repo id. Keep one resumable job for this destination.
+            for duplicate_id, _duplicate in incomplete_matches:
+                if duplicate_id != resume_job_id:
+                    _download_jobs.pop(duplicate_id, None)
         for job in _download_jobs.values():
             if (
                 str(job.get('status') or '') == 'downloading'
-                and str(job.get('repo_id') or '').strip().lower() == repo.lower()
+                and _same_download_path(job.get('path'), dest)
             ):
                 return {
                     'success': True,
@@ -5105,9 +5221,46 @@ def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> None:
         }
         for row in discovered:
             repo = str(row.get('repo_id') or '').strip().lower()
-            if not repo or repo in active_repos:
+            if not repo:
                 continue
             job_id = str(row.get('id') or '')
+            row_path = row.get('path')
+            existing_same_id = _download_jobs.get(job_id)
+            if (
+                existing_same_id
+                and str(existing_same_id.get('status') or '') in {'incomplete', 'error'}
+                and any(
+                    str(candidate.get('status') or '') == 'downloading'
+                    and candidate_id != job_id
+                    and _same_download_path(candidate.get('path'), row_path)
+                    for candidate_id, candidate in _download_jobs.items()
+                )
+            ):
+                _download_jobs.pop(job_id, None)
+                continue
+            for legacy_id, old in list(_download_jobs.items()):
+                if legacy_id == job_id or not _same_download_path(old.get('path'), row_path):
+                    continue
+                if str(old.get('status') or '') not in {'incomplete', 'error'}:
+                    continue
+                active_same_path = any(
+                    str(candidate.get('status') or '') == 'downloading'
+                    and _same_download_path(candidate.get('path'), row_path)
+                    for candidate_id, candidate in _download_jobs.items()
+                    if candidate_id != legacy_id
+                )
+                if active_same_path:
+                    _download_jobs.pop(legacy_id, None)
+                    continue
+                if job_id not in _download_jobs:
+                    migrated = dict(old)
+                    migrated.update({
+                        'id': job_id,
+                        'repo_id': row.get('repo_id'),
+                        'path': row_path,
+                    })
+                    _download_jobs.pop(legacy_id, None)
+                    _download_jobs[job_id] = migrated
             # Migrate legacy slash-containing incomplete ids.
             for legacy_id in _incomplete_repo_job_id_candidates(job_id=job_id, repo_id=repo):
                 if legacy_id == job_id:
@@ -5120,6 +5273,8 @@ def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> None:
                     _download_jobs[job_id] = migrated
                     break
             existing = _download_jobs.get(job_id)
+            if repo in active_repos and not (existing and str(existing.get('status') or '') == 'downloading'):
+                continue
             if existing and str(existing.get('status') or '') == 'downloading':
                 continue
             # Keep user-dismissed incomplete jobs out of the queue.

@@ -29,6 +29,11 @@
     return !pipelineStandby;
   }
 
+  /** Playground may chat when a checkpoint is loaded even if engine toggles look off. */
+  function playgroundChatAllowed() {
+    return consolePipelineActive() || !!chatReadyEngine();
+  }
+
   const MAX_ATTACHMENTS = 5;
   const MAX_TEXT_FILE_BYTES = 250 * 1024;
   const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;
@@ -1167,7 +1172,7 @@
     renderStandbyBanner();
     renderActiveModelChip();
 
-    if (!consolePipelineActive()) {
+    if (!playgroundChatAllowed()) {
       if (input) {
         input.disabled = true;
         input.placeholder = ENGINE_STANDBY_MSG;
@@ -1447,7 +1452,7 @@
   }
 
   async function loadCheckpoint() {
-    if (!consolePipelineActive()) {
+    if (!playgroundChatAllowed()) {
       toast(ENGINE_STANDBY_MSG, false);
       return;
     }
@@ -1660,7 +1665,7 @@
       toast('Load a model first', false);
       return;
     }
-    if (!engine.cloud && !consolePipelineActive()) {
+    if (!engine.cloud && !playgroundChatAllowed()) {
       toast(ENGINE_STANDBY_MSG, false);
       return;
     }

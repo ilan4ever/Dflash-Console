@@ -384,15 +384,32 @@
     return 0;
   }
 
+  function catalogShardComponentLabel(filename) {
+    const parts = String(filename || '').replaceAll('\\', '/').split('/');
+    const component = String(parts.at(-2) || '').toLowerCase();
+    const labels = {
+      text_encoder: 'Text encoder',
+      'text-encoder': 'Text encoder',
+      transformer: 'Transformer weights',
+      transformers: 'Transformer weights',
+      vae: 'VAE',
+      unet: 'UNet weights',
+      tokenizer: 'Tokenizer',
+    };
+    return labels[component] || '';
+  }
+
   const CATALOG_SHARD_RE = /^(?<prefix>.+?)-(?<part>\d{5})-of-(?<total>\d{5})\.(?:gguf|safetensors|bin)$/i;
 
   function isAuxiliaryCatalogFilename(filename) {
     const lower = String(filename || '').trim().toLowerCase();
     if (!lower) return false;
     if (lower.includes('imatrix')) return true;
-    if (lower.startsWith('mmproj') || lower.includes('.mmproj')) return true;
+    if (lower.startsWith('mmproj') || lower.includes('.mmproj') || lower.includes('/mmproj/')) return true;
     if (lower.startsWith('mtp-')) return true;
     if (lower.endsWith('.part')) return true;
+    if (/(?:^|[._-])draft(?:[._-]|\.gguf$)/.test(lower)) return true;
+    if (/(?:^|[._-])fastmtp(?:[._-]|\.gguf$)/.test(lower)) return true;
     return false;
   }
 
@@ -435,10 +452,13 @@
       const ext = base.split('.').pop().toLowerCase();
       const isGguf = ext === 'gguf';
       const prefix = match.groups.prefix;
+      const componentLabel = catalogShardComponentLabel(first.filename);
       options.push({
         filename: first.filename,
         label: expected > 1
-          ? (isGguf ? `${prefix} (${expected} files)` : `Full model (${expected} files)`)
+          ? (isGguf
+            ? `${prefix} (${expected} files)`
+            : `${componentLabel || 'Full model'} (${expected} files)`)
           : base,
         files: rows.map((row) => row.filename),
         kind: expected > 1 ? (isGguf ? 'quant' : 'sharded') : (isGguf ? 'quant' : 'file'),
@@ -665,6 +685,16 @@
     return slug.replace(/^(?:google|meta|qwen)-/, '') || catalogRepoSlug(model);
   }
 
+  function catalogLooksLikeSidecarRepo(model) {
+    if (model?.accelerator_only) return true;
+    const size = Number(model?.size_gb);
+    if (!Number.isFinite(size)) return false;
+    const slug = catalogRepoSlug(model);
+    const param = slug.match(/\b(\d+(?:\.\d+)?)\s*b\b/i);
+    if (!param) return false;
+    return Number(param[1]) >= 7 && size < 6;
+  }
+
   function catalogRecommendationScore(model) {
     const slug = catalogRepoSlug(model);
     const author = catalogAuthor(model);
@@ -754,7 +784,8 @@
     const requireFit = list.some((model) => model?.fits_machine === true);
     ranked.forEach((model) => {
       if (picked.length >= 3) return;
-      if (skipAccel && model?.accelerator_only) return;
+      if (skipAccel && (model?.accelerator_only || catalogLooksLikeSidecarRepo(model))) return;
+      if (!model?.has_gguf && !model?.has_files && !(Number(model?.downloads) > 0)) return;
       if (requireFit && model?.fits_machine !== true) return;
       if (picked.length && !catalogRecommendationIsQuality(model)) return;
       if (!catalogRecommendationCanPair(picked, model)) return;
@@ -842,14 +873,37 @@
     return { size_gb: sizeGb, size_label: `~${Number(sizeGb)} GB` };
   }
 
+  function preferredCatalogOption(model) {
+    const options = catalogDownloadOptions(model).filter((opt) => !isAuxiliaryCatalogFilename(opt.filename));
+    if (!options.length) return null;
+    const ranked = ['q4_k_m', 'q4_k_s', 'q5_k_m', 'q4_0', 'q6_k'];
+    for (const token of ranked) {
+      const match = options.find((opt) => String(opt.filename || '').toLowerCase().includes(token));
+      if (match && formatCatalogFileSize(match)) return match;
+    }
+    return options.find((opt) => formatCatalogFileSize(opt)) || options[0];
+  }
+
   function listSizeLabel(model) {
+    const preferred = preferredCatalogOption(model);
+    const fromQuant = formatCatalogFileSize(preferred);
+    if (fromQuant) return fromQuant;
     const label = String(model?.size_label || '').trim();
-    if (label && !/^(?:—|-)$/i.test(label) && !/^0(?:\.0+)?\s*gb$/i.test(label)) return label;
-    if (model?.size_gb != null && Number(model.size_gb) > 0) return `${model.size_gb} GB`;
+    const sizeGb = Number(model?.size_gb);
+    const slug = String(model?.id || model?.title || '').split('/').pop() || '';
+    const param = slug.match(/(\d+(?:\.\d+)?)\s*b\b/i);
+    const paramsB = param ? Number(param[1]) : 0;
+    const looksTinyForBigModel = paramsB >= 7 && Number.isFinite(sizeGb) && sizeGb > 0 && sizeGb < 6;
+    if (looksTinyForBigModel) {
+      const estimated = estimateDiskSizeFromName(model?.id || model?.title, !!model?.has_gguf);
+      if (estimated?.size_label) return estimated.size_label;
+    }
+    if (label && !/^(?:—|-)$/i.test(label) && !/^0(?:\.0+)?\s*gb$/i.test(label) && !looksTinyForBigModel) {
+      return label;
+    }
+    if (Number.isFinite(sizeGb) && sizeGb > 0 && !looksTinyForBigModel) return `${sizeGb} GB`;
     const smallest = model?.smallest_quant_gb;
-    if (smallest != null && smallest > 0) return `${smallest} GB`;
-    const best = model?.best_fit_quant_gb;
-    if (best != null && best > 0) return `~${best} GB`;
+    if (smallest != null && smallest > 0 && !(paramsB >= 7 && smallest < 6)) return `${smallest} GB`;
     const estimated = estimateDiskSizeFromName(model?.id || model?.title, !!model?.has_gguf);
     return estimated?.size_label || '—';
   }
@@ -1015,6 +1069,22 @@
     return modality ? `${modality} · Hugging Face model` : 'Hugging Face model';
   }
 
+  function catalogDraftPrimary(model) {
+    if (model?.accelerator_only === true) return false;
+    if (model?.catalog_draft_primary === true) return true;
+    if (model?.catalog_draft_primary === false) return false;
+    return catalogLooksLikeSidecarRepo(model);
+  }
+
+  function catalogListDraftBadge(model) {
+    if (!catalogDraftPrimary(model)) return '';
+    return catalogBadge(
+      'DRAFT',
+      'orange',
+      'MTP or draft sidecar — not the full model. Open the repo and download a full quant (often ~13–15 GB for 27B).',
+    );
+  }
+
   function catalogListKindBadge(model) {
     const tags = Array.isArray(model?.tags)
       ? model.tags.map((tag) => String(tag || '').trim().toLowerCase())
@@ -1022,7 +1092,7 @@
     const id = String(model?.id || '').toLowerCase();
     const hasAcceleratorMarker = model?.accelerator_only === true
       || window.DFlashModelCard?.isAccelerator?.(model) === true
-      || tags.some((tag) => /dflash|dspark|draft-model|speculative-decoding|speculator|eagle3/.test(tag))
+      || tags.some((tag) => /dflash|dspark|draft-model|speculator|eagle3/.test(tag))
       || /(?:-dflash(?:[-_.]|\/|$)|-dspark(?:[-_.]|\/|$)|eagle3)/i.test(id);
     if (hasAcceleratorMarker) {
       return catalogBadge(
@@ -1056,7 +1126,7 @@
     const compatible = catalogDflashCompatible(model) && !kindBadge
       ? catalogDflashCompatibleBadge()
       : '';
-    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${catalogAuxiliaryOnly(model) ? catalogBadge('calibration only', 'yellow', 'Only an imatrix/calibration file is present — download the model weights') : ''}${kindBadge}${compatible}`;
+    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${catalogAuxiliaryOnly(model) ? catalogBadge('calibration only', 'yellow', 'Only an imatrix/calibration file is present — download the model weights') : ''}${catalogListDraftBadge(model)}${kindBadge}${compatible}`;
   }
 
   function catalogListShowsNotRunnableNote(model) {
@@ -1192,6 +1262,13 @@
     const hasText = (pattern) => pattern.test(haystack);
 
     if (shared) badges.push(shared);
+    if (catalogDraftPrimary(model)) {
+      badges.push(catalogBadge(
+        'draft',
+        'orange',
+        'MTP or draft sidecar — download a full quant from this repo to chat, not the draft file alone',
+      ));
+    }
     if (!accelerator && catalogDflashCompatible(model)) badges.push(catalogDflashCompatibleBadge());
     // The logo is reserved for a DFlash stack that is already registered and
     // loadable in this Console. Text in a README or a compatible tag is not
@@ -1315,10 +1392,22 @@
     persistSearchCache(key, cached);
   }
 
+  function normalizeHfSearchQuery(query) {
+    let text = String(query || '')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/[\n\t]+/g, ' ')
+      .trim();
+    text = text.replace(/(?:[\s|]+-?\s*|\s+)[^\s/]+\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$/i, '').trim();
+    text = text.replace(/^[\s|-]+|[\s|-]+$/g, '').replace(/\s+/g, ' ').trim();
+    const first = text.split(' ')[0] || '';
+    if (/^[\w][\w.-]*\/[\w][\w.-]*$/.test(first)) return first;
+    return text;
+  }
+
   function isRepoIdQuery(query) {
-    const needle = String(query || '').trim().replace(/^\/+|\/+$/g, '');
-    if (!needle.includes('/')) return false;
-    return needle.split('/').filter(Boolean).length >= 2;
+    const needle = normalizeHfSearchQuery(query).replace(/^\/+|\/+$/g, '');
+    if (!needle || needle.includes(' ') || (needle.match(/\//g) || []).length !== 1) return false;
+    return /^[\w][\w.-]*\/[\w][\w.-]*$/.test(needle);
   }
 
   function loadingCopy(category, query = '') {
@@ -1586,6 +1675,7 @@
       'size_label',
       'size_bytes',
       'accelerator_only',
+      'catalog_draft_primary',
       'has_gguf',
       'gguf_count',
       'file_count',
@@ -1613,6 +1703,19 @@
       row[field] = detail[field];
       changed = true;
     });
+    const preferred = preferredCatalogOption(row);
+    const quantSize = formatCatalogFileSize(preferred);
+    if (quantSize) {
+      const gb = Number(preferred.size_gb);
+      if (Number.isFinite(gb) && gb > 0 && row.size_gb !== gb) {
+        row.size_gb = gb;
+        changed = true;
+      }
+      if (row.size_label !== quantSize) {
+        row.size_label = quantSize;
+        changed = true;
+      }
+    }
     return changed;
   }
 
@@ -2276,7 +2379,8 @@
   }
 
   async function runSearch({ background = false } = {}) {
-    const query = searchInput()?.value?.trim() || '';
+    const rawQuery = searchInput()?.value?.trim() || '';
+    const query = normalizeHfSearchQuery(rawQuery);
     const sort = currentSort();
     const category = currentCategory();
     const copy = loadingCopy(category, query);
@@ -2317,19 +2421,26 @@
       models = data.models || [];
       putCachedSearch(query, sort, category, models);
       populateCatalogFilters();
-      if (!models.some((m) => m.id === selectedId)) {
+      if (!models.length || !models.some((m) => m.id === selectedId)) {
         selectedId = '';
         selectedDetail = null;
-        if (!background) renderDetailPlaceholder();
+        if (!models.length) {
+          renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
+        } else if (!background) {
+          renderDetailPlaceholder();
+        }
       }
       renderList();
       void warmListDetails(visibleModels(), category);
       const visible = visibleModels();
-      if (!selectedId && visible[0]) {
+      if (!visible.length) {
+        selectedId = '';
+        selectedDetail = null;
+        renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
+      } else if (!selectedId && visible[0]) {
         void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
       } else if (selectedId && !visible.some((model) => model.id === selectedId)) {
-        if (visible[0]) void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
-        else renderDetailPlaceholder();
+        void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
       }
     } catch (err) {
       if (gen !== searchRefreshGen) return;

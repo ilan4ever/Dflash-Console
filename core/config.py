@@ -905,6 +905,11 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
         result['target_path'] = target_path
     if draft_path:
         result['draft_path'] = draft_path
+    if entry.get('dflash_draft_disabled') is True:
+        result['dflash_draft_disabled'] = True
+        reason = str(entry.get('dflash_draft_disabled_reason') or '').strip()
+        if reason:
+            result['dflash_draft_disabled_reason'] = reason
     mmproj_path = str(entry.get('mmproj_path') or '').strip()
     if mmproj_path:
         result['mmproj_path'] = mmproj_path

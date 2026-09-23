@@ -63,6 +63,54 @@ def test_index_search_matches_qwen_dot_query(catalog_index):
     assert hit['from_index'] is True
 
 
+def test_index_search_prefers_exact_model_name(catalog_index):
+    catalog_index.upsert_models([
+        {
+            'id': 'DavidAU/Qwen3.8-27B-Cold-Fusion-GAIN-V1.1-NM-Q5_K_M-GGUF',
+            'title': 'Qwen3.8-27B-Cold-Fusion-GAIN-V1.1-NM-Q5_K_M-GGUF',
+            'description': 'Qwen image-to-text model',
+            'downloads': 2_000_000,
+            'has_gguf': True,
+            'tags': ['qwen', 'vision'],
+        },
+        {
+            'id': 'Qwen/Qwen-Image-2.1',
+            'title': 'Qwen-Image-2.1',
+            'downloads': 16_200,
+            'has_gguf': False,
+            'has_files': True,
+            'tags': ['qwen', 'image'],
+        },
+        {
+            'id': 'Qwen/Qwen2.5-VL-7B-Instruct',
+            'title': 'Qwen2.5-VL-7B-Instruct',
+            'description': 'Qwen image understanding model',
+            'downloads': 9_000_000,
+            'has_gguf': False,
+            'tags': ['qwen', 'vision'],
+        },
+    ])
+
+    hit = catalog_index.search_local('Qwen Image 2.1', category='all', limit=25)
+
+    assert hit is not None
+    assert [row['id'] for row in hit['models']] == ['Qwen/Qwen-Image-2.1']
+
+
+def test_index_search_miss_falls_through_to_live_search(catalog_index):
+    catalog_index.upsert_models([
+        {
+            'id': 'Qwen/Qwen2.5-VL-7B-Instruct',
+            'title': 'Qwen2.5-VL-7B-Instruct',
+            'downloads': 9_000_000,
+            'has_gguf': False,
+            'tags': ['qwen'],
+        },
+    ])
+
+    assert catalog_index.search_local('Qwen Image 2.1', category='all', limit=25) is None
+
+
 def test_index_search_filters_gguf_category(catalog_index):
     catalog_index.upsert_models([
         {
@@ -200,6 +248,12 @@ def test_expand_query_tokens_splits_family_and_size():
     assert _expand_query_tokens('gemma4 2b') == ['gemma', '4', '2b']
     assert _expand_query_tokens('gemma 4 e2b') == ['gemma', '4', '2b']
     assert _expand_query_tokens('qwen3.8') == ['qwen', '3', '8']
+
+
+def test_numeric_query_does_not_match_inside_larger_number():
+    from core.hf_catalog_index import _token_in_text
+
+    assert not _token_in_text('2', 'Qwen-Image-2511', 'qwenimage2511')
 
 
 def test_index_search_matches_gemma4_2b_keywords(catalog_index):

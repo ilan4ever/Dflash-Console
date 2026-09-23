@@ -22,6 +22,7 @@ from core.config import (
 from core.memory_guardrails import plan_engine_gpu_launch
 from core.log_utils import rotate_log
 from core.model_presets import (
+    dflash_draft_disabled,
     infer_profile_from_path,
     model_id_from_path,
     preset_path_for,
@@ -905,6 +906,124 @@ def _ar_fallback_result(
     }
 
 
+def _mark_dflash_draft_disabled(
+    entry: dict[str, Any],
+    *,
+    cfg: dict[str, Any],
+    error_text: str,
+) -> dict[str, Any]:
+    """Persist a runtime draft failure and return a target-only server entry."""
+    from core.config import save_config
+    from core.model_presets import ar_fallback_profile
+
+    detail = str(error_text or 'draft model load failed').strip().replace('\n', ' ')
+    if len(detail) > 240:
+        detail = detail[:237].rstrip() + '...'
+    fallback_profile = ar_fallback_profile(entry.get('profile'))
+    fallback_entry = {
+        **entry,
+        'profile': fallback_profile,
+        'draft_path': '',
+        'dflash_draft_disabled': True,
+        'dflash_draft_disabled_reason': detail,
+    }
+
+    changed = False
+    servers = cfg.get('servers')
+    if isinstance(servers, list):
+        for row in servers:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('id') or '').strip() != str(entry.get('id') or '').strip():
+                continue
+            row['dflash_draft_disabled'] = True
+            row['dflash_draft_disabled_reason'] = detail
+            changed = True
+            break
+    if changed:
+        try:
+            save_config(cfg)
+        except (OSError, TypeError, ValueError):
+            # The live target-only retry is still useful when persistence fails.
+            pass
+    return normalize_server(fallback_entry)
+
+
+def _retry_target_without_draft_after_failure(
+    entry: dict[str, Any],
+    *,
+    cfg: dict[str, Any],
+    stack_check: dict[str, Any],
+    error_text: str,
+    api_url: str,
+    host: str,
+    port: int,
+    load_id: str,
+) -> dict[str, Any] | None:
+    """Recover a DFlash runtime failure by loading the full target as AR."""
+    if not profile_requires_draft(entry.get('profile')) or not _draft_load_error(error_text):
+        return None
+    target_path = str(
+        stack_check.get('target_path')
+        or entry.get('target_path')
+        or ''
+    ).strip()
+    if not target_path or not Path(target_path).expanduser().is_file():
+        return None
+
+    from core.runtime import load_model, stop_server
+
+    fallback_entry = _mark_dflash_draft_disabled(
+        entry,
+        cfg=cfg,
+        error_text=error_text,
+    )
+    try:
+        write_server_preset(
+            fallback_entry,
+            cfg=cfg,
+            profile=fallback_entry.get('profile'),
+            use_draft=False,
+        )
+    except ValueError:
+        return None
+
+    stopped = stop_server(port=port, host=host, api_url=api_url)
+    if not stopped.get('success') or not wait_for_port_closed(host, port):
+        return None
+    listen = start_router_listener(
+        fallback_entry,
+        cfg=cfg,
+        skip_preset_write=True,
+    )
+    if not listen.get('success'):
+        return None
+    loaded = load_model(api_url=api_url, model_id=load_id)
+    if not loaded.get('success'):
+        return None
+    settled = _wait_for_checkpoint_load(
+        api_url=api_url,
+        load_id=load_id,
+        host=host,
+        port=port,
+        server_id=str(entry.get('id') or ''),
+    )
+    if settled.get('status') != 'loaded':
+        return None
+    return {
+        'success': True,
+        'port': port,
+        'loaded': True,
+        'model': load_id,
+        'ar_fallback': True,
+        'draft_disabled': True,
+        'message': (
+            'DFlash draft loading failed; the full target is loaded without '
+            'speculative acceleration.'
+        ),
+    }
+
+
 def _normalized_model_path(path: str | Path) -> str:
     try:
         return str(Path(str(path)).expanduser().resolve()).lower()
@@ -1571,6 +1690,7 @@ def _load_server_checkpoint_locked(
             already = checkpoint_already_loaded(entry, cfg=cfg, model_path=custom_path, model_id=load_id)
             if already and (
                 not profile_requires_draft(entry.get('profile'))
+                or dflash_draft_disabled(entry)
                 or live_draft_before_preset is True
             ):
                 return already
@@ -1638,6 +1758,7 @@ def _load_server_checkpoint_locked(
         already = checkpoint_already_loaded(entry, cfg=cfg, model_path=model_path, model_id=load_id)
         if already and (
             not profile_requires_draft(entry.get('profile'))
+            or dflash_draft_disabled(entry)
             or live_draft_before_preset is True
         ):
             return already
@@ -1675,6 +1796,18 @@ def _load_server_checkpoint_locked(
             note_boot_cycle_end(port)
             return {'success': True, 'port': port, 'loaded': True, 'model': load_id, 'adhoc': bool(custom_path)}
         error_text = str(settled.get('error') or load_result.get('error') or '')
+        fallback = _retry_target_without_draft_after_failure(
+            entry,
+            cfg=cfg,
+            stack_check=stack_check,
+            error_text=error_text,
+            api_url=api_url,
+            host=host,
+            port=port,
+            load_id=load_id,
+        )
+        if fallback:
+            return fallback
         structured_failure = _structured_draft_load_failure(entry, stack_check, error_text)
         if structured_failure:
             structured_failure['port'] = port
@@ -1688,6 +1821,18 @@ def _load_server_checkpoint_locked(
             'port': port,
         }
     error_text = str(load_result.get('error') or 'model load failed')
+    fallback = _retry_target_without_draft_after_failure(
+        entry,
+        cfg=cfg,
+        stack_check=stack_check,
+        error_text=error_text,
+        api_url=api_url,
+        host=host,
+        port=port,
+        load_id=load_id,
+    )
+    if fallback:
+        return fallback
     structured_failure = _structured_draft_load_failure(entry, stack_check, error_text)
     if structured_failure:
         structured_failure['port'] = port
@@ -1783,6 +1928,7 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
             stop_server(port=port, host=host, api_url=api_url)
         elif model_id in loaded and (
             not profile_requires_draft(entry.get('profile'))
+            or dflash_draft_disabled(entry)
             or live_draft_before_preset is True
         ):
             note_boot_cycle_end(port)
@@ -1843,6 +1989,19 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
                 _started_launch[port] = dict(signature)
                 note_boot_cycle_end(port)
                 return {'success': True, 'port': port, 'log_file': str(log_path), 'loaded': True}
+            fallback = _retry_target_without_draft_after_failure(
+                entry,
+                cfg=cfg,
+                stack_check=stack_check,
+                error_text=str(load_result.get('error') or 'model load failed'),
+                api_url=api_url,
+                host=host,
+                port=port,
+                load_id=model_id,
+            )
+            if fallback:
+                fallback['log_file'] = str(log_path)
+                return fallback
             mark_boot_failed(server_id, load_result.get('error') or 'model load failed')
             _cleanup_failed_process(port, host, process)
             note_boot_cycle_end(port)

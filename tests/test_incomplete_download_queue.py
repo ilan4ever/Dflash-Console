@@ -64,6 +64,57 @@ def test_resume_download_job_accepts_legacy_slash_id(monkeypatch):
     assert calls['kwargs'].get('allow_incomplete_resume') is True
 
 
+def test_same_repo_downloads_use_parallel_destination_jobs(tmp_path, monkeypatch):
+    from core import huggingface as hf
+
+    with hf._jobs_lock:
+        hf._download_jobs.clear()
+        hf._cleared_ids.clear()
+    monkeypatch.setattr(hf, '_is_under_allowed_model_root', lambda path, cfg: True)
+    monkeypatch.setattr(hf, '_save_pending_downloads', lambda: None)
+    monkeypatch.setattr(hf, '_repo_download_worker', lambda *args: None)
+
+    first_path = tmp_path / 'first'
+    second_path = tmp_path / 'second'
+    first = hf.start_repo_download('org/model', dest_path=str(first_path), cfg={})
+    second = hf.start_repo_download('org/model', dest_path=str(second_path), cfg={})
+
+    assert first['success'] is True
+    assert second['success'] is True
+    assert second.get('already_running') is not True
+    assert first['job_id'] != second['job_id']
+
+    same_target = hf.start_repo_download('org/model', dest_path=str(first_path), cfg={})
+    assert same_target['success'] is True
+    assert same_target['already_running'] is True
+    assert same_target['job_id'] == first['job_id']
+
+
+def test_component_resume_recovers_parent_repo_id(tmp_path, monkeypatch):
+    from core import huggingface as hf
+
+    model_root = tmp_path / 'Qwen' / 'Qwen-Image-2.1'
+    component = model_root / 'text_encoder'
+    component.mkdir(parents=True)
+    (model_root / 'config.json').write_text('{}', encoding='utf-8')
+    with hf._jobs_lock:
+        hf._download_jobs.clear()
+        hf._cleared_ids.clear()
+    monkeypatch.setattr(hf, 'allowed_model_roots', lambda cfg: [tmp_path])
+    monkeypatch.setattr(hf, '_is_under_allowed_model_root', lambda path, cfg: True)
+    monkeypatch.setattr(hf, '_save_pending_downloads', lambda: None)
+    monkeypatch.setattr(hf, '_repo_download_worker', lambda *args: None)
+
+    result = hf.start_repo_download(
+        'Qwen-Image-2.1/text_encoder',
+        dest_path=str(component),
+        cfg={},
+    )
+
+    assert result['success'] is True
+    assert hf._download_jobs[result['job_id']]['repo_id'] == 'Qwen/Qwen-Image-2.1'
+
+
 def test_list_download_jobs_includes_incomplete(monkeypatch):
     monkeypatch.setattr(
         'core.huggingface._discover_incomplete_repo_jobs',

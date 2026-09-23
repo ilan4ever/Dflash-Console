@@ -39,6 +39,22 @@ def test_build_download_options_sums_gguf_quant_shards():
     assert row['size_gb'] > 65
 
 
+def test_build_download_options_names_safetensors_components():
+    files = [
+        _shard('transformer/diffusion_pytorch_model-00001-of-00002.safetensors', 1_000),
+        _shard('transformer/diffusion_pytorch_model-00002-of-00002.safetensors', 1_000),
+        _shard('text_encoder/model-00001-of-00004.safetensors', 1_000),
+        _shard('text_encoder/model-00002-of-00004.safetensors', 1_000),
+    ]
+
+    options = build_download_options(files)
+
+    assert {row['label'] for row in options} == {
+        'Transformer weights (2 files)',
+        'Text encoder (4 files)',
+    }
+
+
 def test_preferred_download_size_sums_safetensors_shards():
     from core.huggingface import _preferred_download_size
 

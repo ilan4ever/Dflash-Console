@@ -3050,9 +3050,13 @@
         const data = await api(`/api/hf/download/${encodeURIComponent(jobId)}`);
         const job = data?.job;
         if (job?.status === 'done') {
+          if (job.post_action_error) {
+            toast(job.post_action_error || 'Vision projector downloaded, but it could not be wired', false);
+            return;
+          }
           toast(`Vision enabled for ${model.label || model.filename || 'model'}`);
           window.DFlashStatusFeed?.note('Vision projector ready', model.label || model.filename || '');
-          await refresh({ rebindInspector: true });
+          await refresh({ rebindInspector: true, forceCatalogRefresh: true });
           if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh(true);
           return;
         }
@@ -3088,7 +3092,7 @@
       });
       if (result.ready || result.wired || result.vision_ready) {
         toast(`Vision enabled for ${label}`);
-        await refresh({ rebindInspector: true });
+        await refresh({ rebindInspector: true, forceCatalogRefresh: true });
         if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh(true);
         return;
       }

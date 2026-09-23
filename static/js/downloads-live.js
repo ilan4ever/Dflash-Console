@@ -9,6 +9,19 @@
   let selectedJobId = '';
   const modelByJobId = new Map();
   const loadingJobIds = new Set();
+  const jobStatusById = new Map();
+
+  function downloadsViewActive() {
+    return !!document.querySelector('.lm-view[data-view="downloads"].active');
+  }
+
+  function noteDownloadFinished(job) {
+    if (!job?.id || job.status !== 'done') return;
+    if (!downloadsViewActive()) return;
+    setPane('history');
+    selectedJobId = job.id;
+    void bindInspectorForJob(job);
+  }
 
   function escapeHtml(value) {
     return String(value || '')
@@ -94,23 +107,73 @@
     return `<div class="df-downloads-card-actions">${actions}</div>`;
   }
 
-  async function bindInspectorForJob(job) {
-    if (!job) return;
+  function stackWizardOfferHtml(job, model) {
+    return queue()?.renderDownloadStackWizardOfferHtml?.(job, model, { variant: 'page' }) || '';
+  }
+
+  async function openStackWizardForDownload(jobId) {
+    const job = jobById(jobId);
+    if (!job?.path) return;
     const model = await resolveJobModel(job);
-    if (!model) return;
+    if (!queue()?.canOfferDownloadStackWizard?.(job, model)) {
+      toast('This download is not a stack target (or already has a draft).', false);
+      return;
+    }
+    try {
+      await modelsLive()?.refresh?.({ rebindInspector: false });
+    } catch {
+      /* library may still be scanning */
+    }
+    const wizard = window.DFlashStackWizard;
+    if (!wizard?.open) {
+      toast('Stack wizard is not available.', false);
+      return;
+    }
+    await wizard.open({
+      targetPath: job.path,
+      targetLabel: job.filename || job.repo_id || '',
+      allowHfAccelerator: true,
+    });
+  }
+
+  async function bindInspectorForJob(job) {
+    if (!job) {
+      serverLive()?.renderInspectorEmptyState?.();
+      return;
+    }
+    serverLive()?.ensureInspectorVisible?.();
+    if (job.status !== 'done' || !job.path) {
+      serverLive()?.applyDownloadJobInspector?.(job, queue()?.getJobMeta?.(job) || {});
+      serverLive()?.focusInspectorTab?.('info');
+      return;
+    }
+    const model = await resolveJobModel(job);
+    if (!model) {
+      serverLive()?.applyDownloadJobInspector?.(job, queue()?.getJobMeta?.(job) || {});
+      return;
+    }
     if (serverLive()?.flushInspectorSave) {
       await serverLive().flushInspectorSave();
     }
     if (serverLive()?.applyModelSelection) {
       await serverLive().applyModelSelection(model);
     }
-    serverLive()?.ensureInspectorVisible?.();
     serverLive()?.focusInspectorTab?.('load');
+  }
+
+  function clearDownloadsInspector() {
+    selectedJobId = '';
+    serverLive()?.renderInspectorEmptyState?.();
   }
 
   async function selectDownloadJob(jobId) {
     const job = jobById(jobId);
     if (!job) return;
+    if (selectedJobId === job.id) {
+      clearDownloadsInspector();
+      render();
+      return;
+    }
     selectedJobId = job.id;
     await bindInspectorForJob(job);
     render();
@@ -172,8 +235,8 @@
 
     if (pane === 'active') {
       hint.textContent = active.length
-        ? `${active.length} downloading / incomplete now`
-        : 'Nothing is downloading right now. Start a model from Model catalog.';
+        ? `${active.length} downloading / incomplete now — finished files move to Last downloads`
+        : 'Nothing is downloading right now. Finished models appear under Last downloads.';
     } else {
       hint.textContent = history.length
         ? `${history.length} download${history.length === 1 ? '' : 's'} ${rangeLabel()}`
@@ -184,11 +247,20 @@
       list.innerHTML = pane === 'active'
         ? '<p class="df-downloads-page-empty">No models are downloading at the moment.</p>'
         : `<p class="df-downloads-page-empty">No downloads ${rangeLabel()}.</p>`;
+      if (!rows.length && selectedJobId) {
+        clearDownloadsInspector();
+      }
       return;
     }
 
+    if (selectedJobId && !rows.some((job) => job.id === selectedJobId)) {
+      clearDownloadsInspector();
+    }
     const cards = await Promise.all(rows.map(async (job) => {
-      const model = canLoadJob(job) ? await resolveJobModel(job) : null;
+      let model = null;
+      if (canLoadJob(job) || job.status === 'done') {
+        model = await resolveJobModel(job);
+      }
       const modelLoading = isJobModelLoading(model, job);
       const remove = job.status === 'downloading'
         ? ''
@@ -198,6 +270,7 @@
         variant: 'page',
         removeButtonHtml: remove,
         loadActionsHtml: loadActionsHtml(job, model),
+        model,
         selectedClass,
         modelLoading,
       }) || '';
@@ -253,6 +326,13 @@
         void queue()?.resumeDownloadJob?.(resumeBtn.dataset.resumeJob);
         return;
       }
+      const stackBtn = event.target.closest('[data-download-stack-wizard]');
+      if (stackBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        void openStackWizardForDownload(stackBtn.dataset.downloadStackWizard || '');
+        return;
+      }
       const loadBtn = event.target.closest('[data-action="load-model"]');
       if (loadBtn) {
         event.preventDefault();
@@ -303,15 +383,21 @@
       if (!card) return;
       void selectDownloadJob(card.dataset.downloadJobId || '');
     });
-    queue()?.subscribe?.(() => {
+    queue()?.subscribe?.((jobs) => {
+      (jobs || []).forEach((job) => {
+        const prev = jobStatusById.get(job.id);
+        if (prev && prev !== 'done' && job.status === 'done') {
+          noteDownloadFinished(job);
+        }
+        jobStatusById.set(job.id, job.status);
+      });
       void render();
     });
   }
 
   async function onViewEnter() {
     bind();
-    serverLive()?.ensureInspectorVisible?.();
-    serverLive()?.focusInspectorTab?.('load');
+    clearDownloadsInspector();
     const nextPane = activeJobs().length ? 'active' : 'history';
     pane = nextPane;
     document.querySelectorAll('[data-downloads-pane]').forEach((btn) => {
@@ -325,19 +411,19 @@
     if (pane === 'active' && !activeJobs().length) {
       setPane('history');
     } else {
-      const firstLoadable = historyJobs().find((job) => canLoadJob(job));
-      if (firstLoadable && !selectedJobId) {
-        selectedJobId = firstLoadable.id;
-        await bindInspectorForJob(firstLoadable);
-      }
       await render();
     }
+  }
+
+  function onViewLeave() {
+    clearDownloadsInspector();
   }
 
   document.addEventListener('DOMContentLoaded', bind);
 
   window.DFlashDownloadsLive = {
     onViewEnter,
+    onViewLeave,
     showPane: setPane,
     render,
     selectDownloadJob,

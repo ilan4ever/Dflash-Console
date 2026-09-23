@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell, dialog, Menu, Tray, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -1325,6 +1325,31 @@ if (!app.isPackaged) {
   app.setPath('userData', path.join(app.getPath('appData'), 'dflash-console'));
 }
 
+// Chromium gates microphone capture behind these two session hooks. Without
+// them the Playground "Record from mic" button fails on getUserMedia and no
+// audio is ever captured, so the Transcribe request never reaches the server.
+function isAudioCapturePermission(permission, details) {
+  if (permission === 'audioCapture') return true;
+  if (permission !== 'media') return false;
+  const mediaTypes = details && details.mediaTypes;
+  if (!Array.isArray(mediaTypes) || mediaTypes.length === 0) {
+    // Windows reports an empty mediaTypes list for a mic request; a camera
+    // request carries mediaTypes: ['video'].
+    return true;
+  }
+  return mediaTypes.includes('audio') && !mediaTypes.includes('video');
+}
+
+function installMediaPermissions() {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    callback(isAudioCapturePermission(permission, details));
+  });
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission, _origin, details) => {
+    if (permission !== 'media' && permission !== 'audioCapture') return false;
+    return !details || details.mediaType !== 'video';
+  });
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -1338,6 +1363,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    installMediaPermissions();
     registerContextMenus(app);
     syncPostInstallWelcomeFlag();
     updateService = createUpdateService();

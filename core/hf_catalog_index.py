@@ -201,7 +201,7 @@ def _token_in_text(token: str, haystack: str, folded: str) -> bool:
         return bool(size_re.search(haystack) or size_re.search(folded))
     if needle.isdigit():
         digit_re = re.compile(rf'(?:^|[^0-9]){re.escape(needle)}(?:[^0-9]|$)')
-        return bool(digit_re.search(haystack) or needle in folded)
+        return bool(digit_re.search(haystack))
     return needle in haystack or _fold(needle) in folded
 
 
@@ -647,6 +647,22 @@ def _rank_rows(query: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return rows
     folded = _fold(needle)
     tokens = _expand_query_tokens(needle)
+    # Prefer model-name matches over repositories that mention the query only
+    # in a README or tag.  This prevents "Qwen Image 2.1" from being led by
+    # unrelated Qwen vision repositories with generic image descriptions.
+    name_matches = [
+        row for row in rows
+        if tokens and _row_matches_tokens(
+            {'id': row.get('id'), 'title': row.get('title'), 'label': row.get('label')},
+            tokens,
+        )
+    ]
+    if name_matches:
+        rows = name_matches
+    elif any(token.isdigit() for token in tokens):
+        # Numeric model versions are part of the identity. Do not return a
+        # popular model whose README happens to mention the same number.
+        return []
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for row in rows:
         if tokens and not _row_matches_tokens(row, tokens):
@@ -736,7 +752,9 @@ def search_local(
     if needle:
         models = _rank_rows(needle, models)
     models = models[: max(1, min(int(limit), 50))]
-    if not models and not ready:
+    # An indexed miss must fall through to Hugging Face.  The index is a
+    # background snapshot and may not contain a newly published exact model.
+    if not models:
         return None
     return {
         'success': True,

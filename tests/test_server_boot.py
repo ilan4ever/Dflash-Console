@@ -263,7 +263,7 @@ def test_llama_server_binary_uses_models_root_engine(monkeypatch, tmp_path):
     assert result == binary
 
 
-def test_dflash_load_failure_returns_repair_instead_of_fallback(monkeypatch, tmp_path):
+def test_dflash_load_failure_falls_back_to_target_without_draft(monkeypatch, tmp_path):
     target = tmp_path / 'Qwen3.8-27B-Q6_K_L.gguf'
     draft = tmp_path / 'Qwen3.8-27B-DFlash2-Q4_K_M.gguf'
     target.write_bytes(b'target')
@@ -306,20 +306,38 @@ def test_dflash_load_failure_returns_repair_instead_of_fallback(monkeypatch, tmp
         'core.runtime._fetch_models_payload',
         lambda *args, **kwargs: [],
     )
-    monkeypatch.setattr(
-        'core.runtime.load_model',
-        lambda *args, **kwargs: {
+    load_results = iter([
+        {
             'success': False,
             'error': 'failed to load draft model: wrong number of tensors',
         },
+        {'success': True},
+    ])
+    monkeypatch.setattr(
+        'core.runtime.load_model',
+        lambda *args, **kwargs: next(load_results),
+    )
+    monkeypatch.setattr(
+        server_boot,
+        'wait_for_port_closed',
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        'core.runtime.stop_server',
+        lambda *args, **kwargs: {'success': True},
+    )
+    monkeypatch.setattr(
+        server_boot,
+        '_wait_for_checkpoint_load',
+        lambda *args, **kwargs: {'status': 'loaded'},
     )
 
     result = server_boot.load_server_checkpoint(entry, cfg={'servers': []})
 
-    assert result['success'] is False
-    assert result['reason_code'] == 'draft-load-failed'
-    assert result['repair']['action'] == 'attach_draft'
-    assert 'without' not in str(result).lower()
+    assert result['success'] is True
+    assert result['ar_fallback'] is True
+    assert result['draft_disabled'] is True
+    assert 'without' in result['message'].lower()
 
 
 def test_validate_dflash_stack_falls_back_to_ar_when_draft_missing(tmp_path):

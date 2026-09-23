@@ -6,6 +6,7 @@
   const labels = new Map();
   const metaById = new Map();
   const listeners = new Set();
+  const resumingJobIds = new Set();
   let pollTimer = null;
   let panelOpen = false;
   let downloadContextJob = null;
@@ -131,7 +132,7 @@
 
   function inferQuant(filename) {
     const name = String(filename || '');
-    const match = name.match(/(?:^|[._-])(Q\d[_A-Z0-9]*|F16|BF16|IQ\d[_A-Z0-9]*)(?:[._-]|\.|$)/i);
+    const match = name.match(/(?:^|[._-])(Q\d[_A-Z0-9]*|IQ\d[_A-Z0-9]*|F16|BF16|XXS|XS|XL)(?:[._-]|\.|$)/i);
     return match ? match[1].toUpperCase() : '';
   }
 
@@ -203,11 +204,16 @@
   async function resumeDownloadJob(jobId) {
     const id = String(jobId || '').trim();
     if (!id) return;
+    if (resumingJobIds.has(id)) return;
     const existing = jobs.get(id);
+    resumingJobIds.add(id);
     if (existing) {
       jobs.set(id, {
         ...existing,
         status: 'downloading',
+        resuming: true,
+        localOnly: true,
+        localStartedAt: Date.now() / 1000,
         speed_bps: 0,
         eta_seconds: null,
         error: null,
@@ -227,6 +233,7 @@
         const old = jobs.get(id);
         if (old) {
           labels.set(data.job_id, labels.get(id) || old.repo_id || old.filename || 'Model');
+          jobs.delete(id);
         }
       }
       await refresh({ discover: true });
@@ -241,6 +248,8 @@
         window.DFlashDownloadsLive?.render?.();
       }
       toast(err.message || 'Could not resume download', false);
+    } finally {
+      resumingJobIds.delete(id);
     }
   }
 
@@ -463,6 +472,34 @@
     return window.DFlashModelGroups?.isAcceleratorOnlyModel?.(model) === true;
   }
 
+  function canOfferDownloadStackWizard(job, model) {
+    if (job?.status !== 'done') return false;
+    const path = String(job?.path || '').trim();
+    if (!path.toLowerCase().endsWith('.gguf')) return false;
+    const leaf = String(job?.filename || path).replace(/^.*[/\\]/, '').toLowerCase();
+    if (!leaf || leaf.startsWith('mmproj') || leaf.includes('.mmproj')) return false;
+    const meta = getJobMeta(job);
+    if (isDownloadAccelerator(job, meta)) return false;
+    if (model?.draft_path || model?.dflash_stack) return false;
+    if (window.DFlashModelGroups?.isDflashStack?.(model)) return false;
+    return true;
+  }
+
+  function renderDownloadStackWizardOfferHtml(job, model, { variant = 'panel' } = {}) {
+    if (variant !== 'page' || !canOfferDownloadStackWizard(job, model)) return '';
+    return `<button type="button" class="lm-btn df-btn-accent small df-downloads-stack-wizard" data-download-stack-wizard="${escapeHtml(job.id)}" title="Pair this model with a DFlash draft accelerator">Create DFlash stack</button>`;
+  }
+
+  function renderDownloadCardActionsHtml(job, model, { variant = 'panel', loadActionsHtml = '' } = {}) {
+    if (variant !== 'page') return loadActionsHtml;
+    const stackBtn = renderDownloadStackWizardOfferHtml(job, model, { variant });
+    const loadInner = String(loadActionsHtml || '')
+      .replace(/^<div class="df-downloads-card-actions">/, '')
+      .replace(/<\/div>\s*$/, '');
+    if (!stackBtn && !loadInner.trim()) return '';
+    return `<div class="df-downloads-card-actions df-downloads-card-actions--with-stack">${stackBtn}${loadInner}</div>`;
+  }
+
   function isConsoleLibraryJob(job, model) {
     if (window.DFlashModelGroups?.isConsoleDiskPath?.(model)) return true;
     const path = String(job?.path || model?.path || '').replace(/\\/g, '/').toLowerCase();
@@ -535,6 +572,7 @@
     variant = 'panel',
     removeButtonHtml = '',
     loadActionsHtml = '',
+    model = null,
     selectedClass = '',
     modelLoading = false,
   } = {}) {
@@ -542,7 +580,6 @@
     const diskBytes = Number(job?.disk_bytes);
     const hasDiskBytes = Number.isFinite(diskBytes) && diskBytes > 0;
     const title = labels.get(job.id) || job.repo_id || job.filename || 'Model';
-    const showRepo = job.repo_id && job.repo_id !== title;
     const width = progressWidth(job);
     const indeterminate = job.status === 'downloading' && width == null;
     const fillStyle = width != null ? ` style="width:${width}%"` : '';
@@ -556,14 +593,18 @@
     const bytes = totalBytes
       ? `${formatBytes(readBytes)} / ${formatBytes(totalBytes)}`
       : (readBytes ? formatBytes(readBytes) : '');
-    const descParts = [meta.lab, meta.author, meta.quant, meta.format].filter(Boolean);
-    const descLine = descParts.length
-      ? descParts.join(' · ')
-      : (meta.sizeLabel || '');
-    const displaySize = totalBytes && readBytes > 0 && readBytes < totalBytes
-      ? `${formatBytes(readBytes)} on disk`
-      : (meta.sizeLabel || (totalBytes ? formatBytes(totalBytes) : ''));
-    const sizeStat = displaySize && job.status !== 'downloading' ? displaySize : '';
+    const fileLine = job.filename && job.filename !== title ? job.filename : '';
+    const descParts = [meta.lab, meta.quant, meta.format].filter(Boolean);
+    const descLine = descParts.join(' · ');
+    const sizeBase = hasDiskBytes
+      ? formatBytes(diskBytes)
+      : (totalBytes ? formatBytes(totalBytes) : meta.sizeLabel);
+    const sizeStat = job.status === 'downloading'
+      ? ''
+      : [sizeBase, meta.quant].filter(Boolean).join(' · ');
+    const sizeTitle = job.status === 'done' && meta.quant
+      ? `On-disk size of this ${meta.quant} file, not the full-repo estimate`
+      : '';
     const statusPrimary = modelLoading
       ? 'Loading…'
       : (job.status === 'downloading'
@@ -588,19 +629,12 @@
       : bytes;
     const asideSecondary = job.status === 'downloading'
       ? [asideBytes, [speed, eta].filter(Boolean).join(' · ')].filter(Boolean)
-      : [
-        sizeStat || (totalBytes ? formatBytes(readBytes || totalBytes) : ''),
-        variant === 'page' && job.finished_at
-          ? new Date(Number(job.finished_at) * 1000).toLocaleString()
-          : '',
-      ].filter(Boolean);
-    const footLine = job.status === 'downloading'
-      ? shortPath(job.path)
-      : (job.status === 'error'
-        ? String(job.error || job.path || '')
-        : (job.status === 'incomplete'
-          ? String(job.error || shortPath(job.path || job.repo_id || ''))
-          : shortPath(job.path || job.repo_id || '')));
+      : [sizeStat].filter(Boolean);
+    const footLine = job.status === 'error'
+      ? String(job.error || job.path || '')
+      : (job.status === 'incomplete'
+        ? String(job.error || shortPath(job.path || job.repo_id || ''))
+        : (job.status === 'downloading' ? shortPath(job.path) : ''));
     const bar = modelLoading && job.status === 'done'
       ? '<div class="df-downloads-item-bar"><div class="df-downloads-item-fill is-indeterminate"></div></div>'
       : (job.status === 'downloading'
@@ -610,23 +644,25 @@
             ? Math.round(((Number(job.shard_present) || 0) / Number(job.shard_total)) * 100)
             : Math.round((readBytes / totalBytes) * 100)))}%"></div></div>`
           : ''));
-    const resumeBtn = job.status === 'incomplete'
-      ? `<button type="button" class="lm-btn ghost tiny df-downloads-resume" data-resume-job="${escapeHtml(job.id)}" title="Resume downloading remaining files">Resume</button>`
-      : '';
+    const canResume = job.status === 'incomplete' || (job.status === 'error' && job.resumable);
+    const isResuming = job.resuming === true || resumingJobIds.has(job.id);
+    const resumeBtn = isResuming
+      ? '<button type="button" class="lm-btn ghost tiny df-downloads-resume" disabled aria-busy="true">Resuming…</button>'
+      : (canResume
+        ? `<button type="button" class="lm-btn ghost tiny df-downloads-resume" data-resume-job="${escapeHtml(job.id)}" title="Resume downloading remaining files">Resume</button>`
+        : '');
     const tagsHtml = downloadJobTagsHtml(job, meta);
     const tags = tagsHtml
       ? `<div class="df-downloads-card-tags">${tagsHtml}</div>`
       : '';
-    const cardDetails = window.DFlashModelCard?.detailsHtml?.(jobModelShape(job, meta), {
-      includeTarget: false,
-      includeAccelerator: true,
-      alwaysForStack: false,
-    }) || '';
     const avatar = meta.author
       ? `<span class="df-downloads-card-avatar" aria-hidden="true">${escapeHtml(meta.author.charAt(0).toUpperCase())}</span>`
       : '';
     const wrapperClass = variant === 'page' ? 'df-downloads-page-item' : 'df-downloads-item';
     const pageSelectedClass = variant === 'page' ? String(selectedClass || '') : '';
+    const pageActionsHtml = variant === 'page'
+      ? renderDownloadCardActionsHtml(job, model, { variant, loadActionsHtml })
+      : loadActionsHtml;
     return `
       <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${modelLoading ? ' is-model-loading' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
         ${removeButtonHtml}
@@ -637,17 +673,15 @@
               <span class="df-downloads-card-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
               ${resumeBtn}
             </div>
-            ${showRepo ? `<div class="df-downloads-card-repo">${escapeHtml(job.repo_id)}</div>` : ''}
-            ${job.filename ? `<div class="df-downloads-card-file">${escapeHtml(job.filename)}</div>` : ''}
+            ${fileLine ? `<div class="df-downloads-card-file" title="${escapeHtml(fileLine)}">${escapeHtml(fileLine)}</div>` : ''}
             ${descLine ? `<div class="df-downloads-card-desc">${escapeHtml(descLine)}</div>` : ''}
             ${footLine ? `<div class="df-downloads-card-foot">${escapeHtml(footLine)}</div>` : ''}
-            ${cardDetails}
-            ${variant === 'page' ? loadActionsHtml : ''}
+            ${pageActionsHtml}
           </div>
           ${tags}
           <div class="df-downloads-card-aside">
             <span class="df-downloads-card-stat-primary${statusClass}">${escapeHtml(statusPrimary)}</span>
-            ${asideSecondary.map((line) => `<span class="df-downloads-card-stat">${escapeHtml(line)}</span>`).join('')}
+            ${asideSecondary.map((line) => `<span class="df-downloads-card-stat"${sizeTitle && line === sizeStat ? ` title="${escapeHtml(sizeTitle)}"` : ''}>${escapeHtml(line)}</span>`).join('')}
           </div>
         </div>
         ${bar}
@@ -813,15 +847,20 @@
       const incoming = data.jobs || [];
       const seen = new Set();
       incoming.forEach((job) => {
-        jobs.set(job.id, job);
+        jobs.set(job.id, { ...job, localOnly: false });
         seen.add(job.id);
       });
-      if (incoming.length) {
-        for (const id of [...jobs.keys()]) {
-          if (seen.has(id)) continue;
-          if (jobs.get(id)?.status === 'downloading') continue;
-          jobs.delete(id);
+      for (const id of [...jobs.keys()]) {
+        if (seen.has(id)) continue;
+        const cached = jobs.get(id);
+        if (
+          cached?.status === 'downloading'
+          && cached.localOnly === true
+          && (Date.now() / 1000 - Number(cached.localStartedAt || 0)) < 15
+        ) {
+          continue;
         }
+        jobs.delete(id);
       }
       emit();
       if (activeJobs().length) ensurePolling();
@@ -846,6 +885,8 @@
       progress: null,
       started_at: Date.now() / 1000,
       path: meta?.path || '',
+      localOnly: true,
+      localStartedAt: Date.now() / 1000,
     });
     ensurePolling();
     void refresh();
@@ -940,6 +981,8 @@
     formatEta,
     formatElapsed,
     renderDownloadCardHtml,
+    renderDownloadStackWizardOfferHtml,
+    canOfferDownloadStackWizard,
     getJobMeta,
   };
 })();

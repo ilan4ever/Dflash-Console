@@ -15,6 +15,13 @@ Routes:
     GET  /health                  gateway + console health
     GET  /                        info
 
+Concurrent OpenAI clients on the same loaded engine (for example DeepSeek Harness
+main turn + session title) are accepted: the Console queues the ready/start
+section per ``server_id``, then llama-server multiplexes within ``parallel_slots``.
+Steady-state overlaps must not return HTTP 409. Intentional 409s remain for
+``X-DFlash-Strict-Model`` mismatches, duplicate checkpoint on another engine,
+DFlash stack / vision repair, and load/unload conflicts.
+
 The default chat engine is ``config.json -> gateway_server_id`` (falls back to
 the first enabled non-embedding engine); embeddings route to the first enabled
 embedding engine. The gateway is started on the UI process lifespan, so it is
@@ -41,6 +48,7 @@ from core.gateway_routing import (
     enabled_chat_servers,
     gateway_model_aliases,
     gateway_public_model_ids,
+    is_cursor_compat_model_id,
     resolve_chat_server,
     _advertised_engine_server,
 )
@@ -50,6 +58,11 @@ from core.model_presets import server_target_path_on_disk
 logger = logging.getLogger(__name__)
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
+
+
+def gateway_cloud_chat_enabled(cfg: dict[str, Any]) -> bool:
+    """Allow active Settings cloud models unless explicitly disabled."""
+    return cfg.get('gateway_cloud_chat_enabled') is not False
 
 _FORWARD_HEADERS = {
     'content-type',
@@ -383,6 +396,9 @@ async def list_models() -> dict[str, Any]:
         pass
     from core.api_providers import cloud_model_entries, with_api_label
 
+    if not gateway_cloud_chat_enabled(cfg):
+        return {'object': 'list', 'data': data}
+
     for entry in cloud_model_entries(cfg):
         mid = str(entry.get('id') or '').strip()
         if not mid or mid.lower() in listed_ids:
@@ -432,14 +448,29 @@ async def _forward_chat(
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream('POST', url, content=body, headers=headers) as upstream:
-                    upstream.raise_for_status()
+                    if upstream.status_code >= 400:
+                        raw_err = await upstream.aread()
+                        # Re-raise as HTTPStatusError with body already buffered.
+                        response = httpx.Response(
+                            upstream.status_code,
+                            content=raw_err,
+                            request=upstream.request,
+                            headers=upstream.headers,
+                        )
+                        raise httpx.HTTPStatusError(
+                            f'Client error {upstream.status_code}',
+                            request=upstream.request,
+                            response=response,
+                        )
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
         except httpx.HTTPStatusError as exc:
             status = int(exc.response.status_code or 500)
             logger.warning('gateway chat upstream HTTP %s for %s', status, url)
             try:
-                raw = await exc.response.aread()
+                raw = exc.response.content or b''
+                if not raw:
+                    raw = await exc.response.aread()
             except Exception:
                 raw = b''
             try:  # DFLASH_LOG_400_BODIES (stream path)
@@ -569,20 +600,58 @@ async def chat_completions(request: Request) -> Response:
         if not isinstance(model, str):
             model = ''
     from core.api_providers import resolve_cloud_provider_for_model
+    from core.client_identity import resolve_client_label
+    from core.gateway_access_log import record_gateway_route
 
-    cloud_provider = resolve_cloud_provider_for_model(cfg, model)
+    # A cloud model selected as the gateway default must also handle clients
+    # that omit ``model`` or send a Cursor-compatible placeholder.
+    configured_model = str(cfg.get('gateway_server_id') or '').strip()
+    if (
+        gateway_cloud_chat_enabled(cfg)
+        and configured_model
+        and (not model or is_cursor_compat_model_id(model))
+        and resolve_cloud_provider_for_model(cfg, configured_model) is not None
+    ):
+        model = configured_model
+
+    client_label = resolve_client_label(request)
+    cloud_provider = (
+        resolve_cloud_provider_for_model(cfg, model)
+        if gateway_cloud_chat_enabled(cfg)
+        else None
+    )
     if cloud_provider is not None:
+        provider_id = str(cloud_provider.get('id') or 'cloud')
+        record_gateway_route(
+            model=model,
+            route='cloud',
+            target=provider_id,
+            client=client_label,
+            note=str(cloud_provider.get('base_url') or ''),
+        )
         body: bytes | None = None
         if isinstance(payload, dict):
+            payload['model'] = model
             try:
                 body = json.dumps(payload).encode('utf-8')
             except Exception:
                 body = None
         if body is None:
             body = await request.body()
-        return await _forward_cloud_chat(request, provider=cloud_provider, body=body)
+        response = await _forward_cloud_chat(request, provider=cloud_provider, body=body)
+        if isinstance(response, Response):
+            response.headers['X-DFlash-Route'] = 'cloud'
+            response.headers['X-DFlash-Provider-Id'] = provider_id
+        return response
     server, upstream = await _resolve_chat_target(cfg, model)
     sid = str(server.get('id') or '')
+    record_gateway_route(
+        model=model,
+        route='local',
+        target=sid or str(server.get('label') or ''),
+        client=client_label,
+        note=str(upstream or ''),
+    )
     if sid:
         from core.engine_state import note_engine_on
 
@@ -603,6 +672,10 @@ async def chat_completions(request: Request) -> Response:
         reasoning_model = model_has_reasoning(server)
         client_label = resolve_client_label(request)
         attributed = bool(client_label) and client_label != LABEL_UNKNOWN_API
+        # External OpenAI clients (Cursor, SDKs) use the gateway without X-DFlash-Client.
+        # Treat them like attributed clients so low max_tokens disables reasoning instead of 400.
+        if not attributed:
+            attributed = True
         disable_reasoning, reasoning_error = resolve_disable_reasoning_for_chat(
             body,
             reasoning=reasoning_model,
@@ -641,6 +714,7 @@ async def chat_completions(request: Request) -> Response:
     filter_reasoning = disable_reasoning
     response = await _forward_chat(request, url, body, filter_reasoning=filter_reasoning)
     if isinstance(response, Response):
+        response.headers['X-DFlash-Route'] = 'local'
         response.headers['X-DFlash-Server-Id'] = sid
     return response
 
