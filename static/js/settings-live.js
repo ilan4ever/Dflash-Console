@@ -2277,7 +2277,7 @@
         </div>
         <div class="lm-field">
           <label for="apiProviderWizardApiKey">API key</label>
-          <input type="password" class="lm-input" id="apiProviderWizardApiKey" value="" placeholder="${escapeHtml(apiProviderWizard.api_key_set ? (apiProviderWizard.api_key_preview || '•••• saved') : 'sk-…')}" autocomplete="off" spellcheck="false">
+          <input type="password" class="lm-input" id="apiProviderWizardApiKey" value="${escapeHtml(apiProviderWizard.typedKey || '')}" placeholder="${escapeHtml(apiProviderWizard.api_key_set ? (apiProviderWizard.api_key_preview || '•••• saved') : 'sk-…')}" autocomplete="off" spellcheck="false">
         </div>
       </div>
       ${apiProviderWizard.isCustom ? `
@@ -2315,7 +2315,10 @@
     if (baseEl) apiProviderWizard.base_url = String(baseEl.value || '').trim();
     if (keyEl) {
       const typed = String(keyEl.value || '');
-      apiProviderWizard.typedKey = typed;
+      // The wizard re-renders after Test & fetch models and the password input
+      // is rebuilt. Keep a previously captured key so a following Save still
+      // sends api_key instead of silently dropping it.
+      if (typed) apiProviderWizard.typedKey = typed;
       apiProviderWizard.keyDirty = typed.length > 0 || apiProviderWizard.keyDirty;
     }
     if (enabledEl) apiProviderWizard.enabled = !!enabledEl.checked;

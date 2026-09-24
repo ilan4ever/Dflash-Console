@@ -717,7 +717,7 @@ def save_config(cfg: dict[str, Any]) -> None:
                     handle.write(payload)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temp_name, CONFIG_PATH)
+                _replace_config_file(temp_name)
                 temp_name = ''
             finally:
                 if temp_name:
@@ -725,6 +725,24 @@ def save_config(cfg: dict[str, Any]) -> None:
                         os.unlink(temp_name)
                     except OSError:
                         pass
+
+
+def _replace_config_file(temp_name: str) -> None:
+    """Atomically replace config, tolerating short Windows file locks.
+
+    Electron, antivirus, and file-indexing readers can briefly deny the
+    destination during an otherwise valid save. Keep the atomic replacement,
+    but retry the transient Windows failure before surfacing HTTP 500.
+    """
+    attempts = 6 if os.name == 'nt' else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(temp_name, CONFIG_PATH)
+            return
+        except PermissionError:
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 @contextmanager
