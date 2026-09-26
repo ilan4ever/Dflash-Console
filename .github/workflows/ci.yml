@@ -1,11 +1,10 @@
 name: CI
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
 
+# Automatic runs disabled to avoid GitHub Actions minute usage.
+# Run manually from Actions tab when needed.
+on:
+  workflow_dispatch:
 permissions:
   contents: read
 

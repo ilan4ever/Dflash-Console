@@ -1,16 +1,10 @@
 name: Windows release
 
-on:
-  push:
-    tags:
-      - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Existing version tag to build and publish
-        required: true
-        type: string
 
+# Automatic runs disabled to avoid GitHub Actions minute usage.
+# Run manually from Actions tab when needed.
+on:
+  workflow_dispatch:
 permissions:
   contents: write
 
