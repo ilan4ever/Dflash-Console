@@ -198,7 +198,10 @@ class TransformersRuntimeAdapter:
         if 'glm-ocr' in model_path.lower() or 'glm_ocr' in model_path.lower():
             settings['trust_remote_code'] = True
         policy = str(profile.get('device_policy') or 'auto').strip().lower()
-        if settings.get('device') in ('auto', '', None):
+        requested_gpu = str((model or {}).get('gpu_device') or '').strip().lower()
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            settings['device'] = f'cuda:{int(requested_gpu)}'
+        elif settings.get('device') in ('auto', '', None):
             settings['device'] = {'gpu': 'cuda', 'cpu': 'cpu'}.get(policy, 'auto')
 
         payload = dict(settings)

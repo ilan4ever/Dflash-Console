@@ -9,6 +9,7 @@
   let gpuOtherSnapshot = null;
   let gpuOtherMissingPolls = 0;
   let pollInFlight = false;
+  let lastExternalPollAt = 0;
   let latestSnapshotRevision = 0;
   /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
   let pendingLoadsSnapshot = {};
@@ -253,7 +254,14 @@
     if (pollInFlight) return;
     pollInFlight = true;
     try {
-      const data = await api('/api/servers?include_external=1');
+      // External GPU discovery can take several seconds. Get the local engine
+      // snapshot immediately during startup, then refresh external apps on a
+      // slower cadence. The Engines tab has its own faster external scan when
+      // it is active, so the global feed must not block its first paint.
+      const now = Date.now();
+      const includeExternal = lastExternalPollAt > 0 && now - lastExternalPollAt >= 15000;
+      const data = await api(`/api/servers?include_external=${includeExternal ? '1' : '0'}`);
+      if (includeExternal || lastExternalPollAt === 0) lastExternalPollAt = now;
       const revision = Number(data?.snapshot_revision || 0);
       if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) return;
       if (revision > 0) latestSnapshotRevision = revision;

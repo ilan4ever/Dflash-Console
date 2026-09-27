@@ -114,20 +114,22 @@ def count_loaded_console_engines(
     exclude_server_id: str | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     """Return (count, rows) for Console engines that currently hold GPU weights."""
-    from core.runtime import tcp_port_open
+    from core.net_listeners import configured_listening_ports
 
     exclude = str(exclude_server_id or '').strip()
+    enabled = [
+        server for server in list_servers(cfg)
+        if server.get('enabled', True)
+        and str(server.get('id') or '')
+        and (not exclude or str(server.get('id') or '') != exclude)
+    ]
+    open_ports = configured_listening_ports(enabled)
     rows: list[dict[str, Any]] = []
-    for server in list_servers(cfg):
-        if not server.get('enabled', True):
-            continue
+    for server in enabled:
         server_id = str(server.get('id') or '')
-        if exclude and server_id == exclude:
-            continue
-        host = str(server.get('host') or '127.0.0.1')
         port = int(server.get('port') or 0)
         api_url = str(server.get('api_url') or '')
-        if port <= 0 or not tcp_port_open(host, port) or not api_url:
+        if port <= 0 or port not in open_ports or not api_url:
             continue
         loaded = _probe_loaded_models(api_url)
         if not loaded:

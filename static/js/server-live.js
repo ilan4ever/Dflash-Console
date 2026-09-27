@@ -582,14 +582,20 @@
       || allServers.find((s) => s.id === serverId);
     const progress = normalizeLoadProgress(server?.load_progress);
     const model = meta.model || {};
+    const runtimeId = String(model.runtime_id || server?.runtime_id || serverId || '').trim();
     return {
       card_state: 'loading',
       title: meta.label,
       label: meta.label,
+      id: model.id || model.model_id || meta.label,
+      model_id: model.model_id || model.id || meta.label,
+      server_id: serverId,
+      runtime_id: runtimeId,
+      path: model.path || model.model_path || '',
       role: 'alias',
       ejectable: true,
       progress: progress.pct ?? server?.load_progress ?? null,
-      progress_detail: progress.detail || '',
+      progress_detail: progress.detail || model.load_progress?.detail || '',
       plain_llm: !!meta.plain_gguf,
       size_gb: model.size_gb,
       stack_details: model.stack_details,
@@ -804,7 +810,7 @@
     let mode = 'loading';
 
     if (!initialStatusSettled) {
-      title = 'Loading engine status…';
+      title = 'Starting engine services…';
       detail = formatStatusTraceDetail() || 'Checking llama-server listeners and loaded models.';
       mode = 'loading';
     } else if (externalScanError && !externalGpuLoads.length && externalInitialFetchDone) {
@@ -2001,6 +2007,7 @@
   }
 
   function aggregateStatusLabel() {
+    if (!initialStatusSettled) return 'Starting engine';
     const dflashLoaded = dflashLoadedCount();
     const booting = bootingServerCount();
     const starting = [...serverActions.values()].filter((a) => a === 'starting').length;
@@ -2648,11 +2655,12 @@
     isGenerating = false,
   } = {}) {
     const diskSpan = cardDiskMetricsHtml(row);
+    const gpuPick = engineGpuPickerHtml(server, row);
     if (!desktopLayout) {
       const ctx = cardContextMetric(row, server);
       const pair = ctx ? [`<div class="lm-external-foot-pair">${ctx}</div>`] : [];
-      const top = `<div class="lm-stats-top">${diskSpan || ''}${action || ''}</div>`;
-      if (!diskSpan && !action && !pair.length) return '';
+      const top = `<div class="lm-stats-top">${diskSpan || ''}${gpuPick}${action || ''}</div>`;
+      if (!diskSpan && !gpuPick && !action && !pair.length) return '';
       return `<div class="lm-external-stats-col">${top}${pair.join('')}</div>`;
     }
     const foot = desktopEngineMetricsFootHtml({
@@ -2663,9 +2671,9 @@
       isGenerating,
       includeAccelerator: false,
     });
-    if (!action && !diskSpan && !foot) return '';
+    if (!action && !gpuPick && !diskSpan && !foot) return '';
     return `<div class="lm-external-stats-col lm-desktop-engine-stats">
-      ${action ? `<div class="lm-desktop-engine-actions">${action}</div>` : ''}
+      ${(action || gpuPick) ? `<div class="lm-desktop-engine-actions">${gpuPick}${action}</div>` : ''}
       ${diskSpan ? `<div class="lm-desktop-engine-sizes">${diskSpan}</div>` : ''}
       ${foot}
     </div>`;
@@ -3443,6 +3451,20 @@
     return '<div class="lm-model-card-center-row lm-model-card-token-row lm-model-card-loading-spacer" aria-hidden="true"></div>';
   }
 
+  function engineGpuPickerHtml(server, row) {
+    if (!server || row?.external || server.external || !server.id) return '';
+    const selected = String(server.gpu_device || 'auto').trim().toLowerCase() || 'auto';
+    const options = [
+      `<option value="auto"${selected === 'auto' ? ' selected' : ''}>Auto</option>`,
+      ...gpus.map((gpu) => {
+        const index = String(gpu.index);
+        const name = gpu.display_name || gpu.name || `GPU ${index}`;
+        return `<option value="${escapeHtml(index)}"${selected === index ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+      }),
+    ].join('');
+    return `<select class="lm-select small lm-engine-gpu-pick" data-action="gpu-device-pick" data-gpu-server-id="${escapeHtml(server.id)}" aria-label="GPU for ${escapeHtml(row?.label || server.label || 'model')}" title="Default GPU for this engine card. Auto keeps the existing smart GPU selection.">${options}</select>`;
+  }
+
   function cardCenterBlock({
     server,
     row,
@@ -3732,6 +3754,7 @@
     lastEngineCardsMarkup = cardsMarkup;
     lastGpuOverheadMarkup = overheadHtml;
     wrap.innerHTML = cardsMarkup + overheadHtml;
+    bindEngineGpuPickers(wrap);
     syncEngineCardLiveMetrics(wrap);
 
     wrap.querySelectorAll('.lm-model-card').forEach((card) => {
@@ -3785,6 +3808,7 @@
       serverId,
       model.path || model.model_path || model.id || '',
       model.context_size || activeServer()?.context_size || '',
+      model.gpu_device || 'auto',
     ].join('|');
   }
 
@@ -3820,12 +3844,14 @@
     notice.classList.add('is-block');
   }
 
-  async function fetchLoadPlan(model, serverId) {
+  async function fetchLoadPlan(model, serverId, gpuDevice = null) {
     const sid = serverId || model?.server_id || activeServer()?.id || '';
     if (!sid || !model) return null;
     const params = new URLSearchParams();
     if (model.path || model.model_path) params.set('model_path', model.path || model.model_path);
     if (model.id) params.set('model_id', model.id);
+    const selectedGpu = gpuDevice ?? model.gpu_device;
+    if (selectedGpu != null && String(selectedGpu).trim()) params.set('gpu_device', String(selectedGpu));
     try {
       return await api(
         `/api/servers/${encodeURIComponent(sid)}/load-plan?${params.toString()}`,
@@ -3862,7 +3888,7 @@
     renderLoadPlanNotice(model);
     const serverId = model.server_id || activeServer()?.id || '';
     try {
-      const result = await fetchLoadPlan(model, serverId);
+      const result = await fetchLoadPlan(model, serverId, model.gpu_device);
       if (currentLoadPlanKey !== key) return;
       currentLoadPlan = result;
     } finally {
@@ -4067,7 +4093,10 @@
 
     if (statusText) {
       statusText.textContent = label;
-      const anyActive = dflashLoadedCount() > 0
+      const anyStarting = [...serverActions.values()].some((a) => a === 'starting');
+      const anyActive = !initialStatusSettled
+        || anyStarting
+        || dflashLoadedCount() > 0
         || bootingServerCount() > 0
         || serverIsLive(server);
       statusText.className = anyActive ? 'lm-status-running' : 'lm-status-stopped';
@@ -4704,7 +4733,7 @@
     if (shouldRender && showLoading) {
       setSelectLoading(modelPick, true, 'Loading models…');
       if (settingsPick && !settingsPick.options.length) {
-        setSelectLoading(settingsPick, true, 'Loading engines…');
+        setSelectLoading(settingsPick, true, 'Starting engines…');
       }
     }
 
@@ -5148,6 +5177,8 @@
       await ensureServerArmed(serverId);
       await saveInspectorLoadSettings();
       const body = {};
+      const gpuDevice = String(options.gpuDevice ?? model.gpu_device ?? '').trim();
+      if (gpuDevice) body.gpu_device = gpuDevice;
       if (shouldSendModelPath(model, serverId)) {
         body.model_path = model.path;
         const loadId = catalogLoadModelId(model);
@@ -5199,9 +5230,11 @@
       clearPendingLoadCard(serverId);
       resetEngineModelPicker();
       renderAll();
+      // Never await includeExternal here — that scan can take 60–90s and left
+      // Models-tab LOADING... stuck long after weights were already live.
       void refreshExternalGpuLoads(true);
-      await refreshStatus(true, { includeExternal: true, fresh: false });
-      void refreshStatus(true, { includeExternal: true, fresh: true }).catch(() => {});
+      void refreshStatus(true, { includeExternal: false, fresh: true }).catch(() => {});
+      void refreshStatus(true, { includeExternal: true, fresh: false }).catch(() => {});
       reschedulePoll();
     }
     return completed;
@@ -5247,6 +5280,10 @@
   function handleEngineCardPointerAction(event) {
     const target = event.target?.closest?.('[data-action]');
     if (!target || !event.currentTarget?.contains?.(target)) return;
+    if (target.matches('select[data-action="gpu-device-pick"]')) {
+      event.stopPropagation();
+      return;
+    }
     const action = target.getAttribute('data-action');
     if (!['eject', 'stop', 'cancel-load', 'copy-to-console', 'get-matching-draft'].includes(action)) return;
     event.stopPropagation();
@@ -5282,6 +5319,32 @@
     if (!wrap || wrap.dataset.cardActionsBound === '1') return;
     wrap.dataset.cardActionsBound = '1';
     wrap.addEventListener('pointerdown', handleEngineCardPointerAction);
+  }
+
+  function bindEngineGpuPickers(wrap) {
+    if (!wrap) return;
+    wrap.querySelectorAll('select[data-action="gpu-device-pick"]').forEach((pick) => {
+      if (pick.dataset.gpuBound === '1') return;
+      pick.dataset.gpuBound = '1';
+      pick.addEventListener('click', (event) => event.stopPropagation());
+      pick.addEventListener('change', async (event) => {
+        event.stopPropagation();
+        const serverId = pick.dataset.gpuServerId || '';
+        if (!serverId) return;
+        try {
+          await api(`/api/servers/${encodeURIComponent(serverId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ gpu_device: pick.value || 'auto' }),
+          });
+          toast(pick.value === 'auto'
+            ? 'Engine GPU set to Automatic'
+            : `Engine GPU pinned to GPU ${pick.value}`);
+          await refresh(true, { fresh: true, includeExternal: false });
+        } catch (err) {
+          toast(err.message || 'Could not save the GPU selection', false);
+        }
+      });
+    });
   }
 
   async function ejectExternalLoad(pid) {
@@ -5556,7 +5619,8 @@
     if (!findLiveServerForModel(model) && !pendingLoads.has(serverId)) {
       beginPendingLoadCard(serverId, model);
     }
-    const payload = { ...model };
+    const gpuDevice = String(options.gpuDevice ?? model.gpu_device ?? '').trim() || 'auto';
+    const payload = { ...model, gpu_device: gpuDevice };
     if (shouldSendModelPath(payload, serverId)) {
       payload.server_id = '';
     } else if (payload.server_id !== serverId) {
@@ -5568,7 +5632,7 @@
       return false;
     }
     if (!options.skipLoadPlanCheck) {
-      const plan = await fetchLoadPlan(payload, serverId);
+      const plan = await fetchLoadPlan(payload, serverId, gpuDevice);
       if (plan?.level === 'already_loaded') {
         clearPendingLoadCard(serverId);
         toast(plan.message || 'Model already loaded');
@@ -5587,7 +5651,7 @@
         return false;
       }
     }
-    return executeModelLoad(payload, serverId, options);
+    return executeModelLoad(payload, serverId, { ...options, gpuDevice });
   }
 
   async function onEnginesViewEnter() {
@@ -5611,6 +5675,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     bind();
+    renderToolbar(activeServer());
     updateEnginePageNotice();
     void loadGatewayUrl();
     void initEngineFilters()
@@ -5655,5 +5720,7 @@
     refreshCatalog,
     ingestExternalGpuLoads,
     syncPipelineStandbyFromFeed,
+    beginRuntimeLoadCard: beginPendingLoadCard,
+    clearRuntimeLoadCard: clearPendingLoadCard,
   };
 })();

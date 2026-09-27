@@ -449,10 +449,46 @@ function Resolve-PwshPath {
     return $null
 }
 
+function Resolve-PythonPath {
+    $venvPython = Join-Path $Root '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPython) {
+        return (Resolve-Path -LiteralPath $venvPython).Path
+    }
+    foreach ($name in @('python', 'python3')) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $src = [string]$cmd.Source
+        if (-not $src) { continue }
+        # Skip zero-byte Windows Store stubs.
+        try {
+            if ($src -match 'WindowsApps\\python' -and (Get-Item -LiteralPath $src).Length -eq 0) { continue }
+        } catch {}
+        if (Test-Path -LiteralPath $src) { return $src }
+    }
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+        (Join-Path $env:USERPROFILE 'miniconda3\python.exe'),
+        'C:\Python314\python.exe'
+    )) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+$pythonPath = Resolve-PythonPath
+if (-not $pythonPath) {
+    Write-StartupLine 'ERROR: Python not found (checked .venv, PATH, and common install locations)' 'Red'
+    exit 1
+}
+# Prefer the resolved interpreter for later `& python ...` calls.
+$env:PATH = "$(Split-Path -Parent $pythonPath);$env:PATH"
+Write-StartupLine ("Using Python: {0}" -f $pythonPath) 'DarkGray'
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {
-    Write-StartupLine 'ERROR: Python not found on PATH' 'Red'
-    exit 1
+    # Still expose a Source-like object if PATH prepending did not win.
+    $python = [pscustomobject]@{ Source = $pythonPath }
 }
 $pwshPath = Resolve-PwshPath
 if (-not $Foreground -and -not $pwshPath) {

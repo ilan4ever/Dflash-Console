@@ -5,10 +5,13 @@
 
   let bootId = null;
   let uiVersion = null;
-  let offline = false;
+  let connectionState = 'starting';
+  let hasConnected = false;
   let reloading = false;
   let checking = false;
   let timer = null;
+  let pendingReloadUrl = '';
+  let reloadFocusHandler = null;
   let badgeEl = null;
   let devBadgeEl = null;
   let urlEl = null;
@@ -66,13 +69,50 @@
     el.classList.toggle('hidden', !isDev);
   }
 
-  function setConnectionBadge(isOnline) {
+  function setConnectionBadge(state) {
     const el = badge();
     if (!el) return;
-    el.textContent = isOnline ? 'Online' : 'Offline';
-    el.classList.toggle('online', isOnline);
-    el.classList.toggle('offline', !isOnline);
-    el.title = isOnline ? 'Console API connected' : 'Console API unreachable — start or restart the server';
+    const nextState = state === 'online' || state === 'offline' ? state : 'starting';
+    const labels = { starting: 'Starting…', online: 'Online', offline: 'Offline' };
+    const titles = {
+      starting: 'Starting the Console API and checking engine services…',
+      online: 'Console API connected',
+      offline: 'Console API unreachable — start or restart the server',
+    };
+    connectionState = nextState;
+    el.textContent = labels[nextState];
+    el.classList.toggle('starting', nextState === 'starting');
+    el.classList.toggle('online', nextState === 'online');
+    el.classList.toggle('offline', nextState === 'offline');
+    el.title = titles[nextState];
+  }
+
+  function formControlFocused() {
+    return Boolean(document.activeElement?.matches?.(
+      'select, input, textarea, button, [contenteditable="true"]',
+    ));
+  }
+
+  function reloadWhenSafe(url) {
+    const attempt = () => {
+      if (formControlFocused()) {
+        pendingReloadUrl = url;
+        if (!reloadFocusHandler) {
+          reloadFocusHandler = () => {
+            if (formControlFocused() || !pendingReloadUrl) return;
+            const nextUrl = pendingReloadUrl;
+            pendingReloadUrl = '';
+            document.removeEventListener('focusout', reloadFocusHandler, true);
+            reloadFocusHandler = null;
+            window.location.replace(nextUrl);
+          };
+          document.addEventListener('focusout', reloadFocusHandler, true);
+        }
+        return;
+      }
+      window.location.replace(url);
+    };
+    window.setTimeout(attempt, 500);
   }
 
   async function check() {
@@ -89,11 +129,14 @@
       setDeveloperBadge(Boolean(data?.dev_server));
       setConsoleUrl(data);
       const storedBootId = sessionStorage.getItem(bootStorageKey) || '';
-      const restarted = (bootId && nextId && nextId !== bootId)
-        || (storedBootId && nextId && nextId !== storedBootId);
+      // The first successful health check belongs to the current page. A stale
+      // boot id in sessionStorage must not trigger a startup page reload.
+      const restarted = hasConnected && ((bootId && nextId && nextId !== bootId)
+        || (storedBootId && nextId && nextId !== storedBootId));
       const uiChanged = uiVersion && nextUi && nextUi !== uiVersion;
-      setConnectionBadge(true);
-      if (restarted || (offline && nextId) || uiChanged) {
+      const recoveredAfterOffline = hasConnected && connectionState === 'offline' && nextId;
+      setConnectionBadge('online');
+      if (restarted || recoveredAfterOffline || uiChanged) {
         reloading = true;
         if (nextId) sessionStorage.setItem(bootStorageKey, nextId);
         const reason = uiChanged && !restarted ? 'UI updated — refreshing page…' : 'Server restarted — refreshing page…';
@@ -101,17 +144,16 @@
         const bust = nextUi || Date.now();
         const url = new URL(window.location.href);
         url.searchParams.set('_ui', bust);
-        window.setTimeout(() => window.location.replace(url.toString()), 500);
+        reloadWhenSafe(url.toString());
         return;
       }
       if (nextId) bootId = nextId;
       if (nextUi) uiVersion = nextUi;
       if (nextId) sessionStorage.setItem(bootStorageKey, nextId);
-      offline = false;
-      setConnectionBadge(true);
+      hasConnected = true;
+      setConnectionBadge('online');
     } catch {
-      offline = true;
-      setConnectionBadge(false);
+      setConnectionBadge(hasConnected ? 'offline' : 'starting');
     } finally {
       window.clearTimeout(timeout);
       checking = false;
@@ -131,7 +173,7 @@
   function start() {
     setConsoleUrl(null);
     consoleUrlEl()?.addEventListener('click', copyConsoleUrl);
-    setConnectionBadge(false);
+    setConnectionBadge('starting');
     void check().finally(scheduleNextCheck);
   }
 

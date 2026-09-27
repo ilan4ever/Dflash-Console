@@ -1,10 +1,10 @@
-'use strict';
+﻿'use strict';
 
 const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 const {
   loadAppSettings,
   saveAppSettings,
@@ -166,7 +166,7 @@ function repoRoot() {
   if (override && isConsoleRoot(override)) {
     // The installed (packaged) app is a SEPARATE application with its own data
     // root. A stale DFLASH_CONSOLE_ROOT that points at the developer git
-    // checkout (inherited from a shell/profile) must not be honored here —
+    // checkout (inherited from a shell/profile) must not be honored here â€”
     // otherwise the installed app reuses the developer server and shows the
     // Developer badge inside the Electron app. Only non-checkout roots are
     // accepted as an override in packaged mode.
@@ -315,7 +315,7 @@ function readUpdatePublicKey() {
 }
 
 function createUpdateService() {
-  // The developer app never auto-updates — only the installed app does.
+  // The developer app never auto-updates â€” only the installed app does.
   if (!app.isPackaged) return null;
   const config = readUpdateConfig();
   const manifestUrl = String(
@@ -986,32 +986,38 @@ function raceTimeout(promise, ms) {
  * CommandLine, so we cannot rely on --type= filtering alone.
  */
 function closeOtherDesktopApp() {
+  // Always clear BOTH developer Electron shells for this repo and the installed
+  // "DFlash Console.exe" main process before boot. The previous branches were
+  // inverted for duplicate-dev: unpackaged only killed the installed exe, so
+  // requestSingleInstanceLock failed and the new process silent-quit.
   const selfPid = process.pid;
-  const script = app.isPackaged
-    ? `
+  let repoHint = '';
+  try {
+    repoHint = String(repoRoot() || '').replace(/\\/g, '\\\\');
+  } catch (_err) {
+    repoHint = '';
+  }
+  const script = `
 $self = ${selfPid}
-$targetName = 'electron.exe'
-Get-CimInstance Win32_Process -Filter "Name='$targetName'" | ForEach-Object {
-  if ($_.ProcessId -eq $self) { return }
-  $cmd = [string]$_.CommandLine
-  if ($cmd -and $cmd -match '--type=') { return }
-  if ($cmd -and $cmd -notmatch '(?i)dflash-console') { return }
-  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
-  if ($parent -and $parent.Name -eq $targetName) { return }
-  & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+$repoHint = '${repoHint}'
+function Stop-DflashDesktopMain([string]$targetName, [bool]$requireRepoMatch) {
+  Get-CimInstance Win32_Process -Filter "Name='$targetName'" -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.ProcessId -eq $self) { return }
+    $cmd = [string]$_.CommandLine
+    if ($cmd -and $cmd -match '--type=') { return }
+    if ($requireRepoMatch) {
+      $matched = $false
+      if ($cmd -and $cmd -match '(?i)dflash-console') { $matched = $true }
+      if (-not $matched -and $repoHint -and $cmd -and $cmd.IndexOf($repoHint, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
+      if (-not $matched) { return }
+    }
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
+    if ($parent -and $parent.Name -eq $targetName) { return }
+    & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+  }
 }
-`
-    : `
-$self = ${selfPid}
-$targetName = 'DFlash Console.exe'
-Get-CimInstance Win32_Process -Filter "Name='$targetName'" | ForEach-Object {
-  if ($_.ProcessId -eq $self) { return }
-  $cmd = [string]$_.CommandLine
-  if ($cmd -and $cmd -match '--type=') { return }
-  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
-  if ($parent -and $parent.Name -eq $targetName) { return }
-  & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
-}
+Stop-DflashDesktopMain 'electron.exe' $true
+Stop-DflashDesktopMain 'DFlash Console.exe' $false
 `;
   return new Promise((resolve) => {
     try {
@@ -1025,6 +1031,86 @@ Get-CimInstance Win32_Process -Filter "Name='$targetName'" | ForEach-Object {
       resolve();
     }
   });
+}
+
+/**
+ * Synchronously kill other DFlash Console desktop main processes BEFORE
+ * requestSingleInstanceLock(). Async kill-after-failed-lock is too late
+ * (lock already lost; npm + app.relaunch races). Same matching rules as
+ * closeOtherDesktopApp: other main electron.exe for this repo/dflash-console
+ * and main DFlash Console.exe, excluding self.
+ */
+function killOtherDesktopAppsSync() {
+  const selfPid = process.pid;
+  let repoHint = '';
+  try {
+    repoHint = String(repoRoot() || '').replace(/\\/g, '\\\\');
+  } catch (_err) {
+    repoHint = '';
+  }
+  const script = `
+$self = ${selfPid}
+$repoHint = '${repoHint}'
+function Stop-DflashDesktopMain([string]$targetName, [bool]$requireRepoMatch) {
+  Get-CimInstance Win32_Process -Filter "Name='$targetName'" -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.ProcessId -eq $self) { return }
+    $cmd = [string]$_.CommandLine
+    if ($cmd -and $cmd -match '--type=') { return }
+    if ($requireRepoMatch) {
+      $matched = $false
+      if ($cmd -and $cmd -match '(?i)dflash-console') { $matched = $true }
+      if (-not $matched -and $repoHint -and $cmd -and $cmd.IndexOf($repoHint, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
+      if (-not $matched) { return }
+    }
+    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
+    if ($parent -and $parent.Name -eq $targetName) { return }
+    & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+  }
+}
+Stop-DflashDesktopMain 'electron.exe' $true
+Stop-DflashDesktopMain 'DFlash Console.exe' $false
+`;
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      timeout: 15000,
+      stdio: 'ignore',
+    });
+  } catch (_err) {
+    // best effort — requestSingleInstanceLock still runs next
+  }
+  // Brief pause so the OS can release the previous lock holder.
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 400'], {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+  } catch (_err) {
+    // ignore
+  }
+}
+
+function writeLockFailureLog(message) {
+  try {
+    let root = null;
+    try {
+      root = repoRoot();
+    } catch (_err) {
+      root = null;
+    }
+    if (!root) root = path.resolve(__dirname, '..');
+    const logDir = path.join(root, 'logs');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    fs.appendFileSync(
+      path.join(logDir, 'electron-launch.log'),
+      `[${stamp}] single-instance lock failed: ${message}\n`,
+      'utf8',
+    );
+  } catch (_err) {
+    // ignore
+  }
 }
 
 /**
@@ -1043,7 +1129,7 @@ async function closeOtherApp() {
     }
     await stopForeignConsole(port);
   } catch (_err) {
-    // best effort — ensureBackend() still reconciles the port
+    // best effort â€” ensureBackend() still reconciles the port
   }
 }
 
@@ -1082,8 +1168,8 @@ async function ensureBackend() {
   }
 
   if (existing) {
-    // A different Console instance (dev or installed) — or a stale server from
-    // another version — holds the port. Stop it so only one current DFlash
+    // A different Console instance (dev or installed) â€” or a stale server from
+    // another version â€” holds the port. Stop it so only one current DFlash
     // server runs at a time on this PC, then take over.
     await stopForeignConsole(port);
   }
@@ -1170,7 +1256,7 @@ function buildMenu() {
               type: health ? 'info' : 'warning',
               title: 'DFlash Console',
               message: health
-                ? `Online · v${health.version || '?'} · boot ${health.boot_id || '?'}`
+                ? `Online Â· v${health.version || '?'} Â· boot ${health.boot_id || '?'}`
                 : 'Console API is offline.',
             });
           },
@@ -1244,7 +1330,7 @@ async function createWindow() {
     // the minimize button still landed in the taskbar.
     if (!loadAppSettings().minimizeToTray) return;
     if (!tray) ensureTray();
-    if (!tray) return; // tray unavailable (e.g. no icon) — allow normal minimize
+    if (!tray) return; // tray unavailable (e.g. no icon) â€” allow normal minimize
     event.preventDefault();
     mainWindow.hide();
   });
@@ -1264,7 +1350,7 @@ async function createWindow() {
     // Cache clear is best-effort so a stale page cannot show old Settings.
   }
   const url = consoleUrl(activePort);
-  mainWindow.setTitle(`DFlash Console — ${url}`);
+  mainWindow.setTitle(`DFlash Console â€” ${url}`);
   await mainWindow.loadURL(url);
 }
 
@@ -1350,9 +1436,22 @@ function installMediaPermissions() {
   });
 }
 
+// Kill peer desktop shells synchronously BEFORE taking the single-instance lock.
+// Doing this after !gotLock is too late (lock already lost; relaunch under npm races).
+killOtherDesktopAppsSync();
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  // Sync pre-lock kill already ran. Do NOT app.relaunch() — that races under npm
+  // and leaves exit code 1 with no lasting window. Fail loudly instead.
+  const msg = 'Could not acquire single-instance lock after killing other desktop shells. Another DFlash Console may still be holding the lock.';
+  writeLockFailureLog(msg);
+  try {
+    dialog.showErrorBox('DFlash Console', msg);
+  } catch (_err) {
+    // showErrorBox may be unavailable very early
+  }
+  app.exit(1);
 } else {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.dflash.console');

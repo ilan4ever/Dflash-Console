@@ -393,6 +393,9 @@ class FreeTokenRuntimeAdapter:
                 'error': 'FreeToken requires a Hugging Face SafeTensors model directory',
             }
         profile = self._profile()
+        requested_gpu = str((model or {}).get('gpu_device') or '').strip().lower()
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            profile = {**profile, 'gpu_device': requested_gpu}
         settings = normalize_freetoken_settings(profile.get('freetoken_settings'))
         overrides = (model or {}).get('load_settings')
         if isinstance(overrides, dict):

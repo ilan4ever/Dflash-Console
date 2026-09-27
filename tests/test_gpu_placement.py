@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from core.gpu_devices import estimate_model_vram_gb, resolve_auto_gpu_launch
+import pytest
+
+from core.gpu_devices import estimate_model_vram_gb, resolve_auto_gpu_launch, validate_gpu_device
+
+
+def test_gpu_device_selector_accepts_auto_and_index():
+    assert validate_gpu_device(None) == 'auto'
+    assert validate_gpu_device('automatic') == 'auto'
+    assert validate_gpu_device('1') == '1'
+
+
+def test_gpu_device_selector_rejects_invalid_values():
+    with pytest.raises(ValueError):
+        validate_gpu_device('cuda:1')
 
 
 def test_estimate_31b_needs_more_than_12b():
