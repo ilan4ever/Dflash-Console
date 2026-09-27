@@ -229,6 +229,9 @@ class VllmRuntimeAdapter:
                 settings['gpu_memory_utilization'] = float(extra['gpu_memory_utilization'])
             if extra.get('max_model_len') is not None:
                 settings['max_model_len'] = int(extra['max_model_len'])
+        requested_gpu = str((model or {}).get('gpu_device') or '').strip().lower()
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            settings['gpu_device'] = requested_gpu
         started = self._start_server(path_obj, settings)
         if not started.get('success'):
             return started
@@ -331,10 +334,17 @@ class VllmRuntimeAdapter:
         if backend == 'wsl':
             distro = str(manifest.get('wsl_distro') or 'Ubuntu')
             python = str(manifest.get('wsl_python') or self.python())
-            cmd = ['wsl', '-d', distro, '--', python, *args]
+            gpu = str(settings.get('gpu_device') or '').strip().lower()
+            prefix = ['env', f'CUDA_VISIBLE_DEVICES={gpu}'] if gpu not in ('', 'auto', 'automatic', 'default') else []
+            cmd = ['wsl', '-d', distro, '--', *prefix, python, *args]
         else:
             cmd = [self.python(), *args]
         popen_kwargs: dict[str, Any] = {'cwd': str(VLLM_BUNDLE)}
+        gpu = str(settings.get('gpu_device') or '').strip().lower()
+        if gpu not in ('', 'auto', 'automatic', 'default'):
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = gpu
+            popen_kwargs['env'] = env
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         LOG_DIR.mkdir(parents=True, exist_ok=True)

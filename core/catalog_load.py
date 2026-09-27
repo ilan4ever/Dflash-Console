@@ -16,6 +16,7 @@ from core.config import (
     normalize_server,
 )
 from core.engine_state import note_engine_loaded, note_engine_on
+from core.gpu_devices import validate_gpu_device
 from core.local_models import list_local_models
 from core.memory_guardrails import assess_load
 from core.server_boot import load_server_checkpoint
@@ -43,6 +44,7 @@ def execute_catalog_load(
     model_id: str | None = None,
     server_id: str | None = None,
     context_size: int | None = None,
+    gpu_device: str | None = None,
     load_settings: dict[str, Any] | None = None,
     inference_settings: dict[str, Any] | None = None,
     requested_runtime_id: str | None = None,
@@ -51,6 +53,37 @@ def execute_catalog_load(
 ) -> dict[str, Any]:
     """Load a model from the local catalog by path or model_id."""
     config = cfg or load_config()
+    try:
+        requested_gpu = validate_gpu_device(gpu_device) if gpu_device is not None else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if requested_gpu not in (None, 'auto'):
+        from core.gpu_devices import get_gpu_devices_payload
+
+        selected = next(
+            (item for item in get_gpu_devices_payload().get('gpus') or []
+             if str(item.get('index')) == requested_gpu),
+            None,
+        )
+        if selected is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'error': 'gpu_unavailable',
+                    'gpu_device': requested_gpu,
+                    'message': f'GPU {requested_gpu} is not detected on this machine.',
+                },
+            )
+        free = selected.get('vram_free_gb')
+        if free is not None and float(free) <= 0.1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'error': 'gpu_busy',
+                    'gpu_device': requested_gpu,
+                    'message': f'GPU {requested_gpu} is full. Unload another model or choose Automatic/another GPU.',
+                },
+            )
     catalog = list_local_models(cfg=config)
     models = catalog.get('models') or []
     resolved_path = str(path or '').strip()
@@ -119,7 +152,7 @@ def execute_catalog_load(
 
     if runtime_id == 'stt':
         adapter = get_runtime_adapter('stt')
-        result = adapter.load({'path': resolved_path})
+        result = adapter.load({'path': resolved_path, 'gpu_device': requested_gpu})
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'STT load failed')
         return {
@@ -134,6 +167,8 @@ def execute_catalog_load(
     if runtime_id == 'faster-whisper':
         adapter = get_runtime_adapter('faster-whisper')
         model_payload: dict[str, Any] = {'path': resolved_path}
+        if requested_gpu is not None:
+            model_payload['gpu_device'] = requested_gpu
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
         result = adapter.load(model_payload)
@@ -150,7 +185,7 @@ def execute_catalog_load(
         }
     if runtime_id == 'piper':
         adapter = get_runtime_adapter('piper')
-        result = adapter.load({'path': resolved_path})
+        result = adapter.load({'path': resolved_path, 'gpu_device': requested_gpu})
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'TTS load failed')
         return {
@@ -165,6 +200,8 @@ def execute_catalog_load(
     if runtime_id == 'vibevoice':
         adapter = get_runtime_adapter('vibevoice')
         model_payload = {'path': resolved_path}
+        if requested_gpu is not None:
+            model_payload['gpu_device'] = requested_gpu
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
         result = adapter.load(model_payload)
@@ -185,6 +222,8 @@ def execute_catalog_load(
         if adapter is None:
             raise HTTPException(status_code=404, detail=f'runtime adapter not found: {runtime_id}')
         model_payload = {'path': resolved_path}
+        if requested_gpu is not None:
+            model_payload['gpu_device'] = requested_gpu
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
             if load_settings.get('preset'):
@@ -227,6 +266,8 @@ def execute_catalog_load(
         raise HTTPException(status_code=409, detail=f'no enabled server can run a {modality} model — pass server_id')
 
     server = normalize_server(dict(server))
+    if requested_gpu is not None:
+        server['gpu_device'] = requested_gpu
     note_engine_on(str(server.get('id') or ''))
     candidate = {**server, 'adhoc_model_path': resolved_path}
     if context_size is not None:
@@ -239,7 +280,7 @@ def execute_catalog_load(
     check = assess_load(candidate, cfg=config)
     if check.get('level') == 'block':
         raise HTTPException(status_code=400, detail=str(check.get('message') or 'insufficient VRAM'))
-    result = load_server_checkpoint(server, cfg=config, model_path=resolved_path, model_id=model_id)
+    result = load_server_checkpoint(candidate, cfg=config, model_path=resolved_path, model_id=model_id)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     note_engine_loaded(str(server.get('id') or ''), loaded_by=loaded_by)

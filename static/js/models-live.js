@@ -18,6 +18,7 @@
   const pendingModelUnloads = new Map();
   const pendingServerUnloads = new Set();
   let runtimePollTimer = null;
+  let pendingTableRender = null;
   let autoSetupInFlight = null;
   let catalogRefreshInFlight = null;
   let partialRetryTimer = null;
@@ -27,6 +28,8 @@
   let hfAcceleratorStatus = 'idle';
   let hfAcceleratorRequest = null;
   let hfAcceleratorRevision = 0;
+  let gpuDevices = [];
+  let gpuDevicesReady = false;
   const suppressedLibrary = { keys: new Set(), paths: new Set() };
 
   const LOAD_ENGINE_KEY = 'dflashConsole.loadEngine';
@@ -35,6 +38,7 @@
   const PINNED_KEY = 'dflashConsole.pinnedModels';
   const LOCAL_CATALOG_CACHE_KEY = 'dflashConsole.modelLibraryCache';
   const MODEL_LIST_REFRESH_MS = 5 * 60 * 1000;
+  const GPU_PREFERENCE_KEY = 'dflashConsole.modelGpuDevices';
 
   function escapeHtml(value) {
     return String(value || '')
@@ -42,6 +46,58 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function gpuPreferenceKey(model) {
+    return modelKey(model);
+  }
+
+  function readGpuPreferences() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(GPU_PREFERENCE_KEY) || '{}');
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function modelGpuDevice(model) {
+    const saved = String(readGpuPreferences()[gpuPreferenceKey(model)] || '').trim().toLowerCase();
+    if (saved === 'auto' || /^\d+$/.test(saved)) return saved;
+    const configured = String(model?.gpu_device || '').trim().toLowerCase();
+    return configured === 'auto' || /^\d+$/.test(configured) ? configured : 'auto';
+  }
+
+  function saveModelGpuDevice(model, value) {
+    const next = value === 'auto' || /^\d+$/.test(String(value || '')) ? String(value) : 'auto';
+    const prefs = readGpuPreferences();
+    prefs[gpuPreferenceKey(model)] = next;
+    try {
+      localStorage.setItem(GPU_PREFERENCE_KEY, JSON.stringify(prefs));
+    } catch {
+      /* local preferences are optional */
+    }
+  }
+
+  function gpuDevicePicker(model, { compact = false } = {}) {
+    if (!model?.path || isCloudApiModel(model) || String(model.runtime_id || '').toLowerCase() === 'piper') return '';
+    const selected = modelGpuDevice(model);
+    const options = [
+      `<option value="auto"${selected === 'auto' ? ' selected' : ''}>Auto</option>`,
+      ...gpuDevices.map((gpu) => {
+        const index = String(gpu.index);
+        const name = gpu.display_name || gpu.name || `GPU ${index}`;
+        return `<option value="${escapeHtml(index)}"${selected === index ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+      }),
+    ].join('');
+    const cls = compact ? 'lm-select small lm-gpu-pick is-compact' : 'lm-select small lm-gpu-pick';
+    const loadingAttrs = gpuDevicesReady
+      ? ''
+      : ' disabled aria-busy="true"';
+    const title = gpuDevicesReady
+      ? 'Auto chooses the best available GPU; a numbered option pins this model to that GPU'
+      : 'GPU choices will be available when the Console finishes detecting GPUs';
+    return `<select class="${cls}" data-gpu-pick="${escapeHtml(gpuPreferenceKey(model))}" aria-label="GPU for ${escapeHtml(model.label || model.filename || model.id || 'model')}" title="${escapeHtml(title)}"${loadingAttrs}>${options}</select>`;
   }
 
   // Normalize a search string so HF/name separators are interchangeable:
@@ -779,10 +835,9 @@
     }
     if (canLoadInConsole(model)) {
       const control = rowEngineControl(model);
-      if (control) {
-        return actionStackHtml([control, actionButton('load-model', 'Load', 'Load model onto GPU')]);
-      }
-      return actionButton('load-model', 'Load', 'Load model onto GPU');
+      const gpu = gpuDevicePicker(model);
+      const controls = [control, gpu, actionButton('load-model', 'Load', 'Load model onto GPU')].filter(Boolean);
+      return controls.length > 1 ? actionStackHtml(controls) : controls[0];
     }
     if (model?.path) {
       return actionButton('open-folder', 'Open', 'Show file in Explorer');
@@ -1250,6 +1305,10 @@
   function mergeModelsWithState(catalogModels, serversData, browsePrefs) {
     const serverMap = {};
     serverPortById = {};
+    if (Array.isArray(serversData?.gpus)) {
+      gpuDevices = serversData.gpus;
+      gpuDevicesReady = true;
+    }
     externalGpuLoads = Array.isArray(serversData?.external_gpu_loads)
       ? serversData.external_gpu_loads
       : [];
@@ -1305,6 +1364,7 @@
         merged = {
           ...merged,
           context_size: server.context_size ?? merged.context_size,
+          gpu_device: server.gpu_device ?? merged.gpu_device,
           load_settings: { ...(merged.load_settings || {}), ...(server.load_settings || {}) },
           inference_settings: { ...(merged.inference_settings || {}), ...(server.inference_settings || {}) },
           runtime_status: server.status,
@@ -1766,7 +1826,32 @@
 
   let pollTimer = null;
   let pollPaused = false;
+  let modelSelectorFocused = false;
   let lastRenderSignature = '';
+
+  function isModelSelectorElement(element) {
+    if (!element) return false;
+    if (element.matches?.('select[data-gpu-pick], select[data-engine-pick], select[data-load-engine-pick], .df-select-trigger[data-model-selector-trigger], .df-select-menu[data-model-selector-menu]')) return true;
+    return Boolean(element.closest?.('.df-select-wrap[data-model-selector-wrap="1"]'));
+  }
+
+  function isModelSelectorMenuOpen() {
+    return Boolean(document.querySelector(
+      '.df-select-menu[data-model-selector-menu="1"].open',
+    ));
+  }
+
+  function isModelSelectorFocused() {
+    return isModelSelectorElement(document.activeElement) || isModelSelectorMenuOpen();
+  }
+
+  function scheduleModelSelectorRefresh() {
+    window.setTimeout(() => {
+      if (isModelSelectorFocused()) return;
+      modelSelectorFocused = false;
+      void refreshRuntimeState({ silent: true });
+    }, 0);
+  }
 
   function modelType(model) {
     if (isProjectorModel(model)) return 'projector';
@@ -2026,7 +2111,11 @@
         .replace('lm-action-btn', 'ghost small');
     }
     if (canLoadInConsole(model)) {
-      return '<button class="lm-btn ghost small" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
+      const engine = rowEngineControl(model);
+      const gpu = gpuDevicePicker(model, { compact: true });
+      const load = '<button class="lm-btn ghost small" type="button" data-action="load-model" title="Load model onto GPU">Load</button>';
+      const controls = [engine, gpu, load].filter(Boolean);
+      return controls.length > 1 ? `<div class="lm-mobile-load-controls">${controls.join('')}</div>` : controls[0];
     }
     const raw = stackActionButton(model);
     if (raw.includes('lm-action-stack')) {
@@ -2142,6 +2231,14 @@
     function renderTable(filterText, { force = false } = {}) {
     const body = document.getElementById('modelsTableBody');
     if (!body) return;
+    if (modelSelectorFocused || isModelSelectorFocused()) {
+      pendingTableRender = {
+        filterText: String(filterText || ''),
+        force: Boolean(force) || Boolean(pendingTableRender?.force),
+      };
+      return;
+    }
+    pendingTableRender = null;
     const signature = modelsRenderSignature(filterText);
     if (!force && signature === lastRenderSignature) return;
     lastRenderSignature = signature;
@@ -2324,7 +2421,8 @@
         if (event.target.closest('[data-action="setup-stack"]')) return;
         if (event.target.closest('[data-action="unload-model"]')) return;
         if (event.target.closest('[data-action="open-chat"]')) return;
-        if (event.target.closest('[data-engine-pick]')) return;
+        if (event.target.closest('[data-engine-pick], [data-load-engine-pick], [data-gpu-pick]')) return;
+        if (event.target.closest('.df-select-wrap[data-model-selector-wrap="1"], .df-select-trigger[data-model-selector-trigger], .df-select-menu[data-model-selector-menu]')) return;
         void selectModel(row.dataset.modelKey);
       });
       row.addEventListener('dblclick', () => {
@@ -2353,6 +2451,9 @@
     root.querySelectorAll('[data-action="load-model"]').forEach((btn) => {
       btn.addEventListener('click', (event) => {
         event.stopPropagation();
+        // Load sits beside themed GPU/engine selects; never leave their menu open
+        // after a Load press, and never let a prior open menu look like Load's job.
+        window.DFlashSelectTheme?.closeAllMenus?.();
         const model = modelForRow(btn.closest(rowSel));
         if (model) void loadModel(model);
       });
@@ -2364,6 +2465,24 @@
         if (model && requiresFreeToken(model) && runtime !== 'freetoken') {
           toast(freeTokenRequirementMessage(model, runtime), false);
         }
+      });
+    });
+    root.querySelectorAll('[data-gpu-pick]').forEach((pick) => {
+      pick.addEventListener('click', (event) => event.stopPropagation());
+      const wrap = pick.closest('.df-select-wrap');
+      if (wrap && wrap.dataset.dfGpuStop !== '1') {
+        wrap.dataset.dfGpuStop = '1';
+        wrap.addEventListener('click', (event) => event.stopPropagation());
+        wrap.addEventListener('pointerdown', (event) => event.stopPropagation());
+      }
+      pick.addEventListener('change', (event) => {
+        event.stopPropagation();
+        const model = modelForRow(pick.closest(rowSel));
+        if (!model) return;
+        saveModelGpuDevice(model, String(pick.value || 'auto'));
+        toast(pick.value === 'auto'
+          ? 'GPU selection set to Automatic'
+          : `GPU selection pinned to GPU ${pick.value}`);
       });
     });
     root.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
@@ -3171,6 +3290,9 @@
     const adapterRuntimes = new Set(['stt', 'faster-whisper', 'piper', 'transformers', 'vibevoice', 'vllm', 'freetoken']);
     const pick = document.querySelector(`[data-engine-pick="${CSS.escape(modelKey(model))}"]`);
     const chosenRuntime = String(pick?.value || (isHfEngineModel(model) ? getLoadEngine() : '') || runtimeId || '');
+    const gpuPick = document.querySelector(`[data-gpu-pick="${CSS.escape(gpuPreferenceKey(model))}"]`);
+    const gpuDevice = String(gpuPick?.value || modelGpuDevice(model) || 'auto');
+    if (gpuPick) saveModelGpuDevice(model, gpuDevice);
     if (adapterRuntimes.has(chosenRuntime) || adapterRuntimes.has(runtimeId)) {
       if (!model?.path) {
         toast('This file is not available to load.', false);
@@ -3206,6 +3328,14 @@
         }
       }
       markModelLoadPending(model, isFreeToken ? 'freetoken' : '');
+      // Adapter loads are synchronous API calls, so the runtime does not
+      // expose its active model until the request returns. Mirror the pending
+      // state into Engines immediately so users see the card while weights
+      // are entering GPU/CPU memory.
+      window.DFlashServerLive?.beginRuntimeLoadCard?.(loadRuntime, {
+        ...model,
+        runtime_id: loadRuntime,
+      });
       window.DFlashStatusFeed?.setTransient(`Loading ${model.label || model.id}…`, {
         secondary: isFreeToken
           ? 'Starting FreeToken through WSL2 — expert banks warm up after the server port opens'
@@ -3224,6 +3354,7 @@
             path: model.path || model.ollama_model || model.label || '',
             model_id: model.ollama_model || model.model_id || model.id || '',
             runtime_id: loadRuntime,
+            gpu_device: gpuDevice,
             load_settings: isVllm ? { preset: 'balanced' } : undefined,
           }),
           timeoutMs: 0,
@@ -3242,6 +3373,7 @@
         toast(err.message || `Could not load ${model.label || model.id}`, false);
       } finally {
         clearModelLoadPending(model, '');
+        window.DFlashServerLive?.clearRuntimeLoadCard?.(loadRuntime);
       }
       await refreshRuntimeState({ silent: true });
       void refreshCatalogQuiet();
@@ -3290,14 +3422,19 @@
       ttlMs: 120000,
     });
     try {
-      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model);
-      if (loaded === false) return;
+      const loaded = await window.DFlashServerLive.loadModelOnServer(serverId, model, { gpuDevice });
+      if (loaded === false) {
+        // Explicit clear on failure/400 so the row never sticks on LOADING...
+        clearModelLoadPending(model, serverId);
+        return;
+      }
       await refreshRuntimeState({ silent: true });
       void refreshCatalogQuiet();
       if (window.DFlashServerLive?.refresh) {
         void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
       }
     } catch (err) {
+      clearModelLoadPending(model, serverId);
       toast(err.message || `Could not load ${model.label || model.id}`, false);
     } finally {
       clearModelLoadPending(model, serverId);
@@ -3305,9 +3442,11 @@
   }
 
   async function fetchServersForLibrary() {
+    // Primary path must not wait on the external GPU scan (~11s). Engines
+    // refreshes external rows via refreshExternalGpuLoads on its own.
     try {
       const [serversData, tfRuntime, vllmRuntime] = await Promise.all([
-        api('/api/servers?include_external=true', { timeoutMs: 20000 }),
+        api('/api/servers?include_external=false', { timeoutMs: 12000 }),
         api('/api/runtimes/transformers', { timeoutMs: 8000 }).catch(() => null),
         api('/api/runtimes/vllm', { timeoutMs: 8000 }).catch(() => null),
       ]);
@@ -3319,21 +3458,30 @@
       }
       return serversData;
     } catch (_err) {
-      try {
-        const [serversData, tfRuntime, vllmRuntime] = await Promise.all([
-          api('/api/servers?include_external=false', { timeoutMs: 12000 }),
-          api('/api/runtimes/transformers', { timeoutMs: 8000 }).catch(() => null),
-          api('/api/runtimes/vllm', { timeoutMs: 8000 }).catch(() => null),
-        ]);
-        if (tfRuntime?.active_model) {
-          serversData.transformers_runtime = tfRuntime;
+      return { servers: [], external_gpu_loads: [] };
+    }
+  }
+
+  function reconcileLoadPendingWithRuntime() {
+    // Clear stuck LOADING... when the model is already on GPU, or the client
+    // pending flag is older than 45s with no boot progress from the API.
+    const MAX_PENDING_MS = 45000;
+    const now = Date.now();
+    for (const [key, meta] of [...pendingModelLoads.entries()]) {
+      const model = models.find((row) => modelKey(row) === key);
+      const serverId = meta?.serverId || model?.server_id || '';
+      if (model && isStackLoadedOnGpu(model)) {
+        clearModelLoadPending(model, serverId);
+        continue;
+      }
+      const startedAt = Number(meta?.startedAt || 0);
+      const booting = !!(serverId && bootingServers[serverId]);
+      if (startedAt && (now - startedAt) > MAX_PENDING_MS && !booting) {
+        if (model) clearModelLoadPending(model, serverId);
+        else {
+          pendingModelLoads.delete(key);
+          if (serverId) pendingServerLoads.delete(serverId);
         }
-        if (vllmRuntime?.active_model) {
-          serversData.vllm_runtime = vllmRuntime;
-        }
-        return serversData;
-      } catch (_err2) {
-        return { servers: [], external_gpu_loads: [] };
       }
     }
   }
@@ -3343,6 +3491,9 @@
     try {
       const serversData = await fetchServersForLibrary();
       models = mergeModelsWithState(models, serversData, loadBrowsePrefs());
+      reconcileLoadPendingWithRuntime();
+      if (hasBootingServers() && !runtimePollTimer) startRuntimePoll();
+      if (modelSelectorFocused || isModelSelectorFocused()) return;
       renderFooter(meta);
       renderTable(filter, { force: true });
       notifyDownloadsLoadState();
@@ -3357,13 +3508,18 @@
     runtimePollTimer = null;
   }
 
+  function hasBootingServers() {
+    return Object.keys(bootingServers).length > 0;
+  }
+
   function startRuntimePoll() {
     stopRuntimePoll();
     runtimePollTimer = window.setInterval(() => {
       if (document.body.dataset.activeView !== 'models' && document.body.dataset.activeView !== 'downloads') return;
+      if (modelSelectorFocused || isModelSelectorFocused()) return;
       if (!pendingModelLoads.size && !pendingServerLoads.size
         && !pendingModelUnloads.size && !pendingServerUnloads.size
-        && !bootingServers.freetoken) {
+        && !hasBootingServers()) {
         stopRuntimePoll();
         return;
       }
@@ -3380,6 +3536,7 @@
     pendingModelLoads.set(key, {
       serverId: serverId || model.server_id || '',
       label: model.label || model.id || key,
+      startedAt: Date.now(),
     });
     if (serverId) pendingServerLoads.add(serverId);
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
@@ -3391,7 +3548,8 @@
     pendingModelLoads.delete(modelKey(model));
     if (serverId) pendingServerLoads.delete(serverId);
     if (!pendingModelLoads.size && !pendingServerLoads.size
-      && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+      && !pendingModelUnloads.size && !pendingServerUnloads.size
+      && !hasBootingServers()) {
       stopRuntimePoll();
     }
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
@@ -3414,7 +3572,8 @@
     pendingModelUnloads.delete(modelKey(model));
     if (serverId) pendingServerUnloads.delete(serverId);
     if (!pendingModelLoads.size && !pendingServerLoads.size
-      && !pendingModelUnloads.size && !pendingServerUnloads.size) {
+      && !pendingModelUnloads.size && !pendingServerUnloads.size
+      && !hasBootingServers()) {
       stopRuntimePoll();
     }
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
@@ -3663,6 +3822,21 @@
 
     document.addEventListener('click', hideContextMenu);
     document.addEventListener('scroll', hideContextMenu, true);
+    // Native select popups open during the mouse-down sequence. Mark the
+    // selector as protected before the browser opens that popup so a runtime
+    // poll cannot replace the row between mousedown and focusin.
+    document.addEventListener('pointerdown', (event) => {
+      if (isModelSelectorElement(event.target)) modelSelectorFocused = true;
+    }, true);
+    document.addEventListener('mousedown', (event) => {
+      if (isModelSelectorElement(event.target)) modelSelectorFocused = true;
+    }, true);
+    document.addEventListener('focusin', (event) => {
+      if (isModelSelectorElement(event.target)) modelSelectorFocused = true;
+    });
+    document.addEventListener('focusout', (event) => {
+      if (isModelSelectorElement(event.target)) scheduleModelSelectorRefresh();
+    });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') hideContextMenu();
     });
@@ -3678,10 +3852,11 @@
   function startPolling() {
     if (pollTimer) return;
     pollTimer = window.setInterval(() => {
-      if (pollPaused) return;
+      if (pollPaused || modelSelectorFocused || isModelSelectorFocused()) return;
       if (document.body.dataset.activeView === 'models') {
         if (pendingModelLoads.size || pendingServerLoads.size
-          || pendingModelUnloads.size || pendingServerUnloads.size) {
+          || pendingModelUnloads.size || pendingServerUnloads.size
+          || hasBootingServers()) {
           void refreshRuntimeState({ silent: true });
           return;
         }

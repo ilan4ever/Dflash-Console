@@ -196,7 +196,15 @@ def listener_is_managed_engine(host: str, port: int) -> bool:
     if not _tcp_port_open(host, port):
         return False
     pid = listener_pid(host, port)
-    return pid is not None and managed_process_identity(pid)
+    if pid is not None and managed_process_identity(pid):
+        return True
+    # PID ownership can flake; fall back to a llama-compatible /v1/models probe.
+    try:
+        from core.runtime import _fetch_models_payload
+    except Exception:
+        return False
+    api_url = f'http://{host}:{int(port)}/v1'
+    return _is_llama_compatible_models_payload(_fetch_models_payload(api_url))
 
 
 def _sync_server_listen_port(server: dict[str, Any], port: int, host: str) -> None:
@@ -260,8 +268,42 @@ def get_started_launch(port: int) -> dict[str, Any]:
     return dict(_started_launch.get(int(port)) or {})
 
 
+
+def _is_llama_compatible_models_payload(
+    models: list[dict[str, Any]],
+    *,
+    expected_model_id: str | None = None,
+) -> bool:
+    """True when /v1/models looks like llama.cpp / our router (not a foreign API)."""
+    if not models:
+        return False
+    expected = str(expected_model_id or '').strip().lower()
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = str(entry.get('id') or entry.get('model') or '').strip()
+        owned = str(entry.get('owned_by') or '').strip().lower()
+        if 'llama' in owned or owned in {'llamacpp', 'llama.cpp', 'llama-cpp'}:
+            return True
+        if expected and model_id.lower() == expected:
+            return True
+        status = entry.get('status')
+        if isinstance(status, dict) and str(status.get('value') or '').strip():
+            # llama-server router entries expose status.value (loaded/unloaded/...)
+            return True
+        meta = entry.get('meta')
+        if isinstance(meta, dict) and meta.get('n_ctx'):
+            return True
+    return False
+
+
 def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Track an engine process Console did not spawn (e.g. after Console restart)."""
+    """Track an engine process Console did not spawn (e.g. after Console restart).
+
+    PID ownership can flake when psutil is missing and the listen map is slow.
+    If the configured api_url still returns a llama-compatible /v1/models payload,
+    adopt it anyway — only refuse when the port is clearly a foreign API.
+    """
     from core.runtime import _fetch_models_payload
 
     entry = normalize_server(server)
@@ -271,21 +313,56 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         return {'success': False, 'adopted': False, 'error': 'invalid port'}
     if not _tcp_port_open(host, port):
         return {'success': False, 'adopted': False, 'port': port}
-    pid = listener_pid(host, port)
-    if pid is None or not managed_process_identity(pid):
-        return {
-            'success': False,
-            'adopted': False,
-            'port': port,
-            'error': 'configured port is open but is not owned by a managed llama engine',
-        }
+
     api_url = str(entry.get('api_url') or '').strip()
-    if not api_url or not _fetch_models_payload(api_url):
+    models = _fetch_models_payload(api_url) if api_url else []
+    llama_api = _is_llama_compatible_models_payload(
+        models,
+        expected_model_id=str(entry.get('model_id') or '') or None,
+    )
+
+    # Prefer the fast /v1/models probe. PID ownership via PowerShell/netstat can
+    # take multiple seconds and flakes when psutil is missing — only pay that
+    # cost when the API probe did not prove llama-compatibility.
+    pid = None
+    managed = False
+    if not llama_api:
+        pid = listener_pid(host, port)
+        managed = pid is not None and managed_process_identity(pid)
+        if not managed:
+            return {
+                'success': False,
+                'adopted': False,
+                'port': port,
+                'error': 'configured port is open but is not owned by a managed llama engine',
+            }
+    if not api_url or not models:
         return {
             'success': False,
             'adopted': False,
             'port': port,
             'error': 'configured port is open but does not expose a compatible model API',
+        }
+    if not llama_api and not managed:
+        return {
+            'success': False,
+            'adopted': False,
+            'port': port,
+            'error': 'configured port is open but does not expose a compatible model API',
+        }
+
+    # plan_engine_gpu_launch hits GPU enumeration (~1–4s). Skip when this port
+    # is already tracked from a prior adopt/start in this process.
+    cached = _started_launch.get(int(port))
+    if cached:
+        note_boot_cycle_end(port)
+        return {
+            'success': True,
+            'adopted': True,
+            'port': port,
+            'pid': pid,
+            'identity': 'managed' if managed else 'llama-api',
+            'cached': True,
         }
 
     launch = plan_engine_gpu_launch(entry, cfg or {})
@@ -297,7 +374,13 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         signature = _launch_signature(entry, launch, cfg=cfg)
     _started_launch[port] = dict(signature)
     note_boot_cycle_end(port)
-    return {'success': True, 'adopted': True, 'port': port}
+    return {
+        'success': True,
+        'adopted': True,
+        'port': port,
+        'pid': pid,
+        'identity': 'managed' if managed else 'llama-api',
+    }
 
 
 def clear_server_tracking(port: int) -> None:
@@ -1328,9 +1411,15 @@ def find_target_loaded_elsewhere(
     model_path: str | None = None,
     exclude_server_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """True when the same GGUF target is already live on another Console engine."""
+    """True when the same GGUF target is already live on another Console engine.
+
+    Avoids full ``build_server_status`` (which can take seconds per running
+    engine via adopt/PID). Path-compare configured targets first, then only
+    probe open ports with a cheap /v1/models fetch.
+    """
     from core.config import is_embedding_server, list_servers
-    from core.runtime import build_server_status
+    from core.net_listeners import configured_listening_ports
+    from core.runtime import probe_models
 
     target = resolve_load_target_path(server, cfg=cfg, model_path=model_path)
     if not target:
@@ -1338,24 +1427,38 @@ def find_target_loaded_elsewhere(
 
     config = cfg or load_config()
     self_id = str(exclude_server_id or server.get('id') or '')
+    candidates: list[dict[str, Any]] = []
     for other in list_servers(config):
         other_id = str(other.get('id') or '')
         if not other_id or other_id == self_id or other.get('enabled', True) is False:
             continue
         if is_embedding_server(other):
             continue
-        status = build_server_status(other, cfg=config)
-        if status.get('status') != 'loaded' and not status.get('loaded_models'):
-            continue
         other_target = resolve_load_target_path(other, cfg=config)
-        if other_target and checkpoints_match(other_target, target):
-            return {
-                'server_id': other_id,
-                'label': str(other.get('label') or other_id),
-                'port': int(other.get('port') or 0),
-                'target_path': other_target,
-                'requested_target_path': target,
-            }
+        if not other_target or not checkpoints_match(other_target, target):
+            continue
+        candidates.append({**other, '_resolved_target': other_target})
+
+    if not candidates:
+        return None
+
+    open_ports = configured_listening_ports(candidates)
+    for other in candidates:
+        other_id = str(other.get('id') or '')
+        port = int(other.get('port') or 0)
+        api_url = str(other.get('api_url') or '').strip()
+        if port <= 0 or port not in open_ports or not api_url:
+            continue
+        loaded = probe_models(api_url)
+        if not loaded:
+            continue
+        return {
+            'server_id': other_id,
+            'label': str(other.get('label') or other_id),
+            'port': port,
+            'target_path': other.get('_resolved_target'),
+            'requested_target_path': target,
+        }
     return None
 
 
@@ -1382,12 +1485,12 @@ def checkpoint_already_loaded(
 
     from core.runtime import probe_models
 
-    adopted = adopt_running_engine(entry, cfg=cfg)
-    if not adopted.get('success'):
-        return None
+    # Probe first (milliseconds). Only adopt/track after we know weights are live,
+    # so a miss does not pay the multi-second PID identity path on every load-plan.
     loaded = probe_models(api_url)
     if not _checkpoint_id_loaded(load_id, loaded):
         return None
+    adopt_running_engine(entry, cfg=cfg)
     note_boot_cycle_end(port)
     return {
         'success': True,
@@ -1482,7 +1585,7 @@ def _wait_for_checkpoint_load(
         if match is None and rows:
             match = rows[0]
         if not match:
-            time.sleep(1.0)
+            time.sleep(0.15)
             continue
         status = _model_state(match)
         status_info = match.get('status') if isinstance(match.get('status'), dict) else {}
@@ -1493,7 +1596,7 @@ def _wait_for_checkpoint_load(
                 'status': 'failed',
                 'error': _checkpoint_load_failure_error(server_id, status_info),
             }
-        time.sleep(1.0)
+        time.sleep(0.15)
     return {'status': 'timeout', 'error': f'timed out waiting for {load_id} on {host}:{port}'}
 
 
@@ -1541,6 +1644,7 @@ def load_server_checkpoint(
     cfg: dict[str, Any] | None = None,
     model_path: str | None = None,
     model_id: str | None = None,
+    skip_memory_check: bool = False,
 ) -> dict[str, Any]:
     """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
     from core.config import is_embedding_server
@@ -1557,13 +1661,14 @@ def load_server_checkpoint(
     from core.memory_guardrails import assess_load
 
     config = cfg or _load_config()
-    memory_check = assess_load(entry, config, exclude_server_id=str(entry.get('id') or ''))
-    if memory_check.get('level') == 'block':
-        return {
-            'success': False,
-            'error': memory_check.get('message') or 'insufficient VRAM',
-            'memory': memory_check,
-        }
+    if not skip_memory_check:
+        memory_check = assess_load(entry, config, exclude_server_id=str(entry.get('id') or ''))
+        if memory_check.get('level') == 'block':
+            return {
+                'success': False,
+                'error': memory_check.get('message') or 'insufficient VRAM',
+                'memory': memory_check,
+            }
 
     with _checkpoint_load_lock:
         return _load_server_checkpoint_locked(
@@ -1683,10 +1788,26 @@ def _load_server_checkpoint_locked(
         except ValueError as exc:
             return {'success': False, 'error': str(exc), 'port': port}
 
+        registered_ids = {
+            str(row.get('id') or row.get('model') or '').strip()
+            for row in _fetch_models_payload(api_url)
+        }
+        registered_ids.discard('')
+        from core.chat_vision import router_registration_stale
+
+        preset_stale = router_registration_stale(preset_entry, load_id=load_id)
+
         if _tcp_port_open(host, port):
             adopted = adopt_running_engine(entry, cfg=cfg)
             if not adopted.get('success'):
-                return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
+                # Port is open but identity flaked / foreign. If the API is still
+                # llama-compatible, reclaim the listener and continue load.
+                # Otherwise keep the hard refuse (do not steal foreign ports).
+                probe = _fetch_models_payload(api_url) if api_url else []
+                if not _is_llama_compatible_models_payload(probe, expected_model_id=load_id):
+                    return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
+                stop_server(port=port, host=host, api_url=api_url)
+                adopted = {'success': True, 'reclaimed': True}
             already = checkpoint_already_loaded(entry, cfg=cfg, model_path=custom_path, model_id=load_id)
             if already and (
                 not profile_requires_draft(entry.get('profile'))
@@ -1694,11 +1815,15 @@ def _load_server_checkpoint_locked(
                 or live_draft_before_preset is True
             ):
                 return already
-            stop_server(port=port, host=host, api_url=api_url)
+            # Healthy listener with this preset already registered: load in place.
+            # Only recycle the process when the preset changed or the id is missing.
+            if load_id not in registered_ids or preset_stale:
+                stop_server(port=port, host=host, api_url=api_url)
 
-        listen = start_router_listener(preset_entry, cfg=cfg)
-        if not listen.get('success'):
-            return listen
+        if not _tcp_port_open(host, port):
+            listen = start_router_listener(preset_entry, cfg=cfg)
+            if not listen.get('success'):
+                return listen
 
         load_result = load_model(api_url=api_url, model_id=load_id)
         if load_result.get('success'):
@@ -1754,7 +1879,12 @@ def _load_server_checkpoint_locked(
     if _tcp_port_open(host, port):
         adopted = adopt_running_engine(entry, cfg=cfg)
         if not adopted.get('success'):
-            return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
+            from core.runtime import _fetch_models_payload, stop_server
+            probe = _fetch_models_payload(api_url) if api_url else []
+            if not _is_llama_compatible_models_payload(probe, expected_model_id=load_id):
+                return {'success': False, 'error': adopted.get('error') or f'port {port} is not a managed model API'}
+            stop_server(port=port, host=host, api_url=api_url)
+            adopted = {'success': True, 'reclaimed': True}
         already = checkpoint_already_loaded(entry, cfg=cfg, model_path=model_path, model_id=load_id)
         if already and (
             not profile_requires_draft(entry.get('profile'))

@@ -254,11 +254,12 @@ def _engine_endpoints() -> list[dict[str, Any]]:
         {
             'method': 'PATCH',
             'path': f'/api/servers/{sid}',
-            'summary': 'Update engine: port, host, context_size, load_settings, inference_settings.',
+            'summary': 'Update engine: port, host, context_size, gpu_device (auto or GPU index), load_settings, inference_settings.',
             'body': {
                 'context_size': 65536,
                 'load_settings': {'gpu_layers': 99, 'cpu_threads': 8, 'flash_attention': True},
                 'inference_settings': {'temperature': 0.7, 'top_p': 0.9, 'max_tokens': 4096},
+                'gpu_device': 'auto',
             },
         },
         {'method': 'POST', 'path': f'/api/servers/{sid}/listen', 'summary': 'Start router only (no checkpoint loaded).'},
@@ -273,6 +274,7 @@ def _engine_endpoints() -> list[dict[str, Any]]:
                 'inference_settings': {'temperature': 0.7, 'max_tokens': 4096},
                 'model_path': 'C:\\\\path\\\\to\\\\model.gguf',
                 'model_id': 'optional-router-id',
+                'gpu_device': '1',
             },
             'notes': (
                 'Omit model_path to load the engine profile default. Pass model_path to load any local GGUF on this engine. '
@@ -345,7 +347,7 @@ def _runtime_json_doc() -> str:
 
 def _multimodal_guide_md() -> str:
     return (
-        '**Load any model with one call** — `POST /api/models/load` with `{"path": "<catalog path>"}`. '
+        '**Load any model with one call** — `POST /api/models/load` with `{"path": "<catalog path>", "gpu_device": "auto"}`. '
         'The console looks the model up in the catalog, detects its modality, and dispatches to the '
         'right runtime automatically (whisper for speech-to-text, piper for text-to-speech, vLLM, '
         'Transformers, or FreeToken for SafeTensors LLMs, llama-server for GGUF llm/embedding/vision/ocr '
@@ -385,11 +387,11 @@ def _multimodal_endpoints() -> list[dict[str, Any]]:
         {'method': 'GET', 'path': f'/api/runtimes/{rid}/install', 'summary': 'On-demand install status for vLLM, Transformers, or FreeToken.'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/install', 'summary': 'Start an on-demand vLLM, Transformers, or FreeToken download.', 'body': {'backend': 'auto', 'torch_variant': 'auto'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/uninstall', 'summary': 'Remove an on-demand vLLM, Transformers, or FreeToken install.'},
-        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice, vLLM/Transformers/FreeToken folder).', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf'}},
+        {'method': 'POST', 'path': f'/api/runtimes/{rid}/load', 'summary': 'Load a model into the runtime (whisper .gguf, piper voice, vLLM/Transformers/FreeToken folder). Supports gpu_device: auto or a GPU index.', 'body': {'path': 'C:\\\\models\\\\whisper\\\\model_q4_k.gguf', 'gpu_device': 'auto'}},
         {'method': 'POST', 'path': '/api/stacks/find-draft', 'summary': 'Search local libraries and Hugging Face for a compatible DFlash 1 or DFlash 2 draft.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
         {'method': 'POST', 'path': '/api/stacks/find-and-attach-draft', 'summary': 'Find, register, and attach a compatible DFlash draft to the target model.', 'body': {'path': 'C:\\\\models\\\\target.gguf'}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/unload', 'summary': 'Unload the active model and free GPU memory.'},
-        {'method': 'POST', 'path': '/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine'}, 'notes': 'Send X-DFlash-Client: YourApp to attribute the load.'},
+        {'method': 'POST', 'path': '/api/models/load', 'summary': 'Unified loader — load ANY catalog model by path; dispatches by modality. gpu_device may be auto or a GPU index.', 'body': {'path': 'C:\\\\models\\\\model.gguf', 'server_id': 'optional-llama-engine', 'gpu_device': '1'}, 'notes': 'Send X-DFlash-Client: YourApp to attribute the load.'},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/speech', 'summary': 'OpenAI-style text-to-speech → WAV (Piper).', 'body': {'input': 'Hello', 'voice': 'en_US-lessac-medium', 'speed': 1.0}},
         {'method': 'POST', 'path': f'/api/runtimes/{rid}/v1/audio/transcriptions', 'summary': 'OpenAI-style speech-to-text (Whisper); multipart file=<audio>.', 'body': {'file': '<audio file>', 'model': 'whisper-1', 'language': 'en'}},
         {'method': 'POST', 'path': f'/api/servers/{sid}/v1/embeddings', 'summary': 'Embed text on an embedding engine.', 'body': {'input': ['one', 'two'], 'model': 'nomic-embed'}},

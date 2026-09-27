@@ -43,8 +43,10 @@ def llama_server_binary(*, cfg: dict[str, Any] | None = None) -> Path:
 
 
 def resolve_embedding_model_path(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> Path:
-    entry = normalize_server(server)
-    target = str(entry.get('target_path') or '').strip()
+    # Read the field directly: this function is reachable from
+    # resolve_model_stack -> normalize_server, and re-normalizing here
+    # would recurse back into the same clamp_server_context_fields path.
+    target = str(server.get('target_path') or '').strip()
     if target:
         path = Path(target)
         if path.is_file():

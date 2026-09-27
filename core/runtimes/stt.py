@@ -175,6 +175,11 @@ class SttRuntimeAdapter:
             'stdout': subprocess.PIPE,
             'stderr': subprocess.STDOUT,
         }
+        requested_gpu = str(cfg_profile.get('gpu_device') or '').strip().lower()
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = requested_gpu
+            popen_kwargs['env'] = env
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         LOG_DIR.mkdir(parents=True, exist_ok=True)

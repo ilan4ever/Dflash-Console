@@ -223,7 +223,12 @@ class FasterWhisperRuntimeAdapter:
                 settings[key] = profile[key]
         # device_policy on the runtime profile maps to the faster-whisper device.
         policy = str(profile.get('device_policy') or 'auto').strip().lower()
-        if settings.get('device') in ('auto', '', None):
+        requested_gpu = str((model or {}).get('gpu_device') or '').strip().lower()
+        device_index = None
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            settings['device'] = 'cuda'
+            device_index = int(requested_gpu)
+        elif settings.get('device') in ('auto', '', None):
             settings['device'] = {'gpu': 'cuda', 'cpu': 'cpu'}.get(policy, 'auto')
         if settings.get('compute_type') in ('auto', '', None):
             if settings['device'] == 'cuda':
@@ -233,6 +238,8 @@ class FasterWhisperRuntimeAdapter:
 
         payload = dict(settings)
         payload['model_dir'] = str(path_obj)
+        if device_index is not None:
+            payload['device_index'] = device_index
         result = self._request('POST', '/load', payload)
         if not result.get('success'):
             return {'success': False, 'error': result.get('error') or 'faster-whisper load failed'}

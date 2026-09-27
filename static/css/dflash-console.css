@@ -177,6 +177,12 @@ select {
   border-color: rgba(16, 185, 129, 0.35);
 }
 
+.lm-server-link-badge.starting {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 .lm-server-link-badge.offline {
   color: #fca5a5;
   background: rgba(239, 68, 68, 0.12);
@@ -3942,6 +3948,46 @@ body.lm-resizing-logs {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.lm-action-stack .lm-gpu-pick {
+  min-width: 92px;
+  max-width: 118px;
+}
+
+.lm-desktop-engine-actions .lm-engine-gpu-pick,
+.lm-stats-top .lm-engine-gpu-pick {
+  min-width: 64px;
+  max-width: 88px;
+}
+.lm-desktop-engine-actions,
+.lm-stats-top {
+  gap: 10px;
+  align-items: center;
+}
+.lm-desktop-engine-actions .df-select-wrap,
+.lm-stats-top .df-select-wrap {
+  flex: 0 0 auto;
+  width: 72px;
+  min-width: 64px;
+  max-width: 88px;
+}
+.lm-desktop-engine-actions .lm-btn,
+.lm-stats-top .lm-btn {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+}
+
+.lm-mobile-load-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lm-mobile-load-controls .lm-gpu-pick {
+  max-width: 112px;
 }
 
 .lm-settings-header {

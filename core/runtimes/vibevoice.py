@@ -199,7 +199,10 @@ class VibeVoiceRuntimeAdapter:
             if key in profile and profile[key] is not None and profile[key] != '':
                 settings[key] = profile[key]
         policy = str(profile.get('device_policy') or 'auto').strip().lower()
-        if settings.get('device') in ('auto', '', None):
+        requested_gpu = str((model or {}).get('gpu_device') or '').strip().lower()
+        if requested_gpu not in ('', 'auto', 'automatic', 'default'):
+            settings['device'] = f'cuda:{int(requested_gpu)}'
+        elif settings.get('device') in ('auto', '', None):
             settings['device'] = {'gpu': 'cuda', 'cpu': 'cpu'}.get(policy, 'auto')
 
         payload = dict(settings)

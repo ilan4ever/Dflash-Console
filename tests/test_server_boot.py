@@ -425,3 +425,56 @@ def test_validate_dflash_stack_skips_non_stack_adhoc_target(tmp_path):
     assert result['valid'] is True
     assert result.get('adhoc') is True
     assert result.get('required') is False
+
+def test_adopt_running_engine_accepts_llama_api_when_pid_identity_flakes(monkeypatch):
+    server = {
+        'id': 'lightonocr-1b-1025-q8-0',
+        'host': '127.0.0.1',
+        'port': 8095,
+        'api_url': 'http://127.0.0.1:8095/v1',
+        'model_id': 'lightonocr-1b-1025-q8-0',
+        'profile': 'plain',
+    }
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(server_boot, 'listener_pid', lambda host, port: None)
+    monkeypatch.setattr(server_boot, 'managed_process_identity', lambda pid: False)
+    monkeypatch.setattr(
+        'core.runtime._fetch_models_payload',
+        lambda api_url: [{
+            'id': 'lightonocr-1b-1025-q8-0',
+            'owned_by': 'llamacpp',
+            'status': {'value': 'unloaded'},
+        }],
+    )
+    monkeypatch.setattr(server_boot, 'plan_engine_gpu_launch', lambda entry, cfg: {})
+    monkeypatch.setattr(server_boot, '_launch_signature', lambda entry, launch, cfg=None: {'context': 8192})
+    monkeypatch.setattr(server_boot, 'is_embedding_server', lambda entry: False)
+    monkeypatch.setattr(server_boot, 'note_boot_cycle_end', lambda port: None)
+    server_boot._started_launch.clear()
+
+    result = server_boot.adopt_running_engine(server, cfg={})
+    assert result.get('success') is True
+    assert result.get('adopted') is True
+    assert result.get('identity') == 'llama-api'
+    assert 8095 in server_boot._started_launch
+
+
+def test_adopt_running_engine_refuses_foreign_api_when_pid_unknown(monkeypatch):
+    server = {
+        'id': 'plain',
+        'host': '127.0.0.1',
+        'port': 8095,
+        'api_url': 'http://127.0.0.1:8095/v1',
+        'model_id': 'plain',
+    }
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(server_boot, 'listener_pid', lambda host, port: None)
+    monkeypatch.setattr(server_boot, 'managed_process_identity', lambda pid: False)
+    monkeypatch.setattr(
+        'core.runtime._fetch_models_payload',
+        lambda api_url: [{'id': 'gpt-4', 'owned_by': 'openai'}],
+    )
+    result = server_boot.adopt_running_engine(server, cfg={})
+    assert result.get('success') is False
+    assert 'not owned' in str(result.get('error') or '').lower()
+

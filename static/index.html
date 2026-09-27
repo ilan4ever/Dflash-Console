@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.241</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.248</span>
           </div>
         </div>
       </div>
@@ -94,10 +94,10 @@
         <div class="lm-sysbar-spacer" aria-hidden="true"></div>
         <button type="button" class="lm-console-url" id="dfConsoleUrl" title="This Console’s web address — same for the browser and the desktop app. Click to copy.">http://127.0.0.1:8900/</button>
         <div class="lm-server-link-badge developer hidden" id="devServerBadge" role="status" title="Developer build — served from the git checkout">Developer</div>
-        <div class="lm-server-link-badge online" id="serverLinkBadge" role="status" aria-live="polite" title="Console API connection">Online</div>
+        <div class="lm-server-link-badge starting" id="serverLinkBadge" role="status" aria-live="polite" title="Starting the Console API and checking engine services…">Starting…</div>
         <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Activity status">
-          <span class="lm-status-feed-line" id="statusFeedPrimary">Ready</span>
-          <span class="lm-status-feed-line secondary" id="statusFeedSecondary"></span>
+          <span class="lm-status-feed-line" id="statusFeedPrimary">Starting Console…</span>
+          <span class="lm-status-feed-line secondary" id="statusFeedSecondary">Connecting to the local API and checking engines…</span>
         </div>
       </div>
     </section>
@@ -317,7 +317,7 @@ try {
               <div class="lm-engine-page-notice-inner">
                 <span class="lm-engine-page-notice-spinner" aria-hidden="true"></span>
                 <div class="lm-engine-page-notice-copy">
-                  <strong id="enginePageNoticeTitle">Loading engines…</strong>
+                  <strong id="enginePageNoticeTitle">Starting engine services…</strong>
                   <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail"></span>
                 </div>
               </div>
@@ -331,7 +331,7 @@ try {
               </div>
             </div>
             <div id="serverModelCards" class="lm-server-cards"></div>
-            <div id="serverEmptyState" class="lm-server-empty">Engine stopped. Enable it or load a model.</div>
+            <div id="serverEmptyState" class="lm-server-empty">Starting engine services…</div>
           </div>
           <div class="lm-logs-dock" id="serverLogsDock">
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
@@ -533,7 +533,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.241</strong>
+                <strong id="dfAboutVersion">v0.3.248</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">

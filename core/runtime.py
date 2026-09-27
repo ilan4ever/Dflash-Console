@@ -1505,7 +1505,8 @@ def get_status_payload(
     fast_external: bool = False,
     status_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    from core.gpu_processes import get_external_gpu_loads, loopback_listening_ports, query_compute_vram_map
+    from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
+    from core.net_listeners import configured_listening_ports
 
     enabled = [s for s in servers if s.get('enabled', True)]
     primary_id = enabled[0]['id'] if enabled else (servers[0]['id'] if servers else '')
@@ -1607,7 +1608,7 @@ def get_status_payload(
         )
 
     listen_started = time.time()
-    open_ports = loopback_listening_ports()
+    open_ports = configured_listening_ports(servers)
     running_ports = sum(
         1 for server in servers
         if int(server.get('port') or 0) in open_ports
@@ -1618,7 +1619,7 @@ def get_status_payload(
         started_at=listen_started,
         detail=(
             f'{len(servers)} engine profile(s); {running_ports} listener(s) up '
-            f'(loopback listener snapshot, not per-port TCP probes)'
+            f'(parallel TCP of configured ports)'
         ),
     )
 
@@ -1676,6 +1677,17 @@ def get_status_payload(
 
     pipeline_active = console_pipeline_active(cfg)
     payload['pipeline_standby'] = not pipeline_active
+    # Publish a core (non-external) snapshot before the slow GPU scan so
+    # concurrent include_external=0 callers can take mid-build cache while
+    # _SERVERS_STATUS_LOCK is still held by this include_external=1 build.
+    if include_external and pipeline_active:
+        early = dict(payload)
+        early['external_gpu_loads'] = []
+        early['gpu_other_usage'] = {
+            'processes': [],
+            'total_other_vram_gb': 0.0,
+        }
+        _store_status_payload(early, include_external=False)
     if include_external and not pipeline_active:
         payload['external_gpu_loads'] = []
         payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}

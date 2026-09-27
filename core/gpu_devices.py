@@ -10,6 +10,20 @@ from typing import Any
 from core.config import DEFAULT_HARDWARE_SETTINGS, normalize_hardware_settings
 
 VRAM_HEADROOM_GB = 1.0
+MAX_GPU_INDEX = 128
+
+
+def validate_gpu_device(raw: Any) -> str:
+    """Normalize a requested GPU selector to ``auto`` or a numeric index."""
+    value = str(raw if raw is not None else 'auto').strip().lower()
+    if value in {'', 'auto', 'automatic', 'default'}:
+        return 'auto'
+    if not re.fullmatch(r'\d+', value):
+        raise ValueError("gpu_device must be 'auto' or a non-negative GPU index")
+    index = int(value)
+    if index > MAX_GPU_INDEX:
+        raise ValueError(f'gpu_device index must be between 0 and {MAX_GPU_INDEX}')
+    return str(index)
 
 
 def _subprocess_no_window_kwargs() -> dict[str, Any]:

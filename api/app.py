@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from core.config import PACKAGE_ROOT, ROOT, get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_download_settings, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_remote_nodes, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
 from core.model_paths import allowed_model_roots, disk_scan_roots, get_models_root, validate_model_path
-from core.gpu_devices import get_gpu_devices_payload
+from core.gpu_devices import get_gpu_devices_payload, validate_gpu_device
 from core.local_models import (
     friendly_model_dir_label,
     invalidate_model_catalog_cache,
@@ -300,6 +300,17 @@ def _request_client_label(request: Request | None) -> str:
     from core.client_identity import resolve_client_label
 
     return resolve_client_label(request)
+
+
+def _request_gpu_device(raw: str | None) -> str | None:
+    """Validate an optional per-load GPU override."""
+    raw = getattr(raw, 'default', raw)
+    if raw is None:
+        return None
+    try:
+        return validate_gpu_device(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _raise_if_pipeline_standby(cfg: dict[str, Any]) -> None:
@@ -729,6 +740,7 @@ class ModelLoadRequest(BaseModel):
     model_id: str | None = None
     runtime_id: str | None = None
     context_size: int | None = Field(default=None, ge=2048, le=1048576)
+    gpu_device: str | None = None
     load_settings: dict[str, Any] | None = None
     inference_settings: dict[str, Any] | None = None
 
@@ -754,6 +766,7 @@ class ServerLoadRequest(BaseModel):
     inference_settings: dict[str, Any] | None = None
     model_path: str | None = None
     model_id: str | None = None
+    gpu_device: str | None = None
 
 
 class GpuProcessUnload(BaseModel):
@@ -805,6 +818,7 @@ class RuntimeLoadRequest(BaseModel):
     voice: str = Field(default='', max_length=120)
     path: str = Field(default='', max_length=1024)
     preset: str = Field(default='', max_length=40)
+    gpu_device: str | None = None
     load_settings: dict[str, Any] | None = None
 
 
@@ -1976,17 +1990,20 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
 
     cfg = load_config()
     _ensure_api_pipeline_armed(cfg, server_id=body.server_id)
+    gpu_device = _request_gpu_device(body.gpu_device)
     result = execute_catalog_load(
         path=body.path,
         model_id=body.model_id,
         server_id=body.server_id,
         context_size=body.context_size,
+        gpu_device=gpu_device,
         load_settings=body.load_settings,
         inference_settings=body.inference_settings,
         requested_runtime_id=body.runtime_id,
         loaded_by=_request_client_label(request),
         cfg=cfg,
     )
+    result.setdefault('gpu_device', gpu_device or 'auto')
     _invalidate_status_cache()
     return result
 
@@ -2435,6 +2452,9 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
     if not callable(load_fn):
         raise HTTPException(status_code=400, detail='adapter does not support load')
     payload: dict[str, Any] = {'id': body.voice, 'path': body.path}
+    gpu_device = _request_gpu_device(body.gpu_device)
+    if gpu_device is not None:
+        payload['gpu_device'] = gpu_device
     if body.preset:
         payload['preset'] = body.preset
     if body.load_settings:
@@ -2442,6 +2462,7 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
     result = load_fn(payload)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
+    result.setdefault('gpu_device', gpu_device or 'auto')
     return {'success': True, 'runtime_id': runtime_id, **result}
 
 
@@ -2601,7 +2622,10 @@ def patch_server(server_id: str, body: ServerPatch) -> dict[str, Any]:
     for idx, entry in enumerate(servers):
         if not isinstance(entry, dict) or str(entry.get('id') or '') != server_id:
             continue
-        merged = normalize_server({**entry, **body.model_dump(exclude_none=True), 'id': server_id})
+        patch = body.model_dump(exclude_none=True)
+        if 'gpu_device' in patch:
+            patch['gpu_device'] = _request_gpu_device(patch['gpu_device'])
+        merged = normalize_server({**entry, **patch, 'id': server_id})
         servers[idx] = merged
         found = True
         break
@@ -3250,6 +3274,7 @@ def server_load_plan(
     server_id: str,
     model_path: str = Query(default=''),
     model_id: str = Query(default=''),
+    gpu_device: str | None = Query(default=None),
 ) -> dict[str, Any]:
     from core.memory_guardrails import assess_load
     from core.server_boot import (
@@ -3262,6 +3287,9 @@ def server_load_plan(
     cfg = load_config()
     server = _require_server(cfg, server_id)
     candidate = dict(server)
+    requested_gpu = _request_gpu_device(gpu_device)
+    if requested_gpu is not None:
+        candidate['gpu_device'] = requested_gpu
     if model_path.strip():
         candidate['adhoc_model_path'] = model_path.strip()
     if model_id.strip():
@@ -3338,6 +3366,8 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         patch = body.model_dump(exclude_none=True)
         model_path = patch.pop('model_path', None)
         model_id = patch.pop('model_id', None)
+        if 'gpu_device' in patch:
+            patch['gpu_device'] = _request_gpu_device(patch['gpu_device'])
         if patch:
             server = _persist_server_merge(cfg, server_id, patch)
     if model_path:
@@ -3354,31 +3384,27 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         note_engine_loaded(server_id, loaded_by=_request_client_label(request))
         _invalidate_status_cache()
         return already
-    elsewhere = find_target_loaded_elsewhere(
-        server,
-        cfg=cfg,
-        model_path=model_path,
-        exclude_server_id=server_id,
-    )
-    if elsewhere:
-        raise HTTPException(status_code=409, detail=duplicate_load_detail(elsewhere))
-    check = assess_load(server, cfg=cfg)
-    if check.get('level') == 'block':
-        raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
         cfg = load_config()
         server = _require_server(cfg, server_id)
-        check = assess_load(server, cfg=cfg)
-        if check.get('level') == 'block':
-            raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
+        if model_path:
+            server = {**server, 'adhoc_model_path': model_path}
+    # Single VRAM assess here; elsewhere/duplicate checks run inside
+    # load_server_checkpoint under the load lock (avoid a second full scan).
+    check = assess_load(server, cfg=cfg)
+    if check.get('level') == 'block':
+        raise HTTPException(status_code=400, detail=_vram_load_block_detail(check))
     result = load_server_checkpoint(
         server,
         cfg=cfg,
         model_path=model_path,
         model_id=model_id,
+        skip_memory_check=True,
     )
     if not result.get('success'):
+        if result.get('already_loaded_elsewhere'):
+            raise HTTPException(status_code=409, detail=duplicate_load_detail(result))
         raise HTTPException(
             status_code=409 if result.get('repair') else 400,
             detail=result,
@@ -3387,6 +3413,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
+    result.setdefault('gpu_device', str(server.get('gpu_device') or 'auto'))
     return result
 
 

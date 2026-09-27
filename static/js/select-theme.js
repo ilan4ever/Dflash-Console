@@ -80,9 +80,27 @@
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
 
+    // Model-library selectors are rebuilt from live engine/GPU state. Mark
+    // the themed controls so their open menu can be protected from that
+    // refresh just like the underlying select.
+    const isModelRuntimeSelector = select.matches(
+      'select[data-gpu-pick], select[data-engine-pick], select[data-load-engine-pick], select[data-action="gpu-device-pick"], select.lm-engine-gpu-pick',
+    );
+    if (isModelRuntimeSelector) {
+      wrap.dataset.modelSelectorWrap = '1';
+      trigger.dataset.modelSelectorTrigger = '1';
+      if (wrap.dataset.dfWrapStop !== '1') {
+        wrap.dataset.dfWrapStop = '1';
+        // Keep row-select / Load hit targets clear of this control's bubble path.
+        wrap.addEventListener('click', (e) => e.stopPropagation());
+        wrap.addEventListener('pointerdown', (e) => e.stopPropagation());
+      }
+    }
+
     const menu = document.createElement('div');
     menu.className = 'df-select-menu';
     menu.setAttribute('role', 'listbox');
+    if (isModelRuntimeSelector) menu.dataset.modelSelectorMenu = '1';
     menu.addEventListener('mousedown', (e) => e.stopPropagation());
     menu.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
 
