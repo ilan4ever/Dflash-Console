@@ -622,6 +622,21 @@
     updateEnginePageNotice();
   }
 
+  function releaseSettledPendingLoads() {
+    let changed = false;
+    for (const serverId of [...pendingLoads.keys()]) {
+      const server = servers.find((row) => row.id === serverId);
+      if (!server) continue;
+      const onGpu = server.status === 'loaded'
+        || (Array.isArray(server.loaded_models) && server.loaded_models.length > 0);
+      if (!onGpu) continue;
+      pendingLoads.delete(serverId);
+      if (getServerAction(serverId) === 'loading') setServerAction(serverId, null);
+      changed = true;
+    }
+    if (changed) syncPendingLoadsFeed();
+  }
+
   function clearPendingLoadCard(serverId) {
     if (!serverId || !pendingLoads.has(serverId)) return;
     pendingLoads.delete(serverId);
@@ -891,6 +906,8 @@
     if (revision > 0) latestStatusRevision = revision;
     servers = data.servers || [];
     allServers = data.all_servers || servers;
+    releaseSettledPendingLoads();
+    window.DFlashModelsLive?.noteRuntimeServers?.(servers);
     syncPipelineStandbyFromPayload(data);
     applyExternalPayload(data, { mergeExternal });
     gpus = data.gpus || gpus;
@@ -929,6 +946,16 @@
   let externalFetchPromise = null;
   let externalPollEarliestMs = 0;
 
+  function externalScanIsComplete(data) {
+    if (!data || data.stale === true) return false;
+    const trace = Array.isArray(data.status_trace) ? data.status_trace : [];
+    const step = trace.find((row) => String(row?.step || '') === 'external_scan');
+    const detail = String(step?.detail || '');
+    const skipped = data.external_scan_skipped === true || /skipped/i.test(detail);
+    if (skipped) return /standby/i.test(detail) || !consolePipelineActive();
+    return true;
+  }
+
   async function refreshExternalGpuLoads(shouldRender = true, { force = false, fresh = false } = {}) {
     const now = Date.now();
     if (!force && now < externalPollEarliestMs) return externalFetchPromise;
@@ -958,14 +985,16 @@
         lastStatusTrace = Array.isArray(data?.status_trace) ? data.status_trace : lastStatusTrace;
         lastStatusBuildMs = Number(data?.status_build_ms || 0);
         externalScanError = String(data?.external_scan_error || '').trim();
+        if (externalScanIsComplete(data)) {
+          externalInitialFetchDone = true;
+        }
         if (shouldRender) renderCards();
         return data;
       } catch {
         /* keep previous external cards */
         return null;
       } finally {
-        externalInitialFetchDone = true;
-        if (showScanNotice) {
+        if (showScanNotice && externalInitialFetchDone) {
           externalFetchPending = false;
           updateEnginePageNotice();
         }
@@ -1900,9 +1929,17 @@
     showExternalEngines = engineCardsFilter === 'both' || engineCardsFilter === 'external';
   }
 
+  function engineCardsPending() {
+    return !initialStatusSettled || !externalInitialFetchDone;
+  }
+
   function syncEngineCardsSectionLabel() {
     const el = document.getElementById('engineCardsSectionLabel');
     if (!el) return;
+    if (engineCardsPending() && !collectLoadedEntries().length) {
+      el.textContent = 'Loading models…';
+      return;
+    }
     const count = collectLoadedEntries().length;
     const loadingCount = collectLoadedEntries().filter(({ row }) => row?.card_state === 'loading').length;
     const readyCount = Math.max(0, count - loadingCount);
@@ -1955,8 +1992,9 @@
       updateEnginePageNotice();
     }
     try {
-      await refresh(true, { includeExternal: true, fresh: true });
-      await refreshExternalGpuLoads(true, { force: true, fresh: true });
+      // Fast scan paints external cards immediately. A fresh scan blocks the
+      // page for a long time on GPU and app probes.
+      await refreshExternalGpuLoads(true, { force: false, fresh: false });
     } finally {
       gpuRescanPending = false;
       updateEnginePageNotice();
@@ -3572,7 +3610,9 @@
       wrap.innerHTML = '';
       lastEngineCardsMarkup = '';
       lastGpuOverheadMarkup = '';
-      empty.classList.add('hidden');
+      empty.textContent = 'Loading models…';
+      empty.classList.remove('hidden');
+      syncEngineCardsSectionLabel();
       updateEnginePageNotice();
       return;
     }
@@ -3590,7 +3630,9 @@
       lastEngineCardsMarkup = overheadHtml;
       lastGpuOverheadMarkup = overheadHtml;
       if (!overheadHtml) {
-        if (allEntries.length) {
+        if (engineCardsPending()) {
+          empty.textContent = 'Loading models…';
+        } else if (allEntries.length) {
           empty.textContent = 'No models match the current filters.';
         } else {
           empty.textContent = emptyMessage(activeServer());
@@ -5678,11 +5720,14 @@
     renderToolbar(activeServer());
     updateEnginePageNotice();
     void loadGatewayUrl();
+    // Start the external scan with the first status request. Do not wait for
+    // it, and do not force a fresh scan — that path can take half a minute.
+    void refreshExternalGpuLoads(true, { force: true, fresh: false });
     void initEngineFilters()
       .then(() => refreshStatus(true, { includeExternal: false, fresh: false }))
       .then(() => {
         startPolling();
-        void refreshExternalGpuLoads(true, { force: true, fresh: true });
+        void refreshExternalGpuLoads(true, { force: false, fresh: false });
         void refreshCatalog({ shouldRender: true });
       })
       .catch((err) => toast(err.message, false));

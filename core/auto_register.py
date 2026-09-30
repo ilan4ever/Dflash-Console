@@ -572,7 +572,8 @@ def auto_register_console_models(*, cfg: dict[str, Any] | None = None) -> dict[s
                 'reason': 'duplicate filename already registered in Console library',
             })
             continue
-        if path.name.lower().startswith('mmproj'):
+        # Google ships projectors as *-mmproj.gguf, not only mmproj-*.gguf
+        if 'mmproj' in path.name.lower():
             continue
         if not is_target_candidate(path):
             results['skipped'].append({

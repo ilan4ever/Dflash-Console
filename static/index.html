@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.248</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.249</span>
           </div>
         </div>
       </div>
@@ -323,7 +323,7 @@ try {
               </div>
             </div>
             <div class="lm-section-head lm-engine-cards-head">
-              <span class="lm-section-label" id="engineCardsSectionLabel">No models loaded on GPU</span>
+              <span class="lm-section-label" id="engineCardsSectionLabel">Loading models…</span>
               <div class="lm-engine-cards-filters">
                 <span class="lm-engine-cards-refresh-meta" id="engineCardsRefreshMeta" aria-live="polite"></span>
                 <button type="button" class="lm-icon-btn tiny" id="engineCardsRefreshBtn" title="Refresh engine cards" aria-label="Refresh engine cards">↻</button>
@@ -331,7 +331,7 @@ try {
               </div>
             </div>
             <div id="serverModelCards" class="lm-server-cards"></div>
-            <div id="serverEmptyState" class="lm-server-empty">Starting engine services…</div>
+            <div id="serverEmptyState" class="lm-server-empty">Loading models…</div>
           </div>
           <div class="lm-logs-dock" id="serverLogsDock">
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
@@ -429,8 +429,13 @@ try {
                   <th class="lm-col-meta" data-col-id="lab" data-col-min="72">Lab</th>
                   <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
                   <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
-                  <th class="lm-col-meta" data-col-id="updated" data-col-min="64">Updated</th>
-                  <th class="lm-col-action" data-col-id="action" data-col-min="132" data-col-default="200"></th>
+                  <th class="lm-col-meta" data-col-id="updated" data-col-min="96" data-col-default="108">Updated</th>
+                  <th class="lm-col-action" data-col-id="action" data-col-min="132" data-col-default="200">
+                    <span class="lm-action-col-heads">
+                      <span class="lm-action-col-head">Engine</span>
+                      <span class="lm-action-col-head">GPU</span>
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody id="modelsTableBody">
@@ -533,7 +538,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.248</strong>
+                <strong id="dfAboutVersion">v0.3.249</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">

@@ -200,14 +200,33 @@ def _refresh_detail_fit(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _detail_lookup_id(repo_id: str) -> str:
+    from core.huggingface import normalize_hf_search_query
+
+    cleaned = normalize_hf_search_query(repo_id).strip().strip('/')
+    if '/' in cleaned and ' ' not in cleaned:
+        return cleaned
+    return str(repo_id or '').strip()
+
+
+def _cached_detail_unusable(payload: dict[str, Any]) -> bool:
+    model = payload.get('model') if isinstance(payload.get('model'), dict) else {}
+    files = model.get('download_files') or model.get('gguf_files') or []
+    if files:
+        return False
+    blob = f"{model.get('description') or ''}\n{model.get('readme') or ''}".lower()
+    return not str(model.get('id') or '').strip() or 'repository not found' in blob
+
+
 def get_or_fetch_detail(
     *,
     repo_id: str,
     category: str,
     fetcher: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
+    repo_id = _detail_lookup_id(repo_id)
     cached = get_cached_detail(repo_id=repo_id, category=category)
-    if cached and cached.get('payload'):
+    if cached and cached.get('payload') and not _cached_detail_unusable(cached['payload']):
         if cached.get('stale'):
             _schedule_detail_refresh(repo_id, category, fetcher)
         payload = dict(cached['payload'])

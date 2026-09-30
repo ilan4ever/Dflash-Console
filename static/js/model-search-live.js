@@ -1399,7 +1399,7 @@
       .trim();
     text = text.replace(/(?:[\s|]+-?\s*|\s+)[^\s/]+\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$/i, '').trim();
     text = text.replace(/^[\s|-]+|[\s|-]+$/g, '').replace(/\s+/g, ' ').trim();
-    const first = text.split(' ')[0] || '';
+    const first = (text.split(' ')[0] || '').replace(/[.,;:!?)]+$/g, '');
     if (/^[\w][\w.-]*\/[\w][\w.-]*$/.test(first)) return first;
     return text;
   }
@@ -2400,7 +2400,10 @@
       if (isRepoIdQuery(query)) {
         void requestDetail(query, category)
           .then((model) => {
-            if (gen !== searchRefreshGen || !model) return;
+            if (gen !== searchRefreshGen || !model?.id) return;
+            const blob = `${model.description || ''}\n${model.readme || ''}`;
+            const files = model.download_files || model.gguf_files || [];
+            if (!files.length && /repository not found/i.test(blob)) return;
             models = [model];
             selectedId = query;
             selectedDetail = model;

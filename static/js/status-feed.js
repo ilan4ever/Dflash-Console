@@ -259,7 +259,9 @@
       // slower cadence. The Engines tab has its own faster external scan when
       // it is active, so the global feed must not block its first paint.
       const now = Date.now();
-      const includeExternal = lastExternalPollAt > 0 && now - lastExternalPollAt >= 15000;
+      // First tick stays local so the header paints immediately. The next tick
+      // (about 2.5s) picks up external apps instead of waiting 15s.
+      const includeExternal = lastExternalPollAt > 0 && now - lastExternalPollAt >= 2000;
       const data = await api(`/api/servers?include_external=${includeExternal ? '1' : '0'}`);
       if (includeExternal || lastExternalPollAt === 0) lastExternalPollAt = now;
       const revision = Number(data?.snapshot_revision || 0);

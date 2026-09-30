@@ -16,6 +16,7 @@ _VISION_PROJECTOR_LEAF_RE = re.compile(r'(?:^|[._-])vision(?:[._-])', re.I)
 
 VISION_CHAT_PROFILES = frozenset({
     'gemma-chat',
+    'gemma-ar',
     'gemma-12-dflash',
     'qwen-dflash',
     'qwen-ar',
@@ -298,6 +299,16 @@ def vision_plan(*, model_path: str, server_id: str | None = None, cfg: dict[str,
 
     repo_id = infer_hf_repo_from_path(path)
     mmproj_filename = pick_mmproj_filename(repo_id, path) if repo_id else None
+    if not mmproj_filename:
+        # Folder-derived repo id may be wrong for distilled/renamed layouts
+        # (e.g. models/google/gemma-draft/...). Fall back to known-repo hints.
+        hint_repo = _guess_vision_repo_from_hint(str(path.parent), path.name)
+        if hint_repo and hint_repo != repo_id:
+            hint_filename = pick_mmproj_filename(hint_repo, path)
+            if hint_filename:
+                repo_id = hint_repo
+                mmproj_filename = hint_filename
+
     dest = path.parent / local_mmproj_filename(mmproj_filename) if mmproj_filename else None
 
     if not repo_id or not mmproj_filename:

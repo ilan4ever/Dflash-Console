@@ -4,7 +4,7 @@ const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipc
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const {
   loadAppSettings,
   saveAppSettings,
@@ -1013,7 +1013,10 @@ function Stop-DflashDesktopMain([string]$targetName, [bool]$requireRepoMatch) {
     }
     $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
     if ($parent -and $parent.Name -eq $targetName) { return }
-    & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
+    # Kill the main process only. /T kills children first and then gives up
+    # when any descendant refuses, which leaves the main process alive with
+    # its window already destroyed and the single-instance lock still held.
+    & taskkill.exe /F /PID $_.ProcessId 2>$null | Out-Null
   }
 }
 Stop-DflashDesktopMain 'electron.exe' $true
@@ -1031,64 +1034,6 @@ Stop-DflashDesktopMain 'DFlash Console.exe' $false
       resolve();
     }
   });
-}
-
-/**
- * Synchronously kill other DFlash Console desktop main processes BEFORE
- * requestSingleInstanceLock(). Async kill-after-failed-lock is too late
- * (lock already lost; npm + app.relaunch races). Same matching rules as
- * closeOtherDesktopApp: other main electron.exe for this repo/dflash-console
- * and main DFlash Console.exe, excluding self.
- */
-function killOtherDesktopAppsSync() {
-  const selfPid = process.pid;
-  let repoHint = '';
-  try {
-    repoHint = String(repoRoot() || '').replace(/\\/g, '\\\\');
-  } catch (_err) {
-    repoHint = '';
-  }
-  const script = `
-$self = ${selfPid}
-$repoHint = '${repoHint}'
-function Stop-DflashDesktopMain([string]$targetName, [bool]$requireRepoMatch) {
-  Get-CimInstance Win32_Process -Filter "Name='$targetName'" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.ProcessId -eq $self) { return }
-    $cmd = [string]$_.CommandLine
-    if ($cmd -and $cmd -match '--type=') { return }
-    if ($requireRepoMatch) {
-      $matched = $false
-      if ($cmd -and $cmd -match '(?i)dflash-console') { $matched = $true }
-      if (-not $matched -and $repoHint -and $cmd -and $cmd.IndexOf($repoHint, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
-      if (-not $matched) { return }
-    }
-    $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -ErrorAction SilentlyContinue
-    if ($parent -and $parent.Name -eq $targetName) { return }
-    & taskkill.exe /F /T /PID $_.ProcessId 2>$null | Out-Null
-  }
-}
-Stop-DflashDesktopMain 'electron.exe' $true
-Stop-DflashDesktopMain 'DFlash Console.exe' $false
-`;
-  try {
-    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-      windowsHide: true,
-      timeout: 15000,
-      stdio: 'ignore',
-    });
-  } catch (_err) {
-    // best effort — requestSingleInstanceLock still runs next
-  }
-  // Brief pause so the OS can release the previous lock holder.
-  try {
-    execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 400'], {
-      windowsHide: true,
-      timeout: 5000,
-      stdio: 'ignore',
-    });
-  } catch (_err) {
-    // ignore
-  }
 }
 
 function writeLockFailureLog(message) {
@@ -1367,6 +1312,10 @@ async function focusOrBoot() {
       return;
     }
   }
+  if (booting) {
+    // Startup never produced a window. A second click must still open one.
+    booting = false;
+  }
   await boot();
   if (mainWindow && !mainWindow.isDestroyed()) {
     showMainWindow({ bringToFront: true });
@@ -1436,22 +1385,13 @@ function installMediaPermissions() {
   });
 }
 
-// Kill peer desktop shells synchronously BEFORE taking the single-instance lock.
-// Doing this after !gotLock is too late (lock already lost; relaunch under npm races).
-killOtherDesktopAppsSync();
-
+// A second launch of this same app must hand off to the copy already running.
+// Killing that copy first (taskkill /T) destroys its window, then often fails
+// to kill the process itself, so the lock stays taken and this launch errors.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  // Sync pre-lock kill already ran. Do NOT app.relaunch() — that races under npm
-  // and leaves exit code 1 with no lasting window. Fail loudly instead.
-  const msg = 'Could not acquire single-instance lock after killing other desktop shells. Another DFlash Console may still be holding the lock.';
-  writeLockFailureLog(msg);
-  try {
-    dialog.showErrorBox('DFlash Console', msg);
-  } catch (_err) {
-    // showErrorBox may be unavailable very early
-  }
-  app.exit(1);
+  writeLockFailureLog('another instance is running; handing off');
+  app.exit(0);
 } else {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.dflash.console');
@@ -1487,7 +1427,11 @@ if (!gotLock) {
   });
 
   app.on('window-all-closed', () => {
-    // Keep running in the tray on Windows after the main window is hidden.
+    // Stay alive only while the tray icon is the way back in. Otherwise a
+    // closed window left this process holding the single-instance lock with
+    // nothing on screen, and every later click failed.
+    if (loadAppSettings().minimizeToTray) return;
+    app.quit();
   });
 
   app.on('activate', () => {

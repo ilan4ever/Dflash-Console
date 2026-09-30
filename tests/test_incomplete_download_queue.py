@@ -115,6 +115,79 @@ def test_component_resume_recovers_parent_repo_id(tmp_path, monkeypatch):
     assert hf._download_jobs[result['job_id']]['repo_id'] == 'Qwen/Qwen-Image-2.1'
 
 
+def test_component_resume_hoists_nested_shard_without_full_snapshot(tmp_path, monkeypatch):
+    from core import huggingface as hf
+
+    root = tmp_path / 'Qwen' / 'Qwen-Image-2.1'
+    component = root / 'text_encoder'
+    nested = component / 'text_encoder'
+    component.mkdir(parents=True)
+    nested.mkdir()
+    (root / 'model_index.json').write_text('{}', encoding='utf-8')
+    for name in (
+        'model-00002-of-00004.safetensors',
+        'model-00003-of-00004.safetensors',
+        'model-00004-of-00004.safetensors',
+    ):
+        (component / name).write_bytes(b'x')
+    (nested / 'model-00001-of-00004.safetensors').write_bytes(b'y')
+
+    def fail_snapshot(*_args, **_kwargs):
+        raise AssertionError('full repo snapshot should not run for a pipeline component')
+
+    monkeypatch.setattr('huggingface_hub.snapshot_download', fail_snapshot)
+    monkeypatch.setattr(hf, '_repo_expected_bytes', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hf, '_save_download_history', lambda: None)
+    monkeypatch.setattr(hf, '_save_pending_downloads', lambda: None)
+    monkeypatch.setattr(hf, '_remove_pending_job', lambda _job_id: None)
+
+    job_id = 'job-component'
+    with hf._jobs_lock:
+        hf._download_jobs[job_id] = {
+            'id': job_id,
+            'repo_id': 'Qwen/Qwen-Image-2.1',
+            'filename': '',
+            'status': 'downloading',
+            'bytes_read': 3,
+            'bytes_total': 4,
+            'path': str(component),
+            'kind': 'repo',
+        }
+
+    hf._repo_download_worker(job_id, 'Qwen/Qwen-Image-2.1', component)
+
+    assert (component / 'model-00001-of-00004.safetensors').read_bytes() == b'y'
+    assert hf._download_jobs[job_id]['status'] == 'done'
+    assert not hf._download_jobs[job_id].get('incomplete')
+
+
+def test_discover_skips_nested_component_copy(tmp_path, monkeypatch):
+    root = tmp_path / 'Qwen' / 'Qwen-Image-2.1'
+    component = root / 'text_encoder'
+    nested = component / 'text_encoder'
+    nested.mkdir(parents=True)
+    (root / 'model_index.json').write_text('{}', encoding='utf-8')
+    for name in (
+        'model-00002-of-00004.safetensors',
+        'model-00003-of-00004.safetensors',
+        'model-00004-of-00004.safetensors',
+    ):
+        (component / name).write_bytes(b'x')
+        (nested / name).write_bytes(b'x')
+
+    monkeypatch.setattr(
+        'core.model_paths.disk_scan_roots',
+        lambda cfg=None: [(tmp_path, 'dflash', '', 'Console')],
+    )
+    monkeypatch.setattr('core.local_models._catalog_repo_size_gb', lambda repo_id: 16.0)
+
+    found = _discover_incomplete_repo_jobs({})
+    assert len(found) == 1
+    assert found[0]['path'].endswith('text_encoder')
+    assert 'text_encoder\\text_encoder' not in found[0]['path']
+    assert 'text_encoder/text_encoder' not in found[0]['path'].replace('\\', '/')
+
+
 def test_list_download_jobs_includes_incomplete(monkeypatch):
     monkeypatch.setattr(
         'core.huggingface._discover_incomplete_repo_jobs',

@@ -53,7 +53,7 @@
 
   function historyJobs() {
     const cutoff = rangeCutoff();
-    return allJobs()
+    const rows = allJobs()
       .filter((job) => job.status !== 'downloading' && job.status !== 'incomplete')
       .filter((job) => {
         if (cutoff == null) return true;
@@ -61,6 +61,7 @@
         return when >= cutoff;
       })
       .sort((a, b) => Number(b.finished_at || b.started_at || 0) - Number(a.finished_at || a.started_at || 0));
+    return queue()?.collapseHistoryJobs?.(rows) || rows;
   }
 
   function rangeCutoff() {

@@ -195,16 +195,20 @@ def listener_is_managed_engine(host: str, port: int) -> bool:
         return False
     if not _tcp_port_open(host, port):
         return False
-    pid = listener_pid(host, port)
-    if pid is not None and managed_process_identity(pid):
-        return True
-    # PID ownership can flake; fall back to a llama-compatible /v1/models probe.
+    # Ask the engine itself first. A Windows process lookup starts PowerShell
+    # and can sit for many seconds even when the model is already loaded.
     try:
         from core.runtime import _fetch_models_payload
     except Exception:
-        return False
-    api_url = f'http://{host}:{int(port)}/v1'
-    return _is_llama_compatible_models_payload(_fetch_models_payload(api_url))
+        _fetch_models_payload = None  # type: ignore
+    if _fetch_models_payload is not None:
+        api_url = f'http://{host}:{int(port)}/v1'
+        if _is_llama_compatible_models_payload(_fetch_models_payload(api_url)):
+            return True
+    pid = listener_pid(host, port)
+    if pid is not None and managed_process_identity(pid):
+        return True
+    return False
 
 
 def _sync_server_listen_port(server: dict[str, Any], port: int, host: str) -> None:

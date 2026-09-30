@@ -1658,6 +1658,32 @@ html:not(.df-narrow) .df-shell .lm-models-table tr.lm-library-card-desktop td.lm
   text-overflow: ellipsis;
 }
 
+.df-shell .lm-models-table.lm-resizable-table th[data-col-id="updated"],
+.df-shell .lm-models-table.lm-resizable-table td.lm-col-updated {
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-action-col-heads {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.df-shell .lm-view[data-view="models"] .lm-action-col-head {
+  flex: 0 1 112px;
+  max-width: 112px;
+  min-width: 72px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: left;
+}
+
 .df-shell .lm-models-table .lm-col-sub {
   color: var(--text-dim);
   font-size: 0.85em;
@@ -3755,6 +3781,16 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   justify-content: flex-end;
 }
 
+/* Keep DISK/VRAM inside the card, clear of the list scrollbar. */
+html:not(.df-narrow) .df-shell .lm-view[data-view="server"] .lm-model-card-compact.external-gpu .lm-model-card-top {
+  padding-right: 18px;
+}
+
+html:not(.df-narrow) .df-shell .lm-view[data-view="server"] .lm-model-card-compact.external-gpu .lm-desktop-engine-stats,
+html:not(.df-narrow) .df-shell .lm-view[data-view="server"] .lm-model-card-compact.external-gpu .lm-external-stats {
+  margin-right: 6px;
+}
+
 html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-engine-foot-metrics {
   flex: 0 1 auto;
 }
@@ -5001,10 +5037,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
 .df-shell .df-select-native {
   position: absolute !important;
   width: 1px !important;
+  min-width: 0 !important;
+  max-width: 1px !important;
   height: 1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  flex: 0 0 1px !important;
   opacity: 0 !important;
   pointer-events: none !important;
-  margin: -1px;
+  margin: 0 !important;
   clip: rect(0, 0, 0, 0);
   overflow: hidden;
 }

@@ -712,6 +712,42 @@
     return document.getElementById('dfDownloadsTray');
   }
 
+  const PIPELINE_PART_FILE = /^(?:text_encoder(?:_\d+)?|transformer|vae|unet|scheduler)\//i;
+
+  function historyGroupKey(job) {
+    const repo = String(job?.repo_id || '').trim().toLowerCase();
+    if (!repo || !repo.includes('/')) return '';
+    const filename = String(job?.filename || '').replace(/\\/g, '/');
+    const kind = String(job?.kind || '').toLowerCase();
+    const sameModel = kind === 'repo' || PIPELINE_PART_FILE.test(filename);
+    if (!sameModel) return '';
+    const path = String(job?.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const repoName = repo.split('/').pop();
+    const parts = path.split('/');
+    let end = parts.length;
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      if (parts[index].toLowerCase() === repoName) {
+        end = index + 1;
+        break;
+      }
+    }
+    return `${repo}|${parts.slice(0, end).join('/').toLowerCase()}`;
+  }
+
+  function collapseHistoryJobs(rows) {
+    const seen = new Set();
+    const collapsed = [];
+    (rows || []).forEach((job) => {
+      const key = historyGroupKey(job);
+      if (key) {
+        if (seen.has(key)) return;
+        seen.add(key);
+      }
+      collapsed.push(job);
+    });
+    return collapsed;
+  }
+
   function sortedJobs() {
     return [...jobs.values()].sort((a, b) => Number(b.started_at || 0) - Number(a.started_at || 0));
   }
@@ -811,7 +847,9 @@
     if (!list || !sub) return;
 
     const active = snapshot.filter((job) => job.status === 'downloading');
-    const recent = snapshot.filter((job) => job.status !== 'downloading').slice(0, 6);
+    const recent = collapseHistoryJobs(
+      snapshot.filter((job) => job.status !== 'downloading'),
+    ).slice(0, 6);
     const rows = [...active, ...recent];
 
     sub.textContent = active.length
@@ -968,6 +1006,7 @@
     getActiveJob,
     getActiveJobs: activeJobs,
     getJobs: sortedJobs,
+    collapseHistoryJobs,
     getJobLabel(job) {
       return labels.get(job?.id) || job?.filename || job?.repo_id || 'Model';
     },

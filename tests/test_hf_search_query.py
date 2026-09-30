@@ -12,6 +12,12 @@ def test_strips_filename_after_space():
     assert normalize_hf_search_query(raw) == 'zerodigest/Qwen3.8-27B-Uncensored-YMQ-MTP-GGUF'
 
 
+def test_strips_trailing_period_from_repo_id():
+    raw = 'pottokao/Qwen-Image-2.1-Text-Encoder-Heretic.'
+    assert normalize_hf_search_query(raw) == 'pottokao/Qwen-Image-2.1-Text-Encoder-Heretic'
+    assert _is_repo_id_query(raw) is True
+
+
 def test_plain_text_query_unchanged():
     assert normalize_hf_search_query('Qwen3.8-27B-Uncensored') == 'Qwen3.8-27B-Uncensored'
     assert _is_repo_id_query('Qwen3.8-27B-Uncensored') is False

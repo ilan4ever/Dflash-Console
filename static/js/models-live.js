@@ -501,6 +501,7 @@
   }
 
   function isStackBooting(model) {
+    if (isStackLoadedOnGpu(model)) return false;
     return isModelPendingLoad(model)
       || !!(model.server_id && bootingServers[model.server_id])
       || isFreeTokenWarmingModel(model);
@@ -658,7 +659,7 @@
           <td class="lm-col-meta lm-library-handle-meta">${modelLabCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelSourceCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(size)}</td>
-          <td class="lm-col-meta lm-library-handle-meta">${libraryUpdatedCell(model)}</td>
+          <td class="lm-col-meta lm-col-updated lm-library-handle-meta">${libraryUpdatedCell(model)}</td>
           <td class="${actionCls}" rowspan="${actionRowspan}">${loadBtn}</td>
         </tr>`,
     ];
@@ -801,6 +802,9 @@
     if (isStackUnloading(model)) {
       return '<span class="lm-tag orange lm-model-load-pill" title="Unloading model from GPU">Unloading…</span>';
     }
+    if (isStackLoadedOnGpu(model)) {
+      return actionButton('unload-model', 'Unload', 'Remove model from GPU', 'lm-btn-unload-active');
+    }
     if (isStackBooting(model)) {
       const boot = bootingServers[model.server_id] || (isFreeTokenWarmingModel(model) ? bootingServers.freetoken : null);
       const progress = boot?.progress;
@@ -811,9 +815,6 @@
       const label = warming ? 'Warming' : 'Loading';
       const title = escapeHtml(boot?.detail || `${label} model onto GPU`);
       return `<span class="lm-tag blue lm-model-load-pill" title="${title}">${label}${pct}…</span>`;
-    }
-    if (isStackLoadedOnGpu(model)) {
-      return actionButton('unload-model', 'Unload', 'Remove model from GPU', 'lm-btn-unload-active');
     }
     if (isDflashAccelerator(model)) {
       return '<span class="lm-tag orange" title="Accelerators are loaded only with a full target model in a DFlash stack">stack only</span>';
@@ -1583,12 +1584,21 @@
         </button>
         <div class="df-stack-preflight df-model-stack-preflight is-unavailable">${escapeHtml(result.reason)}</div>`;
     }
+    const unavailableReason = stackUnavailableReason(model, result);
     return `
       ${findDraftAction}
-      <button type="button" data-cmd="create-stack" disabled title="${escapeHtml(result.reason || 'DFlash stack is not available')}">
+      <button type="button" data-cmd="create-stack" disabled title="${escapeHtml(unavailableReason)}">
         DFlash stack unavailable
       </button>
-      <div class="df-stack-preflight df-model-stack-preflight is-unavailable">${escapeHtml(result.reason || 'This model cannot be used for a DFlash stack.')}</div>`;
+      <div class="df-stack-preflight df-model-stack-preflight is-unavailable">${escapeHtml(unavailableReason)}</div>`;
+  }
+
+  function stackUnavailableReason(model, result) {
+    const reason = result?.reason || 'This model cannot be used for a DFlash stack.';
+    if (result?.reason_code !== 'no-accelerator') return reason;
+    if (hfAcceleratorStatus !== 'ready') return reason;
+    if (isHfAcceleratorAvailable(model)) return reason;
+    return 'No compatible DFlash accelerator is available for this model.';
   }
 
   function updateStackMenuAction(model) {
@@ -2821,7 +2831,7 @@
       <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="Friendly title shown in the Model library">Copy display name</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
-      <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="Download vision projector from Hugging Face and wire it to this model">Add vision support…</button>
+      <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="${modelHasVision(model) ? 'This model already has a vision projector wired' : 'Download vision projector from Hugging Face and wire it to this model'}">${modelHasVision(model) ? 'Vision already supported' : 'Add vision support…'}</button>
       ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">${escapeHtml(importLabels.copy)}</button>
       <button type="button" data-cmd="move-to-console">${escapeHtml(importLabels.move)}</button>` : ''}
       <hr>
@@ -4307,6 +4317,30 @@
     return { canceled: false, data, mode, verified };
   }
 
+  function noteRuntimeServers(list) {
+    const serversData = { servers: Array.isArray(list) ? list : [] };
+    const markers = collectLoadedMarkers(serversData);
+    loadedServerIds = markers.serverIds;
+    loadedPathKeys = markers.pathKeys;
+    loadedModelIds = markers.modelIds;
+    bootingServers = {};
+    for (const server of serversData.servers) {
+      if (server?.status !== 'booting') continue;
+      bootingServers[server.id] = {
+        progress: server.load_progress?.expert_pct ?? server.load_progress ?? null,
+        label: server.label || server.id,
+        detail: server.load_progress?.detail || 'Loading model onto GPU…',
+        path: server.model_path || server.target_path || '',
+      };
+    }
+    const hadPending = pendingModelLoads.size > 0 || pendingServerLoads.size > 0;
+    reconcileLoadPendingWithRuntime();
+    if (!hadPending && !pendingModelLoads.size) return;
+    if (document.body.dataset.activeView !== 'models') return;
+    if (modelSelectorFocused || isModelSelectorFocused()) return;
+    renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+  }
+
   window.DFlashModelsLive = {
     apiModelIdentifier,
     displayModelName,
@@ -4332,5 +4366,6 @@
     openImportToConsoleWizard,
     importModelWithWizard,
     isModelAlreadyImported,
+    noteRuntimeServers,
   };
 })();

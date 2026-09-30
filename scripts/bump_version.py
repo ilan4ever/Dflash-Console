@@ -78,8 +78,8 @@ def bump(part: str, set_version: str | None = None) -> str:
         text = readme.read_text(encoding='utf-8')
         text = re.sub(r'\*\*Version:\*\* v\d+\.\d+\.\d+', f'**Version:** v{next_version}', text)
         text = re.sub(
-            r'## Recent improvements \(v\d+\.\d+\.\d+\)',
-            f'## Recent improvements (v{next_version})',
+            r'(#{2,3} Recent improvements )\(v\d+\.\d+\.\d+\)',
+            rf'\g<1>(v{next_version})',
             text,
             count=1,
         )

@@ -3112,6 +3112,37 @@ def _ensure_server_ready_for_chat(
             'ready_for_chat': bool(loaded),
         }
 
+    # Already-loaded engines answer /v1/models in a fraction of a second.
+    # The full status build checks GPU, logs, and the Windows process list,
+    # which was adding many seconds in front of every chat.
+    host = str(server.get('host') or '127.0.0.1').strip() or '127.0.0.1'
+    port = int(server.get('port') or 0)
+    api_url = str(server.get('api_url') or '').strip()
+    if port > 0 and tcp_port_open(host, port):
+        if not api_url:
+            api_url = f'http://{host}:{port}/v1'
+        from core.runtime import probe_runtime_state
+
+        loaded_now, _loading_now, _router_now, _progress_now = probe_runtime_state(api_url)
+        if loaded_now:
+            needs_grow = False
+            if required_context and cfg.get('context_auto_grow') is not False:
+                loaded_ctx = _loaded_per_slot_context(server) or _configured_per_slot(server)
+                if loaded_ctx and int(required_context) > int(loaded_ctx):
+                    needs_grow = True
+            if not needs_grow:
+                note_engine_active_client(server_id, client_label=client_label)
+                return {
+                    **server,
+                    'running': True,
+                    'status': 'loaded',
+                    'booting': False,
+                    'load_progress': None,
+                    'loaded_models': loaded_now,
+                    'active_model_id': loaded_now[0],
+                    'ready_for_chat': True,
+                }
+
     live = build_server_status(server, cfg=cfg)
 
     # Another chat is already mid-flight on this engine: never JIT-load (that

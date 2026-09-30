@@ -12,7 +12,7 @@
     if (th.classList.contains('lm-col-model')) return 300;
     if (th.classList.contains('lm-col-action')) return 132;
     if (th.dataset.colId === 'source') return 48;
-    if (th.dataset.colId === 'updated') return 40;
+    if (th.dataset.colId === 'updated') return 96;
     return 36;
   }
 
@@ -49,6 +49,7 @@
     colEls.forEach((col, index) => {
       const value = Number.isFinite(widths[index]) ? widths[index] : 0;
       col.style.width = `${((value / base) * 100).toFixed(3)}%`;
+      col.style.minWidth = '';
     });
   }
 
@@ -58,7 +59,7 @@
     if (th.classList.contains('lm-col-model')) return 420;
     if (th.classList.contains('lm-col-action')) return 200;
     if (th.dataset.colId === 'source') return 84;
-    if (th.dataset.colId === 'updated') return 48;
+    if (th.dataset.colId === 'updated') return 108;
     return 44;
   }
 
@@ -182,7 +183,7 @@
         queueRemeasure(table, headers, colEls, storageKey);
       }
     }
-    applyWidths(colEls, widths);
+    applyWidths(colEls, widths, headers);
 
     headers.forEach((th, index) => {
       if (index >= headers.length - 1) return;

@@ -36,11 +36,21 @@ _QUANT_TOKEN_RE = re.compile(
     re.I,
 )
 
+# Shared shard names (model-00001-of-00004.safetensors) appear in many repos.
+_SHARD_WEIGHT_RE = re.compile(
+    r'^(?:model|pytorch_model|diffusion_pytorch_model)-\d+-of-\d+\.(?:safetensors|bin|pt|ckpt)$',
+    re.I,
+)
+
 
 def is_generic_weight_filename(filename: str) -> bool:
     """True for shared HF weight/config names that must never match by basename alone."""
     name = Path(str(filename or '').strip()).name.lower()
-    return bool(name) and name in _GENERIC_WEIGHT_FILENAMES
+    if not name:
+        return False
+    if name in _GENERIC_WEIGHT_FILENAMES:
+        return True
+    return bool(_SHARD_WEIGHT_RE.match(name))
 
 
 def allows_basename_only_match(filename: str) -> bool:
@@ -186,6 +196,9 @@ def find_local_matches(repo_id: str, filename: str, *, cfg: dict[str, Any] | Non
         normalized = path.as_posix().lower()
         if normalized.endswith(rel_suffix):
             add_match(path, 'hf_layout', row)
+            continue
+        # Shard names are shared across repos. Only an exact author/repo path counts.
+        if is_generic_weight_filename(target_name):
             continue
         if f'/{author.lower()}/' in normalized and repo_slug.replace('-', '') in normalized.replace('-', ''):
             add_match(path, 'repo_path', row)

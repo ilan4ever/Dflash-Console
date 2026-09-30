@@ -312,12 +312,15 @@ def _modified_label(path: Path) -> str:
     if age < 86400:
         return 'today'
     if age < 86400 * 2:
-        return '1 day ago'
+        return '1 day'
     if age < 86400 * 7:
-        return f"{int(age / 86400)} days ago"
+        days = int(age / 86400)
+        return '1 day' if days <= 1 else f'{days} days'
     if age < 86400 * 30:
-        return f"{int(age / (86400 * 7))} weeks ago"
-    return f"{int(age / (86400 * 30))} months ago"
+        weeks = int(age / (86400 * 7))
+        return '1 week' if weeks <= 1 else f'{weeks} weeks'
+    months = int(age / (86400 * 30))
+    return '1 month' if months <= 1 else f'{months} months'
 
 
 _HF_HUB_MARKERS = ('/.cache/huggingface', '/huggingface/hub')

@@ -1727,6 +1727,8 @@ def normalize_hf_search_query(query: str) -> str:
     text = _FILENAME_TAIL_RE.sub('', text).strip(' -|')
     text = re.sub(r'\s+', ' ', text).strip()
     first = text.split(' ', 1)[0] if text else ''
+    # A pasted sentence often keeps the final period: org/repo.
+    first = first.rstrip('.,;:!?)]}\'"')
     if _CLEAN_REPO_RE.match(first):
         return first
     return text
@@ -3516,7 +3518,56 @@ def _sync_repo_shard_fields(job_id: str, dest: Path) -> dict[str, Any]:
     return status
 
 
-def _download_missing_repo_shards(repo_id: str, dest: Path, *, job_id: str = '') -> None:
+def _pipeline_component_prefix(dest: Path) -> str:
+    """Return ``text_encoder/`` when dest is a folder inside a diffusion pipeline repo."""
+    try:
+        target = dest.expanduser().resolve()
+    except OSError:
+        return ''
+    name = str(target.name or '').strip()
+    if not name or name.startswith('.'):
+        return ''
+    parent = target.parent
+    try:
+        if not (parent / 'model_index.json').is_file():
+            return ''
+    except OSError:
+        return ''
+    return f'{name}/'
+
+
+def _hoist_nested_component_shards(dest: Path) -> None:
+    """Move shards that resume saved under dest/dest.name/ back beside the other shards."""
+    try:
+        target = dest.expanduser().resolve()
+    except OSError:
+        return
+    nested = target / target.name
+    if not nested.is_dir():
+        return
+    try:
+        nested_files = list(nested.glob('*.safetensors'))
+    except OSError:
+        return
+    for path in nested_files:
+        if not path.is_file():
+            continue
+        landing = target / path.name
+        if landing.exists():
+            continue
+        try:
+            path.replace(landing)
+        except OSError:
+            continue
+
+
+def _download_missing_repo_shards(
+    repo_id: str,
+    dest: Path,
+    *,
+    job_id: str = '',
+    remote_prefix: str = '',
+) -> None:
     """Fetch any missing weight shards after snapshot_download stops early."""
     missing = _missing_weight_shard_filenames(dest)
     if not missing:
@@ -3526,8 +3577,11 @@ def _download_missing_repo_shards(repo_id: str, dest: Path, *, job_id: str = '')
     except ImportError:
         return
     token = os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN')
+    prefix = str(remote_prefix or '')
+    local_dir = _transformers_hub_local_dir(dest, prefix)
     total_missing = len(missing)
     for index, filename in enumerate(missing, start=1):
+        remote_name = f'{prefix}{filename}' if prefix else filename
         with _jobs_lock:
             job = _download_jobs.get(job_id)
             if not job or str(job.get('status') or '') != 'downloading':
@@ -3536,8 +3590,8 @@ def _download_missing_repo_shards(repo_id: str, dest: Path, *, job_id: str = '')
         try:
             hf_hub_download(
                 repo_id=repo_id,
-                filename=filename,
-                local_dir=str(dest),
+                filename=remote_name,
+                local_dir=str(local_dir),
                 local_dir_use_symlinks=False,
                 token=token.strip() if token else None,
             )
@@ -4750,15 +4804,29 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
         )
         poller.start()
         try:
-            local_dir = snapshot_download(
-                repo_id=repo_id,
-                local_dir=str(dest),
-                local_dir_use_symlinks=False,
-                token=token.strip() if token else None,
-            )
-            target = Path(str(local_dir))
-            # snapshot_download can return while shard files are still missing.
-            _download_missing_repo_shards(repo_id, target, job_id=job_id)
+            # A pipeline component folder (text_encoder, vae, …) must not receive
+            # a full-repo snapshot. That nests the missing shard one level down
+            # and the folder stays "3/4" forever.
+            component_prefix = _pipeline_component_prefix(dest)
+            if component_prefix:
+                _hoist_nested_component_shards(dest)
+                _download_missing_repo_shards(
+                    repo_id,
+                    dest,
+                    job_id=job_id,
+                    remote_prefix=component_prefix,
+                )
+                local_dir = str(dest)
+            else:
+                local_dir = snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=str(dest),
+                    local_dir_use_symlinks=False,
+                    token=token.strip() if token else None,
+                )
+                target = Path(str(local_dir))
+                # snapshot_download can return while shard files are still missing.
+                _download_missing_repo_shards(repo_id, target, job_id=job_id)
         finally:
             stop_poll.set()
             poller.join(timeout=2.0)
@@ -4790,7 +4858,7 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
                     job['disk_bytes'] = disk_bytes
                     if not job.get('bytes_total'):
                         job['bytes_total'] = disk_bytes
-            _mark_job_finished(job_id, 'done', path=str(target))
+            _mark_job_finished(job_id, 'done', path=str(target), error=None, incomplete=False)
         invalidate_model_catalog_cache()
     except Exception as exc:
         stop_poll.set()
@@ -5135,6 +5203,44 @@ def _is_console_download_job(job: dict[str, Any]) -> bool:
     return True
 
 
+def _is_nested_component_copy(path: Path) -> bool:
+    """True for accidental nests such as ``text_encoder/text_encoder``."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    if not target.is_dir():
+        return False
+    parent = target.parent
+    if parent.name.lower() != target.name.lower():
+        return False
+    try:
+        return (parent / 'model_index.json').is_file() or (parent.parent / 'model_index.json').is_file()
+    except OSError:
+        return False
+
+
+def _drop_nested_component_jobs() -> None:
+    """Remove incomplete rows that only point at a nested component copy."""
+    dropped = False
+    with _jobs_lock:
+        for job_id, job in list(_download_jobs.items()):
+            if str(job.get('status') or '') != 'incomplete':
+                continue
+            path_text = str(job.get('path') or '').strip()
+            if not path_text or not _is_nested_component_copy(Path(path_text)):
+                continue
+            _download_jobs.pop(job_id, None)
+            _cleared_ids.add(job_id)
+            dropped = True
+    if not dropped:
+        return
+    try:
+        _save_download_history()
+    except OSError:
+        pass
+
+
 def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Find local HF folders with missing weight shards and expose them as resumable jobs."""
     config = cfg or load_config()
@@ -5163,6 +5269,10 @@ def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[di
             seen.add(key)
             status = _weight_shard_status(parent)
             if not status.get('incomplete'):
+                continue
+            # A failed resume can leave text_encoder/text_encoder/. That nest is
+            # not a second model.
+            if _is_nested_component_copy(parent):
                 continue
             display, publisher = _path_model_display_name(parent)
             repo_id = f'{publisher}/{display}' if publisher and display else display
@@ -5210,6 +5320,7 @@ def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[di
 
 def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> None:
     """Persist discovered incomplete shard folders into the download job table."""
+    _drop_nested_component_jobs()
     discovered = _discover_incomplete_repo_jobs(cfg)
     if not discovered:
         return

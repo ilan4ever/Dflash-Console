@@ -367,6 +367,49 @@ def test_generic_model_safetensors_does_not_basename_collide(tmp_path, monkeypat
     assert matches == []
 
 
+def test_shared_shard_name_does_not_mark_another_repo_installed(tmp_path, monkeypatch):
+    """Qwen-Image-2.1's model-00001 shard must not count as the Heretic encoder."""
+    root = tmp_path / 'models'
+    shard = root / 'Qwen' / 'Qwen-Image-2.1' / 'model-00001-of-00004.safetensors'
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b'weights')
+    cfg = {
+        'dflash_root': str(tmp_path),
+        'model_libraries': [{
+            'id': 'default',
+            'label': 'Models',
+            'path': str(root),
+            'enabled': True,
+            'preset': 'dflash',
+            'download_default': True,
+        }],
+        'servers': [],
+    }
+    monkeypatch.setattr('core.hf_local_match.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.load_config', lambda: cfg)
+    monkeypatch.setattr('core.local_models.list_servers', lambda _cfg: [])
+    monkeypatch.setattr(
+        'core.hf_local_match.list_local_models',
+        lambda **kwargs: {
+            'models': [{
+                'path': str(shard),
+                'publisher': 'Qwen',
+                'loadable': False,
+            }],
+        },
+    )
+
+    from core.hf_local_match import find_local_matches, is_generic_weight_filename
+
+    assert is_generic_weight_filename('model-00001-of-00004.safetensors') is True
+    matches = find_local_matches(
+        'pottokao/Qwen-Image-2.1-Text-Encoder-Heretic',
+        'model-00001-of-00004.safetensors',
+        cfg=cfg,
+    )
+    assert matches == []
+
+
 def test_generic_model_safetensors_exact_hf_layout_still_matches(tmp_path, monkeypatch):
     root = tmp_path / 'models'
     target = (
