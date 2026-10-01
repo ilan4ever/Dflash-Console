@@ -872,16 +872,15 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
 }
 
 .lm-model-card.ejecting {
-  background: var(--bg-card);
-  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(51, 65, 85, 0.42);
+  border-color: rgba(148, 163, 184, 0.28);
+  filter: grayscale(1);
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .lm-model-card-eject-shell {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  pointer-events: none;
-  background: rgba(15, 23, 42, 0.42);
+  display: none;
 }
 
 .lm-model-card-eject-label {
@@ -902,10 +901,12 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 
-.lm-model-card.ejecting > .lm-model-card-top {
+.lm-model-card.ejecting > .lm-model-card-top,
+.lm-model-card.ejecting .lm-model-path,
+.lm-model-card.ejecting .lm-mobile-engine-meta-title {
   position: relative;
-  z-index: 1;
-  opacity: 0.72;
+  opacity: 1;
+  color: #cbd5e1;
 }
 
 .lm-badge.ejecting {

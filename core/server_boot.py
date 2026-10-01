@@ -115,6 +115,24 @@ def _port_lock(port: int) -> threading.RLock:
         return _port_locks.setdefault(int(port), threading.RLock())
 
 
+# A cold llama-server boot can take longer than a minute. A second load for the
+# same port waits out the one already running instead of failing the caller.
+_BOOT_JOIN_TIMEOUT_SECONDS = 150.0
+
+
+def _acquire_port_boot(port: int) -> tuple[threading.RLock, bool] | None:
+    """Take the per-port boot lock, waiting when another boot already holds it.
+
+    The boolean is true when this caller waited for an in-progress boot.
+    """
+    lock = _port_lock(port)
+    if lock.acquire(blocking=False):
+        return lock, False
+    if not lock.acquire(timeout=_BOOT_JOIN_TIMEOUT_SECONDS):
+        return None
+    return lock, True
+
+
 def port_lock_for(port: int) -> threading.RLock:
     return _port_lock(port)
 
@@ -613,10 +631,17 @@ def start_router_listener(
     port = int(entry.get('port') or 0)
     if port <= 0 or not entry.get('id'):
         return {'success': False, 'error': 'invalid server'}
-    lock = _port_lock(port)
-    if not lock.acquire(blocking=False):
-        return {'success': False, 'error': 'boot already in progress', 'port': port}
+    acquired = _acquire_port_boot(port)
+    if acquired is None:
+        return {
+            'success': False,
+            'error': 'timed out waiting for the model server to finish starting',
+            'port': port,
+        }
+    lock, joined = acquired
     try:
+        if joined and _tcp_port_open(str(entry.get('host') or '127.0.0.1'), port):
+            return {'success': True, 'port': port, 'joined_boot': True}
         return _start_router_listener_locked(entry, cfg=cfg, skip_preset_write=skip_preset_write)
     finally:
         lock.release()
@@ -1466,6 +1491,63 @@ def find_target_loaded_elsewhere(
     return None
 
 
+def _running_model_paths(rows: list[dict[str, Any]]) -> list[str]:
+    """GGUF paths for router rows that are actually loaded, not just registered."""
+    from core.runtime import _model_state
+
+    paths: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        state = _model_state(row)
+        if state and state not in ('loaded', 'running'):
+            continue
+        status = row.get('status') if isinstance(row.get('status'), dict) else {}
+        args = status.get('args') if isinstance(status.get('args'), list) else []
+        for index, arg in enumerate(args):
+            if str(arg) == '--model' and index + 1 < len(args):
+                path = str(args[index + 1] or '').strip()
+                if path:
+                    paths.append(path)
+    return paths
+
+
+def _checkpoint_already_resident(
+    entry: dict[str, Any],
+    rows: list[dict[str, Any]],
+    loaded_ids: list[str],
+    *,
+    load_id: str,
+    model_path: str | None,
+    model_id: str | None,
+    path_id,
+) -> bool:
+    """True when this engine is already serving the checkpoint the caller asked for.
+
+    Callers often send the engine id (``qwen3-8-...-dflash``) while llama is
+    serving the file name (``qwen3.8-...``). The file on the GPU is the match.
+    """
+    requested = str(model_path or entry.get('adhoc_model_path') or '').strip()
+    own = str(entry.get('target_path') or '').strip()
+    for running in _running_model_paths(rows):
+        if requested and checkpoints_match(requested, running):
+            return True
+        if not requested and own and checkpoints_match(own, running):
+            return True
+    names = [load_id]
+    if requested:
+        names.append(path_id(requested))
+    caller = str(model_id or '').strip()
+    engine_id = str(entry.get('id') or '').strip()
+    if not caller or caller == engine_id:
+        names.append(str(entry.get('model_id') or ''))
+        if own:
+            names.append(path_id(own))
+    elif caller:
+        names.append(caller)
+    return any(_checkpoint_id_loaded(name, loaded_ids) for name in names if str(name or '').strip())
+
+
 def checkpoint_already_loaded(
     server: dict[str, Any],
     *,
@@ -1487,12 +1569,22 @@ def checkpoint_already_loaded(
     if port <= 0 or not api_url or not load_id or not _tcp_port_open(host, port):
         return None
 
-    from core.runtime import probe_models
+    from core.model_presets import model_id_from_path
+    from core.runtime import _fetch_models_payload, probe_models
 
     # Probe first (milliseconds). Only adopt/track after we know weights are live,
     # so a miss does not pay the multi-second PID identity path on every load-plan.
+    rows = _fetch_models_payload(api_url)
     loaded = probe_models(api_url)
-    if not _checkpoint_id_loaded(load_id, loaded):
+    if not _checkpoint_already_resident(
+        entry,
+        rows,
+        loaded,
+        load_id=load_id,
+        model_path=model_path,
+        model_id=model_id,
+        path_id=model_id_from_path,
+    ):
         return None
     adopt_running_engine(entry, cfg=cfg)
     note_boot_cycle_end(port)
@@ -1989,9 +2081,14 @@ def start_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -
     port = int(entry.get('port') or 0)
     if port <= 0 or not entry.get('id'):
         return {'success': False, 'error': 'invalid server'}
-    lock = _port_lock(port)
-    if not lock.acquire(blocking=False):
-        return {'success': False, 'error': 'boot already in progress', 'port': port}
+    acquired = _acquire_port_boot(port)
+    if acquired is None:
+        return {
+            'success': False,
+            'error': 'timed out waiting for the model server to finish starting',
+            'port': port,
+        }
+    lock, _joined = acquired
     try:
         return _start_server_locked(entry, cfg=cfg)
     finally:
@@ -2077,12 +2174,8 @@ def _start_server_locked(server: dict[str, Any], *, cfg: dict[str, Any] | None =
                 return {'success': True, 'port': port, 'loaded': True, 'reused_listener': True}
             stop_server(port=port, host=host, api_url=api_url)
 
-    now = time.time()
     with _boot_lock:
-        last = float(_boot_attempt_at.get(port) or 0.0)
-        if (now - last) < 20.0:
-            return {'success': False, 'error': 'boot already in progress', 'port': port}
-        _boot_attempt_at[port] = now
+        _boot_attempt_at[port] = time.time()
 
     try:
         preset_path = write_server_preset(entry, cfg=cfg)

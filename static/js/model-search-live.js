@@ -920,7 +920,9 @@
   }
 
   function modelTitle(model) {
-    return model.id || model.title || model.label || '—';
+    const title = String(model?.title || model?.label || '').trim();
+    const id = String(model?.id || '').trim();
+    return title || id || '—';
   }
 
   function modelDescription(model) {
@@ -1174,8 +1176,17 @@
   async function runCatalogContextCommand(cmd, model) {
     if (!model) return;
     if (cmd === 'copy-id') {
-      await navigator.clipboard.writeText(model.id || '');
-      toast('Repo id copied');
+      const id = String(model.id || '').trim();
+      if (!id) return;
+      await navigator.clipboard.writeText(id);
+      toast('Hugging Face name copied');
+      return;
+    }
+    if (cmd === 'copy-name') {
+      const name = modelTitle(model);
+      if (!name || name === '—') return;
+      await navigator.clipboard.writeText(name);
+      toast('Display name copied');
       return;
     }
     if (cmd === 'copy-url') {
@@ -1216,9 +1227,10 @@
     const hfUrl = catalogModelUrl(model);
     const canStack = catalogDflashCompatible(model) || catalogListHasGguf(model);
     menu.innerHTML = `
-      <button type="button" data-cmd="copy-id">Copy identifier</button>
+      <button type="button" data-cmd="copy-name"${modelTitle(model) && modelTitle(model) !== '—' ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
+      <button type="button" data-cmd="copy-id"${model?.id ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
       <button type="button" data-cmd="copy-url"${hfUrl ? '' : ' disabled'}>Copy Hugging Face URL</button>
-      <button type="button" data-cmd="open-hf"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
+      <button type="button" data-cmd="open-hf"${hfUrl ? '' : ' disabled'} title="Open this model's page on Hugging Face">Open Hugging Face</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
       <button type="button" data-cmd="create-stack"${canStack ? '' : ' disabled'}>Create DFlash stack</button>

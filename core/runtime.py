@@ -866,11 +866,15 @@ def _build_embedding_server_status(
     )
     embed_started = get_started_launch(port) if port > 0 else {}
     embed_gpu_idx = embed_started.get('main_gpu') if embed_started else launch.get('main_gpu')
-    listener_vram_gb = (
-        vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=embed_gpu_idx)
-        if running and port > 0
-        else None
-    )
+    listener_vram_gb = None
+    if running and port > 0:
+        from core.gpu_processes import primary_measured_vram_for_port
+
+        measured = primary_measured_vram_for_port(port, host)
+        if measured is not None:
+            embed_gpu_idx, listener_vram_gb = measured
+        else:
+            listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=embed_gpu_idx)
     embed_settings = dict(entry.get('embedding_settings') or {})
     embed_file_name = model_path.name if model_path else ''
     embed_display = (
@@ -913,9 +917,21 @@ def _build_embedding_server_status(
                 role=str(card.get('role') or 'target'),
             )
         )
-        gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
+        gpu_idx = embed_gpu_idx
         if gpu_idx is not None:
             card['gpu_index'] = int(gpu_idx)
+            for gpu in gpus or []:
+                if not isinstance(gpu, dict) or gpu.get('index') is None:
+                    continue
+                try:
+                    if int(gpu.get('index')) != int(gpu_idx):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                short = str(gpu.get('display_name') or '').strip()
+                if short:
+                    card['vram_gpu_name'] = short
+                break
         if entry.get('context_size'):
             card['context_size'] = int(entry.get('context_size'))
         if card.get('size_gb') is None and model_path is not None:
@@ -1155,11 +1171,16 @@ def build_server_status(
         bool(loading_models) or active_model_load or (active_boot and not router_ready)
     )
     listener_vram_gb = None
+    measured_gpu_idx = None
     if running and port > 0:
-        from core.gpu_processes import vram_gb_for_port
+        from core.gpu_processes import primary_measured_vram_for_port, vram_gb_for_port
 
-        gpu_idx = started_launch.get('main_gpu') if started_launch else launch.get('main_gpu')
-        listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=gpu_idx)
+        measured = primary_measured_vram_for_port(port, host)
+        if measured is not None:
+            measured_gpu_idx, listener_vram_gb = measured
+        else:
+            gpu_idx = started_launch.get('main_gpu') if started_launch else launch.get('main_gpu')
+            listener_vram_gb = vram_gb_for_port(port, host, vram_map=vram_map, gpu_index=gpu_idx)
     stack = resolve_model_stack(server, cfg=cfg)
     model_size_gb = _stack_size_gb([row for row in stack if str(row.get('role') or '') != 'alias'])
     vram_load_progress = estimate_vram_load_progress(
@@ -1261,9 +1282,23 @@ def build_server_status(
                 role=str(card.get('role') or ''),
             )
         )
-        gpu_idx = started.get('main_gpu') if started else launch.get('main_gpu')
+        gpu_idx = measured_gpu_idx if measured_gpu_idx is not None else (
+            started.get('main_gpu') if started else launch.get('main_gpu')
+        )
         if gpu_idx is not None:
             card['gpu_index'] = int(gpu_idx)
+            for gpu in gpus or []:
+                if not isinstance(gpu, dict) or gpu.get('index') is None:
+                    continue
+                try:
+                    if int(gpu.get('index')) != int(gpu_idx):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                short = str(gpu.get('display_name') or '').strip()
+                if short:
+                    card['vram_gpu_name'] = short
+                break
         if server.get('context_size'):
             card['context_size'] = int(server.get('context_size'))
         resolved_path = _resolve_card_model_path(card, server)

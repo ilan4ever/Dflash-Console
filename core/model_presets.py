@@ -34,6 +34,14 @@ def profile_uses_jinja(profile: str | None) -> bool:
     return str(profile or '').strip().lower() != 'translategemma'
 
 
+def is_mtp_draft_path(path: str | Path | None) -> bool:
+    """True for llama.cpp MTP companion GGUFs (not DFlash accelerators)."""
+    name = Path(str(path or "")).name.lower()
+    if not name.endswith(".gguf"):
+        return False
+    return name.startswith("mtp-") or "-mtp-" in name or name.endswith("-mtp.gguf") or ".mtp." in name
+
+
 def profile_requires_draft(profile: str | None) -> bool:
     """Return whether a profile is required to run speculative decoding."""
     name = str(profile or '').strip().lower()
@@ -255,11 +263,15 @@ def write_server_preset(
 
     target_path_resolved = str(target_path or server.get('target_path') or '').strip()
     draft_path_resolved = str(server.get('draft_path') or '').strip()
+    # MTP + quantized V-cache requires flash_attn; Unsloth wants fa off for E4B MTP, so use f16 KV.
+    if is_mtp_draft_path(draft_path_resolved):
+        cache_k, cache_v = ('f16', 'f16')
     if target_path_resolved and not Path(target_path_resolved).expanduser().is_file():
         target_path_resolved = ''
     if draft_path_resolved and not Path(draft_path_resolved).expanduser().is_file():
         draft_path_resolved = ''
-    if not profile_requires_draft(preset_profile):
+    # Keep explicit MTP companion drafts on AR profiles; only clear unknown drafts.
+    if not profile_requires_draft(preset_profile) and not is_mtp_draft_path(draft_path_resolved):
         draft_path_resolved = ''
     if target_path_resolved:
         target = {
@@ -272,7 +284,7 @@ def write_server_preset(
             draft_file = Path(draft_path_resolved).expanduser()
             if draft_file.is_file():
                 draft = {
-                    'role': 'draft-dflash',
+                    'role': 'draft-mtp' if is_mtp_draft_path(draft_file) else 'draft-dflash',
                     'label': draft_file.name,
                     'path': str(draft_file),
                 }
@@ -299,9 +311,12 @@ def write_server_preset(
 
     configured_profile = str(server.get('profile') or preset_profile).strip()
     if draft and str(draft.get('path') or '').strip():
-        pair = _dflash_pair_preflight(str(target.get('path') or ''), str(draft.get('path') or ''))
-        if not pair or not pair.get('compatible'):
-            draft = None
+        if is_mtp_draft_path(draft.get('path')):
+            pass  # MTP companions are not DFlash accelerators; skip DFlash preflight.
+        else:
+            pair = _dflash_pair_preflight(str(target.get('path') or ''), str(draft.get('path') or ''))
+            if not pair or not pair.get('compatible'):
+                draft = None
 
     if use_draft is False:
         if profile_requires_draft(preset_profile) and server_dflash_draft_usable(server, cfg=cfg):
@@ -357,7 +372,13 @@ def write_server_preset(
 
     if draft and draft.get('path'):
         lines.append(f"model-draft = {draft['path']}")
-        if preset_profile in ('gemma-chat', 'qwen-dflash', 'gemma-12-dflash'):
+        if is_mtp_draft_path(draft.get('path')):
+            lines.extend([
+                'spec-type = draft-mtp',
+                'spec-draft-n-max = 4',
+                'ngld = all',
+            ])
+        elif preset_profile in ('gemma-chat', 'qwen-dflash', 'gemma-12-dflash'):
             draft_n_max = spec_draft_n_max(draft_path=draft['path'], profile=preset_profile)
             lines.extend([
                 'spec-type = draft-dflash',

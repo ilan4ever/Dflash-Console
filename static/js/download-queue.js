@@ -157,11 +157,11 @@
 
   function jobIdentifier(job) {
     const repo = String(job?.repo_id || '').trim();
-    const file = String(job?.filename || '').trim();
-    if (repo && file) return `${repo} · ${file}`;
-    if (repo) return repo;
-    if (file) return file;
-    return String(job?.id || '').trim();
+    return repo.includes('/') ? repo : '';
+  }
+
+  function jobDisplayName(job) {
+    return String(labels.get(job?.id) || job?.repo_id || job?.filename || '').trim();
   }
 
   function hideDownloadContextMenu() {
@@ -268,7 +268,14 @@
     if (cmd === 'copy-id') {
       if (!identifier) return;
       await navigator.clipboard.writeText(identifier);
-      toast('Identifier copied');
+      toast('Hugging Face name copied');
+      return;
+    }
+    if (cmd === 'copy-name') {
+      const name = jobDisplayName(job);
+      if (!name) return;
+      await navigator.clipboard.writeText(name);
+      toast('Display name copied');
       return;
     }
     if (cmd === 'copy-url') {
@@ -360,6 +367,7 @@
     const path = String(job.path || '').trim();
     const hfUrl = hfRepoUrl(repoId);
     const identifier = jobIdentifier(job);
+    const displayName = jobDisplayName(job);
     const isActive = job.status === 'downloading';
     const canResume = job.status === 'incomplete' || (job.status === 'error' && job.resumable);
 
@@ -367,11 +375,12 @@
     menu.innerHTML = `
       <button type="button" data-cmd="resume"${canResume ? '' : ' disabled'}>Resume download</button>
       <button type="button" data-cmd="load-model"${canLoad ? '' : ' disabled'}>Load model</button>
-      <button type="button" data-cmd="copy-id"${identifier ? '' : ' disabled'}>Copy identifier</button>
+      <button type="button" data-cmd="copy-name"${displayName ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
+      <button type="button" data-cmd="copy-id"${identifier ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
       <button type="button" data-cmd="copy-url"${hfUrl ? '' : ' disabled'}>Copy Hugging Face URL</button>
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy file path</button>
       <button type="button" data-cmd="copy-filename"${filename ? '' : ' disabled'}>Copy filename</button>
-      <button type="button" data-cmd="open-hf"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
+      <button type="button" data-cmd="open-hf"${hfUrl ? '' : ' disabled'} title="Open this model's page on Hugging Face">Open Hugging Face</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
       <button type="button" data-cmd="open-catalog"${repoId ? '' : ' disabled'}>Open in Model catalog</button>

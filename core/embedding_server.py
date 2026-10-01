@@ -17,13 +17,13 @@ from core.gpu_devices import resolve_role_gpu_launch_params
 from core.log_utils import rotate_log
 from core.server_boot import (
     LOG_DIR,
+    _acquire_port_boot,
     _spawn_detached,
     _tcp_port_open,
     clear_server_tracking,
     forget_started_process,
     get_started_process,
     note_boot_cycle_end,
-    port_lock_for,
     register_started_launch,
     terminate_process_tree,
     wait_for_port_closed,
@@ -241,9 +241,14 @@ def start_embedding_server(server: dict[str, Any], *, cfg: dict[str, Any] | None
     port = int(entry.get('port') or 0)
     if port <= 0 or not entry.get('id'):
         return {'success': False, 'error': 'invalid embedding server config'}
-    lock = port_lock_for(port)
-    if not lock.acquire(blocking=False):
-        return {'success': False, 'error': 'boot already in progress', 'port': port}
+    acquired = _acquire_port_boot(port)
+    if acquired is None:
+        return {
+            'success': False,
+            'error': 'timed out waiting for the model server to finish starting',
+            'port': port,
+        }
+    lock, _joined = acquired
     try:
         return _start_embedding_server_locked(entry, cfg=cfg)
     finally:

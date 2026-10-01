@@ -1163,6 +1163,76 @@ def test_enrich_external_cards_applies_windows_vram(monkeypatch):
     assert cards[0]['vram_source'] == 'windows'
 
 
+def test_enrich_external_cards_moves_card_to_the_gpu_holding_the_memory(monkeypatch):
+    monkeypatch.setattr(gpu_processes, '_gpu_live_map', lambda: {})
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.apply_windows_process_vram',
+        lambda _rows: False,
+    )
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.lookup_windows_process_vram_gb',
+        lambda _pid, _gpu_index: None,
+    )
+    monkeypatch.setattr(
+        'core.gpu_process_memory_windows.process_vram_by_gpu',
+        lambda pid: {1: 0.718} if pid == 26760 else {},
+    )
+    monkeypatch.setattr(
+        'core.gpu_devices.query_gpu_devices',
+        lambda: [
+            {'index': 0, 'display_name': 'RTX 4090'},
+            {'index': 1, 'display_name': 'TITAN'},
+        ],
+    )
+    monkeypatch.setattr(gpu_processes, '_attach_external_inference_stats', lambda card: card)
+    cards = _enrich_external_cards([
+        {
+            'id': 'external-gpu-26760',
+            'pid': 26760,
+            'gpu_index': 0,
+            'gpu_display': 'RTX 4090',
+            'title': 'speech_hermes_ws',
+            'vram_gb': None,
+        },
+    ], attach_stats=True)
+    assert cards[0]['gpu_index'] == 1
+    assert cards[0]['vram_gb'] == 0.718
+    assert cards[0]['vram_gpu_name'] == 'TITAN'
+
+
+def test_other_gpu_drops_compositor_that_exceeds_the_board(monkeypatch):
+    from core.gpu_processes import get_gpu_other_processes
+
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: [
+            {'gpu_index': 0, 'pid': 2260, 'process_name': 'dwm.exe', 'vram_mb': 10500, 'vram_gb': 10.3},
+            {'gpu_index': 0, 'pid': 201, 'process_name': 'Discord.exe', 'vram_mb': 1024, 'vram_gb': 1.0},
+        ],
+    )
+    monkeypatch.setattr(gpu_processes, '_managed_listener_pids', lambda _servers: set())
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            2260: {'process_name': 'dwm.exe', 'command_line': '', 'parent_process_name': ''},
+            201: {'process_name': 'Discord.exe', 'command_line': '', 'parent_process_name': ''},
+        },
+    )
+    payload = get_gpu_other_processes(
+        servers=[],
+        gpus=[{'index': 0, 'display_name': 'RTX 4090', 'vram_gb': 48, 'vram_used_gb': 29}],
+        external_cards=[],
+        attributed_vram_by_gpu={0: 21},
+    )
+    pids = {row['pid'] for row in payload['processes']}
+    assert 2260 not in pids
+    assert 201 in pids
+    assert payload['total_other_vram_gb'] == 1.0
+    assert payload['by_gpu'][0]['unattributed_gb'] == 7.0
+
+
 def test_enrich_external_cards_windows_vram_fallback_when_gpu_index_mismatches(monkeypatch):
     monkeypatch.setattr(gpu_processes, '_gpu_live_map', lambda: {1: {'index': 1, 'load_percent': 8}})
     monkeypatch.setattr(

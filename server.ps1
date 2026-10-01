@@ -325,7 +325,7 @@ if (-not $Restart -and -not $ApiRestart -and -not $DelegatedStart) {
             exit 0
         }
         Write-Host ''
-        Write-Host "Another DFlash Console instance ($existingRoot) holds port $Port — stopping it so only one server runs." -ForegroundColor Yellow
+        Write-Host "Another DFlash Console instance ($existingRoot) holds port $Port - stopping it so only one server runs." -ForegroundColor Yellow
         Write-StartupLine "Stopping foreign Console instance on port $Port (root: $existingRoot)..." 'Yellow'
         $stopped = Stop-ForeignConsoleApi -TargetPort $Port
         if ($stopped) {
@@ -345,7 +345,7 @@ Write-StartupLine "Console UI port: $Port"
 Write-StartupLine ("Mode: {0}" -f $(if ($Restart) { 'full restart' } elseif ($ApiRestart) { 'API restart; preserve engines' } else { 'start if needed' })) 'Gray'
 
 if ($Restart) {
-    Write-StartupLine 'Full restart — stopping managed engines...' 'Yellow'
+    Write-StartupLine 'Full restart - stopping managed engines...' 'Yellow'
     # A full restart force-stops each managed listener below. Calling the
     # graceful Python unload helper first made startup wait up to 20 seconds
     # when an engine was busy, without changing the final process state.
@@ -375,7 +375,7 @@ if ($Restart) {
     Start-Sleep -Milliseconds 750
 
 } else {
-    Write-StartupLine 'Gentle start — preserving running llama-server engines' 'Gray'
+    Write-StartupLine 'Gentle start - preserving running llama-server engines' 'Gray'
 }
 
 if (-not $orchestratedStart) {
@@ -389,7 +389,7 @@ if (-not $orchestratedStart) {
     } else {
         $stale = Stop-StaleConsoleApi -TargetPort $Port
         if ($stale.Count -gt 0) {
-            Write-StartupLine "  Stopped stale Console API — $($stale -join ', ')" 'DarkYellow'
+            Write-StartupLine "  Stopped stale Console API - $($stale -join ', ')" 'DarkYellow'
         } else {
             Write-StartupLine '  Console API port ready for launch' 'DarkGray'
         }
@@ -398,13 +398,13 @@ if (-not $orchestratedStart) {
     if ($gatewayPort -gt 0 -and $gatewayPort -ne $Port) {
         $gwStopped = Stop-ListenersOnPort -TargetPort $gatewayPort
         if ($gwStopped.Count -gt 0) {
-            Write-StartupLine "  Stopped stale OpenAI gateway — $($gwStopped -join ', ')" 'DarkYellow'
+            Write-StartupLine "  Stopped stale OpenAI gateway - $($gwStopped -join ', ')" 'DarkYellow'
         }
     }
 } elseif (-not (Test-ConsoleApiHealthy -TargetPort $Port)) {
     $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
     if ($listener) {
-        Write-StartupLine 'Orchestrated start — waiting for existing Console API to become healthy...' 'Gray'
+        Write-StartupLine 'Orchestrated start - waiting for existing Console API to become healthy...' 'Gray'
         for ($attempt = 0; $attempt -lt 20; $attempt++) {
             if (Test-ConsoleApiHealthy -TargetPort $Port) {
                 Write-StartupLine '  Existing Console API became healthy (no restart)' 'Green'

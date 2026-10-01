@@ -478,3 +478,45 @@ def test_adopt_running_engine_refuses_foreign_api_when_pid_unknown(monkeypatch):
     assert result.get('success') is False
     assert 'not owned' in str(result.get('error') or '').lower()
 
+
+def test_start_router_listener_joins_an_in_progress_boot(monkeypatch):
+    import threading
+    import time
+
+    port = 59991
+    lock = server_boot._port_lock(port)
+    assert lock.acquire(blocking=False)
+    monkeypatch.setattr(
+        server_boot,
+        'ensure_managed_listen_port',
+        lambda *args, **kwargs: {'success': True},
+    )
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(
+        server_boot,
+        '_start_router_listener_locked',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('must not start a second boot')),
+    )
+
+    result: dict = {}
+
+    def run() -> None:
+        result['value'] = server_boot.start_router_listener({
+            'id': 'qwen-join',
+            'host': '127.0.0.1',
+            'port': port,
+        })
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        time.sleep(0.2)
+        lock.release()
+        thread.join(timeout=5)
+    finally:
+        if lock.acquire(blocking=False):
+            lock.release()
+    assert thread.is_alive() is False
+    assert result['value']['success'] is True
+    assert result['value']['joined_boot'] is True
+

@@ -1416,17 +1416,28 @@
     return String(raw || '').trim().replace(SYNTHETIC_ID_RE, '');
   }
 
-  /** OpenAI gateway / chat `model` field, or engine server id for Console proxy URLs. */
+  /** Gateway `model` field: the checkpoint id, with dots and underscores written as hyphens. */
+  function gatewayApiModelId(raw) {
+    const text = stripSyntheticCatalogId(raw);
+    if (!text || ['default', 'model', 'none', 'unknown'].includes(text.toLowerCase())) return '';
+    return text.replace(/\./g, '-').replace(/_/g, '-');
+  }
+
+  /** OpenAI gateway / chat `model` field. */
   function apiModelIdentifier(model) {
     if (!model) return '';
+    const remoteCloud = model.cloud === true
+      || model.always_ready === true
+      || model.cloud_provider
+      || model.provider_id
+      || String(model.source || '').trim().toLowerCase() === 'cloud';
+    if (remoteCloud) {
+      return String(model.model_id || model.api_model_id || model.id || '').trim();
+    }
+    const apiModelId = gatewayApiModelId(model.api_model_id || model.model_id);
+    if (apiModelId) return apiModelId;
     const serverId = stripSyntheticCatalogId(model.server_id);
-    const apiModelId = stripSyntheticCatalogId(model.api_model_id || model.model_id);
-    const source = String(model.source || '');
-    const hasEngine = Boolean(
-      serverId && (model.loadable || source === 'dflash-profile' || Number(model.port) > 0),
-    );
-    if (hasEngine) return serverId;
-    if (apiModelId && !SYNTHETIC_ID_RE.test(String(model.id || ''))) return apiModelId;
+    if (serverId) return serverId;
     const hfRepo = String(model.hf_repo || model.repo_id || '').trim();
     if (hfRepo && hfRepo.includes('/')) return hfRepo;
     const label = String(model?.label || '').trim();
@@ -1446,23 +1457,11 @@
   }
 
   function displayModelName(model) {
-    const synthetic = SYNTHETIC_ID_RE;
-    const label = String(model?.label || '').trim();
-    const filename = String(model?.filename || '').trim();
-    const publisher = String(model?.publisher || '').trim();
-    const hfRepo = String(model?.hf_repo || model?.repo_id || '').trim();
-    if (hfRepo && !synthetic.test(hfRepo)) return hfRepo;
-    if ((model?.arch === 'hf' || model?.kind === 'dir') && publisher && label && !label.includes('/')) {
-      return `${publisher}/${label}`;
-    }
-    if (window.DFlashModelGroups?.stackDisplayName && model?.dflash_stack && model?.draft_path) {
-      const stackName = String(window.DFlashModelGroups.stackDisplayName(model) || '').trim();
-      if (stackName) return stackName;
-    }
-    if (label && !synthetic.test(label)) return label;
-    if (filename && /\.[a-z0-9]+$/i.test(filename) && !synthetic.test(filename)) return filename;
-    const raw = String(model?.model_id || model?.id || '').trim();
-    return stripSyntheticCatalogId(raw) || filename || label || raw;
+    if (!model) return '';
+    const title = String(modelTitleLine(model) || '').trim();
+    if (title && title !== '—') return title;
+    const label = String(model.label || model.filename || '').trim();
+    return label.replace(/\.gguf$/i, '');
   }
 
   function stackTargetIssue(model) {
@@ -1651,16 +1650,34 @@
   }
 
   function huggingFaceUrl(model) {
-    const normalized = String(model.path || '').replace(/\\/g, '/');
-    const parts = normalized.split('/');
-    const modelsIdx = parts.findIndex((part) => part === 'models');
-    if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
-      return `https://huggingface.co/${parts[modelsIdx + 1]}/${parts[modelsIdx + 2]}`;
+    const repo = String(model?.hf_repo || model?.repo_id || '').trim().replace(/^\/+|\/+$/g, '');
+    if (repo.includes('/') && !repo.includes('..') && !/\s/.test(repo)) {
+      return `https://huggingface.co/${repo}`;
     }
-    if (model.publisher && model.id) {
-      return `https://huggingface.co/${model.publisher}/${model.id}`;
+    const normalized = String(model?.path || model?.model_path || model?.target_path || '').replace(/\\/g, '/');
+    const hub = normalized.match(/models--([^/]+)--([^/]+)/i);
+    if (hub?.[1] && hub?.[2]) return `https://huggingface.co/${hub[1]}/${hub[2]}`;
+    const parts = normalized.split('/').filter(Boolean);
+    const modelsIdx = parts.findIndex((part) => part.toLowerCase() === 'models');
+    if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
+      const org = parts[modelsIdx + 1];
+      const name = parts[modelsIdx + 2];
+      if (org && name && !/\.(gguf|bin|onnx|safetensors)$/i.test(name)) {
+        return `https://huggingface.co/${org}/${name}`;
+      }
+    }
+    const publisher = String(model?.publisher || '').trim();
+    const folder = String(model?.label || '').trim();
+    if ((model?.arch === 'hf' || model?.kind === 'dir') && publisher && folder && !folder.includes('/')) {
+      return `https://huggingface.co/${publisher}/${folder}`;
     }
     return '';
+  }
+
+  function huggingFaceName(model) {
+    const url = huggingFaceUrl(model);
+    if (!url) return '';
+    return url.replace(/^https:\/\/huggingface\.co\//i, '').replace(/\/+$/, '');
   }
 
   function getActiveDownloadJobs() {
@@ -2827,8 +2844,9 @@
 
     menu.innerHTML = `
       <button type="button" data-cmd="pin">${isPinned ? 'Unpin' : 'Pin'}</button>
-      <button type="button" data-cmd="copy-id"${apiModelIdentifier(model) ? '' : ' disabled'} title="Engine id for API clients (gateway model field or /api/servers/…/v1)">Copy API identifier</button>
-      <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="Friendly title shown in the Model library">Copy display name</button>
+      <button type="button" data-cmd="copy-id"${apiModelIdentifier(model) ? '' : ' disabled'} title="Name you send as the model in an API request">Copy API name</button>
+      <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
+      <button type="button" data-cmd="copy-hf-name"${huggingFaceName(model) ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="${modelHasVision(model) ? 'This model already has a vision projector wired' : 'Download vision projector from Hugging Face and wire it to this model'}">${modelHasVision(model) ? 'Vision already supported' : 'Add vision support…'}</button>
@@ -2953,7 +2971,7 @@
       const id = apiModelIdentifier(model);
       if (!id) return;
       await navigator.clipboard.writeText(id);
-      toast('API identifier copied');
+      toast('API name copied');
       return;
     }
     if (cmd === 'copy-name') {
@@ -2961,6 +2979,13 @@
       if (!name) return;
       await navigator.clipboard.writeText(name);
       toast('Display name copied');
+      return;
+    }
+    if (cmd === 'copy-hf-name') {
+      const name = huggingFaceName(model);
+      if (!name) return;
+      await navigator.clipboard.writeText(name);
+      toast('Hugging Face name copied');
       return;
     }
     if (cmd === 'metadata') {
@@ -4344,6 +4369,8 @@
   window.DFlashModelsLive = {
     apiModelIdentifier,
     displayModelName,
+    huggingFaceUrl,
+    huggingFaceName,
     findAndAttachDraftForTarget,
     waitForDraftAttach,
     refresh,

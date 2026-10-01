@@ -50,6 +50,7 @@
   let initialStatusSettled = false;
   let pollInFlight = false;
   let latestStatusRevision = 0;
+  let latchedStatusBootId = '';
   let externalFetchPending = false;
   let externalInitialFetchDone = false;
   let externalScanError = '';
@@ -895,16 +896,29 @@
     }
   }
 
-  function applyServersPayload(data, { mergeExternal = true } = {}) {
+  function noteStatusSnapshot(data) {
     const revision = Number(data?.snapshot_revision || 0);
-    const staleRevision = revision > 0 && latestStatusRevision > 0 && revision < latestStatusRevision;
+    const boot = String(data?.boot_id || '');
+    if (boot && boot !== latchedStatusBootId) {
+      latchedStatusBootId = boot;
+      latestStatusRevision = revision > 0 ? revision : 0;
+      return false;
+    }
+    if (revision > 0 && latestStatusRevision > 0 && revision < latestStatusRevision) {
+      return true;
+    }
+    if (revision > 0) latestStatusRevision = revision;
+    return false;
+  }
+
+  function applyServersPayload(data, { mergeExternal = true } = {}) {
+    const staleRevision = noteStatusSnapshot(data);
     syncPipelineStandbyFromPayload(data);
     if (staleRevision) {
       applyExternalPayload(data, { mergeExternal });
       return false;
     }
-    if (revision > 0) latestStatusRevision = revision;
-    servers = data.servers || [];
+    servers = keepEjectingCardContent(data.servers || []);
     allServers = data.all_servers || servers;
     releaseSettledPendingLoads();
     window.DFlashModelsLive?.noteRuntimeServers?.(servers);
@@ -973,12 +987,10 @@
     externalFetchPromise = (async () => {
       try {
         const data = await api(`/api/servers?include_external=1${useFresh ? '&fresh=1' : ''}`);
-        const revision = Number(data?.snapshot_revision || 0);
-        const staleRevision = revision > 0 && latestStatusRevision > 0 && revision < latestStatusRevision;
+        const staleRevision = noteStatusSnapshot(data);
         applyExternalPayload(data, { mergeExternal: true });
         if (!staleRevision) {
-          if (revision > 0) latestStatusRevision = revision;
-          servers = data.servers || servers;
+          servers = keepEjectingCardContent(data.servers || servers);
           allServers = data.all_servers || servers;
           gpus = data.gpus || gpus;
         }
@@ -1546,6 +1558,28 @@
     cardContextTarget = null;
   }
 
+  function engineHuggingFaceProbe(server, row) {
+    return {
+      hf_repo: row?.hf_repo || server?.hf_repo || '',
+      repo_id: row?.repo_id || server?.repo_id || '',
+      path: row?.model_path || row?.path || server?.model_path || server?.target_path || '',
+      model_path: row?.model_path || server?.model_path || '',
+      target_path: server?.target_path || row?.target_path || '',
+      publisher: row?.publisher || server?.publisher || '',
+      label: row?.label || server?.label || '',
+      arch: row?.arch || server?.arch || '',
+      kind: row?.kind || server?.kind || '',
+    };
+  }
+
+  function engineHuggingFaceName(server, row) {
+    return window.DFlashModelsLive?.huggingFaceName?.(engineHuggingFaceProbe(server, row)) || '';
+  }
+
+  function engineModelPageUrl(server, row) {
+    return window.DFlashModelsLive?.huggingFaceUrl?.(engineHuggingFaceProbe(server, row)) || '';
+  }
+
   function engineCatalogRow(server, row) {
     return {
       ...row,
@@ -1570,10 +1604,10 @@
     const url = gatewayUrl || server.reachable_url || '';
     const path = row.path || '';
     const catalogRow = engineCatalogRow(server, row);
-    const apiId = window.DFlashModelsLive?.apiModelIdentifier?.(catalogRow)
-      || String(server?.id || row?.server_id || '').trim();
-    const displayName = window.DFlashModelsLive?.displayModelName?.(catalogRow)
-      || String(row?.label || server?.label || row?.title || '').trim();
+    const apiId = window.DFlashModelsLive?.apiModelIdentifier?.(catalogRow) || '';
+    const displayName = cardDisplayName(row, server);
+    const hfName = engineHuggingFaceName(server, row);
+    const modelPage = engineModelPageUrl(server, row);
     const isEmbedding = server.engine_mode === 'embedding'
       || server.model_kind === 'embedding'
       || row.model_kind === 'embedding'
@@ -1589,8 +1623,10 @@
       <button type="button" data-cmd="runtime">Show runtime settings</button>
       <button type="button" data-cmd="copy-url"${url ? '' : ' disabled'}>Copy API URL</button>
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
-      <button type="button" data-cmd="copy-identifier"${apiId ? '' : ' disabled'} title="Engine id for API clients">Copy API identifier</button>
-      <button type="button" data-cmd="copy-display-name"${displayName ? '' : ' disabled'} title="Friendly title from the Model library">Copy display name</button>
+      <button type="button" data-cmd="copy-identifier"${apiId ? '' : ' disabled'} title="Name you send as the model in an API request">Copy API name</button>
+      <button type="button" data-cmd="copy-display-name"${displayName ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
+      <button type="button" data-cmd="copy-hf-name"${hfName ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
+      <button type="button" data-cmd="open-hf"${modelPage ? '' : ' disabled'} title="Open this model's page on Hugging Face">Open Hugging Face</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
       <button type="button" data-cmd="goto-library" title="Open the same model in the Model library to load it, set it up or delete it">Go to model in Model library</button>
@@ -1653,18 +1689,30 @@
       return;
     }
     if (cmd === 'copy-identifier') {
-      const apiId = window.DFlashModelsLive?.apiModelIdentifier?.(engineCatalogRow(server, row))
-        || String(server?.id || row?.server_id || '').trim();
+      const apiId = window.DFlashModelsLive?.apiModelIdentifier?.(engineCatalogRow(server, row)) || '';
       if (!apiId) return;
       await navigator.clipboard.writeText(apiId);
-      toast('API identifier copied');
+      toast('API name copied');
       return;
     }
     if (cmd === 'copy-display-name') {
-      const name = window.DFlashModelsLive?.displayModelName?.(engineCatalogRow(server, row)) || '';
+      const name = cardDisplayName(row, server);
       if (!name) return;
       await navigator.clipboard.writeText(name);
       toast('Display name copied');
+      return;
+    }
+    if (cmd === 'copy-hf-name') {
+      const name = engineHuggingFaceName(server, row);
+      if (!name) return;
+      await navigator.clipboard.writeText(name);
+      toast('Hugging Face name copied');
+      return;
+    }
+    if (cmd === 'open-hf') {
+      const url = engineModelPageUrl(server, row);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      else toast('No Hugging Face page for this card', false);
       return;
     }
     if (cmd === 'goto-library') {
@@ -2123,7 +2171,17 @@
     if (!Number.isFinite(gb) || gb <= 0) return '';
     if (gb < 0.01) return `${gb.toFixed(3)} GB`;
     if (gb < 10) return `${gb.toFixed(2)} GB`;
-    return `${Math.round(gb)} GB`;
+    const text = gb.toFixed(1).replace(/\.0$/, '');
+    return `${text} GB`;
+  }
+
+  function cardVramGpuName(row, server) {
+    const direct = String(row?.vram_gpu_name || '').trim();
+    if (direct) return direct;
+    const raw = String(row?.gpu_display || server?.gpu_display || '').trim();
+    if (!raw) return '';
+    const parts = raw.split(/→|->/);
+    return String(parts[parts.length - 1] || '').trim();
   }
 
   function cardSizeGb(row) {
@@ -2834,10 +2892,13 @@
 
   function formatGpuOtherTotalLabel(block) {
     const total = gpuOtherProcessVramTotal(block);
-    if (!total) return '';
-    const text = formatGpuOtherTotalGb(total.gb);
+    const unnamed = Number(block?.unattributed_gb);
+    const extra = Number.isFinite(unnamed) && unnamed > 0 ? unnamed : 0;
+    if (!total && extra <= 0) return '';
+    const gb = (total?.gb || 0) + extra;
+    const text = formatGpuOtherTotalGb(gb);
     if (!text) return '';
-    const prefix = total.partial ? '~' : '';
+    const prefix = total?.partial ? '~' : '';
     return `${prefix}${text} GB total`;
   }
 
@@ -2847,7 +2908,7 @@
     const block = gpuOtherUsage;
     if (!block?.processes?.length && !block?.unattributed_gb) return '';
     const rows = block.processes || [];
-    const multiGpu = new Set(rows.map((proc) => proc.gpu_index)).size > 1;
+    const multiGpu = (gpus?.length || 0) > 1 || new Set(rows.map((proc) => proc.gpu_index)).size > 1;
     const visible = rows.slice(0, GPU_OTHER_CHIP_LIMIT);
     const overflow = rows.length - visible.length;
     const chips = visible.map((proc) => {
@@ -2921,9 +2982,19 @@
     return `<span class="lm-external-kind${badge ? '' : ' is-empty'}"${badge ? '' : ' aria-hidden="true"'}">${badge}</span>`;
   }
 
-  function engineHeadVramCell(row) {
+  function engineHeadVramHtml(row, server) {
     const vramVal = formatCardVramGb(row?.vram_gb);
-    return `<span class="lm-engine-head-vram${vramVal ? '' : ' is-empty'}"${vramVal ? ' title="GPU memory in use"' : ' aria-hidden="true"'}>${vramVal ? `<span class="lbl">VRAM</span><span class="val">${escapeHtml(vramVal)}</span>` : ''}</span>`;
+    if (!vramVal) return '';
+    const gpu = cardVramGpuName(row, server);
+    const shown = gpu ? `${vramVal} · ${gpu}` : vramVal;
+    const title = gpu ? `GPU memory in use on ${gpu}` : 'GPU memory in use';
+    return `<span class="lm-engine-head-vram" title="${escapeHtml(title)}"><span class="lbl">VRAM</span><span class="val">${escapeHtml(shown)}</span></span>`;
+  }
+
+  function engineHeadVramCell(row, server) {
+    const html = engineHeadVramHtml(row, server);
+    if (html) return html;
+    return '<span class="lm-engine-head-vram is-empty" aria-hidden="true"></span>';
   }
 
   function engineHeadCtxMetric(row, server) {
@@ -2934,10 +3005,7 @@
   }
 
   function engineHeadVramCtxCell(row, server) {
-    const vramVal = formatCardVramGb(row?.vram_gb);
-    const vramPart = vramVal
-      ? `<span class="lm-engine-head-vram" title="GPU memory in use"><span class="lbl">VRAM</span><span class="val">${escapeHtml(vramVal)}</span></span>`
-      : '';
+    const vramPart = engineHeadVramHtml(row, server);
     const ctxPart = engineHeadCtxMetric(row, server);
     if (!vramPart && !ctxPart) {
       return '<span class="lm-engine-head-vram-ctx is-empty" aria-hidden="true"></span>';
@@ -3183,7 +3251,10 @@
   }
 
   function isMobileEngineCards() {
-    return document.documentElement.classList.contains('df-narrow');
+    // Mobile card markup is only safe when the mobile CSS breakpoint is active.
+    // The df-narrow class can stay on after a webview grows, and the desktop
+    // grid then stacks the mobile header into a tall brown slab.
+    return window.matchMedia('(max-width: 900px)').matches;
   }
 
   function cardTokenMetricGroup(slot, { live = false, recent = [], peakSpeed = null } = {}) {
@@ -5090,18 +5161,71 @@
     }
   }
 
-  async function waitUntilServerIdle(serverId, maxAttempts = 30) {
+  function serverLooksIdle(server) {
+    return !!(server && !server.loaded_models?.length && !server.booting && server.status !== 'booting' && server.status !== 'loaded');
+  }
+
+  function withoutLoadedCards(server) {
+    if (!server) return server;
+    return {
+      ...server,
+      status: server.status === 'loaded' ? 'running' : server.status,
+      loaded_models: [],
+      visible_cards: [],
+      loaded: false,
+      listener_vram_gb: null,
+    };
+  }
+
+  const forcedIdleUntil = new Map();
+
+  function dropUnloadedServer(serverId) {
+    forcedIdleUntil.set(serverId, Date.now() + 12000);
+    const apply = (list) => (list || []).map((server) => (
+      server?.id === serverId ? withoutLoadedCards(server) : server
+    ));
+    servers = apply(servers);
+    allServers = apply(allServers);
+  }
+
+  function keepEjectingCardContent(nextServers) {
+    return (nextServers || []).map((server) => {
+      if (!server?.id) return server;
+      const idleUntil = forcedIdleUntil.get(server.id);
+      if (idleUntil) {
+        if (Date.now() > idleUntil || serverLooksIdle(server)) forcedIdleUntil.delete(server.id);
+        else return withoutLoadedCards(server);
+      }
+      if (getServerAction(server.id) !== 'ejecting') return server;
+      const prev = servers.find((entry) => entry.id === server.id) || server;
+      return {
+        ...server,
+        label: server.label || prev.label,
+        display_name: server.display_name || prev.display_name,
+        display_name_full: server.display_name_full || prev.display_name_full,
+        visible_cards: (Array.isArray(prev.visible_cards) && prev.visible_cards.length)
+          ? prev.visible_cards
+          : server.visible_cards,
+      };
+    });
+  }
+
+  async function waitUntilServerIdle(serverId, maxAttempts = 40) {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const data = await api('/api/servers');
-      servers = data.servers || [];
-      allServers = data.all_servers || servers;
-      const server = servers.find((s) => s.id === serverId);
-      if (server && !server.loaded_models?.length && !server.booting && server.status !== 'booting') {
-        return server;
+      try {
+        const data = await api('/api/servers?include_external=0', { timeoutMs: 15000 });
+        if (!noteStatusSnapshot(data)) {
+          servers = keepEjectingCardContent(data.servers || []);
+          allServers = data.all_servers || servers;
+        }
+        const server = servers.find((s) => s.id === serverId);
+        if (serverLooksIdle(server)) return server;
+      } catch {
+        /* A slow status poll must not cancel the unload or blank the card. */
       }
       await new Promise((resolve) => window.setTimeout(resolve, 400));
     }
-    return activeServer();
+    return null;
   }
 
   function dflashRepairDetail(error) {
@@ -5405,9 +5529,8 @@
       secondary: row?.app_label ? `External · ${row.app_label}` : 'External GPU process',
       ttlMs: 120000,
     });
-    externalGpuLoads = externalGpuLoads.filter((entry) => Number(entry.pid) !== Number(pid));
-    suppressExternalEmptyDebounce = true;
     renderAll();
+    let removed = false;
     try {
       const body = {};
       if (row?.api_url) body.api_url = row.api_url;
@@ -5417,8 +5540,12 @@
         body: Object.keys(body).length ? JSON.stringify(body) : undefined,
         timeoutMs: 0,
       });
-      const removed = await waitUntilExternalUnloaded(pid, { modelName, appLabel });
-      if (removed) {
+      externalGpuLoads = externalGpuLoads.filter((entry) => Number(entry.pid) !== Number(pid));
+      suppressExternalEmptyDebounce = true;
+      removed = true;
+      renderAll();
+      const stayedGone = await waitUntilExternalUnloaded(pid, { modelName, appLabel });
+      if (stayedGone || removed) {
         if (selectedLoadedKey === key) clearLoadedCardSelection();
         toast('External model unloaded');
       } else if (externalGpuLoads.some((entry) => sameExternalModel(entry, pid, modelName, appLabel))) {
@@ -5449,19 +5576,28 @@
     const duplicateIds = serversSharingTarget(targetPath).filter((id) => id !== serverId);
     const unloadIds = [serverId, ...duplicateIds];
     setServerAction(serverId, 'ejecting');
-    const label = allServers.find((s) => s.id === serverId)?.label || serverId;
+    const label = primary?.display_name_full || primary?.display_name || primary?.label || serverId;
     window.DFlashStatusFeed?.setTransient(`Unloading ${label}…`, { ttlMs: 30000 });
     renderAll();
     let unloaded = false;
+    let stillReleasing = false;
     try {
       for (const id of unloadIds) {
         setServerAction(id, 'ejecting');
+        renderAll();
         await api(`/api/servers/${encodeURIComponent(id)}/unload`, { method: 'POST', timeoutMs: 0 });
-        await waitUntilServerIdle(id);
+        const idle = await waitUntilServerIdle(id);
+        if (!idle) {
+          stillReleasing = true;
+          continue;
+        }
+        dropUnloadedServer(id);
         setServerAction(id, null);
+        renderAll();
+        unloaded = true;
       }
-      unloaded = true;
-      toast(duplicateIds.length ? 'Duplicate model copies unloaded' : 'Model unloaded');
+      if (stillReleasing) toast('Unload sent — still releasing the model', true);
+      else toast(duplicateIds.length ? 'Duplicate model copies unloaded' : 'Model unloaded');
       activeId = serverId;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
       await refreshLogs();
@@ -5471,7 +5607,7 @@
       unloadIds.forEach((id) => setServerAction(id, null));
       if (inspectorBound?.serverId === serverId) clearInspectorPendingReload();
       renderAll();
-      await refreshAfterUnload();
+      void refreshAfterUnload();
     }
     return unloaded;
   }

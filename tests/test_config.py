@@ -398,6 +398,50 @@ class ConfigTests(unittest.TestCase):
         load_fn.assert_called_once()
         self.assertEqual(load_fn.call_args.kwargs.get('model_path'), llm_path)
 
+    def test_model_load_returns_already_loaded_without_vram_block(self):
+        from api.app import ModelLoadRequest, model_load
+
+        llm_path = r'C:\models\qwen\model.gguf'
+        server_entry = {
+            'id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+            'port': 8097,
+            'host': '127.0.0.1',
+            'label': 'Qwen',
+        }
+        with patch('core.catalog_load.list_local_models', return_value={'models': [
+            {
+                'path': llm_path,
+                'modality': 'llm',
+                'runtime_id': 'llama-server',
+                'server_id': server_entry['id'],
+                'label': 'Qwen',
+            },
+        ]}):
+            with patch('core.catalog_load.get_server', return_value=server_entry):
+                with patch('core.catalog_load.note_engine_on'):
+                    with patch('core.catalog_load.note_engine_loaded'):
+                        with patch(
+                            'core.catalog_load.checkpoint_already_loaded',
+                            return_value={
+                                'success': True,
+                                'loaded': True,
+                                'already_loaded': True,
+                                'model': 'qwen',
+                                'port': 8097,
+                            },
+                        ):
+                            with patch('core.memory_guardrails.assess_load') as assess:
+                                with patch('core.catalog_load.load_server_checkpoint') as load_fn:
+                                    result = model_load(
+                                        ModelLoadRequest(path=llm_path, model_id=server_entry['id']),
+                                        self._mock_request({'X-DFlash-Client': 'DeepSeek Harness'}),
+                                    )
+        self.assertTrue(result['success'])
+        self.assertTrue(result['already_loaded'])
+        self.assertEqual(result['server_id'], server_entry['id'])
+        assess.assert_not_called()
+        load_fn.assert_not_called()
+
     def test_runtime_start_stop_endpoints(self):
         from types import SimpleNamespace
 

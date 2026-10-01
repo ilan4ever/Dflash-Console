@@ -2175,6 +2175,7 @@ async def servers_status(
         cached = _cached_status_payload(include_external)
         if cached is not None:
             cached = _merge_adapter_engine_rows(dict(cached))
+            cached['boot_id'] = _BOOT_ID
             cached['stale'] = True
             snapshot_at = float(cached.get('updated_at') or 0.0)
             if snapshot_at:
@@ -2206,6 +2207,7 @@ async def servers_status(
 
         _write_engine_status_log(trace, build_ms)
         payload = _merge_adapter_engine_rows(payload)
+        payload['boot_id'] = _BOOT_ID
         _store_status_payload(payload, include_external=include_external)
         return payload
 

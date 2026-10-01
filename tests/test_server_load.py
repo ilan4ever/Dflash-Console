@@ -5,6 +5,7 @@ from fastapi import HTTPException
 import api.app as app
 from core.server_boot import (
     _checkpoint_id_loaded,
+    checkpoint_already_loaded,
     checkpoints_match,
     find_target_loaded_elsewhere,
     resolve_load_target_path,
@@ -289,3 +290,35 @@ def test_find_target_loaded_elsewhere_matches_same_basename_copy(monkeypatch, tm
     )
     assert elsewhere is not None
     assert elsewhere['server_id'] == 'gemma-4-31b-q4-0-it-dflash'
+
+
+def test_already_loaded_accepts_engine_id_when_the_same_file_is_live(monkeypatch, tmp_path):
+    gguf = tmp_path / 'Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf'
+    gguf.write_bytes(b'gguf')
+    other = tmp_path / 'other.gguf'
+    other.write_bytes(b'nope')
+    server = {
+        'id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
+        'port': 8097,
+        'host': '127.0.0.1',
+        'api_url': 'http://127.0.0.1:8097/v1',
+        'model_id': 'qwen3.8-27b-gsq-rco-iq3-xxs-mtp',
+        'target_path': str(gguf),
+        'profile': 'qwen-ar',
+    }
+    rows = [{
+        'id': 'qwen3.8-27b-gsq-rco-iq3-xxs-mtp',
+        'status': {'value': 'loaded', 'args': ['llama-server', '--model', str(gguf)]},
+    }]
+    monkeypatch.setattr('core.server_boot._tcp_port_open', lambda *args, **kwargs: True)
+    monkeypatch.setattr('core.runtime._fetch_models_payload', lambda api_url: rows)
+    monkeypatch.setattr('core.runtime.probe_models', lambda api_url: ['qwen3.8-27b-gsq-rco-iq3-xxs-mtp'])
+    monkeypatch.setattr('core.server_boot.adopt_running_engine', lambda *args, **kwargs: {'success': True})
+    monkeypatch.setattr('core.server_boot.note_boot_cycle_end', lambda *args, **kwargs: None)
+
+    result = checkpoint_already_loaded(server, model_path=str(gguf), model_id=server['id'])
+    assert result is not None
+    assert result['already_loaded'] is True
+
+    missed = checkpoint_already_loaded(server, model_path=str(other), model_id='some-other-model')
+    assert missed is None

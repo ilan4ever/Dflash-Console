@@ -11,6 +11,7 @@
   let pollInFlight = false;
   let lastExternalPollAt = 0;
   let latestSnapshotRevision = 0;
+  let latchedSnapshotBootId = '';
   /** serverId -> { label } — set by Engines tab while a user-initiated load is in flight */
   let pendingLoadsSnapshot = {};
 
@@ -265,8 +266,15 @@
       const data = await api(`/api/servers?include_external=${includeExternal ? '1' : '0'}`);
       if (includeExternal || lastExternalPollAt === 0) lastExternalPollAt = now;
       const revision = Number(data?.snapshot_revision || 0);
-      if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) return;
-      if (revision > 0) latestSnapshotRevision = revision;
+      const boot = String(data?.boot_id || '');
+      if (boot && boot !== latchedSnapshotBootId) {
+        latchedSnapshotBootId = boot;
+        latestSnapshotRevision = revision > 0 ? revision : 0;
+      } else if (revision > 0 && latestSnapshotRevision > 0 && revision < latestSnapshotRevision) {
+        return;
+      } else if (revision > 0) {
+        latestSnapshotRevision = revision;
+      }
       serversSnapshot = data.servers || [];
       pipelineStandby = data.pipeline_standby === true;
       window.DFlashServerLive?.syncPipelineStandbyFromFeed?.(pipelineStandby);

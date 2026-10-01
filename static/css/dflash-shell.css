@@ -3949,6 +3949,44 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   border-bottom: 1px solid rgba(74, 222, 128, 0.28);
 }
 
+/* Mobile header has four cells. Keep them on one row even when the desktop
+   two-column rule would otherwise wrap VRAM, the client badge, and Unload
+   into a tall brown block with the model name stranded underneath. */
+.df-shell .lm-mobile-engine-head.lm-model-card-loaded-by-prompt {
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, max-content) auto;
+  grid-auto-flow: column;
+  grid-template-rows: auto;
+  align-items: center;
+  height: auto;
+  min-height: 0;
+  padding: 3px 8px;
+}
+
+.df-shell .lm-mobile-engine-head.lm-model-card-loaded-by-prompt .lm-mobile-engine-head-chip {
+  grid-column: 1;
+  grid-row: 1;
+  width: auto;
+}
+
+.df-shell .lm-mobile-engine-head.lm-model-card-loaded-by-prompt .lm-engine-head-vram-ctx {
+  grid-column: 2;
+  grid-row: 1;
+  width: auto;
+  justify-content: center;
+}
+
+.df-shell .lm-mobile-engine-head.lm-model-card-loaded-by-prompt .lm-loaded-by-badges {
+  grid-column: 3;
+  grid-row: 1;
+  width: auto;
+}
+
+.df-shell .lm-mobile-engine-head.lm-model-card-loaded-by-prompt .lm-mobile-engine-unload {
+  grid-column: 4;
+  grid-row: 1;
+  width: auto;
+}
+
 .df-shell .lm-model-card-loaded-by-prompt.has-multi-clients {
   grid-template-columns: minmax(0, 1fr) minmax(0, max-content);
 }

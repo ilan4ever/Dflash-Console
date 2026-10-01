@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import os
 import re
 import secrets
@@ -355,6 +356,139 @@ def query_compute_vram_map() -> dict[int, float]:
     return result
 
 
+_PARENT_MAP_CACHE: dict[str, Any] = {'at': 0.0, 'map': {}}
+_PARENT_MAP_LOCK = threading.Lock()
+
+
+def _windows_parent_pid_map() -> dict[int, int]:
+    """pid -> parent pid. The Console server does not ship psutil."""
+    now = time.time()
+    cached = _PARENT_MAP_CACHE.get('map')
+    if isinstance(cached, dict) and (now - float(_PARENT_MAP_CACHE.get('at') or 0.0)) < 20:
+        return dict(cached)
+    with _PARENT_MAP_LOCK:
+        now = time.time()
+        cached = _PARENT_MAP_CACHE.get('map')
+        if isinstance(cached, dict) and (now - float(_PARENT_MAP_CACHE.get('at') or 0.0)) < 20:
+            return dict(cached)
+        return _load_windows_parent_pid_map()
+
+
+def _load_windows_parent_pid_map() -> dict[int, int]:
+    if sys.platform != 'win32':
+        return {}
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
+    )
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            check=False,
+            **_subprocess_no_window_kwargs(),
+        )
+    except Exception:
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return {}
+    rows = payload if isinstance(payload, list) else [payload]
+    mapping: dict[int, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            proc_id = int(row.get('ProcessId') or 0)
+            parent = int(row.get('ParentProcessId') or 0)
+        except (TypeError, ValueError):
+            continue
+        if proc_id > 0:
+            mapping[proc_id] = parent
+    _PARENT_MAP_CACHE['at'] = time.time()
+    _PARENT_MAP_CACHE['map'] = dict(mapping)
+    return mapping
+
+
+def _descendant_pids(pid: int) -> set[int]:
+    found = {int(pid)}
+    try:
+        import psutil
+    except ImportError:
+        psutil = None  # type: ignore[assignment]
+    if psutil is not None:
+        try:
+            parent = psutil.Process(int(pid))
+            for child in parent.children(recursive=True):
+                try:
+                    found.add(int(child.pid))
+                except (psutil.Error, TypeError, ValueError):
+                    continue
+            return found
+        except (psutil.Error, TypeError, ValueError):
+            return found
+    children: dict[int, list[int]] = {}
+    for child, parent in _windows_parent_pid_map().items():
+        if int(parent) > 0:
+            children.setdefault(int(parent), []).append(int(child))
+    stack = [int(pid)]
+    while stack:
+        current = stack.pop()
+        for child in children.get(current, []):
+            if child in found:
+                continue
+            found.add(child)
+            stack.append(child)
+    return found
+
+
+def measured_vram_by_gpu_for_pids(pids: set[int] | list[int]) -> dict[int, float]:
+    """Sum measured VRAM for these PIDs on each GPU. Skips tiny CUDA contexts."""
+    wanted = {int(pid) for pid in pids if int(pid) > 0}
+    if not wanted:
+        return {}
+    try:
+        from core.gpu_process_memory_windows import query_windows_process_gpu_bytes
+    except Exception:
+        return {}
+    data = query_windows_process_gpu_bytes()
+    totals: dict[int, float] = {}
+    for (proc_id, gpu_index), nbytes in data.items():
+        if int(proc_id) not in wanted or int(nbytes) <= 0:
+            continue
+        gb = int(nbytes) / (1024 ** 3)
+        if gb < 0.2:
+            continue
+        totals[int(gpu_index)] = totals.get(int(gpu_index), 0.0) + gb
+    return {gpu: round(gb, 2) for gpu, gb in totals.items() if gb >= 0.2}
+
+
+def primary_measured_vram_for_port(port: int, host: str = '127.0.0.1') -> tuple[int, float] | None:
+    """The GPU that holds this engine, and how much memory is there."""
+    measured = measured_vram_by_gpu_for_port(port, host)
+    if not measured:
+        return None
+    gpu_index = max(measured, key=lambda index: measured[index])
+    return int(gpu_index), float(measured[gpu_index])
+
+
+def measured_vram_by_gpu_for_port(port: int, host: str = '127.0.0.1') -> dict[int, float]:
+    """VRAM of the listener and its llama-server child, per GPU.
+
+    The port owner is the router. The weights live in the child process, and
+    that child can hold memory on more than one board.
+    """
+    pid = _pid_listening_on_port(port, host)
+    if pid is None:
+        return {}
+    return measured_vram_by_gpu_for_pids(_descendant_pids(int(pid)))
+
+
 def vram_gb_for_port(
     port: int,
     host: str = '127.0.0.1',
@@ -362,6 +496,11 @@ def vram_gb_for_port(
     vram_map: dict[int, float] | None = None,
     gpu_index: int | None = None,
 ) -> float | None:
+    measured = measured_vram_by_gpu_for_port(port, host)
+    if measured:
+        if gpu_index is not None and int(gpu_index) in measured:
+            return float(measured[int(gpu_index)])
+        return float(max(measured.values()))
     pid = _pid_listening_on_port(port, host)
     if pid is None:
         return None
@@ -2062,6 +2201,12 @@ def _resolve_external_card_disk_gb(card: dict[str, Any]) -> float | None:
 
 def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = True) -> list[dict[str, Any]]:
     gpu_live = _gpu_live_map()
+    try:
+        from core.gpu_devices import query_gpu_devices
+
+        measured_gpus = query_gpu_devices()
+    except Exception:
+        measured_gpus = []
     vram_rows = [
         {
             'pid': int(card.get('pid') or 0),
@@ -2114,8 +2259,67 @@ def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = 
             row['size_gb'] = size_gb
         if attach_stats:
             row = _attach_external_inference_stats(row)
+        row = _place_external_card_on_measured_gpu(row, gpus=measured_gpus)
         enriched.append(row)
     return enriched
+
+
+def _gpu_display_for_index(gpus: list[dict[str, Any]], gpu_index: int) -> str:
+    for gpu in gpus:
+        if not isinstance(gpu, dict) or gpu.get('index') is None:
+            continue
+        try:
+            if int(gpu.get('index')) != int(gpu_index):
+                continue
+        except (TypeError, ValueError):
+            continue
+        name = str(gpu.get('display_name') or gpu.get('name') or '').strip()
+        if name:
+            return name
+    return f'GPU {int(gpu_index)}'
+
+
+def _place_external_card_on_measured_gpu(
+    card: dict[str, Any],
+    *,
+    gpus: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Point the card at the GPU that actually holds this process.
+
+    nvidia-smi lists one process on every board it touched, and the first row
+    is often the 4090 even when the weights are on the Titan.
+    """
+    pid = int(card.get('pid') or 0)
+    if pid <= 0:
+        return card
+    try:
+        from core.gpu_process_memory_windows import process_vram_by_gpu
+
+        by_gpu = process_vram_by_gpu(pid)
+    except Exception:
+        return card
+    if not by_gpu:
+        return card
+    primary = max(by_gpu, key=lambda index: by_gpu[index])
+    gb = float(by_gpu[primary])
+    if gb <= 0:
+        return card
+    devices = gpus or []
+    if not devices:
+        try:
+            from core.gpu_devices import query_gpu_devices
+
+            devices = query_gpu_devices()
+        except Exception:
+            devices = []
+    card['gpu_index'] = int(primary)
+    card['vram_gb'] = round(gb, 3)
+    card['vram_mb'] = round(gb * 1024, 1)
+    card['vram_source'] = 'windows'
+    name = _gpu_display_for_index(devices, int(primary))
+    card['gpu_display'] = name
+    card['vram_gpu_name'] = name
+    return card
 
 
 def _normalize_model_token(value: str) -> str:
@@ -2622,6 +2826,74 @@ def _other_gpu_process_label(
     return proc or app_label or 'GPU process', app_label
 
 
+_OVERLAPPING_COMPOSITOR = re.compile(
+    r'(?:^|[\\/])(dwm|csrss|winlogon)(?:\.exe)?$',
+    re.I,
+)
+
+
+def _drop_overlapping_compositors(
+    processes: list[dict[str, Any]],
+    *,
+    gpus: list[dict[str, Any]],
+    attributed_vram_by_gpu: dict[int, float] | None,
+) -> list[dict[str, Any]]:
+    """Drop Desktop Window Manager when its counter exceeds the GPU.
+
+    Windows reports a huge dedicated size for dwm that is already inside the
+    board's used-memory total. Adding it on top of the model cards makes the
+    list claim more VRAM than the GPU has.
+    """
+    attributed = {
+        int(key): float(value)
+        for key, value in (attributed_vram_by_gpu or {}).items()
+        if value is not None
+    }
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for proc in processes:
+        try:
+            gpu_index = int(proc.get('gpu_index') or 0)
+        except (TypeError, ValueError):
+            gpu_index = 0
+        grouped.setdefault(gpu_index, []).append(proc)
+
+    used_by_gpu: dict[int, float] = {}
+    for gpu in gpus:
+        if not isinstance(gpu, dict) or gpu.get('index') is None:
+            continue
+        try:
+            used_by_gpu[int(gpu.get('index'))] = float(gpu.get('vram_used_gb') or 0)
+        except (TypeError, ValueError):
+            continue
+
+    def _vram(proc: dict[str, Any]) -> float:
+        try:
+            return float(proc.get('vram_gb') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    kept: list[dict[str, Any]] = []
+    for gpu_index, rows in grouped.items():
+        used = used_by_gpu.get(gpu_index)
+        model = attributed.get(gpu_index, 0.0)
+        if used is None or used <= 0:
+            kept.extend(rows)
+            continue
+        budget = max(0.0, used - model)
+        while rows and sum(_vram(row) for row in rows) > budget + 0.25:
+            compositors = [
+                row for row in rows
+                if _OVERLAPPING_COMPOSITOR.search(str(row.get('process_name') or ''))
+                and _vram(row) > 0.5
+            ]
+            if not compositors:
+                break
+            worst = max(compositors, key=_vram)
+            rows.remove(worst)
+        kept.extend(rows)
+    return kept
+
+
 def get_gpu_other_processes(
     *,
     servers: list[dict[str, Any]] | None = None,
@@ -2756,6 +3028,22 @@ def get_gpu_other_processes(
                     str(item.get('label') or '').lower(),
                 )
             )
+
+    processes = _drop_overlapping_compositors(
+        processes,
+        gpus=gpus,
+        attributed_vram_by_gpu=attributed_vram_by_gpu,
+    )
+    other_vram_by_gpu = {}
+    for proc in processes:
+        try:
+            vram_gb_f = float(proc.get('vram_gb') or 0)
+        except (TypeError, ValueError):
+            vram_gb_f = 0.0
+        if vram_gb_f <= 0:
+            continue
+        gpu_index = int(proc.get('gpu_index') or 0)
+        other_vram_by_gpu[gpu_index] = other_vram_by_gpu.get(gpu_index, 0.0) + vram_gb_f
 
     attributed = {
         int(key): float(value)

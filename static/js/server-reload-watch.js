@@ -89,7 +89,7 @@
 
   function formControlFocused() {
     return Boolean(document.activeElement?.matches?.(
-      'select, input, textarea, button, [contenteditable="true"]',
+      'select, input, textarea, [contenteditable="true"]',
     ));
   }
 

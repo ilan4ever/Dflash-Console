@@ -19,7 +19,7 @@ from core.engine_state import note_engine_loaded, note_engine_on
 from core.gpu_devices import validate_gpu_device
 from core.local_models import list_local_models
 from core.memory_guardrails import assess_load
-from core.server_boot import load_server_checkpoint
+from core.server_boot import checkpoint_already_loaded, find_target_loaded_elsewhere, load_server_checkpoint
 
 
 def _release_peer_llm_engines(keep: str) -> None:
@@ -257,11 +257,15 @@ def execute_catalog_load(
         if server is None:
             raise HTTPException(status_code=404, detail=f'unknown server_id: {server_id}')
     else:
-        candidates = [s for s in list_servers(config) if s.get('enabled', True)]
-        if modality == 'embedding':
-            server = next((s for s in candidates if is_embedding_server(s)), None)
-        else:
-            server = next((s for s in candidates if not is_embedding_server(s)), None)
+        catalog_server_id = str(target.get('server_id') or '').strip()
+        if catalog_server_id:
+            server = get_server(config, catalog_server_id)
+        if server is None:
+            candidates = [s for s in list_servers(config) if s.get('enabled', True)]
+            if modality == 'embedding':
+                server = next((s for s in candidates if is_embedding_server(s)), None)
+            else:
+                server = next((s for s in candidates if not is_embedding_server(s)), None)
     if server is None:
         raise HTTPException(status_code=409, detail=f'no enabled server can run a {modality} model — pass server_id')
 
@@ -276,6 +280,55 @@ def execute_catalog_load(
         candidate['load_settings'] = normalize_load_settings(load_settings)
     if inference_settings:
         candidate['inference_settings'] = normalize_inference_settings(inference_settings)
+
+    server_id_text = str(server.get('id') or '')
+    already = checkpoint_already_loaded(
+        candidate,
+        cfg=config,
+        model_path=resolved_path,
+        model_id=model_id,
+    )
+    if already:
+        note_engine_loaded(server_id_text, loaded_by=loaded_by)
+        model_name = str(already.get('model') or target.get('label') or 'Model')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'llama-server',
+            'server_id': server_id_text,
+            'loaded': True,
+            'already_loaded': True,
+            'path': resolved_path,
+            'message': f'{model_name} is already loaded on this engine.',
+            'how_to_use': f'POST /api/servers/{server_id_text}/v1/chat/completions',
+            **already,
+        }
+    elsewhere = find_target_loaded_elsewhere(
+        candidate,
+        cfg=config,
+        model_path=resolved_path,
+        exclude_server_id=server_id_text,
+    )
+    if elsewhere:
+        use_id = str(elsewhere.get('server_id') or '')
+        label = str(elsewhere.get('label') or use_id or 'another engine')
+        return {
+            'success': True,
+            'modality': modality,
+            'runtime_id': 'llama-server',
+            'server_id': use_id or server_id_text,
+            'loaded': True,
+            'already_loaded': True,
+            'already_loaded_elsewhere': True,
+            'path': resolved_path,
+            'message': f'This model is already loaded on {label}.',
+            'how_to_use': (
+                f'POST /api/servers/{use_id}/v1/chat/completions'
+                if use_id
+                else f'POST /api/servers/{server_id_text}/v1/chat/completions'
+            ),
+            **elsewhere,
+        }
 
     check = assess_load(candidate, cfg=config)
     if check.get('level') == 'block':
