@@ -351,7 +351,7 @@ def test_build_server_status_exposes_agent_fields(monkeypatch):
     }
 
     monkeypatch.setattr('core.runtime.tcp_port_open', lambda h, p: True)
-    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: (['gemma-4-12b-it-qat'], [], True, None))
+    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: (['gemma-4-12b-it-qat'], [], True, None, True))
     monkeypatch.setattr('core.runtime.read_log_tail', lambda sid: [])
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)
@@ -382,7 +382,7 @@ def test_build_server_status_running_not_ready(monkeypatch):
     }
 
     monkeypatch.setattr('core.runtime.tcp_port_open', lambda h, p: True)
-    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: ([], [], True, None))
+    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: ([], [], True, None, True))
     monkeypatch.setattr('core.runtime.read_log_tail', lambda sid: [])
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)

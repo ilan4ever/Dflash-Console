@@ -7,6 +7,7 @@ from core.gpu_processes import (
     _attach_external_inference_stats,
     _build_external_card,
     _classify_app,
+    _onevoice_component_identity,
     _external_card_detail,
     _external_card_path_missing,
     _external_acceleration_fields,
@@ -125,6 +126,21 @@ def test_classify_onevoice_stt():
     )
     assert source == 'onevoice'
     assert label == 'OneVoice'
+
+
+def test_onevoice_component_identity_distinguishes_gpu_workers():
+    assert _onevoice_component_identity(
+        process_name='python.exe',
+        command_line=r'python.exe C:\dev\OneVoice\tools\speech_hermes_ws.py',
+    ) == ('onevoice.hermes_stt', 'OneVoice Hermes STT', 'hermes_stt')
+    assert _onevoice_component_identity(
+        process_name='python.exe',
+        command_line=r'python.exe C:\dev\Speak-OneVoice\tools\stt\speak_stt.py',
+    ) == ('onevoice.speak_stt', 'OneVoice Speak STT', 'speak_stt')
+    assert _onevoice_component_identity(
+        process_name='python.exe',
+        command_line=r'python.exe C:\dev\OneVoice\tools\f5_tts\warm_server.py',
+    ) == ('onevoice.f5_tts', 'OneVoice F5-TTS', 'f5_tts')
 
 
 def test_model_hint_hf_hub():
@@ -398,6 +414,8 @@ def test_build_external_card_app_worker_ready_when_probe_times_out(monkeypatch):
     assert card is not None
     assert card['card_state'] == 'ready'
     assert card['title'] == 'speech_hermes_ws'
+    assert card['component_key'] == 'onevoice.hermes_stt'
+    assert card['component_label'] == 'OneVoice Hermes STT'
 
 
 def test_build_external_card_speak_stt_loading_with_named_log(tmp_path, monkeypatch):

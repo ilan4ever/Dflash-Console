@@ -10,6 +10,49 @@ from core.runtimes import get_runtime_adapter
 from core.runtimes.vllm import VllmRuntimeAdapter, is_vllm_model_dir
 
 
+def test_ocr_folder_is_compact_vision_model(tmp_path: Path):
+    from core.runtimes.vllm import is_compact_vision_model
+
+    assert is_compact_vision_model(tmp_path / 'TeleOCR') is True
+    assert is_compact_vision_model(tmp_path / 'Qwen2.5-7B') is False
+
+
+def test_parse_vllm_load_progress_uses_weight_and_graph_percents():
+    from core.runtimes.vllm import parse_vllm_load_progress
+
+    weights = parse_vllm_load_progress('Loading safetensors checkpoint shards:  40% Completed')
+    assert weights['phase'] == 'weights'
+    assert 2 <= weights['pct'] <= 40
+    graphs = parse_vllm_load_progress('Capturing CUDA graphs (PIECEWISE):  50%|')
+    assert graphs['phase'] == 'compile'
+    assert graphs['pct'] > weights['pct']
+
+
+def test_fit_gpu_memory_utilization_leaves_headroom():
+    from core.runtimes.vllm import fit_gpu_memory_utilization
+
+    text = (
+        'ValueError: Free memory on device cuda:0 (39.58/47.99 GiB) on startup is less than '
+        'desired GPU memory utilization (0.85, 40.79 GiB).'
+    )
+    fitted = fit_gpu_memory_utilization(text, 0.85)
+    assert fitted is not None
+    assert fitted < 0.85
+    assert fitted * 47.99 < 39.58
+
+
+def test_model_needs_chat_template_when_tokenizer_has_none(tmp_path: Path):
+    from core.runtimes.vllm import model_needs_chat_template
+
+    (tmp_path / 'tokenizer_config.json').write_text('{"add_bos_token": false}', encoding='utf-8')
+    assert model_needs_chat_template(tmp_path) is True
+    (tmp_path / 'tokenizer_config.json').write_text(
+        '{"chat_template": "<|im_start|>"}',
+        encoding='utf-8',
+    )
+    assert model_needs_chat_template(tmp_path) is False
+
+
 def test_registry_includes_vllm():
     adapter = get_runtime_adapter('vllm')
     assert adapter is not None

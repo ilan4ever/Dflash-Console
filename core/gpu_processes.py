@@ -489,6 +489,47 @@ def measured_vram_by_gpu_for_port(port: int, host: str = '127.0.0.1') -> dict[in
     return measured_vram_by_gpu_for_pids(_descendant_pids(int(pid)))
 
 
+def process_attribution_for_port(port: int, host: str = '127.0.0.1') -> dict[str, Any]:
+    """Return the process tree and per-GPU VRAM behind one managed listener."""
+    pid = _pid_listening_on_port(port, host)
+    if pid is None:
+        return {
+            'pids': [],
+            'vram_by_gpu': {},
+            'vram_total_gb': None,
+            'vram_source': 'unavailable',
+        }
+    pids = _descendant_pids(int(pid))
+    measured = measured_vram_by_gpu_for_pids(pids)
+    source = 'windows'
+    if not measured:
+        source = 'unavailable'
+        try:
+            rows = query_compute_apps()
+        except Exception:
+            rows = []
+        fallback: dict[int, float] = {}
+        for row in rows:
+            try:
+                row_pid = int(row.get('pid') or 0)
+                gpu_index = int(row.get('gpu_index') or 0)
+                vram = float(row.get('vram_gb') or 0)
+            except (TypeError, ValueError):
+                continue
+            if row_pid in pids and vram > 0:
+                fallback[gpu_index] = fallback.get(gpu_index, 0.0) + vram
+        if fallback:
+            measured = {index: round(value, 2) for index, value in fallback.items()}
+            source = 'nvidia-smi'
+    total = round(sum(float(value) for value in measured.values()), 2) if measured else None
+    return {
+        'pids': sorted(int(item) for item in pids if int(item) > 0),
+        'vram_by_gpu': {str(int(index)): round(float(value), 2) for index, value in measured.items()},
+        'vram_total_gb': total,
+        'vram_source': source,
+    }
+
+
 def vram_gb_for_port(
     port: int,
     host: str = '127.0.0.1',
@@ -923,6 +964,39 @@ def _classify_app(*, process_name: str, command_line: str, parent_name: str) -> 
     if base.lower() in {'python', 'pythonw'} and parent_clean:
         return 'unknown', parent_clean
     return 'unknown', base or 'Unknown app'
+
+
+def _onevoice_component_identity(
+    *,
+    process_name: str,
+    command_line: str,
+    parent_name: str = '',
+) -> tuple[str, str, str] | None:
+    """Return the precise OneVoice workload represented by a GPU process.
+
+    Process discovery predates the structured ``X-DFlash-Component`` headers,
+    so workers that do not talk to DFlash directly still need a stable,
+    human-readable attribution.  Keep this deliberately conservative: only
+    classify a workload as OneVoice when its command line contains an
+    unmistakable worker name or OneVoice path.
+    """
+    hay = f'{process_name} {command_line} {parent_name}'.lower().replace('\\', '/')
+    if not re.search(r'onevoice|speak_stt|speech_hermes|fluent_conversation|free_speak', hay):
+        return None
+
+    if re.search(r'speech_hermes_ws(?:\.py)?|hermes[_ -]?stt|hermes.*speech', hay):
+        return 'onevoice.hermes_stt', 'OneVoice Hermes STT', 'hermes_stt'
+    if re.search(r'(?:^|[/\s])speak_stt(?:\.py)?(?:$|[/\s])|speak[_ -]?stt', hay):
+        return 'onevoice.speak_stt', 'OneVoice Speak STT', 'speak_stt'
+    if re.search(r'f5[_ -]?tts|warm_server\.py.*tts|tts.*f5', hay):
+        return 'onevoice.f5_tts', 'OneVoice F5-TTS', 'f5_tts'
+    if re.search(r'translat|translate', hay):
+        return 'onevoice.translation', 'OneVoice Translation', 'translation'
+    if re.search(r'fluent[_ -]?conversation|free[_ -]?speak|fluent', hay):
+        return 'onevoice.free_speak', 'OneVoice Fluent / Free Speak', 'free_speak'
+    if re.search(r'(?:^|[/\s])(?:server|app|web_ui)\.py(?:$|[/\s])|uvicorn|gunicorn', hay):
+        return 'onevoice.app', 'OneVoice App/API', 'app'
+    return 'onevoice.app', 'OneVoice App/API', 'app'
 
 
 def _model_hint_from_cmdline(command_line: str) -> tuple[str, str]:
@@ -1735,6 +1809,16 @@ def _build_external_card(
         return None
     command_line = str(details.get('command_line') or '')
     parent_name = str(details.get('parent_process_name') or '')
+    # nvidia-smi can discover a process before the cached metadata probe does,
+    # and psutil may briefly return an empty command line during process start.
+    # Refresh that one PID before falling back to the generic OneVoice label;
+    # worker names are the only reliable way to distinguish the services.
+    if not command_line:
+        live_details = _fetch_process_details([pid]).get(pid, {})
+        if live_details:
+            process_name = str(live_details.get('process_name') or process_name)
+            command_line = str(live_details.get('command_line') or '')
+            parent_name = str(live_details.get('parent_process_name') or parent_name)
     hay = f'{process_name} {command_line} {parent_name}'.lower()
 
     app_source, app_label = _classify_app(
@@ -1928,6 +2012,33 @@ def _build_external_card(
         draft_path=draft_path,
         llama_process=llama_process,
     )
+    component_identity = _onevoice_component_identity(
+        process_name=process_name,
+        command_line=command_line,
+        parent_name=parent_name,
+    )
+    if component_identity:
+        component_key, component_label, component_role = component_identity
+        if component_role == 'app' and (
+            not str(model_name or '').strip()
+            or str(model_name or '').strip().lower() in {
+                str(app_label or '').strip().lower(),
+                str(process_name or '').strip().lower(),
+                'electron',
+                'python',
+                'python.exe',
+            }
+        ):
+            model_name = component_label
+    else:
+        component_key = f'external.{str(app_source or "unknown").strip().lower() or "unknown"}'
+        component_label = app_label
+        component_role = str(
+            kind_fields.get('model_kind_label')
+            or kind_fields.get('model_kind')
+            or 'GPU workload'
+        )
+    vram_total_gb = round(float(vram_gb), 2) if vram_gb is not None else None
 
     return {
         'id': f'external-gpu-{pid}',
@@ -1937,10 +2048,17 @@ def _build_external_card(
         'process_name': process_name,
         'app_source': app_source,
         'app_label': app_label,
+        'component_key': component_key,
+        'component_label': component_label,
+        'component_role': component_role,
+        'pids': [pid],
         'gpu_index': gpu_index,
         'gpu_display': gpu_display,
         'vram_mb': entry.get('vram_mb'),
         'vram_gb': vram_gb,
+        'vram_by_gpu': {str(gpu_index): vram_total_gb} if vram_total_gb is not None else {},
+        'vram_total_gb': vram_total_gb,
+        'vram_source': 'nvidia-smi' if vram_total_gb is not None else 'unavailable',
         'size_gb': size_gb,
         'model_name': model_name,
         'model_path': model_path,
@@ -1989,6 +2107,8 @@ def _make_api_external_card(
         command_line='',
         process_name=app_label,
     )
+    component_key = f'external.{str(app_source or "unknown").strip().lower() or "unknown"}'
+    vram_total_gb = round(float(vram_gb), 2) if vram_gb is not None else None
     card_detail = _external_card_detail(
         model_kind=str(kind_fields.get('model_kind') or ''),
         model_name=model_name,
@@ -2004,10 +2124,17 @@ def _make_api_external_card(
         'process_name': app_label,
         'app_source': app_source,
         'app_label': app_label,
+        'component_key': component_key,
+        'component_label': app_label,
+        'component_role': str(kind_fields.get('model_kind_label') or kind_fields.get('model_kind') or 'GPU workload'),
+        'pids': [int(pid)] if int(pid or 0) > 0 else [],
         'gpu_index': gpu_index,
         'gpu_display': gpu_display,
         'vram_mb': round(vram_gb * 1024, 1) if vram_gb else None,
         'vram_gb': vram_gb,
+        'vram_by_gpu': {str(gpu_index): vram_total_gb} if vram_total_gb is not None else {},
+        'vram_total_gb': vram_total_gb,
+        'vram_source': 'nvidia-smi' if vram_total_gb is not None else 'unavailable',
         'size_gb': size_gb,
         'model_name': model_name,
         'model_path': '',
@@ -2316,6 +2443,13 @@ def _place_external_card_on_measured_gpu(
     card['vram_gb'] = round(gb, 3)
     card['vram_mb'] = round(gb * 1024, 1)
     card['vram_source'] = 'windows'
+    card['vram_by_gpu'] = {
+        str(int(index)): round(float(value), 3)
+        for index, value in by_gpu.items()
+        if float(value) > 0
+    }
+    card['vram_total_gb'] = round(sum(float(value) for value in by_gpu.values()), 3)
+    card['pids'] = [pid]
     name = _gpu_display_for_index(devices, int(primary))
     card['gpu_display'] = name
     card['vram_gpu_name'] = name

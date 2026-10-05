@@ -27,6 +27,37 @@ def test_resolve_client_label_uses_explicit_header():
     assert resolve_client_label(req) == 'OneVoice'
 
 
+def test_request_component_identity_uses_friendly_role_labels():
+    from core.client_identity import request_component_identity
+
+    identity = request_component_identity(_Request({
+        'X-DFlash-Client': 'OneVoice AI',
+        'X-DFlash-Role': 'free_speak',
+    }))
+
+    assert identity['component_key'] == 'onevoice.free_speak'
+    assert identity['component_label'] == 'OneVoice Fluent / Free Speak'
+    assert identity['component_role'] == 'free_speak'
+
+
+def test_request_component_identity_has_precise_onevoice_worker_labels():
+    from core.client_identity import request_component_identity
+
+    cases = (
+        ('stt', 'onevoice.hermes_stt', 'OneVoice Hermes STT'),
+        ('speak_stt', 'onevoice.speak_stt', 'OneVoice Speak STT'),
+        ('f5_tts', 'onevoice.f5_tts', 'OneVoice F5-TTS'),
+        ('translation', 'onevoice.translation', 'OneVoice Translation'),
+    )
+    for role, key, label in cases:
+        identity = request_component_identity(_Request({
+            'X-DFlash-Client': 'OneVoice AI',
+            'X-DFlash-Role': role,
+        }))
+        assert identity['component_key'] == key
+        assert identity['component_label'] == label
+
+
 def test_request_load_context_size_header():
     assert request_load_context_size(_Request({'X-DFlash-Load-Context': '131072'})) == 131072
     assert request_load_context_size(_Request({'X-DFlash-Load-Context': '1024'})) is None

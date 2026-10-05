@@ -102,7 +102,7 @@ def _probe_loaded_models(api_url: str) -> list[str]:
     from core.runtime import probe_runtime_state
 
     try:
-        loaded_ids, _loading, _router, _progress = probe_runtime_state(api_url)
+        loaded_ids, _loading, _router, _progress, _fetch_ok = probe_runtime_state(api_url)
         return [str(item).strip() for item in loaded_ids if str(item).strip()]
     except Exception:
         return []

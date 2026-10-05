@@ -70,6 +70,7 @@
     if (tab === 'server') {
       window.DFlashServerLive?.onEnginesViewEnter?.();
     }
+    if (tab === 'models') window.DFlashModelsLive?.onViewEnter?.();
     if (tab === 'settings') window.DFlashSettingsLive?.onViewEnter?.();
     if (tab === 'catalog') window.DFlashModelSearchLive?.onViewEnter?.();
     if (tab === 'downloads') window.DFlashDownloadsLive?.onViewEnter?.();

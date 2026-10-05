@@ -37,7 +37,8 @@
   const LOAD_ENGINE_PREFERENCE = ['transformers', 'vllm', 'dflash'];
   const PINNED_KEY = 'dflashConsole.pinnedModels';
   const LOCAL_CATALOG_CACHE_KEY = 'dflashConsole.modelLibraryCache';
-  const MODEL_LIST_REFRESH_MS = 5 * 60 * 1000;
+  const MODEL_LIST_REFRESH_MS = 8000;
+  const MODEL_LIST_REFRESH_FAST_MS = 2000;
   const GPU_PREFERENCE_KEY = 'dflashConsole.modelGpuDevices';
 
   function escapeHtml(value) {
@@ -1852,7 +1853,7 @@
   }
 
   let pollTimer = null;
-  let pollPaused = false;
+  const downloadStatusSeen = new Map();
   let modelSelectorFocused = false;
   let lastRenderSignature = '';
 
@@ -2019,6 +2020,9 @@
       model?.path,
       model?.publisher,
       model?.hf_repo,
+      model?.publisher && (model?.filename || model?.label)
+        ? `${model.publisher}/${model.filename || model.label}`
+        : '',
       repoFromPath,
       model?.arch,
       model?.quant,
@@ -2036,7 +2040,15 @@
 
   function modelMatchesSearch(model, needle) {
     if (!needle) return true;
-    return modelSearchHaystack(model).includes(needle);
+    const hay = modelSearchHaystack(model);
+    if (!hay) return false;
+    // Full name, or only the beginning of it: "Xing" and "XingChen-AGI/TeleOCR"
+    // both find XingChen-AGI/TeleOCR.
+    if (hay.includes(needle)) return true;
+    const raw = String(document.getElementById('modelsFilterInput')?.value || '');
+    const parts = raw.split(/[/\\]+/).map((part) => normalizeSearchText(part)).filter((part) => part.length >= 2);
+    if (parts.length > 1 && parts.every((part) => hay.includes(part))) return true;
+    return parts.some((part) => part.startsWith(needle) && hay.includes(part));
   }
 
   function showingAcceleratorsOnly() {
@@ -3406,14 +3418,14 @@
         }
       } catch (err) {
         toast(err.message || `Could not load ${model.label || model.id}`, false);
+        window.DFlashServerLive?.clearRuntimeLoadCard?.(loadRuntime);
       } finally {
         clearModelLoadPending(model, '');
-        window.DFlashServerLive?.clearRuntimeLoadCard?.(loadRuntime);
       }
       await refreshRuntimeState({ silent: true });
       void refreshCatalogQuiet();
       if (window.DFlashServerLive?.refresh) {
-        void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
+        void window.DFlashServerLive.refresh(true, { fresh: false, includeExternal: false }).catch(() => {});
       }
       return;
     }
@@ -3466,7 +3478,7 @@
       await refreshRuntimeState({ silent: true });
       void refreshCatalogQuiet();
       if (window.DFlashServerLive?.refresh) {
-        void window.DFlashServerLive.refresh(true, { fresh: true, includeExternal: true }).catch(() => {});
+        void window.DFlashServerLive.refresh(true, { fresh: false, includeExternal: false }).catch(() => {});
       }
     } catch (err) {
       clearModelLoadPending(model, serverId);
@@ -3807,10 +3819,35 @@
     }
   }
 
+  function catalogAwaitingDiskScan() {
+    return !!(meta?.cached || meta?.stale || meta?.partial || catalogLoading);
+  }
+
   function onDownloadQueueUpdate() {
+    const jobs = window.DFlashDownloadQueue?.getJobs?.() || [];
+    let justFinished = false;
+    const live = new Set();
+    for (const job of jobs) {
+      const id = String(job?.id || '');
+      if (!id) continue;
+      live.add(id);
+      const prev = downloadStatusSeen.get(id);
+      if (prev && prev !== 'done' && job.status === 'done') justFinished = true;
+      downloadStatusSeen.set(id, job.status || '');
+    }
+    for (const id of [...downloadStatusSeen.keys()]) {
+      if (!live.has(id)) downloadStatusSeen.delete(id);
+    }
+    if (justFinished) {
+      void refresh({ silent: true, forceCatalogRefresh: true });
+    }
     if (document.body.dataset.activeView !== 'models') return;
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     renderFooter(meta);
+  }
+
+  function onModelsViewEnter() {
+    void refresh({ silent: true });
   }
 
   function bind() {
@@ -3821,6 +3858,9 @@
     resetLibraryToolbarDefaults({ render: false });
     document.getElementById('modelsFilterInput')?.addEventListener('input', (e) => {
       renderTable(e.target.value, { force: true });
+      if (normalizeSearchText(e.target.value) && catalogAwaitingDiskScan()) {
+        void refresh({ silent: true });
+      }
     });
     const modelTypePick = document.getElementById('modelsTypeFilter');
     if (modelTypePick) {
@@ -3886,18 +3926,24 @@
 
   function startPolling() {
     if (pollTimer) return;
-    pollTimer = window.setInterval(() => {
-      if (pollPaused || modelSelectorFocused || isModelSelectorFocused()) return;
-      if (document.body.dataset.activeView === 'models') {
-        if (pendingModelLoads.size || pendingServerLoads.size
-          || pendingModelUnloads.size || pendingServerUnloads.size
-          || hasBootingServers()) {
-          void refreshRuntimeState({ silent: true });
-          return;
+    const tick = () => {
+      const wait = catalogAwaitingDiskScan() ? MODEL_LIST_REFRESH_FAST_MS : MODEL_LIST_REFRESH_MS;
+      pollTimer = window.setTimeout(() => {
+        pollTimer = null;
+        const onModels = document.body.dataset.activeView === 'models';
+        if (onModels && !modelSelectorFocused && !isModelSelectorFocused()) {
+          if (pendingModelLoads.size || pendingServerLoads.size
+            || pendingModelUnloads.size || pendingServerUnloads.size
+            || hasBootingServers()) {
+            void refreshRuntimeState({ silent: true });
+          } else {
+            void refresh({ silent: true }).catch(() => {});
+          }
         }
-        void refresh({ silent: true }).catch(() => {});
-      }
-    }, MODEL_LIST_REFRESH_MS);
+        tick();
+      }, wait);
+    };
+    tick();
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -3912,9 +3958,10 @@
       renderFooter(meta);
       renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     }
-    const tableWrap = document.querySelector('.lm-view[data-view="models"] .lm-models-table-wrap');
-    tableWrap?.addEventListener('mouseenter', () => { pollPaused = true; });
-    tableWrap?.addEventListener('mouseleave', () => { pollPaused = false; });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') onModelsViewEnter();
+    });
+    window.addEventListener('focus', () => onModelsViewEnter());
     void refresh({ rebindInspector: true })
       .then(() => {
         void refreshCatalogQuiet();
@@ -4374,6 +4421,7 @@
     findAndAttachDraftForTarget,
     waitForDraftAttach,
     refresh,
+    onViewEnter: onModelsViewEnter,
     selectModel,
     loadModel,
     waitForFreeTokenReady,

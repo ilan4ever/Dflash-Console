@@ -799,6 +799,9 @@ def update_server_runtime(
     *,
     engine_on: bool | None = None,
     loaded_by: str | None = None,
+    component_key: str | None = None,
+    component_label: str | None = None,
+    component_role: str | None = None,
 ) -> dict[str, Any]:
     cfg = load_config()
     entry = get_server(cfg, server_id)
@@ -814,6 +817,17 @@ def update_server_runtime(
         if label and entry.get('loaded_by') != label:
             entry['loaded_by'] = label
             changed = True
+    for key, value in (
+        ('component_key', component_key),
+        ('component_label', component_label),
+        ('component_role', component_role),
+    ):
+        if value is None:
+            continue
+        text = str(value or '').strip()
+        if text and entry.get(key) != text:
+            entry[key] = text
+            changed = True
     if changed:
         entry.pop('checkpoint_loaded', None)
         save_config(cfg)
@@ -821,6 +835,9 @@ def update_server_runtime(
     return {
         'engine_on': entry.get('engine_on') is True,
         'loaded_by': str(entry.get('loaded_by') or '').strip(),
+        'component_key': str(entry.get('component_key') or '').strip(),
+        'component_label': str(entry.get('component_label') or '').strip(),
+        'component_role': str(entry.get('component_role') or '').strip(),
     }
 
 
@@ -916,6 +933,9 @@ def normalize_server(entry: dict[str, Any]) -> dict[str, Any]:
         'enabled': entry.get('enabled', True) is not False,
         'engine_on': entry.get('engine_on') is True,
         'loaded_by': str(entry.get('loaded_by') or '').strip(),
+        'component_key': str(entry.get('component_key') or '').strip(),
+        'component_label': str(entry.get('component_label') or '').strip(),
+        'component_role': str(entry.get('component_role') or '').strip(),
         'load_settings': normalize_load_settings(entry.get('load_settings')),
         'inference_settings': normalize_inference_settings(entry.get('inference_settings')),
     }

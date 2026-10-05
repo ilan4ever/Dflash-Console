@@ -70,6 +70,8 @@ _FORWARD_HEADERS = {
     'authorization',
     'x-disable-reasoning',
     'x-dflash-client',
+    'x-dflash-component',
+    'x-dflash-role',
     'x-dflash-load-context',
     'user-agent',
     'referer',
@@ -157,11 +159,14 @@ def _embed_server(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pick_headers(request: Request) -> dict[str, str]:
-    return {
+    headers = {
         key: value
         for key, value in request.headers.items()
         if key.lower() in _FORWARD_HEADERS
     }
+    headers.setdefault('X-DFlash-Client', 'OpenAI Gateway')
+    headers.setdefault('X-DFlash-Component', 'external.openai_gateway')
+    return headers
 
 
 @gateway_app.get('/')
@@ -232,6 +237,28 @@ async def _resolve_chat_target(cfg: dict[str, Any], model: str) -> tuple[dict[st
         or str(target.get('model_id') or '')
     )
     return target, upstream
+
+
+def _runtime_for_model_name(model: str) -> str:
+    """Return vllm/transformers/freetoken when the client asked for its loaded model."""
+    requested = str(model or '').strip().lower().replace('\\', '/').rstrip('/')
+    if not requested:
+        return ''
+    from core.runtimes import get_runtime_adapter
+
+    for runtime_id in ('vllm', 'transformers', 'freetoken'):
+        adapter = get_runtime_adapter(runtime_id)
+        if adapter is None or not callable(getattr(adapter, 'health', None)):
+            continue
+        health = adapter.health() or {}
+        if health.get('running') is not True:
+            continue
+        active = str(health.get('active_model') or '').replace('\\', '/').rstrip('/')
+        folder = active.rsplit('/', 1)[-1].lower()
+        names = {runtime_id, folder, active.lower()}
+        if requested in names:
+            return runtime_id
+    return ''
 
 
 def _require_pipeline_active() -> None:
@@ -351,21 +378,29 @@ async def list_models() -> dict[str, Any]:
         active = str(health.get('active_model') or runtime.get('default_model') or '').strip()
         if not active:
             continue
-        data.append({
-            'id': runtime_id,
-            'object': 'model',
-            'created': 0,
-            'owned_by': 'dflash-console',
-            'name': active.rsplit('/', 1)[-1].rsplit('\\', 1)[-1],
-            'meta': {
-                'engine': str(runtime.get('label') or runtime_id),
-                'display_name': str(runtime.get('label') or runtime_id),
-                'api_model_id': active,
-                'runtime_id': runtime_id,
-                'api_url': str(health.get('api_url') or ''),
-                'running': health.get('running') is True,
-            },
-        })
+        folder_name = active.rsplit('/', 1)[-1].rsplit('\\', 1)[-1]
+        served = str(health.get('served_model_id') or active)
+        public_ids = [runtime_id]
+        for alias in (folder_name, folder_name.lower()):
+            if alias and alias not in public_ids:
+                public_ids.append(alias)
+        for public_id in public_ids:
+            data.append({
+                'id': public_id,
+                'object': 'model',
+                'created': 0,
+                'owned_by': 'dflash-console',
+                'name': folder_name or runtime_id,
+                'meta': {
+                    'engine': str(runtime.get('label') or runtime_id),
+                    'display_name': folder_name or str(runtime.get('label') or runtime_id),
+                    'api_model_id': served,
+                    'runtime_id': runtime_id,
+                    'api_url': str(health.get('api_url') or ''),
+                    'running': health.get('running') is True,
+                    'alias_of': runtime_id if public_id != runtime_id else '',
+                },
+            })
     listed_ids = {str(row.get('id') or '').lower() for row in data}
     try:
         default_server = default_gateway_chat_server(cfg)
@@ -642,6 +677,23 @@ async def chat_completions(request: Request) -> Response:
         if isinstance(response, Response):
             response.headers['X-DFlash-Route'] = 'cloud'
             response.headers['X-DFlash-Provider-Id'] = provider_id
+        return response
+    runtime_match = _runtime_for_model_name(model)
+    if runtime_match:
+        sid = runtime_match
+        record_gateway_route(
+            model=model,
+            route='local',
+            target=sid,
+            client=client_label,
+            note='runtime',
+        )
+        body = await request.body() if not isinstance(payload, dict) else json.dumps(payload).encode('utf-8')
+        url = f"{_console_base(cfg)}/api/servers/{sid}/v1/chat/completions"
+        response = await _forward_chat(request, url, body)
+        if isinstance(response, Response):
+            response.headers['X-DFlash-Route'] = 'local'
+            response.headers['X-DFlash-Server-Id'] = sid
         return response
     server, upstream = await _resolve_chat_target(cfg, model)
     sid = str(server.get('id') or '')

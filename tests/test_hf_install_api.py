@@ -102,6 +102,43 @@ def test_get_loaded_models_payload_shape():
     assert payload['loaded'][0]['server_id'] == 'demo'
 
 
+def test_runtime_status_report_includes_component_and_vram_attribution():
+    from core.status_report import _runtime_rows
+
+    class _Adapter:
+        def health(self):
+            return {
+                'running': True,
+                'port': 9010,
+                'host': '127.0.0.1',
+                'active_model': r'C:\models\TeleOCR',
+            }
+
+    with patch('core.status_report.get_runtime_adapter', return_value=_Adapter()), patch(
+        'core.gpu_processes.process_attribution_for_port',
+        return_value={
+            'pids': [4242],
+            'vram_by_gpu': {'0': 2.65},
+            'vram_total_gb': 2.65,
+            'vram_source': 'nvidia-smi',
+        },
+    ):
+        rows = _runtime_rows({
+            'runtimes': [{
+                'id': 'runtime-vllm',
+                'runtime_id': 'vllm',
+                'label': 'vLLM',
+                'enabled': True,
+            }],
+        })
+
+    assert rows[0]['component_label'] == 'OneVoice vLLM'
+    assert rows[0]['active_model_id'] == 'TeleOCR'
+    assert rows[0]['vram_total_gb'] == 2.65
+    assert rows[0]['vram_source'] == 'nvidia-smi'
+    assert rows[0]['pids'] == [4242]
+
+
 def test_get_status_report_payload_shape():
     from core.status_report import get_status_report_payload
 

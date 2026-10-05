@@ -18,6 +18,33 @@ def _runtime_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         runtime_id = str(runtime.get('runtime_id') or '')
         adapter = get_runtime_adapter(runtime_id)
         health = adapter.health() if adapter is not None and callable(getattr(adapter, 'health', None)) else {}
+        attribution: dict[str, Any] = {
+            'pids': [],
+            'vram_by_gpu': {},
+            'vram_total_gb': None,
+            'vram_source': 'unavailable',
+        }
+        if health.get('running') is True and int(health.get('port') or 0) > 0:
+            try:
+                from core.gpu_processes import process_attribution_for_port
+
+                attribution = process_attribution_for_port(
+                    int(health.get('port') or 0),
+                    str(health.get('host') or '127.0.0.1'),
+                )
+            except Exception:
+                pass
+        component_key = f'onevoice.{runtime_id}' if runtime_id else ''
+        component_label = {
+            'vllm': 'OneVoice vLLM',
+            'transformers': 'OneVoice Transformers',
+            'freetoken': 'OneVoice FreeToken (WSL)',
+            'faster-whisper': 'OneVoice Faster-Whisper STT',
+            'vibevoice': 'OneVoice VibeVoice TTS',
+            'stt': 'OneVoice STT',
+        }.get(runtime_id, str(runtime.get('label') or runtime_id))
+        active_model = str(health.get('active_model') or '').strip()
+        model_id = active_model.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] if active_model else ''
         rows.append({
             'id': str(runtime.get('id') or ''),
             'runtime_id': runtime_id,
@@ -26,9 +53,14 @@ def _runtime_rows(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             'api_url': str(health.get('api_url') or runtime.get('api_url') or ''),
             'enabled': runtime.get('enabled', True) is not False,
             'running': health.get('running') is True,
-            'active_model': health.get('active_model') or '',
+            'active_model': active_model,
+            'active_model_id': model_id,
             'active_device': health.get('device') or health.get('active_device') or '',
+            'component_key': component_key,
+            'component_label': component_label,
+            'component_role': runtime_id,
             'adapter_installed': adapter is not None,
+            **attribution,
         })
     return rows
 
@@ -57,6 +89,13 @@ def _loaded_from_engines(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'ready_for_embedding': bool(server.get('ready_for_embedding')),
             'inference_stats': server.get('inference_stats') or {},
             'gpu_display': server.get('gpu_display') or '',
+            'component_key': server.get('component_key') or '',
+            'component_label': server.get('component_label') or '',
+            'component_role': server.get('component_role') or '',
+            'pids': server.get('pids') or [],
+            'vram_by_gpu': server.get('vram_by_gpu') or {},
+            'vram_total_gb': server.get('vram_total_gb'),
+            'vram_source': server.get('vram_source') or '',
         })
     return loaded
 
@@ -67,16 +106,27 @@ def _loaded_from_runtimes(runtimes: list[dict[str, Any]]) -> list[dict[str, Any]
         active = str(runtime.get('active_model') or '').strip()
         if not active:
             continue
+        folder = active.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1]
+        runtime_id = str(runtime.get('runtime_id') or '')
         loaded.append({
             'kind': 'runtime',
-            'runtime_id': str(runtime.get('runtime_id') or ''),
+            'runtime_id': runtime_id,
             'id': str(runtime.get('id') or ''),
-            'label': str(runtime.get('label') or runtime.get('id') or ''),
+            'server_id': runtime_id,
+            'model_id': folder.lower(),
+            'label': folder or str(runtime.get('label') or runtime.get('id') or ''),
             'status': 'loaded' if runtime.get('running') else 'ready',
             'active_model': active,
             'model_path': active,
             'api_url': str(runtime.get('api_url') or ''),
             'active_device': str(runtime.get('active_device') or ''),
+            'component_key': runtime.get('component_key') or f"onevoice.{runtime_id}",
+            'component_label': runtime.get('component_label') or runtime.get('label') or runtime_id,
+            'component_role': runtime.get('component_role') or runtime_id,
+            'pids': runtime.get('pids') or [],
+            'vram_by_gpu': runtime.get('vram_by_gpu') or {},
+            'vram_total_gb': runtime.get('vram_total_gb'),
+            'vram_source': runtime.get('vram_source') or '',
         })
     return loaded
 

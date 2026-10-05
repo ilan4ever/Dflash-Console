@@ -8,7 +8,7 @@ def test_contention_stop_others_requires_loaded_models(monkeypatch):
     )
     monkeypatch.setattr(
         'core.runtimes.contention.probe_runtime_state',
-        lambda api_url: ([], False, True, None),
+        lambda api_url: ([], False, True, None, True),
     )
     report = gpu_contention_report(cfg={'servers': [{
         'id': 'demo',
@@ -22,7 +22,7 @@ def test_contention_stop_others_requires_loaded_models(monkeypatch):
 
     monkeypatch.setattr(
         'core.runtimes.contention.probe_runtime_state',
-        lambda api_url: (['model-a'], False, True, None),
+        lambda api_url: (['model-a'], False, True, None, True),
     )
     report = gpu_contention_report(cfg={'servers': [{
         'id': 'demo',

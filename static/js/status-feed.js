@@ -24,7 +24,12 @@
         pct,
         detail: String(raw.detail || '').trim(),
         phase: String(raw.phase || '').trim(),
-        eta_seconds: Number.isFinite(Number(raw.eta_seconds)) ? Number(raw.eta_seconds) : null,
+        eta_seconds: (() => {
+          const eta = raw.eta_seconds;
+          if (eta == null || eta === '') return null;
+          const num = Number(eta);
+          return Number.isFinite(num) && num > 0 ? num : null;
+        })(),
         elapsed_seconds: Number.isFinite(Number(raw.elapsed_seconds)) ? Number(raw.elapsed_seconds) : null,
         expert_present: Number.isFinite(Number(raw.expert_present)) ? Number(raw.expert_present) : null,
         expert_total: Number.isFinite(Number(raw.expert_total)) ? Number(raw.expert_total) : null,

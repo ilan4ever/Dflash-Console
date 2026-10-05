@@ -207,76 +207,59 @@ def loopback_listening_ports() -> set[int]:
 
 
 
-def _pid_listening_on_port_windows_fast(port: int) -> int | None:
-    """Fast single-port owner lookup (avoids full net_connections / listen map).
+_NETSTAT_CACHE: tuple[float, dict[int, int]] = (0.0, {})
+_NETSTAT_TTL_SECONDS = 2.0
 
-    venv often lacks psutil; the full Get-NetTCPConnection map is slow and can
-    flake. Prefer a LocalPort-filtered query, then netstat for that port only.
+
+def _netstat_listen_pids() -> dict[int, int]:
+    """Port to process id, from one short netstat snapshot.
+
+    Get-NetTCPConnection walks the whole connection table and can freeze the
+    Console for minutes, which makes other apps think it is not running.
     """
-    port = int(port or 0)
-    if port <= 0:
-        return None
-    script = (
-        f"$c = @(Get-NetTCPConnection -State Listen -LocalPort {port} "
-        "-ErrorAction SilentlyContinue | Select-Object -First 1); "
-        "if ($c -and $c[0].OwningProcess) { Write-Output ([int]$c[0].OwningProcess) }"
-    )
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        result = None
-    if result is not None:
-        for line in result.stdout.splitlines():
-            token = line.strip()
-            if not token:
-                continue
-            try:
-                pid = int(token)
-            except (TypeError, ValueError):
-                continue
-            if pid > 0:
-                return pid
-
-    # netstat fallback scoped to the port (no modal dialog when CREATE_NO_WINDOW).
+    global _NETSTAT_CACHE
+    now = time.time()
+    with _LISTEN_PORTS_LOCK:
+        cached_at, cached = _NETSTAT_CACHE
+        if cached and (now - cached_at) < _NETSTAT_TTL_SECONDS:
+            return dict(cached)
     try:
         result = subprocess.run(
             ['netstat', '-ano', '-p', 'tcp'],
             capture_output=True,
-            text=True,
-            timeout=3,
+            timeout=2,
             check=False,
             **_subprocess_no_window_kwargs(),
         )
-    except Exception:
-        return None
-    needle = f':{port} '
-    for line in result.stdout.splitlines():
-        upper = line.upper()
-        if 'LISTENING' not in upper and 'LISTEN' not in upper:
+    except (OSError, subprocess.SubprocessError):
+        return dict(cached)
+    text = (result.stdout or b'').decode('utf-8', errors='replace')
+    found: dict[int, int] = {}
+    for line in text.splitlines():
+        if 'LISTENING' not in line.upper():
             continue
-        if needle not in line and not line.rstrip().endswith(f':{port}'):
-            # Match ":8095 " in local address column.
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            local = parts[1] if len(parts) > 1 else ''
-            if not local.endswith(f':{port}'):
-                continue
         parts = line.split()
+        if len(parts) < 4 or ':' not in parts[1]:
+            continue
         try:
+            listen_port = int(parts[1].rsplit(':', 1)[-1])
             pid = int(parts[-1])
         except (TypeError, ValueError):
             continue
-        if pid > 0:
-            return pid
-    return None
+        if listen_port > 0 and pid > 0:
+            found[listen_port] = pid
+    with _LISTEN_PORTS_LOCK:
+        _NETSTAT_CACHE = (now, found)
+    return found
+
+
+def _pid_listening_on_port_windows_fast(port: int) -> int | None:
+    """Fast single-port owner lookup from a cached netstat snapshot."""
+    port = int(port or 0)
+    if port <= 0:
+        return None
+    pid = _netstat_listen_pids().get(port)
+    return pid if pid else None
 
 
 def pid_listening_on_port(port: int, host: str = '127.0.0.1') -> int | None:

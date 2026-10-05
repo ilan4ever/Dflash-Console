@@ -595,7 +595,7 @@
       path: model.path || model.model_path || '',
       role: 'alias',
       ejectable: true,
-      progress: progress.pct ?? server?.load_progress ?? null,
+      progress: (progress.pct != null || progress.detail) ? progress : (server?.load_progress ?? null),
       progress_detail: progress.detail || model.load_progress?.detail || '',
       plain_llm: !!meta.plain_gguf,
       size_gb: model.size_gb,
@@ -621,16 +621,37 @@
     renderCards();
     renderToolbar(activeServer());
     updateEnginePageNotice();
+    reschedulePoll();
+    void refreshStatus(true, { includeExternal: false, fresh: false });
+  }
+
+  function pendingLoadSettled(serverId, server) {
+    if (!server || server.booting || server.status === 'booting') return false;
+    const meta = pendingLoads.get(serverId);
+    const model = meta?.model || {};
+    const needles = [model.path, model.model_path, model.model_id, model.id, model.filename, meta?.label]
+      .map((value) => String(value || '').replace(/\\/g, '/').split('/').pop().toLowerCase())
+      .filter((value) => value && value.length > 2);
+    const haystacks = [
+      ...(Array.isArray(server.visible_cards) ? server.visible_cards : []),
+      ...(Array.isArray(server.loaded_models) ? server.loaded_models.map((id) => ({ model_id: id, card_state: 'ready' })) : []),
+    ];
+    return haystacks.some((row) => {
+      if (row?.card_state === 'loading') return false;
+      const hay = [row?.path, row?.model_path, row?.model_id, row?.id, row?.label, row?.title, row?.filename]
+        .map((value) => String(value || '').replace(/\\/g, '/').toLowerCase())
+        .join(' ');
+      if (!hay) return false;
+      if (!needles.length) return server.status === 'loaded';
+      return needles.some((needle) => hay.includes(needle));
+    });
   }
 
   function releaseSettledPendingLoads() {
     let changed = false;
     for (const serverId of [...pendingLoads.keys()]) {
       const server = servers.find((row) => row.id === serverId);
-      if (!server) continue;
-      const onGpu = server.status === 'loaded'
-        || (Array.isArray(server.loaded_models) && server.loaded_models.length > 0);
-      if (!onGpu) continue;
+      if (!pendingLoadSettled(serverId, server)) continue;
       pendingLoads.delete(serverId);
       if (getServerAction(serverId) === 'loading') setServerAction(serverId, null);
       changed = true;
@@ -703,17 +724,13 @@
   }
 
   function pollIntervalMs() {
-    const onEngines = enginesViewActive();
-    if (anyServerGenerating() || anyExternalGpuBusy()) return onEngines ? 250 : 500;
+    if (enginesViewActive()) return 1000;
+    if (anyServerGenerating() || anyExternalGpuBusy()) return 500;
     const ejecting = [...serverActions.values()].some((value) => value === 'ejecting');
-    if (ejecting) return onEngines ? 250 : 400;
-    if (pendingLoads.size > 0 || bootingServerCount() > 0 || anyExternalLoading()) {
-      return onEngines ? 300 : 500;
-    }
-    if (enginesNeedFastRefresh() || loadedServerCount() > 0) {
-      return onEngines ? 700 : 800;
-    }
-    return onEngines ? 1200 : 2500;
+    if (ejecting) return 400;
+    if (pendingLoads.size > 0 || bootingServerCount() > 0 || anyExternalLoading()) return 500;
+    if (enginesNeedFastRefresh() || loadedServerCount() > 0) return 800;
+    return 2500;
   }
 
   function loadProgressDisplay(loading, rawProgress, { warming = false } = {}) {
@@ -733,7 +750,7 @@
         / Number(norm.expert_present)
       );
     }
-    const etaLabel = Number.isFinite(etaSeconds) && etaSeconds >= 0
+    const etaLabel = Number.isFinite(etaSeconds) && etaSeconds > 0
       ? `~${formatLoadEta(etaSeconds)} remaining`
       : '';
     if (!loading) {
@@ -897,6 +914,7 @@
   }
 
   function noteStatusSnapshot(data) {
+    if (data?.quick && latestStatusRevision > 0) return true;
     const revision = Number(data?.snapshot_revision || 0);
     const boot = String(data?.boot_id || '');
     if (boot && boot !== latchedStatusBootId) {
@@ -911,6 +929,32 @@
     return false;
   }
 
+  function serverShowsLoaded(server) {
+    return server?.status === 'loaded'
+      || server?.booting
+      || server?.status === 'booting'
+      || (Array.isArray(server?.loaded_models) && server.loaded_models.length > 0);
+  }
+
+  function withoutMassLoadedFlash(incoming) {
+    // A status reply can briefly mark every listening profile as loaded.
+    // That paints the whole model list, then snaps back. Keep the previous
+    // cards unless only one or two engines actually changed.
+    if (!Array.isArray(incoming) || !servers.length) return incoming || [];
+    const newlyLoaded = incoming.filter((server) => {
+      if (!serverShowsLoaded(server)) return false;
+      if (pendingLoads.has(server.id)) return false;
+      const prev = servers.find((row) => row.id === server.id);
+      return !serverShowsLoaded(prev);
+    });
+    if (newlyLoaded.length < 3) return incoming;
+    const blocked = new Set(newlyLoaded.map((server) => server.id));
+    return incoming.map((server) => {
+      if (!blocked.has(server.id)) return server;
+      return servers.find((row) => row.id === server.id) || server;
+    });
+  }
+
   function applyServersPayload(data, { mergeExternal = true } = {}) {
     const staleRevision = noteStatusSnapshot(data);
     syncPipelineStandbyFromPayload(data);
@@ -918,7 +962,7 @@
       applyExternalPayload(data, { mergeExternal });
       return false;
     }
-    servers = keepEjectingCardContent(data.servers || []);
+    servers = keepEjectingCardContent(withoutMassLoadedFlash(data.servers || []));
     allServers = data.all_servers || servers;
     releaseSettledPendingLoads();
     window.DFlashModelsLive?.noteRuntimeServers?.(servers);
@@ -1440,6 +1484,13 @@
         path: row.model_path || '',
         size_gb: cardSizeGb(row),
         vram_gb: row.vram_gb,
+        vram_by_gpu: row.vram_by_gpu || {},
+        vram_total_gb: row.vram_total_gb,
+        vram_source: row.vram_source || '',
+        pids: row.pids || [],
+        component_key: row.component_key || server.component_key || '',
+        component_label: row.component_label || server.component_label || '',
+        component_role: row.component_role || server.component_role || '',
         gpu_display: row.gpu_display || server.gpu_display || '',
         app_label: row.app_label || 'External app',
         listen_port: row.listen_port || null,
@@ -1466,6 +1517,13 @@
         display_name: displayFields.display_name || catalog.display_name || null,
         loaded_on_gpu: server.status === 'loaded',
         vram_gb: row.vram_gb ?? catalog.vram_gb,
+        vram_by_gpu: row.vram_by_gpu || server.vram_by_gpu || {},
+        vram_total_gb: row.vram_total_gb ?? server.vram_total_gb,
+        vram_source: row.vram_source || server.vram_source || '',
+        pids: row.pids || server.pids || [],
+        component_key: row.component_key || server.component_key || '',
+        component_label: row.component_label || server.component_label || '',
+        component_role: row.component_role || server.component_role || '',
         gpu_display: row.gpu_display || server.gpu_display,
       };
     }
@@ -1477,6 +1535,13 @@
       path: row.path || '',
       size_gb: cardSizeGb(row),
       vram_gb: row.vram_gb,
+      vram_by_gpu: row.vram_by_gpu || server.vram_by_gpu || {},
+      vram_total_gb: row.vram_total_gb ?? server.vram_total_gb,
+      vram_source: row.vram_source || server.vram_source || '',
+      pids: row.pids || server.pids || [],
+      component_key: row.component_key || server.component_key || '',
+      component_label: row.component_label || server.component_label || '',
+      component_role: row.component_role || server.component_role || '',
       gpu_display: server.gpu_display || row.gpu_display || '',
       listen_port: server.port,
       loaded_on_gpu: server.status === 'loaded',
@@ -2184,6 +2249,52 @@
     return String(parts[parts.length - 1] || '').trim();
   }
 
+  function cardComponent(row, server) {
+    return String(
+      row?.component_label
+      || server?.component_label
+      || row?.app_label
+      || server?.app_label
+      || '',
+    ).trim();
+  }
+
+  function cardVramTotal(row, server) {
+    const total = Number(row?.vram_total_gb ?? server?.vram_total_gb);
+    if (Number.isFinite(total) && total > 0) return total;
+    const direct = Number(row?.vram_gb ?? server?.listener_vram_gb);
+    return Number.isFinite(direct) && direct > 0 ? direct : null;
+  }
+
+  function cardVramSource(row, server) {
+    const raw = String(row?.vram_source || server?.vram_source || '').trim().toLowerCase();
+    if (!raw || raw === 'unavailable' || raw === 'unknown') return '';
+    if (raw.includes('nvidia') || raw.includes('measur') || raw.includes('process')) return 'measured';
+    if (raw.includes('estim') || raw.includes('model-size') || raw.includes('fallback')) return 'estimated';
+    return raw;
+  }
+
+  function cardComponentAttributionText(row, server) {
+    const component = cardComponent(row, server);
+    if (!component) return '';
+    const vram = formatCardVramGb(cardVramTotal(row, server));
+    const vramSource = cardVramSource(row, server);
+    const pids = Array.isArray(row?.pids) && row.pids.length
+      ? `PID ${row.pids.join(', ')}`
+      : '';
+    return [
+      component,
+      vram ? `${vram} VRAM${vramSource ? ` (${vramSource})` : ''}` : '',
+      pids,
+    ].filter(Boolean).join(' · ');
+  }
+
+  function cardComponentAttributionHtml(row, server) {
+    const text = cardComponentAttributionText(row, server);
+    if (!text) return '';
+    return `<span class="lm-loaded-by-app-badge is-component" title="${escapeHtml(`GPU consumer: ${text}`)}">${escapeHtml(text)}</span>`;
+  }
+
   function cardSizeGb(row) {
     const breakdown = stackDiskBreakdown(row);
     if (breakdown?.totalGb) return breakdown.totalGb;
@@ -2254,8 +2365,10 @@
     if (gpu) parts.push(gpu);
     const size = formatCardGb(cardSizeGb(row));
     if (size) parts.push(size);
-    const vram = formatCardVramGb(row.vram_gb) || formatCardGb(row.vram_gb, { vram: true });
+    const vram = formatCardVramGb(cardVramTotal(row, server)) || formatCardGb(cardVramTotal(row, server), { vram: true });
     if (vram) parts.push(vram);
+    const component = cardComponent(row, server);
+    if (component) parts.push(component);
     return parts.join(' · ');
   }
 
@@ -2302,6 +2415,8 @@
     if (meta) lines.push(meta);
     const loadedBy = activeClientLabels(row).join(', ') || formatLoadedByLabel(row?.loaded_by || row?.app_label);
     if (loadedBy) lines.push(`Active client${activeClientLabels(row).length > 1 ? 's' : ''}: ${loadedBy}`);
+    const component = cardComponentAttributionText(row, server);
+    if (component) lines.push(`GPU consumer: ${component}`);
     if (row?.model_path) lines.push(`Path: ${row.model_path}`);
     else if (row?.path) lines.push(`Path: ${row.path}`);
     if (row.external) {
@@ -2321,7 +2436,7 @@
   }
 
   function cardAppLabel(row) {
-    if (row?.external) return row.app_label || 'External app';
+    if (row?.external) return row.component_label || row.app_label || 'External app';
     return formatLoadedByLabel(row?.loaded_by || row?.app_label);
   }
 
@@ -2364,9 +2479,11 @@
     const soloConsole = !multi && /^dflash console$/i.test(clients[0]);
     const stackChip = engineHeadStackChip(row);
     const vramCell = engineHeadVramCtxCell(row, server);
+    const componentBadge = cardComponentAttributionHtml(row, server);
     return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloUnknown ? ' is-unknown' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}" title="${escapeHtml(multi ? 'Clients using this model' : `Active client: ${clients[0]}`)}">
             ${stackChip}
             ${vramCell}
+            ${componentBadge}
             <span class="lm-loaded-by-badges">${badges}</span>
           </div>`;
   }
@@ -2953,7 +3070,7 @@
 
   function cardVramPctMetric(row) {
     const isExternal = !!row?.external;
-    const used = Number(row?.vram_gb);
+    const used = Number(row?.vram_total_gb ?? row?.vram_gb);
     if (!Number.isFinite(used) || used <= 0) return '';
     const gpuTotal = gpuTotalVramGb(row?.gpu_index);
     if (!gpuTotal) return '';
@@ -2983,7 +3100,7 @@
   }
 
   function engineHeadVramHtml(row, server) {
-    const vramVal = formatCardVramGb(row?.vram_gb);
+    const vramVal = formatCardVramGb(cardVramTotal(row, server));
     if (!vramVal) return '';
     const gpu = cardVramGpuName(row, server);
     const shown = gpu ? `${vramVal} · ${gpu}` : vramVal;
@@ -3295,76 +3412,30 @@
     return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="${escapeHtml(recentCompletionsTitle(recent))}"><span class="lbl">LAST</span>${body}</span>`;
   }
 
-  function dflashChipForMobileRow(row) {
-    if (row?.external) return '';
-    if (row?.role === 'draft-dflash') {
-      const gen = row?.dflash_generation_label || window.DFlashModelGroups?.acceleratorGenerationLabel?.(row) || 'DFlash 1';
-      return dflashLogoLabel(`${gen}`);
+  function mobileEngineVramHtml(row, server) {
+    const vramVal = formatCardVramGb(row?.vram_gb);
+    const gpu = cardVramGpuName(row, server);
+    if (!vramVal && !gpu) {
+      return '<span class="lm-mobile-engine-vram is-empty" aria-hidden="true"></span>';
     }
-    if (cardUsesDflashStack(row)) return dflashLogoLabel('DFlash 1 stack');
-    return '';
+    const title = gpu ? `GPU memory in use on ${gpu}` : 'GPU memory in use';
+    const gb = vramVal ? `<span class="lm-mobile-engine-gb">${escapeHtml(vramVal)}</span>` : '';
+    const gpuHtml = gpu ? `<span class="lm-mobile-engine-gpu">${escapeHtml(gpu)}</span>` : '';
+    return `<span class="lm-mobile-engine-vram" title="${escapeHtml(title)}">${gb}${gpuHtml}</span>`;
   }
 
-  function mobileEngineHeadHtml({ row, server, ready, action }) {
-    const chip = dflashChipForMobileRow(row);
-    const chipCell = `<span class="lm-mobile-engine-head-chip" aria-hidden="${chip ? 'false' : 'true'}">${chip}</span>`;
+  function mobileEngineHeadHtml({ row, server, action }) {
+    const title = escapeHtml(cardDisplayName(row, server));
     const unload = action ? `<div class="lm-mobile-engine-unload">${action}</div>` : '<div class="lm-mobile-engine-unload" aria-hidden="true"></div>';
-    if (row?.external) {
-      const app = escapeHtml(cardAppLabel(row));
-      const kindCell = externalHeaderKindCell(row);
-      const vramCell = engineHeadVramCtxCell(row, server);
-      return `<div class="lm-mobile-engine-head lm-model-card-external-prompt">
-        <span class="lm-external-origin">External</span>
-        ${kindCell}
-        ${vramCell}
-        <span class="lm-external-app-name" title="Loaded outside DFlash Console by ${app}">${app}</span>
-        ${unload}
-      </div>`;
-    }
-    const clients = ready ? activeClientLabels(row) : [];
-    const badges = clients.map((label) => {
-      const isUnknown = /^unknown api client$/i.test(label);
-      const isConsole = /^dflash console$/i.test(label);
-      return `<span class="lm-loaded-by-app-badge${isUnknown ? ' is-unknown' : ''}${isConsole ? ' is-console' : ''}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
-    }).join('');
-    const multi = clients.length > 1;
-    const soloUnknown = !multi && clients[0] && /^unknown api client$/i.test(clients[0]);
-    const soloConsole = !multi && clients[0] && /^dflash console$/i.test(clients[0]);
-    const headClass = `lm-mobile-engine-head lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloUnknown ? ' is-unknown' : ''}${soloConsole ? ' is-console' : ''}`;
-    const vramCell = engineHeadVramCtxCell(row, server);
-    return `<div class="${headClass}" title="${escapeHtml(multi ? 'Clients using this model' : (clients[0] ? `Active client: ${clients[0]}` : 'Active client'))}">
-      ${chipCell}
-      ${vramCell}
-      <span class="lm-loaded-by-badges">${badges}</span>
+    return `<div class="lm-mobile-engine-head">
+      ${mobileEngineVramHtml(row, server)}
+      <span class="lm-mobile-engine-meta-title lm-model-path">${title}</span>
       ${unload}
     </div>`;
   }
 
-  function mobileEngineMetaHtml(row, server, { ready = false } = {}) {
-    const title = escapeHtml(cardDisplayName(row, server));
-    if (row?.external) {
-      const statusBadge = ready ? '<span class="lm-badge ready">READY</span>' : '';
-      const subline = externalCardSublineHtml(row);
-      const foot = cardFootMetricsHtml(row, null, { omitVram: true });
-      const actions = externalPromptActionsHtml(row);
-      const identityExtras = statusBadge;
-      return `<div class="lm-mobile-engine-meta lm-mobile-engine-meta-external">
-      <div class="lm-mobile-engine-meta-identity">
-        <div class="lm-mobile-engine-meta-title-row">
-          <span class="lm-mobile-engine-meta-title lm-model-path">${title}</span>${identityExtras}
-        </div>
-        ${subline}
-      </div>
-      ${foot}
-      ${actions ? `<div class="lm-mobile-engine-external-actions">${actions}</div>` : ''}
-    </div>`;
-    }
-    const disk = cardDiskMetricsHtml(row);
-    const stats = disk || '';
-    return `<div class="lm-mobile-engine-meta">
-      <div class="lm-mobile-engine-meta-title">${title}</div>
-      <div class="lm-mobile-engine-meta-stats">${stats}</div>
-    </div>`;
+  function mobileEngineMetaHtml() {
+    return '';
   }
 
   function buildMobileEngineCardArticle({
@@ -3773,7 +3844,7 @@
               <span class="lm-model-card-load-label">${loadLabel}<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span></span>
               <span class="lm-model-card-load-percent">${progressKnown && progressPct != null ? `${Math.round(progressPct)}%` : 'Preparing…'}${progress.etaLabel ? ` · ${escapeHtml(progress.etaLabel)}` : ''}</span>
             </div>
-            <div class="lm-model-card-load-detail">${escapeHtml(progress.detail || (warming ? 'Building expert banks…' : 'Reading model weights…'))}</div>
+            <div class="lm-model-card-load-detail">${escapeHtml(progress.detail || row.progress_detail || (warming ? 'Building expert banks…' : (progressKnown ? 'Preparing the GPU…' : 'Reading model weights…')))}</div>
             <div class="lm-model-card-load-track" role="progressbar" aria-label="${escapeHtml(`${loadLabel} ${cardDisplayName(row, server)}`)}"${progressKnown && progressPct != null ? ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progressPct)}"` : ' aria-valuemin="0" aria-valuemax="100"'}><div class="lm-model-card-load-fill"></div></div>
           </div>`
         : '';
@@ -4987,7 +5058,7 @@
   ) {
     const onEngines = enginesViewActive();
     const includeExt = includeExternal ?? onEngines;
-    const wantFresh = fresh || (onEngines && enginesNeedFastRefresh());
+    const wantFresh = fresh === true;
     engineStatusLoadingDetail = includeExt
       ? 'Building engine status and scanning external GPU apps…'
       : 'Checking configured llama-server listeners and loaded models…';
@@ -5015,10 +5086,9 @@
 
   async function refresh(shouldRender = true, options = {}) {
     void ensureTotalVram();
-    const onEngines = enginesViewActive();
     const merged = {
       includeExternal: options.includeExternal ?? false,
-      fresh: options.fresh ?? (onEngines && enginesNeedFastRefresh()),
+      fresh: options.fresh === true,
       ...options,
     };
     if (!catalogLoaded) {
@@ -5082,7 +5152,7 @@
         // Keep the high-frequency status loop off the expensive external GPU
         // scan. External cards are refreshed independently below.
         includeExternal: false,
-        fresh: enginesNeedFastRefresh(),
+        fresh: false,
       });
       if (onEngines) {
         void refreshInferenceStats(true);
@@ -5393,14 +5463,13 @@
         window.DFlashStatusFeed?.note('Load failed', err.message || label);
       }
     } finally {
-      clearPendingLoadCard(serverId);
+      if (!completed) clearPendingLoadCard(serverId);
       resetEngineModelPicker();
       renderAll();
       // Never await includeExternal here — that scan can take 60–90s and left
       // Models-tab LOADING... stuck long after weights were already live.
       void refreshExternalGpuLoads(true);
-      void refreshStatus(true, { includeExternal: false, fresh: true }).catch(() => {});
-      void refreshStatus(true, { includeExternal: true, fresh: false }).catch(() => {});
+      void refreshStatus(true, { includeExternal: false, fresh: false }).catch(() => {});
       reschedulePoll();
     }
     return completed;
@@ -5856,9 +5925,8 @@
     renderToolbar(activeServer());
     updateEnginePageNotice();
     void loadGatewayUrl();
-    // Start the external scan with the first status request. Do not wait for
-    // it, and do not force a fresh scan — that path can take half a minute.
-    void refreshExternalGpuLoads(true, { force: true, fresh: false });
+    // Paint configured engines first. The external GPU scan must not run ahead
+    // of that, or the Engines page sits on "Starting engine services".
     void initEngineFilters()
       .then(() => refreshStatus(true, { includeExternal: false, fresh: false }))
       .then(() => {

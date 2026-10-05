@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from core.client_identity import display_loaded_by_label, resolve_active_clients, resolve_engine_client_label
+from core.client_identity import (
+    display_loaded_by_label,
+    resolve_active_clients,
+    resolve_active_components,
+    resolve_engine_client_label,
+)
 from core.net_listeners import pid_listening_on_port
 
 _SERVER_STATUS_CACHE: dict[str, dict[str, Any]] = {}
@@ -139,17 +144,22 @@ def _write_engine_status_log(trace: list[dict[str, Any]], build_ms: int) -> None
         pass
 
 
-def _fetch_models_payload(api_url: str) -> list[dict[str, Any]]:
+def _fetch_models_payload_result(api_url: str) -> tuple[list[dict[str, Any]], bool]:
     url = f"{str(api_url or '').strip().rstrip('/')}/models"
     try:
         with urllib.request.urlopen(url, timeout=2.5) as resp:
             payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, ConnectionResetError, OSError):
-        return []
+        return [], False
     models = payload.get('data') if isinstance(payload, dict) else None
     if not isinstance(models, list):
-        return []
-    return [entry for entry in models if isinstance(entry, dict)]
+        return [], False
+    return [entry for entry in models if isinstance(entry, dict)], True
+
+
+def _fetch_models_payload(api_url: str) -> list[dict[str, Any]]:
+    entries, _ok = _fetch_models_payload_result(api_url)
+    return entries
 
 
 def _model_state(entry: dict[str, Any]) -> str:
@@ -182,13 +192,13 @@ def _loaded_model_ids(entries: list[dict[str, Any]], *, router: bool) -> list[st
         model_id = str(entry.get('id') or entry.get('model') or '').strip()
         if not model_id or model_id == 'default':
             continue
-        if router:
-            state = _model_state(entry)
-            if state:
-                if state not in ('loaded', 'running'):
-                    continue
-            elif not (isinstance(entry.get('meta'), dict) and entry['meta'].get('n_ctx')):
-                continue
+        state = _model_state(entry)
+        # A listening engine lists its configured model even when the weights
+        # are not on the GPU. Never turn that "unloaded" row into a card.
+        if state and state not in ('loaded', 'running'):
+            continue
+        if router and not state and not (isinstance(entry.get('meta'), dict) and entry['meta'].get('n_ctx')):
+            continue
         ids.append(model_id)
     return ids
 
@@ -245,15 +255,20 @@ def _router_unload_cached(api_url: str) -> bool:
     return value
 
 
-def probe_runtime_state(api_url: str) -> tuple[list[str], list[str], bool, float | None]:
-    """Single /models fetch for status polling — avoids duplicate HTTP calls."""
-    entries = _fetch_models_payload(api_url)
+def probe_runtime_state(api_url: str) -> tuple[list[str], list[str], bool, float | None, bool]:
+    """Single /models fetch for status polling — avoids duplicate HTTP calls.
+
+    The last flag is True when /models answered. A successful answer that
+    lists only unloaded models must not fall back to the configured id.
+    """
+    entries, fetch_ok = _fetch_models_payload_result(api_url)
     router = _router_unload_cached(api_url)
     return (
         _loaded_model_ids(entries, router=router),
         _loading_model_ids(entries),
         router,
         _loading_progress_from_models(entries),
+        fetch_ok,
     )
 
 
@@ -867,10 +882,17 @@ def _build_embedding_server_status(
     embed_started = get_started_launch(port) if port > 0 else {}
     embed_gpu_idx = embed_started.get('main_gpu') if embed_started else launch.get('main_gpu')
     listener_vram_gb = None
+    process_attribution: dict[str, Any] = {
+        'pids': [],
+        'vram_by_gpu': {},
+        'vram_total_gb': None,
+        'vram_source': 'unavailable',
+    }
     if running and port > 0:
-        from core.gpu_processes import primary_measured_vram_for_port
+        from core.gpu_processes import primary_measured_vram_for_port, process_attribution_for_port
 
         measured = primary_measured_vram_for_port(port, host)
+        process_attribution = process_attribution_for_port(port, host)
         if measured is not None:
             embed_gpu_idx, listener_vram_gb = measured
         else:
@@ -886,6 +908,13 @@ def _build_embedding_server_status(
     )
     loaded_by = resolve_engine_client_label(str(entry.get('id') or ''), entry.get('loaded_by'))
     active_clients = resolve_active_clients(str(entry.get('id') or ''), entry.get('loaded_by'))
+    active_components = resolve_active_components(
+        str(entry.get('id') or ''),
+        stored_component_key=entry.get('component_key'),
+        stored_component_label=entry.get('component_label'),
+        stored_component_role=entry.get('component_role'),
+    )
+    primary_component = active_components[0] if active_components else {}
     embedding_dimensions = meta.get('embedding_dimensions') or meta.get('dimensions')
     card_detail = ' · '.join(
         str(part)
@@ -905,6 +934,11 @@ def _build_embedding_server_status(
         card['app_label'] = loaded_by
         card['loaded_by'] = loaded_by
         card['active_clients'] = active_clients
+        card['active_components'] = active_components
+        card['component_key'] = primary_component.get('component_key', '')
+        card['component_label'] = primary_component.get('component_label', '')
+        card['component_role'] = primary_component.get('component_role', '')
+        card.update(process_attribution)
         card['app_source'] = 'dflash'
         card['external'] = False
         card['card_detail'] = card_detail
@@ -1000,6 +1034,11 @@ def _build_embedding_server_status(
         'inference_stats': inference_stats,
         'active_clients': active_clients,
         'loaded_by': loaded_by,
+        'active_components': active_components,
+        'component_key': primary_component.get('component_key', ''),
+        'component_label': primary_component.get('component_label', ''),
+        'component_role': primary_component.get('component_role', ''),
+        **process_attribution,
         'boot_error': boot_error,
     }
 
@@ -1095,6 +1134,7 @@ def build_server_status(
     gpus: list[dict[str, Any]] | None = None,
     vram_map: dict[int, float] | None = None,
     open_ports: set[int] | None = None,
+    live_probe: bool = True,
 ) -> dict[str, Any]:
     from core.config import is_embedding_server
 
@@ -1134,7 +1174,7 @@ def build_server_status(
     else:
         port_open = tcp_port_open(host, port) if port > 0 else False
     running = port_open
-    if running and not get_started_launch(port) and engine_on:
+    if live_probe and running and not get_started_launch(port) and engine_on:
         adopt_running_engine(server, cfg=cfg)
     started_launch = get_started_launch(port) if port > 0 else {}
     display_launch = {
@@ -1143,8 +1183,14 @@ def build_server_status(
         'tensor_split': started_launch.get('tensor_split', launch.get('tensor_split')),
     } if started_launch else launch
     gpu_display = format_gpu_assignment(str(server.get('gpu_device') or 'auto'), display_launch, gpus)
-    if running and api_url:
-        loaded_models, loading_models, router_ready, api_load_progress = probe_runtime_state(api_url)
+    fetch_ok = False
+    if not live_probe:
+        # Do not invent a loaded card for every listening profile. A fast
+        # snapshot that does that flashes the whole model list, then snaps
+        # back to the one model that is actually on the GPU.
+        loaded_models, loading_models, router_ready, api_load_progress = [], [], False, None
+    elif running and api_url:
+        loaded_models, loading_models, router_ready, api_load_progress, fetch_ok = probe_runtime_state(api_url)
     else:
         loaded_models, loading_models, router_ready, api_load_progress = [], [], False, None
     loaded_models = _normalize_loaded_model_ids(
@@ -1152,10 +1198,10 @@ def build_server_status(
         configured_model_id=configured_model_id,
         # A router can advertise configured model aliases while its weights
         # are explicitly unloaded. Never turn that advertisement into a
-        # false "loaded" state.
-        allow_fallback=running and not router_ready,
+        # false "loaded" state. A successful /models reply already told us.
+        allow_fallback=running and not router_ready and not fetch_ok,
     )
-    log_lines = read_log_tail(server_id) if server_id else []
+    log_lines = read_log_tail(server_id) if (live_probe and server_id) else []
     from core.load_progress import boot_failure_message
 
     boot_error = boot_failure_message(log_lines)
@@ -1172,10 +1218,21 @@ def build_server_status(
     )
     listener_vram_gb = None
     measured_gpu_idx = None
-    if running and port > 0:
-        from core.gpu_processes import primary_measured_vram_for_port, vram_gb_for_port
+    process_attribution: dict[str, Any] = {
+        'pids': [],
+        'vram_by_gpu': {},
+        'vram_total_gb': None,
+        'vram_source': 'unavailable',
+    }
+    if live_probe and running and port > 0:
+        from core.gpu_processes import (
+            primary_measured_vram_for_port,
+            process_attribution_for_port,
+            vram_gb_for_port,
+        )
 
         measured = primary_measured_vram_for_port(port, host)
+        process_attribution = process_attribution_for_port(port, host)
         if measured is not None:
             measured_gpu_idx, listener_vram_gb = measured
         else:
@@ -1264,6 +1321,13 @@ def build_server_status(
 
     loaded_by = resolve_engine_client_label(server_id, server.get('loaded_by'))
     active_clients = resolve_active_clients(server_id, server.get('loaded_by'))
+    active_components = resolve_active_components(
+        server_id,
+        stored_component_key=server.get('component_key'),
+        stored_component_label=server.get('component_label'),
+        stored_component_role=server.get('component_role'),
+    )
+    primary_component = active_components[0] if active_components else {}
 
     for card in visible_cards:
         card['gpu_display'] = gpu_display
@@ -1273,6 +1337,11 @@ def build_server_status(
         card['app_label'] = loaded_by
         card['loaded_by'] = loaded_by
         card['active_clients'] = active_clients
+        card['active_components'] = active_components
+        card['component_key'] = primary_component.get('component_key', '')
+        card['component_label'] = primary_component.get('component_label', '')
+        card['component_role'] = primary_component.get('component_role', '')
+        card.update(process_attribution)
         card['app_source'] = 'dflash'
         card['external'] = False
         card.update(
@@ -1379,10 +1448,15 @@ def build_server_status(
         'inference_stats': inference_stats,
         'active_clients': active_clients,
         'loaded_by': loaded_by,
+        'active_components': active_components,
+        'component_key': primary_component.get('component_key', ''),
+        'component_label': primary_component.get('component_label', ''),
+        'component_role': primary_component.get('component_role', ''),
+        **process_attribution,
         'boot_error': status_error,
         'load_error': load_error,
     }
-    if server_id:
+    if server_id and live_probe:
         _SERVER_STATUS_CACHE[server_id] = dict(result)
     return result
 
@@ -1539,6 +1613,7 @@ def get_status_payload(
     max_stale_seconds: float = 0.75,
     fast_external: bool = False,
     status_trace: list[dict[str, Any]] | None = None,
+    live_probe: bool = True,
 ) -> dict[str, Any]:
     from core.gpu_processes import get_external_gpu_loads, query_compute_vram_map
     from core.net_listeners import configured_listening_ports
@@ -1597,6 +1672,7 @@ def get_status_payload(
         cached_payload = _STATUS_PAYLOAD_CACHE.get('payload')
         cache_matches = (
             isinstance(cached_payload, dict)
+            and not cached_payload.get('quick')
             and _STATUS_PAYLOAD_CACHE.get('include_external') == include_external
             and (time.time() - cached_at) <= float(max_stale_seconds)
         )
@@ -1607,7 +1683,12 @@ def get_status_payload(
             out['stale_age_ms'] = max(0, int((time.time() - cached_at) * 1000))
         return out
 
-    resolved_gpus = gpus if gpus is not None else query_gpu_devices()
+    if gpus is not None:
+        resolved_gpus = gpus
+    elif live_probe:
+        resolved_gpus = query_gpu_devices()
+    else:
+        resolved_gpus = []
     if gpus is None:
         _append_status_trace(
             status_trace,
@@ -1625,13 +1706,13 @@ def get_status_payload(
 
     # Skip expensive VRAM process scans while any engine is generating.
     vram_started = time.time()
-    if _any_proxy_generating(servers):
+    if not live_probe or _any_proxy_generating(servers):
         vram_map = {}
         _append_status_trace(
             status_trace,
             step='vram_map',
             started_at=vram_started,
-            detail='skipped while an engine is generating',
+            detail='skipped' if not live_probe else 'skipped while an engine is generating',
         )
     else:
         vram_map = query_compute_vram_map()
@@ -1669,6 +1750,7 @@ def get_status_payload(
                 gpus=resolved_gpus,
                 vram_map=vram_map,
                 open_ports=open_ports,
+                live_probe=live_probe,
             )
         except Exception:
             cached = _SERVER_STATUS_CACHE.get(sid)
@@ -1771,5 +1853,8 @@ def get_status_payload(
         _attach_gpu_other_usage(payload, servers=servers, gpus=resolved_gpus)
     else:
         payload['gpu_other_usage'] = _cached_gpu_other_usage() if pipeline_active else {'processes': [], 'total_other_vram_gb': 0.0}
-    _store_status_payload(payload, include_external=include_external)
+    if live_probe:
+        _store_status_payload(payload, include_external=include_external)
+    else:
+        payload['quick'] = True
     return payload

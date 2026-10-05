@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -49,6 +50,9 @@ def execute_catalog_load(
     inference_settings: dict[str, Any] | None = None,
     requested_runtime_id: str | None = None,
     loaded_by: str = 'api',
+    component_key: str = '',
+    component_label: str = '',
+    component_role: str = '',
     cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load a model from the local catalog by path or model_id."""
@@ -150,9 +154,27 @@ def execute_catalog_load(
 
     from core.runtimes import get_runtime_adapter
 
+    from core.load_activity import track_model_load
+
+    def _tracked_adapter_load(runtime_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        adapter = get_runtime_adapter(runtime_key)
+        if adapter is None:
+            raise HTTPException(status_code=404, detail=f'runtime adapter not found: {runtime_key}')
+        label = Path(resolved_path).name or str(target.get('label') or runtime_key)
+        with track_model_load(
+            runtime_key,
+            label=label,
+            model_id=str(target.get('model_id') or target.get('id') or ''),
+            model_path=resolved_path,
+            runtime_id=runtime_key,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        ):
+            return adapter.load(payload)
+
     if runtime_id == 'stt':
-        adapter = get_runtime_adapter('stt')
-        result = adapter.load({'path': resolved_path, 'gpu_device': requested_gpu})
+        result = _tracked_adapter_load('stt', {'path': resolved_path, 'gpu_device': requested_gpu})
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'STT load failed')
         return {
@@ -165,13 +187,12 @@ def execute_catalog_load(
             **result,
         }
     if runtime_id == 'faster-whisper':
-        adapter = get_runtime_adapter('faster-whisper')
         model_payload: dict[str, Any] = {'path': resolved_path}
         if requested_gpu is not None:
             model_payload['gpu_device'] = requested_gpu
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
-        result = adapter.load(model_payload)
+        result = _tracked_adapter_load('faster-whisper', model_payload)
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'faster-whisper load failed')
         return {
@@ -184,8 +205,7 @@ def execute_catalog_load(
             **result,
         }
     if runtime_id == 'piper':
-        adapter = get_runtime_adapter('piper')
-        result = adapter.load({'path': resolved_path, 'gpu_device': requested_gpu})
+        result = _tracked_adapter_load('piper', {'path': resolved_path, 'gpu_device': requested_gpu})
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'TTS load failed')
         return {
@@ -198,13 +218,12 @@ def execute_catalog_load(
             **result,
         }
     if runtime_id == 'vibevoice':
-        adapter = get_runtime_adapter('vibevoice')
         model_payload = {'path': resolved_path}
         if requested_gpu is not None:
             model_payload['gpu_device'] = requested_gpu
         if load_settings:
             model_payload['load_settings'] = dict(load_settings)
-        result = adapter.load(model_payload)
+        result = _tracked_adapter_load('vibevoice', model_payload)
         if not result.get('success'):
             raise HTTPException(status_code=400, detail=result.get('error') or 'VibeVoice load failed')
         return {
@@ -228,7 +247,7 @@ def execute_catalog_load(
             model_payload['load_settings'] = dict(load_settings)
             if load_settings.get('preset'):
                 model_payload['preset'] = load_settings.get('preset')
-        result = adapter.load(model_payload)
+        result = _tracked_adapter_load(runtime_id, model_payload)
         if not result.get('success'):
             from core.model_runtime_policy import explain_freetoken_load_error
 
@@ -289,7 +308,13 @@ def execute_catalog_load(
         model_id=model_id,
     )
     if already:
-        note_engine_loaded(server_id_text, loaded_by=loaded_by)
+        note_engine_loaded(
+            server_id_text,
+            loaded_by=loaded_by,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
         model_name = str(already.get('model') or target.get('label') or 'Model')
         return {
             'success': True,
@@ -336,7 +361,13 @@ def execute_catalog_load(
     result = load_server_checkpoint(candidate, cfg=config, model_path=resolved_path, model_id=model_id)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
-    note_engine_loaded(str(server.get('id') or ''), loaded_by=loaded_by)
+    note_engine_loaded(
+        str(server.get('id') or ''),
+        loaded_by=loaded_by,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
+    )
     if modality == 'embedding':
         how_to_use = f'POST /api/servers/{server["id"]}/v1/embeddings {{"input": ["text", ...]}}'
     else:

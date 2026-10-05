@@ -348,7 +348,9 @@ def write_server_preset(
         f"t = {int(load.get('cpu_threads') or 9)}",
         f"b = {int(load.get('eval_batch_size') or 2048)}",
         f"ub = {int(load.get('physical_batch_size') or 512)}",
-        f"fa = {'on' if load.get('flash_attention', True) else 'off'}",
+        # Quantized V cache cannot boot with flash attention off
+        # ("quantized V cache requires flash_attn to be enabled").
+        f"fa = {'on' if (load.get('flash_attention', True) or str(cache_v).lower() not in {'f16', 'f32', 'bf16'}) else 'off'}",
         f"jinja = {'true' if profile_uses_jinja(preset_profile) else 'false'}",
         'mlock = true',
         f"main-gpu = {int(launch.get('main_gpu') or 0)}",

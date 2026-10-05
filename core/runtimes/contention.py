@@ -50,7 +50,7 @@ def gpu_contention_report(
         loaded: list[str] = []
         if running and api_url:
             try:
-                loaded_ids, _loading, _router, _progress = probe_runtime_state(api_url)
+                loaded_ids, _loading, _router, _progress, _fetch_ok = probe_runtime_state(api_url)
                 loaded = list(loaded_ids)
             except Exception:
                 loaded = []

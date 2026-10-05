@@ -1766,14 +1766,25 @@ def load_server_checkpoint(
                 'memory': memory_check,
             }
 
-    with _checkpoint_load_lock:
-        return _load_server_checkpoint_locked(
-            entry,
-            cfg=config,
-            model_path=model_path,
-            model_id=model_id,
-            stack_check=stack_check,
-        )
+    from core.load_activity import track_model_load
+
+    raw_name = str(model_path or model_id or entry.get('label') or entry.get('model_id') or 'Model')
+    shown = Path(raw_name).name if model_path else raw_name
+    with track_model_load(
+        str(entry.get('id') or ''),
+        label=shown,
+        model_id=str(model_id or entry.get('model_id') or ''),
+        model_path=str(model_path or entry.get('adhoc_model_path') or entry.get('target_path') or ''),
+        runtime_id='llama-server',
+    ):
+        with _checkpoint_load_lock:
+            return _load_server_checkpoint_locked(
+                entry,
+                cfg=config,
+                model_path=model_path,
+                model_id=model_id,
+                stack_check=stack_check,
+            )
 
 
 def _load_server_checkpoint_locked(

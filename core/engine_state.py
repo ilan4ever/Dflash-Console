@@ -113,10 +113,23 @@ def note_engine_idle(server_id: str) -> dict[str, Any]:
     return note_engine_on(server_id)
 
 
-def note_engine_loaded(server_id: str, *, loaded_by: str | None = None) -> dict[str, Any]:
+def note_engine_loaded(
+    server_id: str,
+    *,
+    loaded_by: str | None = None,
+    component_key: str | None = None,
+    component_label: str | None = None,
+    component_role: str | None = None,
+) -> dict[str, Any]:
     """Runtime load only — config remembers engine on, not which checkpoint is in VRAM."""
-    if loaded_by:
-        note_engine_active_client(server_id, client_label=loaded_by)
+    if loaded_by or component_key or component_role:
+        note_engine_active_client(
+            server_id,
+            client_label=loaded_by,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
     try:
         from core.support_journal import journal_event, note_first_server_started, record_model_event
 
@@ -125,30 +138,66 @@ def note_engine_loaded(server_id: str, *, loaded_by: str | None = None) -> dict[
         journal_event('engine', 'checkpoint loaded', server_id=server_id, client=loaded_by or '')
     except Exception:
         pass
-    return update_server_runtime(server_id, engine_on=True, loaded_by=loaded_by)
+    return update_server_runtime(
+        server_id,
+        engine_on=True,
+        loaded_by=loaded_by,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
+    )
 
 
-def note_engine_active_client(server_id: str, *, client_label: str | None = None) -> dict[str, Any]:
+def note_engine_active_client(
+    server_id: str,
+    *,
+    client_label: str | None = None,
+    component_key: str | None = None,
+    component_label: str | None = None,
+    component_role: str | None = None,
+) -> dict[str, Any]:
     """Record which client last used this engine (chat, embed, or explicit load)."""
-    from core.client_identity import set_active_client_label
+    from core.client_identity import component_identity, set_active_client_label, set_active_component
 
     label = str(client_label or '').strip()
     sid = str(server_id or '').strip()
-    if not sid or not label:
-        return {'loaded_by': '', 'loaded_by_changed': False}
+    if not sid:
+        return {'loaded_by': '', 'loaded_by_changed': False, 'component_changed': False}
 
-    changed = set_active_client_label(sid, label)
-    if changed:
+    changed = set_active_client_label(sid, label) if label else False
+    identity = component_identity(
+        component=component_key,
+        role=component_role,
+        client=label,
+    )
+    component_changed = set_active_component(
+        sid,
+        component_key=identity.get('component_key'),
+        component_label=component_label or identity.get('component_label'),
+        component_role=component_role or identity.get('component_role'),
+    ) if identity.get('component_key') else False
+    if changed or component_changed:
         from core.runtime import invalidate_status_payload_cache
 
         invalidate_status_payload_cache()
         try:
             from core.support_journal import journal_event
 
-            journal_event('client', 'active client changed', server_id=sid, client=label)
+            journal_event(
+                'client',
+                'active client changed',
+                server_id=sid,
+                client=label,
+                component=identity.get('component_key') or '',
+            )
         except Exception:
             pass
-    return {'loaded_by': label, 'loaded_by_changed': changed}
+    return {
+        'loaded_by': label,
+        'loaded_by_changed': changed,
+        'component_changed': component_changed,
+        **identity,
+    }
 
 
 def release_gpu_checkpoints(server: dict[str, Any]) -> dict[str, Any]:

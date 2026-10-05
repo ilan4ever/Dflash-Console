@@ -21,6 +21,23 @@ def _cfg(profile: str = 'gemma-chat') -> dict:
     }
 
 
+def test_vllm_unload_does_not_look_up_a_llama_server(monkeypatch):
+    class _Adapter:
+        def unload(self):
+            return {'success': True, 'unloaded': True}
+
+    monkeypatch.setattr(app, 'load_config', lambda: {'servers': []})
+    monkeypatch.setattr(app, '_hf_engine_adapter', lambda server_id: _Adapter() if server_id == 'vllm' else None)
+    monkeypatch.setattr(app, '_invalidate_status_cache', lambda: None)
+    monkeypatch.setattr('core.client_identity.clear_active_clients', lambda *_args, **_kwargs: None)
+
+    result = app.server_unload('vllm')
+
+    assert result['success'] is True
+    assert result['unloaded'] is True
+    assert result['engine_stopped'] is True
+
+
 def test_router_unload_keeps_listener_ready(monkeypatch):
     monkeypatch.setattr(app, 'load_config', lambda: _cfg())
     monkeypatch.setattr(app, 'tcp_port_open', lambda host, port: True)

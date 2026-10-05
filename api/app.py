@@ -62,6 +62,8 @@ def _load_dflash_env_admin() -> None:
 
 _load_dflash_env_admin()
 _SERVERS_STATUS_LOCK = asyncio.Lock()
+_status_build_task: asyncio.Task | None = None
+_status_build_wants_external = False
 _ADAPTER_ENGINE_ROWS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
 _ADAPTER_ENGINE_ROWS_CACHE_TTL = 2.0
 _SYSTEM_STATS_LOCK = asyncio.Lock()
@@ -875,8 +877,10 @@ def _hf_engine_profile(cfg: dict[str, Any], runtime_id: str) -> dict[str, Any]:
 
 
 def _invalidate_status_cache() -> None:
+    global _ADAPTER_ENGINE_ROWS_CACHE
     from core.runtime import invalidate_status_payload_cache
 
+    _ADAPTER_ENGINE_ROWS_CACHE = (0.0, [])
     invalidate_status_payload_cache()
 
 
@@ -1987,10 +1991,12 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
     otherwise the first enabled engine that matches the modality is used.
     """
     from core.catalog_load import execute_catalog_load
+    from core.client_identity import request_component_identity
 
     cfg = load_config()
     _ensure_api_pipeline_armed(cfg, server_id=body.server_id)
     gpu_device = _request_gpu_device(body.gpu_device)
+    component = request_component_identity(request)
     result = execute_catalog_load(
         path=body.path,
         model_id=body.model_id,
@@ -2001,6 +2007,9 @@ def model_load(body: ModelLoadRequest, request: Request) -> dict[str, Any]:
         inference_settings=body.inference_settings,
         requested_runtime_id=body.runtime_id,
         loaded_by=_request_client_label(request),
+        component_key=str(component.get('component_key') or ''),
+        component_label=str(component.get('component_label') or ''),
+        component_role=str(component.get('component_role') or ''),
         cfg=cfg,
     )
     result.setdefault('gpu_device', gpu_device or 'auto')
@@ -2094,6 +2103,24 @@ def _adapter_engine_rows() -> list[dict[str, Any]]:
             status = 'running'
         else:
             status = 'stopped'
+        attribution: dict[str, Any] = {
+            'pids': [],
+            'vram_by_gpu': {},
+            'vram_total_gb': None,
+            'vram_source': 'unavailable',
+        }
+        if running and int(health.get('port') or 0) > 0:
+            try:
+                from core.gpu_processes import process_attribution_for_port
+
+                attribution = process_attribution_for_port(
+                    int(health.get('port') or 0),
+                    str(health.get('host') or '127.0.0.1'),
+                )
+            except Exception:
+                pass
+        component_key = f'onevoice.{runtime_id}'
+        component_label = f'OneVoice {label}'
         rows.append({
             'id': runtime_id,
             'label': label,
@@ -2115,6 +2142,15 @@ def _adapter_engine_rows() -> list[dict[str, Any]]:
             'loaded': bool(inference_ready and name),
             'ready_for_chat': inference_ready,
             'model_path': model,
+            'component_key': component_key,
+            'component_label': component_label,
+            'component_role': runtime_id,
+            'active_components': [{
+                'component_key': component_key,
+                'component_label': component_label,
+                'component_role': runtime_id,
+            }] if running else [],
+            **attribution,
         })
     return rows
 
@@ -2128,6 +2164,102 @@ def _adapter_engine_rows_cached() -> list[dict[str, Any]]:
     rows = _adapter_engine_rows()
     _ADAPTER_ENGINE_ROWS_CACHE = (now, [dict(row) for row in rows])
     return [dict(row) for row in rows]
+
+
+def _loading_card(job: dict[str, Any]) -> dict[str, Any]:
+    label = str(job.get('label') or 'Model')
+    model_id = str(job.get('model_id') or label)
+    return {
+        'role': 'loaded-model',
+        'card_state': 'loading',
+        'id': model_id,
+        'model_id': model_id,
+        'label': label,
+        'title': label,
+        'path': str(job.get('model_path') or ''),
+        'progress': None,
+        'progress_detail': 'Loading into GPU…',
+        'ejectable': True,
+        'component_key': str(job.get('component_key') or ''),
+        'component_label': str(job.get('component_label') or ''),
+        'component_role': str(job.get('component_role') or ''),
+        'active_components': [{
+            'component_key': str(job.get('component_key') or ''),
+            'component_label': str(job.get('component_label') or ''),
+            'component_role': str(job.get('component_role') or ''),
+        }] if job.get('component_key') or job.get('component_label') else [],
+    }
+
+
+def _load_job_progress(job: dict[str, Any]) -> dict[str, Any]:
+    """Real startup progress when the runtime publishes it, otherwise a plain label."""
+    fallback = {'detail': 'Loading into GPU…'}
+    runtime_id = str(job.get('runtime_id') or job.get('server_id') or '').strip()
+    if runtime_id not in {'vllm', 'transformers', 'freetoken'}:
+        return fallback
+    from core.runtimes import get_runtime_adapter
+
+    adapter = get_runtime_adapter(runtime_id)
+    if adapter is None or not callable(getattr(adapter, 'health', None)):
+        return fallback
+    health = adapter.health() or {}
+    reported = health.get('load_progress')
+    if isinstance(reported, dict) and (reported.get('detail') or reported.get('pct') is not None):
+        return reported
+    return fallback
+
+
+def _apply_active_loads(payload: dict[str, Any]) -> dict[str, Any]:
+    """Show a loading card as soon as a load request is accepted."""
+    from core.load_activity import active_model_loads
+
+    jobs = active_model_loads()
+    if not jobs:
+        return payload
+    servers = [dict(row) if isinstance(row, dict) else row for row in (payload.get('servers') or [])]
+    by_id = {
+        str(row.get('id') or ''): row
+        for row in servers
+        if isinstance(row, dict)
+    }
+    for job in jobs:
+        sid = str(job.get('server_id') or '')
+        if not sid:
+            continue
+        card = _loading_card(job)
+        progress = _load_job_progress(job)
+        if progress.get('pct') is not None:
+            card['progress'] = progress.get('pct')
+        if progress.get('detail'):
+            card['progress_detail'] = progress.get('detail')
+        row = by_id.get(sid)
+        if row is None:
+            row = {
+                'id': sid,
+                'label': str(job.get('label') or sid),
+                'status': 'booting',
+                'booting': True,
+                'running': True,
+                'runtime_id': str(job.get('runtime_id') or sid),
+                'loaded_models': [],
+                'visible_cards': [card],
+                'model_id': str(job.get('model_id') or ''),
+                'model_path': str(job.get('model_path') or ''),
+                'load_progress': progress,
+            }
+            servers.append(row)
+            by_id[sid] = row
+            continue
+        row['status'] = 'booting'
+        row['booting'] = True
+        row['running'] = True
+        row['loaded_models'] = []
+        row['model_id'] = str(job.get('model_id') or row.get('model_id') or '')
+        row['model_path'] = str(job.get('model_path') or row.get('model_path') or '')
+        row['load_progress'] = progress
+        row['visible_cards'] = [card]
+    payload['servers'] = servers
+    return payload
 
 
 def _merge_adapter_engine_rows(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2144,7 +2276,7 @@ def _merge_adapter_engine_rows(payload: dict[str, Any]) -> dict[str, Any]:
     extra = [row for row in adapter_rows if str(row.get('id') or '') not in existing]
     merged['servers'] = list(merged.get('servers') or []) + extra
     merged['all_servers'] = list(merged.get('all_servers') or []) + extra
-    return merged
+    return _apply_active_loads(merged)
 
 
 @app.get('/api/servers/profiles')
@@ -2161,61 +2293,174 @@ def server_profiles() -> dict[str, Any]:
     }
 
 
+def _status_cache_age_seconds(cached: dict[str, Any] | None) -> float:
+    if not isinstance(cached, dict):
+        return 1e9
+    snapshot_at = float(cached.get('updated_at') or 0.0)
+    if not snapshot_at:
+        return 1e9
+    return max(0.0, time.time() - snapshot_at)
+
+
+def _mark_status_stale(cached: dict[str, Any]) -> dict[str, Any]:
+    payload = _merge_adapter_engine_rows(dict(cached))
+    payload['boot_id'] = _BOOT_ID
+    payload['stale'] = True
+    snapshot_at = float(payload.get('updated_at') or 0.0)
+    if snapshot_at:
+        payload['stale_age_ms'] = max(0, int((time.time() - snapshot_at) * 1000))
+    return payload
+
+
+def _quick_engine_snapshot() -> dict[str, Any]:
+    """Listening engines and their configured models, without GPU or HTTP probes."""
+    from core.runtime import get_status_payload
+
+    cfg = load_config()
+    enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
+    trace: list[dict[str, Any]] = []
+    started = time.time()
+    payload = get_status_payload(
+        enabled,
+        cfg=cfg,
+        gpus=[],
+        include_external=False,
+        allow_stale=False,
+        live_probe=False,
+        status_trace=trace,
+    )
+    payload['gpus'] = []
+    payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
+    payload['external_scan_skipped'] = True
+    payload['external_gpu_loads'] = []
+    payload['status_trace'] = trace
+    payload['status_build_ms'] = max(0, int((time.time() - started) * 1000))
+    payload['quick'] = True
+    payload['stale'] = True
+    payload['boot_id'] = _BOOT_ID
+    payload.pop('snapshot_revision', None)
+    return _merge_adapter_engine_rows(payload)
+
+
+def _build_servers_payload(*, include_external: bool, fresh: bool) -> dict[str, Any]:
+    from core.runtime import _store_status_payload, _write_engine_status_log
+
+    cfg = load_config()
+    enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
+    gpus = get_gpu_devices_payload().get('gpus') or []
+    trace: list[dict[str, Any]] = []
+    build_started = time.time()
+    payload = get_status_payload(
+        enabled,
+        cfg=cfg,
+        gpus=gpus,
+        include_external=include_external,
+        allow_stale=not fresh,
+        fast_external=not fresh,
+        status_trace=trace,
+    )
+    build_ms = max(0, int((time.time() - build_started) * 1000))
+    payload['gpus'] = gpus
+    payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
+    payload['external_scan_skipped'] = not include_external
+    payload['status_trace'] = trace
+    payload['status_build_ms'] = build_ms
+    _write_engine_status_log(trace, build_ms)
+    payload = _merge_adapter_engine_rows(payload)
+    payload['boot_id'] = _BOOT_ID
+    _store_status_payload(payload, include_external=include_external)
+    return payload
+
+
+def _ensure_status_build(*, include_external: bool) -> None:
+    """Refresh engine status off the request path so the Engines page can paint."""
+    global _status_build_task, _status_build_wants_external
+    if include_external:
+        _status_build_wants_external = True
+    if _status_build_task is not None and not _status_build_task.done():
+        return
+    want_external = _status_build_wants_external
+    _status_build_wants_external = False
+    _status_build_task = asyncio.create_task(_run_status_build(want_external))
+
+
+def _attach_external_scan() -> None:
+    """Add external GPU cards onto the latest engine snapshot without blocking it."""
+    from core.gpu_processes import get_external_gpu_loads
+    from core.runtime import _cached_status_payload, _store_status_payload
+
+    cached = _cached_status_payload(False)
+    if not isinstance(cached, dict):
+        return
+    cfg = load_config()
+    enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
+    payload = dict(cached)
+    started = time.time()
+    try:
+        payload['external_gpu_loads'] = get_external_gpu_loads(
+            servers=enabled,
+            gpus=payload.get('gpus') if isinstance(payload.get('gpus'), list) else None,
+            cfg=cfg,
+            fast=True,
+        )
+        payload.pop('external_scan_error', None)
+    except Exception as exc:
+        payload['external_scan_error'] = str(exc)[:240]
+    payload['external_scan_skipped'] = False
+    payload['quick'] = False
+    payload['updated_at'] = time.time()
+    payload['status_build_ms'] = max(
+        int(payload.get('status_build_ms') or 0),
+        int((time.time() - started) * 1000),
+    )
+    payload = _merge_adapter_engine_rows(payload)
+    payload['boot_id'] = _BOOT_ID
+    _store_status_payload(payload, include_external=True)
+
+
+async def _run_status_build(include_external: bool) -> None:
+    global _status_build_wants_external
+    try:
+        async with _SERVERS_STATUS_LOCK:
+            await asyncio.to_thread(_build_servers_payload, include_external=False, fresh=False)
+        if include_external or _status_build_wants_external:
+            _status_build_wants_external = False
+            await asyncio.to_thread(_attach_external_scan)
+    except Exception:
+        return
+    if _status_build_wants_external:
+        asyncio.get_running_loop().call_soon(
+            lambda: _ensure_status_build(include_external=True),
+        )
+
+
 @app.get('/api/servers')
 async def servers_status(
     include_external: bool = Query(default=True),
     fresh: bool = Query(default=False),
 ) -> dict[str, Any]:
-    from core.runtime import _cached_status_payload, _store_status_payload
+    from core.runtime import _cached_status_payload
 
-    # External GPU discovery can legitimately take several seconds. Once a
-    # snapshot exists, status refreshes should remain responsive while that
-    # scan is in progress instead of queueing every UI poll behind it.
-    if _SERVERS_STATUS_LOCK.locked() and not fresh:
-        cached = _cached_status_payload(include_external)
-        if cached is not None:
-            cached = _merge_adapter_engine_rows(dict(cached))
-            cached['boot_id'] = _BOOT_ID
-            cached['stale'] = True
-            snapshot_at = float(cached.get('updated_at') or 0.0)
-            if snapshot_at:
-                cached['stale_age_ms'] = max(0, int((time.time() - snapshot_at) * 1000))
-            return cached
-
-    def _build_payload() -> dict[str, Any]:
-        cfg = load_config()
-        enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
-        gpus = get_gpu_devices_payload().get('gpus') or []
-        trace: list[dict[str, Any]] = []
-        build_started = time.time()
-        payload = get_status_payload(
-            enabled,
-            cfg=cfg,
-            gpus=gpus,
-            include_external=include_external,
-            allow_stale=not fresh,
-            fast_external=not fresh,
-            status_trace=trace,
+    # The Engines page must not wait on nvidia-smi or a full external GPU scan.
+    # Return the last snapshot, or a listening-port snapshot, and refresh behind it.
+    if not fresh:
+        building = _SERVERS_STATUS_LOCK.locked() or (
+            _status_build_task is not None and not _status_build_task.done()
         )
-        build_ms = max(0, int((time.time() - build_started) * 1000))
-        payload['gpus'] = gpus
-        payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
-        payload['external_scan_skipped'] = not include_external
-        payload['status_trace'] = trace
-        payload['status_build_ms'] = build_ms
-        from core.runtime import _write_engine_status_log
+        cached = _cached_status_payload(include_external)
+        if isinstance(cached, dict) and cached.get('quick'):
+            cached = None
+        if isinstance(cached, dict) and (building or _status_cache_age_seconds(cached) <= 2.0):
+            if building or cached.get('quick'):
+                _ensure_status_build(include_external=include_external)
+            return _mark_status_stale(cached) if building else _merge_adapter_engine_rows(dict(cached))
+        _ensure_status_build(include_external=include_external)
+        if isinstance(cached, dict):
+            return _mark_status_stale(cached)
+        return await asyncio.to_thread(_quick_engine_snapshot)
 
-        _write_engine_status_log(trace, build_ms)
-        payload = _merge_adapter_engine_rows(payload)
-        payload['boot_id'] = _BOOT_ID
-        _store_status_payload(payload, include_external=include_external)
-        return payload
-
-    # Several UI surfaces consume the same status snapshot. Only one expensive
-    # status build may run at a time; other callers wait without occupying an
-    # anyio worker thread and then receive the fresh cached snapshot.
     async with _SERVERS_STATUS_LOCK:
-        return await asyncio.to_thread(_build_payload)
+        return await asyncio.to_thread(_build_servers_payload, include_external=include_external, fresh=True)
 
 
 @app.get('/api/runtimes')
@@ -2253,6 +2498,24 @@ def runtimes_status() -> dict[str, Any]:
         runtime_id = str(runtime.get('runtime_id') or '')
         adapter = get_runtime_adapter(runtime_id)
         health = adapter.health() if adapter is not None and callable(getattr(adapter, 'health', None)) else {}
+        attribution: dict[str, Any] = {
+            'pids': [],
+            'vram_by_gpu': {},
+            'vram_total_gb': None,
+            'vram_source': 'unavailable',
+        }
+        if health.get('running') is True and int(health.get('port') or runtime.get('port') or 0) > 0:
+            try:
+                from core.gpu_processes import process_attribution_for_port
+
+                attribution = process_attribution_for_port(
+                    int(health.get('port') or runtime.get('port') or 0),
+                    str(health.get('host') or runtime.get('host') or '127.0.0.1'),
+                )
+            except Exception:
+                pass
+        component_key = f'onevoice.{runtime_id}' if runtime_id else 'onevoice.runtime'
+        component_label = str(runtime.get('label') or runtime.get('id') or runtime_id or 'Runtime')
         merged.append({
             'id': str(runtime.get('id') or ''),
             'kind': 'runtime',
@@ -2286,6 +2549,10 @@ def runtimes_status() -> dict[str, Any]:
             'freetoken_settings': runtime.get('freetoken_settings') or {},
             'wsl_distro': health.get('wsl_distro') or '',
             'wsl_python': health.get('wsl_python') or '',
+            'component_key': component_key,
+            'component_label': component_label,
+            'component_role': runtime_id,
+            **attribution,
         })
     adapters = [{
         'runtime_id': adapter.runtime_id,
@@ -2461,7 +2728,17 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
         payload['preset'] = body.preset
     if body.load_settings:
         payload['load_settings'] = dict(body.load_settings)
-    result = load_fn(payload)
+    from core.load_activity import track_model_load
+
+    label = Path(str(body.path or body.voice or runtime_id)).name or runtime_id
+    with track_model_load(
+        runtime_id,
+        label=label,
+        model_id=str(body.voice or ''),
+        model_path=str(body.path or ''),
+        runtime_id=runtime_id,
+    ):
+        result = load_fn(payload)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
     result.setdefault('gpu_device', gpu_device or 'auto')
@@ -2911,6 +3188,9 @@ def _grow_context_for_chat(
     required: int,
     *,
     client_label: str = 'DFlash Console',
+    component_key: str = '',
+    component_label: str = '',
+    component_role: str = '',
 ) -> dict[str, Any]:
     """Reload a model with a larger per-slot context to fit ``required`` tokens.
 
@@ -2965,7 +3245,13 @@ def _grow_context_for_chat(
                 'message': str(result.get('error') or 'failed to reload model with larger context'),
             },
         )
-    note_engine_loaded(server_id, loaded_by=client_label)
+    note_engine_loaded(
+        server_id,
+        loaded_by=client_label,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
+    )
     _invalidate_status_cache()
     deadline = time.time() + 180.0
     while time.time() < deadline:
@@ -3014,6 +3300,9 @@ def _ensure_server_ready_for_chat(
     cfg: dict[str, Any],
     *,
     client_label: str = 'DFlash Console',
+    component_key: str = '',
+    component_label: str = '',
+    component_role: str = '',
     required_context: int | None = None,
 ) -> dict[str, Any]:
     """JIT-load configured checkpoint when chat arrives.
@@ -3125,7 +3414,7 @@ def _ensure_server_ready_for_chat(
             api_url = f'http://{host}:{port}/v1'
         from core.runtime import probe_runtime_state
 
-        loaded_now, _loading_now, _router_now, _progress_now = probe_runtime_state(api_url)
+        loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(api_url)
         if loaded_now:
             needs_grow = False
             if required_context and cfg.get('context_auto_grow') is not False:
@@ -3133,7 +3422,13 @@ def _ensure_server_ready_for_chat(
                 if loaded_ctx and int(required_context) > int(loaded_ctx):
                     needs_grow = True
             if not needs_grow:
-                note_engine_active_client(server_id, client_label=client_label)
+                note_engine_active_client(
+                    server_id,
+                    client_label=client_label,
+                    component_key=component_key,
+                    component_label=component_label,
+                    component_role=component_role,
+                )
                 return {
                     **server,
                     'running': True,
@@ -3167,10 +3462,19 @@ def _ensure_server_ready_for_chat(
                         server,
                         cfg,
                         client_label=client_label,
+                        component_key=component_key,
+                        component_label=component_label,
+                        component_role=component_role,
                         required_context=required_context,
                     )
                 # Still busy after wait: serve with current context rather than 409.
-        note_engine_active_client(server_id, client_label=client_label)
+        note_engine_active_client(
+            server_id,
+            client_label=client_label,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
         return live
 
     if live.get('loaded_models'):
@@ -3180,8 +3484,23 @@ def _ensure_server_ready_for_chat(
         if required_context and cfg.get('context_auto_grow') is not False:
             loaded_ctx = _loaded_per_slot_context(server)
             if loaded_ctx and required_context > loaded_ctx:
-                return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
-        note_engine_active_client(server_id, client_label=client_label)
+                return _grow_context_for_chat(
+                    server_id,
+                    server,
+                    cfg,
+                    required_context,
+                    client_label=client_label,
+                    component_key=component_key,
+                    component_label=component_label,
+                    component_role=component_role,
+                )
+        note_engine_active_client(
+            server_id,
+            client_label=client_label,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
         return live
 
     # Probe can return empty loaded_models while llama is busy serving another
@@ -3198,7 +3517,13 @@ def _ensure_server_ready_for_chat(
             live = _synthetic_loaded_from_config()
         if live.get('loaded_models'):
             live = _status_as_loaded(live)
-            note_engine_active_client(server_id, client_label=client_label)
+            note_engine_active_client(
+                server_id,
+                client_label=client_label,
+                component_key=component_key,
+                component_label=component_label,
+                component_role=component_role,
+            )
             return live
 
     if live.get('status') == 'booting':
@@ -3210,7 +3535,16 @@ def _ensure_server_ready_for_chat(
     if required_context and cfg.get('context_auto_grow') is not False:
         configured_per_slot = _configured_per_slot(server)
         if configured_per_slot and required_context > configured_per_slot:
-            return _grow_context_for_chat(server_id, server, cfg, required_context, client_label=client_label)
+            return _grow_context_for_chat(
+                server_id,
+                server,
+                cfg,
+                required_context,
+                client_label=client_label,
+                component_key=component_key,
+                component_label=component_label,
+                component_role=component_role,
+            )
 
     _auto_stop_other_servers(cfg, server_id)
     cfg = load_config()
@@ -3230,7 +3564,13 @@ def _ensure_server_ready_for_chat(
                     'host': other_entry.get('host'),
                     'api_url': other_entry.get('api_url'),
                 })
-                note_engine_active_client(other_id, client_label=client_label)
+                note_engine_active_client(
+                    other_id,
+                    client_label=client_label,
+                    component_key=component_key,
+                    component_label=component_label,
+                    component_role=component_role,
+                )
                 return other_live
         raise HTTPException(status_code=409, detail=duplicate_load_detail(elsewhere))
 
@@ -3254,7 +3594,13 @@ def _ensure_server_ready_for_chat(
             },
         )
 
-    note_engine_loaded(server_id, loaded_by=client_label)
+    note_engine_loaded(
+        server_id,
+        loaded_by=client_label,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
+    )
     _invalidate_status_cache()
     return _wait_until_loaded()
 
@@ -3381,6 +3727,7 @@ def server_load_plan(
 
 @app.post('/api/servers/{server_id}/load')
 def server_load(server_id: str, request: Request, body: ServerLoadRequest | None = None) -> dict[str, Any]:
+    from core.client_identity import request_component_identity
     from core.engine_state import note_engine_loaded
     from core.memory_guardrails import assess_load
     from core.server_boot import (
@@ -3391,6 +3738,12 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     )
 
     cfg = load_config()
+    component = request_component_identity(request)
+    component_kwargs = {
+        'component_key': str(component.get('component_key') or ''),
+        'component_label': str(component.get('component_label') or ''),
+        'component_role': str(component.get('component_role') or ''),
+    }
     server = _require_server(cfg, server_id)
     _arm_server_engine_for_api(server_id, cfg)
     model_path = None
@@ -3414,7 +3767,11 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         raise HTTPException(status_code=409, detail=stack_check)
     already = checkpoint_already_loaded(server, cfg=cfg, model_path=model_path, model_id=model_id)
     if already:
-        note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+        note_engine_loaded(
+            server_id,
+            loaded_by=_request_client_label(request),
+            **component_kwargs,
+        )
         _invalidate_status_cache()
         return already
     if _auto_stop_other_servers(cfg, server_id):
@@ -3442,7 +3799,11 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
             status_code=409 if result.get('repair') else 400,
             detail=result,
         )
-    note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+    note_engine_loaded(
+        server_id,
+        loaded_by=_request_client_label(request),
+        **component_kwargs,
+    )
     _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
@@ -3564,18 +3925,28 @@ async def proxy_chat_completions(server_id: str, request: Request):
         upstream_chat_completion,
         wants_stream,
     )
-    from core.client_identity import LABEL_UNKNOWN_API
+    from core.client_identity import LABEL_UNKNOWN_API, request_component_identity
     from core.inference_stats import mark_inference_end, mark_inference_start, note_completion_stats
     from core.local_models import model_has_reasoning
     from core.runtime import api_base_url, build_server_status
 
     cfg = load_config()
     client_label = _request_client_label(request)
+    request_component = request_component_identity(request)
+    component_key = str(request_component.get('component_key') or '').strip()
+    component_role = str(request_component.get('component_role') or '').strip()
+    component_label = str(request_component.get('component_label') or '').strip()
     adapter_id = str(server_id or '').strip().lower()
     if adapter_id in {'vllm', 'transformers', 'freetoken'}:
         from core.engine_state import note_engine_active_client
 
-        note_engine_active_client(adapter_id, client_label=client_label)
+        note_engine_active_client(
+            adapter_id,
+            client_label=client_label,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
         adapter = _require_runtime_adapter(adapter_id)
         health = adapter.health() if callable(getattr(adapter, 'health', None)) else {}
         if not health.get('running') or not health.get('api_url'):
@@ -3587,7 +3958,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
 
         model_path = str(health.get('active_model') or '')
         model_name = _Path(model_path).name if model_path else ''
-        served_id = model_path or model_name
+        # vLLM on WSL registers a Linux path. Sending the Windows path, or
+        # the short name "teleocr", makes it answer that the model does not exist.
+        served_id = str(health.get('served_model_id') or '').strip() or model_name
         server = {
             'id': adapter_id,
             'api_url': str(health.get('api_url') or ''),
@@ -3669,6 +4042,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 server,
                 cfg,
                 client_label=_request_client_label(request),
+                component_key=component_key,
+                component_label=component_label,
+                component_role=component_role,
                 required_context=required_context or None,
             )
         except Exception:
@@ -3765,6 +4141,14 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 body_json['model'] = upstream_model_id
                 # Console-only load hint; llama-server OpenAI chat does not accept it.
                 body_json.pop('context_size', None)
+                if str(server.get('id') or '') == 'vllm':
+                    # This model's own file forces a single-token pick, so OCR
+                    # repeats one word ("lock") until the reply is full.
+                    body_json['top_p'] = 1
+                    body_json['top_k'] = -1
+                    penalty = body_json.get('repetition_penalty')
+                    if penalty in (None, 1, 1.0):
+                        body_json['repetition_penalty'] = 1.15
                 raw = json.dumps(body_json).encode('utf-8')
             except Exception:
                 pass
@@ -3777,6 +4161,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
             api_url=api_url,
             model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
             client_label=client_label,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
         )
         close_upstream = None
         read_timeout = chat_upstream_read_timeout(cfg)
@@ -3789,14 +4176,22 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 read_timeout=read_timeout,
             )
         except urllib.error.HTTPError as exc:
-            mark_inference_end(server_id, client_label=client_label)
+            mark_inference_end(
+                server_id,
+                client_label=client_label,
+                component_key=component_key,
+            )
             if _chat_gate_held and _chat_gate is not None:
                 _chat_gate.release()
                 _chat_gate_held = False
             detail = exc.read().decode('utf-8', errors='replace')
             raise HTTPException(status_code=exc.code, detail=detail) from exc
         except Exception as exc:
-            mark_inference_end(server_id, client_label=client_label)
+            mark_inference_end(
+                server_id,
+                client_label=client_label,
+                component_key=component_key,
+            )
             if _chat_gate_held and _chat_gate is not None:
                 _chat_gate.release()
                 _chat_gate_held = False
@@ -3858,7 +4253,11 @@ async def proxy_chat_completions(server_id: str, request: Request):
                         api_url=api_url,
                         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
                     )
-                mark_inference_end(server_id, client_label=client_label)
+                mark_inference_end(
+                    server_id,
+                    client_label=client_label,
+                    component_key=component_key,
+                )
 
         return StreamingResponse(
             stream_body(),
@@ -3875,6 +4274,9 @@ async def proxy_chat_completions(server_id: str, request: Request):
         api_url=api_url,
         model_id=str(live.get('active_model_id') or server.get('model_id') or ''),
         client_label=client_label,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
     )
     if _chat_gate_held and _chat_gate is not None:
         _chat_gate.release()
@@ -3915,7 +4317,11 @@ async def proxy_chat_completions(server_id: str, request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         disconnect_task.cancel()
-        mark_inference_end(server_id, client_label=client_label)
+        mark_inference_end(
+            server_id,
+            client_label=client_label,
+            component_key=component_key,
+        )
 
 
 def _ensure_server_ready_for_embed(
@@ -3924,6 +4330,9 @@ def _ensure_server_ready_for_embed(
     cfg: dict[str, Any],
     *,
     client_label: str = 'DFlash Console',
+    component_key: str = '',
+    component_label: str = '',
+    component_role: str = '',
 ) -> dict[str, Any]:
     """JIT-load an embedding engine (no chat-ready gate)."""
     import time
@@ -3958,7 +4367,13 @@ def _ensure_server_ready_for_embed(
 
     live = build_server_status(server, cfg=cfg)
     if live.get('status') == 'loaded' and live.get('loaded_models'):
-        note_engine_active_client(server_id, client_label=client_label)
+        note_engine_active_client(
+            server_id,
+            client_label=client_label,
+            component_key=component_key,
+            component_label=component_label,
+            component_role=component_role,
+        )
         return live
     if live.get('status') == 'booting':
         return _wait_until_loaded()
@@ -3973,7 +4388,13 @@ def _ensure_server_ready_for_embed(
                 'model_id': live.get('model_id'),
             },
         )
-    note_engine_active_client(server_id, client_label=client_label)
+    note_engine_active_client(
+        server_id,
+        client_label=client_label,
+        component_key=component_key,
+        component_label=component_label,
+        component_role=component_role,
+    )
     return _wait_until_loaded()
 
 
@@ -3985,12 +4406,22 @@ async def server_embeddings_proxy(server_id: str, request: Request):
     import urllib.error
     import urllib.request
 
+    from core.client_identity import request_component_identity
     from core.runtime import api_base_url
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
     client_label = _request_client_label(request)
-    _ensure_server_ready_for_embed(server_id, server, cfg, client_label=client_label)
+    component = request_component_identity(request)
+    _ensure_server_ready_for_embed(
+        server_id,
+        server,
+        cfg,
+        client_label=client_label,
+        component_key=str(component.get('component_key') or ''),
+        component_label=str(component.get('component_label') or ''),
+        component_role=str(component.get('component_role') or ''),
+    )
 
     api_url = str(server.get('api_url') or '')
     base = api_base_url(api_url)
@@ -4075,10 +4506,12 @@ async def server_embed_batch(server_id: str, body: EmbedBatchRequest) -> dict[st
 
 @app.post('/api/servers/{server_id}/start')
 def server_start(server_id: str, request: Request) -> dict[str, Any]:
+    from core.client_identity import request_component_identity
     from core.engine_state import note_engine_loaded
     from core.memory_guardrails import assess_load
 
     cfg = load_config()
+    component = request_component_identity(request)
     server = _require_server(cfg, server_id)
     check = assess_load(server, cfg=cfg)
     if check.get('level') == 'block':
@@ -4088,7 +4521,13 @@ def server_start(server_id: str, request: Request) -> dict[str, Any]:
     result = start_server(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'start failed')
-    note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+    note_engine_loaded(
+        server_id,
+        loaded_by=_request_client_label(request),
+        component_key=str(component.get('component_key') or ''),
+        component_label=str(component.get('component_label') or ''),
+        component_role=str(component.get('component_role') or ''),
+    )
     _invalidate_status_cache()
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
@@ -4147,6 +4586,24 @@ def server_unload(server_id: str) -> dict[str, Any]:
     import time
 
     cfg = load_config()
+    if get_server(cfg, server_id) is None:
+        adapter = _hf_engine_adapter(server_id)
+        if adapter is not None:
+            unload_fn = getattr(adapter, 'unload', None) or getattr(adapter, 'stop', None)
+            result = unload_fn() if callable(unload_fn) else {'success': False, 'error': 'unload failed'}
+            if not isinstance(result, dict) or not result.get('success'):
+                raise HTTPException(status_code=400, detail=(result or {}).get('error') or 'unload failed')
+            from core.client_identity import clear_active_clients
+
+            clear_active_clients(str(server_id).strip().lower())
+            _invalidate_status_cache()
+            return {
+                **result,
+                'success': True,
+                'unloaded': True,
+                'engine_stopped': True,
+                'message': 'Model unloaded.',
+            }
     server = _require_server(cfg, server_id)
     _invalidate_status_cache()
     host = str(server.get('host') or '127.0.0.1')

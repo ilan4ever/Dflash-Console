@@ -1,0 +1,26 @@
+{%- if messages[0]['role'] == 'system' %}
+{{- '<|im_start|>system\n' + messages[0]['content'] + '<|im_end|>\n' }}
+{%- else %}
+{{- '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n' }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if message['role'] == 'system' and loop.first %}
+    {%- else %}
+        {{- '<|im_start|>' + message['role'] + '\n' }}
+        {%- if message['content'] is string %}
+            {{- message['content'] }}
+        {%- elif message['content'] is sequence %}
+            {%- for content in message['content'] %}
+                {%- if content['type'] == 'image' or content['type'] == 'image_url' %}
+                    {{- '<|vision_start|><|image_pad|><|vision_end|>' }}
+                {%- elif content['type'] == 'text' %}
+                    {{- content['text'] }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{- '<|im_start|>assistant\n' }}
+{%- endif %}
