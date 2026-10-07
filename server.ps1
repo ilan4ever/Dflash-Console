@@ -449,6 +449,17 @@ function Resolve-PwshPath {
     return $null
 }
 
+function Test-SkippedPython {
+    param([string]$Path)
+    if (-not $Path) { return $true }
+    # Store stubs and Conda installs are not the Console runtime.
+    if ($Path -match '(?i)\\(mini)?conda|\\anaconda|\\envs\\') { return $true }
+    try {
+        if ($Path -match 'WindowsApps\\python' -and (Get-Item -LiteralPath $Path).Length -eq 0) { return $true }
+    } catch {}
+    return $false
+}
+
 function Resolve-PythonPath {
     $venvPython = Join-Path $Root '.venv\Scripts\python.exe'
     if (Test-Path -LiteralPath $venvPython) {
@@ -458,18 +469,23 @@ function Resolve-PythonPath {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
         $src = [string]$cmd.Source
-        if (-not $src) { continue }
-        # Skip zero-byte Windows Store stubs.
-        try {
-            if ($src -match 'WindowsApps\\python' -and (Get-Item -LiteralPath $src).Length -eq 0) { continue }
-        } catch {}
+        if (-not $src -or (Test-SkippedPython $src)) { continue }
         if (Test-Path -LiteralPath $src) { return $src }
+    }
+    $pyLauncher = Join-Path $env:WINDIR 'py.exe'
+    if (Test-Path -LiteralPath $pyLauncher) {
+        try {
+            $pyOut = & $pyLauncher -3 -c 'import sys; print(sys.executable)' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $pyOut) {
+                $pyExe = ($pyOut | Select-Object -First 1).ToString().Trim()
+                if ($pyExe -and -not (Test-SkippedPython $pyExe) -and (Test-Path -LiteralPath $pyExe)) { return $pyExe }
+            }
+        } catch {}
     }
     foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
-        (Join-Path $env:USERPROFILE 'miniconda3\python.exe'),
         'C:\Python314\python.exe'
     )) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -479,7 +495,9 @@ function Resolve-PythonPath {
 
 $pythonPath = Resolve-PythonPath
 if (-not $pythonPath) {
-    Write-StartupLine 'ERROR: Python not found (checked .venv, PATH, and common install locations)' 'Red'
+    Write-StartupLine 'ERROR: Python not found (expected Dflash-Console\.venv\Scripts\python.exe)' 'Red'
+    Write-StartupLine '  Run: .\scripts\setup-windows-venv.ps1' 'Yellow'
+    Write-StartupLine '  Or: python -m venv .venv  then  .\.venv\Scripts\pip install -r requirements.lock' 'Yellow'
     exit 1
 }
 # Prefer the resolved interpreter for later `& python ...` calls.

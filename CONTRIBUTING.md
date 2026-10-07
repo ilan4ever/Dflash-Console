@@ -33,8 +33,13 @@ The DFlash name and logo are governed by
 The supported development environment is Windows with Python 3.10+,
 PowerShell 7+, and Node.js 22.12+ for the Electron shell.
 
+**Console server Python (Windows):** `server.ps1` and `run.ps1` resolve
+`Dflash-Console\.venv\Scripts\python.exe` first. Create that venv before
+starting the server (see `scripts/setup-windows-venv.ps1`). Miniconda and
+other global interpreters are not used for the main API process.
+
 ```powershell
-python -m venv .venv
+.\scripts\setup-windows-venv.ps1   # first time: .venv + pinned server deps
 .\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
 pip install -r requirements-dev.txt

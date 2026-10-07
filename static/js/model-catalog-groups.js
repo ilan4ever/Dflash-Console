@@ -275,13 +275,17 @@
   }
 
   function extractQuantTokenFromModel(model) {
-    const fromField = String(model?.quant || '').trim().replace(/^-+|-+$/g, '');
-    if (fromField && fromField !== '—') return fromField.toUpperCase();
     const raw = String(model?.filename || model?.path || model?.label || model?.id || '');
     const match = raw.match(
       /(?:^|[._-])((?:IQ\d+(?:_[A-Z0-9]+)+|Q\d+(?:_[A-Z0-9]+)+|BQ\d+(?:_[A-Z0-9]+)+|F16|F32|BF16))(?:[._-]|\.gguf|$)/i,
     );
-    return match ? match[1].toUpperCase() : '';
+    if (match) return match[1].toUpperCase();
+    const fromField = String(model?.quant || '').trim().replace(/^-+|-+$/g, '');
+    if (!fromField || fromField === '—') return '';
+    // Many scanned folders are stored as full precision by default. That is not
+    // part of the model name, so do not print a fake (F16).
+    if (/^(?:F16|F32|BF16)$/i.test(fromField)) return '';
+    return fromField.toUpperCase();
   }
 
   function withQuantSuffix(name, model) {

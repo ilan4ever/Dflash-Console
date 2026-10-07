@@ -29,7 +29,19 @@
   let hfAcceleratorRequest = null;
   let hfAcceleratorRevision = 0;
   let gpuDevices = [];
+  let remoteGpuDevices = [];
   let gpuDevicesReady = false;
+
+  function isGpuChoice(value) {
+    const text = String(value || '').trim().toLowerCase();
+    return text === 'auto' || /^\d+$/.test(text) || /^remote:[a-z0-9-]+:\d+$/.test(text);
+  }
+
+  function visibleGpuDevices() {
+    const seen = new Set(gpuDevices.map((gpu) => String(gpu.index)));
+    const extra = remoteGpuDevices.filter((gpu) => !seen.has(String(gpu.index)));
+    return gpuDevices.concat(extra);
+  }
   const suppressedLibrary = { keys: new Set(), paths: new Set() };
 
   const LOAD_ENGINE_KEY = 'dflashConsole.loadEngine';
@@ -64,13 +76,13 @@
 
   function modelGpuDevice(model) {
     const saved = String(readGpuPreferences()[gpuPreferenceKey(model)] || '').trim().toLowerCase();
-    if (saved === 'auto' || /^\d+$/.test(saved)) return saved;
+    if (isGpuChoice(saved)) return saved;
     const configured = String(model?.gpu_device || '').trim().toLowerCase();
-    return configured === 'auto' || /^\d+$/.test(configured) ? configured : 'auto';
+    return isGpuChoice(configured) ? configured : 'auto';
   }
 
   function saveModelGpuDevice(model, value) {
-    const next = value === 'auto' || /^\d+$/.test(String(value || '')) ? String(value) : 'auto';
+    const next = isGpuChoice(value) ? String(value).trim().toLowerCase() : 'auto';
     const prefs = readGpuPreferences();
     prefs[gpuPreferenceKey(model)] = next;
     try {
@@ -85,7 +97,7 @@
     const selected = modelGpuDevice(model);
     const options = [
       `<option value="auto"${selected === 'auto' ? ' selected' : ''}>Auto</option>`,
-      ...gpuDevices.map((gpu) => {
+      ...visibleGpuDevices().map((gpu) => {
         const index = String(gpu.index);
         const name = gpu.display_name || gpu.name || `GPU ${index}`;
         return `<option value="${escapeHtml(index)}"${selected === index ? ' selected' : ''}>${escapeHtml(name)}</option>`;
@@ -96,7 +108,7 @@
       ? ''
       : ' disabled aria-busy="true"';
     const title = gpuDevicesReady
-      ? 'Auto chooses the best available GPU; a numbered option pins this model to that GPU'
+      ? 'Auto uses a GPU on this PC. A Production GPU runs the model on that machine.'
       : 'GPU choices will be available when the Console finishes detecting GPUs';
     return `<select class="${cls}" data-gpu-pick="${escapeHtml(gpuPreferenceKey(model))}" aria-label="GPU for ${escapeHtml(model.label || model.filename || model.id || 'model')}" title="${escapeHtml(title)}"${loadingAttrs}>${options}</select>`;
   }
@@ -652,6 +664,7 @@
             <div class="lm-library-handle-title">
               ${pinMark}
               <span class="lm-model-title-text" title="${title}">${title}</span>
+              ${isConsoleModel(model) ? dflashLogoLabel('DFlash') : ''}
               ${handleBadges ? `<span class="lm-library-handle-badges">${handleBadges}</span>` : ''}
             </div>
           </td>
@@ -1311,6 +1324,11 @@
       gpuDevices = serversData.gpus;
       gpuDevicesReady = true;
     }
+    if (!remoteGpuDevices.length) {
+      void refreshRemoteGpus().then(() => {
+        if (remoteGpuDevices.length) renderTable(document.getElementById('modelsFilterInput')?.value || '');
+      });
+    }
     externalGpuLoads = Array.isArray(serversData?.external_gpu_loads)
       ? serversData.external_gpu_loads
       : [];
@@ -1702,6 +1720,32 @@
     return `${gb} GB`;
   }
 
+  function barePrecisionName(name) {
+    return /^(?:fp\d+|bf16|f16|f32|int\d+|nf4|awq|gptq)$/i.test(String(name || '').trim());
+  }
+
+  function readableLibraryTitle(name, model) {
+    let text = String(name || '').trim();
+    const fake = text.match(/^(.*?)\s*\((F16|F32|BF16)\)\s*$/i);
+    if (fake) {
+      const hay = `${model?.filename || ''} ${model?.path || ''} ${model?.id || ''}`;
+      const token = fake[2];
+      const inFile = new RegExp(`(?:^|[._-])${token}(?:[._-]|\\.gguf|$)`, 'i').test(hay);
+      if (!inFile) text = fake[1].trim();
+    }
+    const leaf = text.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if (!barePrecisionName(leaf)) return text || '—';
+    const parts = String(model?.path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    let parent = '';
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      if (parts[i].toLowerCase() !== leaf.toLowerCase()) continue;
+      parent = parts[i - 1] || '';
+      break;
+    }
+    if (!parent || barePrecisionName(parent) || /^(snapshots?|models|blobs)$/i.test(parent)) return text;
+    return `${parent} (${leaf.toUpperCase()})`;
+  }
+
   function modelTitleLine(model) {
     // Cloud API cards: friendly label as title; API id is the path subtitle.
     if (isCloudApiModel(model)) {
@@ -1709,14 +1753,14 @@
     }
     const isStack = !!(model?.dflash_stack && model?.draft_path);
     const rawLabel = String(model?.label || model?.id || '—');
-    const name = isStack && window.DFlashModelGroups?.stackDisplayName
+    let name = isStack && window.DFlashModelGroups?.stackDisplayName
       ? window.DFlashModelGroups.stackDisplayName(model)
       : /\([A-Z][A-Z0-9_]*\)\s*$/.test(rawLabel)
         ? rawLabel
         : window.DFlashModelGroups?.withQuantSuffix
           ? window.DFlashModelGroups.withQuantSuffix(rawLabel, model)
           : rawLabel;
-    return name;
+    return readableLibraryTitle(name, model);
   }
 
   function modelFileMissing(model) {
@@ -2176,35 +2220,21 @@
   }
 
   function bindLibraryCardHover(body) {
-    if (!body || document.documentElement.classList.contains('df-narrow')) return;
+    if (!body || body.dataset.libraryHoverBound === '1') return;
+    if (document.documentElement.classList.contains('df-narrow')) return;
+    body.dataset.libraryHoverBound = '1';
 
-    body.querySelectorAll('tr.lm-library-card-desktop').forEach((row) => {
-      if (row.dataset.libraryHoverRowBound === '1') return;
-      row.dataset.libraryHoverRowBound = '1';
-
-      row.addEventListener('mouseenter', () => {
-        const key = row.dataset.modelKey;
-        if (!key) return;
-        body.querySelectorAll('tr.lm-library-card-hovered').forEach((match) => {
-          match.classList.remove('lm-library-card-hovered');
-        });
-        body.querySelectorAll(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`).forEach((match) => {
-          match.classList.add('lm-library-card-hovered');
-        });
+    const paint = (key) => {
+      body.querySelectorAll('tr.lm-library-card-desktop').forEach((row) => {
+        row.classList.toggle('lm-library-card-hovered', !!key && row.dataset.modelKey === key);
       });
+    };
 
-      row.addEventListener('mouseleave', (event) => {
-        const key = row.dataset.modelKey;
-        if (!key) return;
-        const related = event.relatedTarget;
-        if (related && related.closest && related.closest(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`)) {
-          return;
-        }
-        body.querySelectorAll(`tr.lm-library-card-desktop[data-model-key="${CSS.escape(key)}"]`).forEach((match) => {
-          match.classList.remove('lm-library-card-hovered');
-        });
-      });
+    body.addEventListener('mouseover', (event) => {
+      const row = event.target?.closest?.('tr.lm-library-card-desktop');
+      paint(row?.dataset.modelKey || '');
     });
+    body.addEventListener('mouseleave', () => paint(''));
   }
 
   function renderLibraryCompactCards({
@@ -3340,6 +3370,10 @@
     const gpuPick = document.querySelector(`[data-gpu-pick="${CSS.escape(gpuPreferenceKey(model))}"]`);
     const gpuDevice = String(gpuPick?.value || modelGpuDevice(model) || 'auto');
     if (gpuPick) saveModelGpuDevice(model, gpuDevice);
+    if (String(gpuDevice).startsWith('remote:')) {
+      await loadOnRemoteGpu(model, gpuDevice);
+      return;
+    }
     if (adapterRuntimes.has(chosenRuntime) || adapterRuntimes.has(runtimeId)) {
       if (!model?.path) {
         toast('This file is not available to load.', false);
@@ -3486,6 +3520,77 @@
     } finally {
       clearModelLoadPending(model, serverId);
     }
+  }
+
+  async function loadOnRemoteGpu(model, gpuDevice) {
+    const filename = String(model?.filename || '').trim()
+      || String(model?.path || '').split(/[/\\]/).pop()
+      || '';
+    const repoId = String(model?.hf_repo || model?.repo_id || '').trim();
+    const label = model?.label || filename || 'Model';
+    markModelLoadPending(model, '');
+    let jobId = '';
+    const started = Date.now();
+    try {
+      while (Date.now() - started < 30 * 60 * 1000) {
+        const data = await api('/api/remote-gpus/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gpu_device: gpuDevice,
+            path: model?.path || '',
+            filename,
+            repo_id: repoId,
+            model_id: model?.model_id || model?.id || '',
+            label,
+            runtime_id: String(model?.runtime_id || ''),
+            download_job_id: jobId,
+          }),
+          timeoutMs: 90000,
+        });
+        if (data?.loaded) {
+          toast(`${label} is loading on ${data.gpu_label || 'the production machine'}`);
+          window.DFlashStatusFeed?.note(
+            `${label} on ${data.gpu_label || 'production'}`,
+            'The model runs on that machine',
+          );
+          return;
+        }
+        if (data?.downloading) {
+          jobId = String(data.download_job_id || jobId || '');
+          const pct = Number.isFinite(Number(data.progress)) ? ` ${Math.round(Number(data.progress))}%` : '';
+          window.DFlashStatusFeed?.setTransient(
+            `Downloading ${filename || label} to production${pct}`,
+            { ttlMs: 120000 },
+          );
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          continue;
+        }
+        throw new Error(data?.error || data?.message || 'Could not load on the production machine');
+      }
+      throw new Error('The production download took too long');
+    } catch (err) {
+      toast(err?.message || `Could not load ${label} on the production machine`, false);
+    } finally {
+      clearModelLoadPending(model, '');
+    }
+  }
+
+  let remoteGpuFetch = null;
+
+  async function refreshRemoteGpus() {
+    if (remoteGpuFetch) return remoteGpuFetch;
+    remoteGpuFetch = api('/api/remote-gpus', { timeoutMs: 15000 })
+      .then((data) => {
+        remoteGpuDevices = Array.isArray(data?.gpus) ? data.gpus : [];
+      })
+      .catch(() => {
+        remoteGpuDevices = remoteGpuDevices || [];
+      })
+      .finally(() => {
+        remoteGpuFetch = null;
+      });
+    return remoteGpuFetch;
   }
 
   async function fetchServersForLibrary() {

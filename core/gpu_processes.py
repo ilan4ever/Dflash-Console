@@ -306,21 +306,11 @@ def _subprocess_no_window_kwargs() -> dict[str, Any]:
     return {}
 
 
-def _run_nvidia_smi(args: list[str], *, timeout: float = 4) -> str:
-    try:
-        result = subprocess.run(
-            ['nvidia-smi', *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return ''
-    if result.returncode != 0:
-        return ''
-    return result.stdout.strip()
+def _run_nvidia_smi(args: list[str], *, timeout: float = 3) -> str:
+    """Query the GPU without letting a stuck nvidia-smi freeze the Console."""
+    from core.bounded_proc import run_nvidia_smi
+
+    return run_nvidia_smi(args, timeout=timeout)
 
 
 def _gpu_uuid_map() -> dict[str, int]:
@@ -382,20 +372,30 @@ def _load_windows_parent_pid_map() -> dict[int, int]:
         "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
     )
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=12,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             **_subprocess_no_window_kwargs(),
         )
-    except Exception:
-        return {}
-    if result.returncode != 0 or not result.stdout.strip():
+    except (OSError, subprocess.SubprocessError):
         return {}
     try:
-        payload = json.loads(result.stdout.strip())
+        out, _err = proc.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=0.4)
+        except subprocess.TimeoutExpired:
+            pass
+        return {}
+    if proc.returncode not in (0, None) or not out:
+        return {}
+    text = out.decode('utf-8', errors='replace').strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
     except json.JSONDecodeError:
         return {}
     rows = payload if isinstance(payload, list) else [payload]
@@ -830,31 +830,26 @@ def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, An
     pid_list = ','.join(str(int(pid)) for pid in sorted(set(pids)))
     script = (
         f"$ids = @({pid_list});"
-        "$rows = Get-CimInstance Win32_Process | Where-Object {{ $ids -contains $_.ProcessId }} | "
+        "$rows = Get-CimInstance Win32_Process | Where-Object { $ids -contains $_.ProcessId } | "
         "Select-Object ProcessId, Name, CommandLine, ExecutablePath, ParentProcessId;"
         "$parents = @{};"
         "foreach ($row in $rows) { if ($row.ParentProcessId) { $parents[$row.ParentProcessId] = $true } };"
-        "$parentRows = Get-CimInstance Win32_Process | Where-Object {{ $parents.ContainsKey($_.ProcessId) }} | "
+        "$parentRows = Get-CimInstance Win32_Process | Where-Object { $parents.ContainsKey($_.ProcessId) } | "
         "Select-Object ProcessId, Name;"
         "$payload = @{ processes = @($rows); parents = @($parentRows) };"
         "$payload | ConvertTo-Json -Depth 4 -Compress"
     )
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return {}
-    if result.returncode != 0 or not result.stdout.strip():
+    from core.bounded_proc import run_bounded
+
+    code, text = run_bounded(
+        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        timeout=3,
+    )
+    if code != 0 or not text:
         return {}
 
     try:
-        payload = json.loads(result.stdout.strip())
+        payload = json.loads(text)
     except json.JSONDecodeError:
         return {}
     if not isinstance(payload, dict):
@@ -2935,6 +2930,15 @@ def _other_gpu_process_label(
     command_line: str,
     parent_name: str,
 ) -> tuple[str, str]:
+    component_identity = _onevoice_component_identity(
+        process_name=process_name,
+        command_line=command_line,
+        parent_name=parent_name,
+    )
+    if component_identity:
+        _component_key, component_label, _component_role = component_identity
+        return component_label, component_label
+
     app_source, app_label = _classify_app(
         process_name=process_name,
         command_line=command_line,
@@ -3056,11 +3060,14 @@ def get_gpu_other_processes(
 
     pids = [int(row['pid']) for row in compute_rows if int(row.get('pid') or 0) > 0]
     details_map = _query_process_details(pids)
-    gpu_lookup = {
-        int(gpu.get('index', -1)): gpu
-        for gpu in gpus
-        if isinstance(gpu, dict) and gpu.get('index') is not None
-    }
+    gpu_lookup: dict[int, dict[str, Any]] = {}
+    for gpu in gpus:
+        if not isinstance(gpu, dict) or gpu.get('index') is None:
+            continue
+        try:
+            gpu_lookup[int(gpu.get('index'))] = gpu
+        except (TypeError, ValueError):
+            continue
 
     model_pids = _model_card_pids(
         servers=servers,
@@ -3099,6 +3106,16 @@ def get_gpu_other_processes(
             command_line=command_line,
             parent_name=parent_name,
         )
+        component_identity = _onevoice_component_identity(
+            process_name=process_name,
+            command_line=command_line,
+            parent_name=parent_name,
+        )
+        component_key = ''
+        component_label = ''
+        component_role = ''
+        if component_identity:
+            component_key, component_label, component_role = component_identity
         gpu_index = int(row.get('gpu_index') or 0)
         gpu = gpu_lookup.get(gpu_index, {})
         gpu_display = str(
@@ -3123,6 +3140,9 @@ def get_gpu_other_processes(
             'gpu_display': gpu_display,
             'label': label,
             'app_label': app_label,
+            'component_key': component_key,
+            'component_label': component_label,
+            'component_role': component_role,
             'process_name': process_name,
             'command_line': command_line[:240] if command_line else '',
             'vram_mb': vram_mb,
@@ -3188,7 +3208,10 @@ def get_gpu_other_processes(
     for gpu in gpus:
         if not isinstance(gpu, dict):
             continue
-        gpu_index = int(gpu.get('index', -1))
+        try:
+            gpu_index = int(gpu.get('index'))
+        except (TypeError, ValueError):
+            continue
         if gpu_index < 0:
             continue
         used_gb = gpu.get('vram_used_gb')

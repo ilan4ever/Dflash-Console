@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from core.gpu_processes import (
     _apply_external_loading_ttl,
     _attach_external_gpu_activity,
@@ -12,8 +14,10 @@ from core.gpu_processes import (
     _external_card_path_missing,
     _external_acceleration_fields,
     _fetch_process_details,
+    _fetch_process_details_powershell,
     _is_gpu_model_load,
     _model_hint_from_cmdline,
+    _other_gpu_process_label,
     _probe_loaded_model,
     _probe_lmstudio_loaded_models,
     _resolve_ai_tools_model_name,
@@ -141,6 +145,43 @@ def test_onevoice_component_identity_distinguishes_gpu_workers():
         process_name='python.exe',
         command_line=r'python.exe C:\dev\OneVoice\tools\f5_tts\warm_server.py',
     ) == ('onevoice.f5_tts', 'OneVoice F5-TTS', 'f5_tts')
+
+
+def test_other_gpu_label_uses_structured_onevoice_component():
+    label, app_label = _other_gpu_process_label(
+        process_name='python.exe',
+        command_line=r'python.exe -u C:\dev\OneVoice\ui\server.py',
+        parent_name='',
+    )
+    assert label == 'OneVoice App/API'
+    assert app_label == 'OneVoice App/API'
+
+
+def test_fetch_process_details_powershell_uses_valid_process_filter(monkeypatch):
+    captured: list[str] = []
+
+    class Result:
+        returncode = 0
+        stdout = json.dumps({
+            'processes': [{
+                'ProcessId': 42288,
+                'Name': 'python.exe',
+                'CommandLine': r'python.exe -u C:\dev\OneVoice\tools\speech_hermes_ws.py',
+                'ExecutablePath': r'C:\python.exe',
+                'ParentProcessId': 1,
+            }],
+            'parents': [],
+        })
+
+    def fake_run(argv, **_kwargs):
+        captured.append(str(argv[-1]))
+        return 0, Result.stdout
+
+    monkeypatch.setattr('core.bounded_proc.run_bounded', fake_run)
+    details = _fetch_process_details_powershell([42288])
+    assert details[42288]['command_line'].endswith('speech_hermes_ws.py')
+    assert '{ $ids -contains $_.ProcessId }' in captured[0]
+    assert '{{' not in captured[0]
 
 
 def test_model_hint_hf_hub():
@@ -1388,7 +1429,7 @@ def test_retain_alive_external_cards_keeps_stt_listener(monkeypatch):
 
 
 def test_fetch_process_details_tolerates_access_denied_cmdline(monkeypatch):
-  import psutil
+  psutil = pytest.importorskip('psutil')
 
   class _DeniedProc:
       def ppid(self):

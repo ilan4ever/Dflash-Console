@@ -28,21 +28,16 @@ def _subprocess_no_window_kwargs() -> dict[str, Any]:
 
 
 def _run_powershell_json(script: str, *, timeout: float = 5) -> dict[str, Any] | None:
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return None
-    if result.returncode != 0 or not result.stdout.strip():
+    from core.bounded_proc import run_bounded
+
+    code, text = run_bounded(
+        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        timeout=timeout,
+    )
+    if code != 0 or not text:
         return None
     try:
-        payload = json.loads(result.stdout.strip())
+        payload = json.loads(text)
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
@@ -102,21 +97,14 @@ def _cpu_from_perf_counter() -> int | None:
         "if ($t -and $t.Count -gt 0) { $v = [double]$t[-1].CookedValue } } catch {} } ;"
         "if ($null -ne $v) { [int][math]::Max(0,[math]::Min(100,[math]::Round($v))) } else { '' }"
     )
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=6,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        _cpu_counter_cache = (now, None)
-        return None
-    raw = result.stdout.strip()
+    from core.bounded_proc import run_bounded
+
+    code, raw = run_bounded(
+        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        timeout=4,
+    )
     counter_value: int | None = None
-    if result.returncode == 0 and raw:
+    if code == 0 and raw:
         try:
             counter_value = _normalize_cpu_percent(float(raw))
         except (TypeError, ValueError):
@@ -137,26 +125,17 @@ def _resolve_cpu_percent(process_cpu_seconds: float | None) -> int | None:
 
 
 def _query_gpus_live() -> list[dict[str, Any]]:
-    try:
-        result = subprocess.run(
-            [
-                'nvidia-smi',
-                '--query-gpu=index,name,utilization.gpu,memory.used,memory.total',
-                '--format=csv,noheader,nounits',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
+    from core.bounded_proc import run_nvidia_smi
+
+    text = run_nvidia_smi([
+        '--query-gpu=index,name,utilization.gpu,memory.used,memory.total',
+        '--format=csv,noheader,nounits',
+    ])
+    if not text:
         return []
 
     rows: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
+    for line in text.splitlines():
         parts = [part.strip() for part in line.split(',')]
         if len(parts) < 5:
             continue

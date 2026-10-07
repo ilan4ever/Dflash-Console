@@ -223,9 +223,9 @@
     return tags.join('');
   }
 
-  function detailLine(label, path, size) {
+  function detailLine(label, path, size, { includeSize = true } = {}) {
     const pathText = shortPath(path);
-    const sizeText = formatSizeGb(size);
+    const sizeText = includeSize ? formatSizeGb(size) : '';
     const suffix = sizeText ? ` · ${sizeText}` : '';
     const text = `${label} · ${pathText || 'path unavailable'}${suffix}`;
     const title = path ? `${label}: ${path}${sizeText ? ` · ${sizeText}` : ''}` : text;
@@ -236,6 +236,7 @@
     includeTarget = true,
     includeAccelerator = true,
     alwaysForStack = true,
+    includeSize = true,
   } = {}) {
     const acceleratorPath = acceleratorPathFor(model);
     const targetPath = targetPathFor(model);
@@ -243,13 +244,14 @@
     const lines = [];
     if (includeTarget && targetPath && (!isAccelerator(model) && (alwaysForStack ? stack : true))) {
       const targetPart = stackPart(model, 'target');
-      lines.push(detailLine('Target', targetPath, targetPart?.size_gb ?? model?.size_gb));
+      lines.push(detailLine('Target', targetPath, targetPart?.size_gb ?? model?.size_gb, { includeSize }));
     }
     if (includeAccelerator && acceleratorPath) {
       lines.push(detailLine(
         'Accelerator',
         acceleratorPath,
         acceleratorSizeFor(model),
+        { includeSize },
       ));
     }
     if (!lines.length) return '';

@@ -90,6 +90,11 @@ dflash list
 
 Open **http://127.0.0.1:8900/** in a browser for the same UI as Windows.
 
+**Windows parity:** On Windows, the main server uses the repo
+`.venv\Scripts\python.exe` (not Miniconda). First-time setup:
+`.\scripts\setup-windows-venv.ps1`, then `.\run.ps1` or `.\server.ps1`.
+See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 Or use the helper scripts:
 
 ```bash

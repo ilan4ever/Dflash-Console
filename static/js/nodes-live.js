@@ -51,7 +51,7 @@
     if (!nodes.length) {
       list.innerHTML = `
         <div class="lm-nodes-empty">
-          <p class="lm-setting-desc">No remote nodes yet. Use <strong>Connect securely</strong> for Tailscale or SSH, or add a LAN URL manually.</p>
+          <p class="lm-setting-desc">No other computers yet. Add one to use its GPU from this PC. The GPU name will include that computer in brackets.</p>
         </div>`;
       return;
     }
@@ -70,10 +70,12 @@
             <div class="lm-node-card-meta">
               Last check · ${escapeHtml(formatChecked(node))} · ${latency}${version}
               ${node.has_token ? ' · Token set' : ''}
+              ${node.share_gpu ? ' · GPU shared with this PC' : ''}
             </div>
             ${err}
           </div>
           <div class="lm-node-card-actions">
+            <button class="lm-btn ghost small" type="button" data-node-action="share" data-node-id="${escapeHtml(node.id)}">${node.share_gpu ? 'Stop sharing GPU' : 'Share GPU'}</button>
             <button class="lm-btn ghost small" type="button" data-node-action="health" data-node-id="${escapeHtml(node.id)}">Check</button>
             <button class="lm-btn ghost small" type="button" data-node-action="chat" data-node-id="${escapeHtml(node.id)}">Test chat</button>
             <button class="lm-btn ghost small danger" type="button" data-node-action="remove" data-node-id="${escapeHtml(node.id)}">Remove</button>
@@ -195,6 +197,11 @@
           <span>API token (optional)</span>
           <input class="lm-input" id="nodeConnectToken" type="password" placeholder="Shared secret" autocomplete="off">
         </label>
+        <label class="lm-field lm-check-field">
+          <input type="checkbox" id="nodeConnectShareGpu" checked>
+          <span>Use this computer’s GPU</span>
+        </label>
+        <p class="lm-setting-desc">Turn this on to see that GPU in the model list, with the computer name in brackets.</p>
         <div class="lm-connect-test-result" id="nodeConnectTestResult"></div>
       </div>`;
   }
@@ -248,6 +255,11 @@
           <span>API token (optional)</span>
           <input class="lm-input" id="nodeConnectToken" type="password" placeholder="Shared secret" autocomplete="off">
         </label>
+        <label class="lm-field lm-check-field">
+          <input type="checkbox" id="nodeConnectShareGpu" checked>
+          <span>Use this computer’s GPU</span>
+        </label>
+        <p class="lm-setting-desc">Turn this on to see that GPU in the model list, with the computer name in brackets.</p>
         <div class="lm-connect-test-result" id="nodeConnectTestResult"></div>
       </div>`;
   }
@@ -392,13 +404,27 @@
     const btn = document.getElementById('nodeConnectAddBtn');
     if (btn) btn.disabled = true;
     try {
+      const shareGpu = document.getElementById('nodeConnectShareGpu')?.checked === true;
+      const sshHost = document.getElementById('nodeConnectSshHost')?.value?.trim() || '';
+      const sshUser = document.getElementById('nodeConnectSshUser')?.value?.trim() || '';
+      let sshDestination = sshHost;
+      if (sshHost && !sshHost.includes('@') && sshUser && sshUser !== 'user') {
+        sshDestination = `${sshUser}@${sshHost}`;
+      }
+      const body = {
+        label,
+        base_url: baseUrl,
+        api_token: apiToken || undefined,
+        share_gpu: shareGpu,
+      };
+      if (connectMethod === 'ssh' && connectSshScenario === 'reach_remote' && sshDestination) {
+        body.ssh_host = sshDestination;
+        body.ssh_local_port = Number(document.getElementById('nodeConnectLocalPort')?.value || 8901);
+        body.ssh_remote_port = Number(document.getElementById('nodeConnectRemotePort')?.value || 8900);
+      }
       await api('/api/nodes', {
         method: 'POST',
-        body: JSON.stringify({
-          label,
-          base_url: baseUrl,
-          api_token: apiToken || undefined,
-        }),
+        body: JSON.stringify(body),
       });
       closeModal('nodeConnectModal');
       toast('Node added');
@@ -427,6 +453,7 @@
           label,
           base_url: baseUrl,
           api_token: apiToken || undefined,
+          share_gpu: document.getElementById('nodeAddShareGpu')?.checked === true,
         }),
       });
       closeAddModal();
@@ -472,6 +499,21 @@
       toast(text ? `Remote replied: ${String(text).slice(0, 80)}` : 'Chat test succeeded');
     } catch (err) {
       toast(err.message || 'Chat test failed', false);
+    }
+  }
+
+  async function toggleShareGpu(nodeId) {
+    const node = nodes.find((row) => row.id === nodeId);
+    if (!node) return;
+    try {
+      await api(`/api/nodes/${encodeURIComponent(nodeId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ share_gpu: node.share_gpu !== true }),
+      });
+      toast(node.share_gpu ? 'This PC will stop using that GPU' : 'That GPU will show up in the model list');
+      await refreshNodes({ fresh: true });
+    } catch (err) {
+      toast(err.message || 'Could not update GPU sharing', false);
     }
   }
 
@@ -598,6 +640,7 @@
       const action = btn.dataset.nodeAction || '';
       if (action === 'health') void checkNode(nodeId);
       else if (action === 'chat') void testChat(nodeId);
+      else if (action === 'share') void toggleShareGpu(nodeId);
       else if (action === 'remove') void removeNode(nodeId);
     });
     document.getElementById('nodesList')?.addEventListener('contextmenu', (e) => {

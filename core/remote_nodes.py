@@ -30,6 +30,8 @@ def _public_node(node: dict[str, Any], *, health: dict[str, Any] | None = None) 
         'base_url': node.get('base_url'),
         'enabled': node.get('enabled') is not False,
         'has_token': bool(str(node.get('api_token') or '').strip()),
+        'ssh_host': str(node.get('ssh_host') or ''),
+        'share_gpu': node.get('share_gpu') is True,
     }
     if health:
         row.update(health)
@@ -124,6 +126,18 @@ def check_remote_node_health(node: dict[str, Any], *, timeout: float = 8.0) -> d
             'checked_at': time.time(),
             'error': 'Node is disabled',
         }
+    if str(node.get('ssh_host') or '').strip():
+        try:
+            from core.remote_gpu import ensure_ssh_tunnel
+
+            ensure_ssh_tunnel(node)
+        except Exception as exc:
+            return {
+                'status': 'offline',
+                'online': False,
+                'checked_at': time.time(),
+                'error': str(exc),
+            }
     url = node_health_url(node)
     started = time.time()
     try:

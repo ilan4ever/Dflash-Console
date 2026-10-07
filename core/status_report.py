@@ -166,11 +166,19 @@ def get_status_report_payload(*, cfg: dict[str, Any] | None = None, include_exte
     )
     runtime_rows = _runtime_rows(config)
     loaded_payload = get_loaded_models_payload(cfg=config)
+    from core.remote_gpu import with_shared_gpus
+
+    shared_devices = dict(gpu_devices)
+    shared_list = with_shared_gpus(gpu_devices.get('gpus') or [])
+    shared_devices['gpus'] = shared_list
+    shared_devices['count'] = len(shared_list)
+    system = dict(system)
+    system['gpus'] = with_shared_gpus(system.get('gpus') or [])
     return {
         'success': True,
         'updated_at': time.time(),
         'system': system,
-        'gpu_devices': gpu_devices,
+        'gpu_devices': shared_devices,
         'engines': {
             'success': True,
             'servers': engines.get('servers') or [],

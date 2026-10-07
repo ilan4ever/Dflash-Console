@@ -164,6 +164,8 @@ def _overview_html(base: str) -> str:
 <section class="df-docs-section-block">
   <h3>What&apos;s new in v{APP_VERSION}</h3>
   <ul class="df-docs-checklist">
+    <li><strong>Share a GPU</strong> — another DFlash Console’s GPU appears in the model list as <code>NAME (computer)</code>. Load runs on that machine. See <strong>Documentation → User guide</strong></li>
+    <li><strong>Server release note</strong> — a cloned or pip-run server shows a note when GitHub has a newer release</li>
     <li><strong>Engine standby</strong> — Running toggle arms load/chat; external API callers get a clear 503 when off</li>
     <li><strong>External GPU cards</strong> — models from OneVoice, LM Studio, and other apps; compact mobile layout; loading clears when ready</li>
     <li><strong>Other GPU processes</strong> — per-process VRAM chips for desktop and background GPU apps</li>

@@ -8,7 +8,14 @@ from one UI, then talk to them through a single OpenAI-compatible port.
 > supported platform**; Linux and macOS are not supported or tested (see
 > [Platform support](#platform-support) below).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.264
+**Share a GPU with another DFlash Console.** Run the app on two computers, open
+**Nodes**, and leave **Use this computer’s GPU** on. The other GPU then appears
+in the model list with that computer’s name in brackets, such as **TITAN (lab)**.
+Loading a model on that GPU runs it on the other computer. If the file is not
+there yet, it is downloaded there first. Short steps:
+[docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
+
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.268
 
 ## Download (Windows)
 
@@ -56,6 +63,22 @@ and attaches the matching draft.
 
 ---
 
+## Share a GPU across computers
+
+Two DFlash Console apps can share a GPU. The computer where you click Load
+does not have to own that GPU.
+
+1. Start DFlash Console on both computers.
+2. On the computer where you choose models, open **Nodes**.
+3. Add the other computer. Leave **Use this computer’s GPU** on.
+4. Load a model and pick the GPU whose name ends with that computer in brackets.
+
+The model runs on the other computer. This computer’s GPU list includes it
+whenever GPUs are listed. Full steps, including Tailscale and SSH:
+[docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
+
+---
+
 ## What else it does
 
 | Area | What you get |
@@ -87,8 +110,10 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.264)
+### Recent improvements (v0.3.268)
 
+- **Share a GPU** — another DFlash Console’s GPU appears in the model list as `NAME (computer)`. Load runs on that machine, and a missing file is downloaded there first. See [Share a GPU](./docs/SHARE-A-GPU.md)
+- **Release note for the server** — people who clone or pip-install and run the server see a note at the top when a newer GitHub release is published
 - **Model library** — loading clears when the model is on the GPU; Engine and GPU column headers stay visible
 - **Model catalog** — a pasted repo name with a trailing period still opens the real model, and shared shard names are no longer marked installed
 - **Image downloads** — a pipeline folder no longer nests a second copy of the whole model inside the text encoder

@@ -639,6 +639,10 @@ class RemoteNodeCreate(BaseModel):
     base_url: str = Field(..., min_length=8, max_length=512)
     api_token: str | None = Field(default=None, max_length=512)
     enabled: bool | None = True
+    share_gpu: bool | None = None
+    ssh_host: str | None = Field(default=None, max_length=255)
+    ssh_local_port: int | None = Field(default=None, ge=0, le=65535)
+    ssh_remote_port: int | None = Field(default=None, ge=0, le=65535)
 
 
 class RemoteNodePatch(BaseModel):
@@ -646,6 +650,10 @@ class RemoteNodePatch(BaseModel):
     base_url: str | None = Field(default=None, min_length=8, max_length=512)
     api_token: str | None = Field(default=None, max_length=512)
     enabled: bool | None = None
+    share_gpu: bool | None = None
+    ssh_host: str | None = Field(default=None, max_length=255)
+    ssh_local_port: int | None = Field(default=None, ge=0, le=65535)
+    ssh_remote_port: int | None = Field(default=None, ge=0, le=65535)
 
 
 class ApiProviderModelEntry(BaseModel):
@@ -924,6 +932,14 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get('/api/release-notice')
+async def release_notice() -> dict[str, Any]:
+    """Tell a cloned or pip-run server when GitHub has a newer release."""
+    from core.release_notice import release_notice as build_release_notice
+
+    return await asyncio.to_thread(build_release_notice)
+
+
 @app.post('/api/shutdown')
 async def api_shutdown() -> dict[str, Any]:
     """Gracefully stop the Console API (used by the Electron shell on quit).
@@ -946,7 +962,40 @@ async def api_shutdown() -> dict[str, Any]:
 
 @app.get('/api/gpu-devices')
 def gpu_devices() -> dict[str, Any]:
-    return get_gpu_devices_payload()
+    from core.remote_gpu import with_shared_gpus
+
+    payload = get_gpu_devices_payload()
+    gpus = with_shared_gpus(payload.get('gpus') or [])
+    return {**payload, 'gpus': gpus, 'count': len(gpus)}
+
+
+class RemoteGpuLoadRequest(BaseModel):
+    gpu_device: str = Field(..., min_length=3, max_length=80)
+    path: str = ''
+    filename: str = ''
+    repo_id: str = ''
+    model_id: str = ''
+    label: str = ''
+    runtime_id: str = ''
+    download_job_id: str = ''
+
+
+@app.get('/api/remote-gpus')
+def remote_gpus() -> dict[str, Any]:
+    from core.remote_gpu import remote_gpu_devices
+
+    gpus = remote_gpu_devices()
+    return {'success': True, 'gpus': gpus, 'count': len(gpus)}
+
+
+@app.post('/api/remote-gpus/load')
+def remote_gpu_load(body: RemoteGpuLoadRequest) -> dict[str, Any]:
+    from core.remote_gpu import load_model_on_remote_gpu
+
+    try:
+        return load_model_on_remote_gpu(body.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get('/api/system-stats')
@@ -966,6 +1015,9 @@ async def system_stats() -> dict[str, Any]:
         if _SYSTEM_STATS_CACHE is not None and now - _SYSTEM_STATS_CACHE_AT < _SYSTEM_STATS_CACHE_TTL:
             return dict(_SYSTEM_STATS_CACHE)
         payload = await asyncio.to_thread(get_system_stats_payload)
+        from core.remote_gpu import with_shared_gpus
+
+        payload['gpus'] = with_shared_gpus(payload.get('gpus') or [])
         _SYSTEM_STATS_CACHE = dict(payload)
         _SYSTEM_STATS_CACHE_AT = time.monotonic()
         return payload
@@ -1526,6 +1578,8 @@ def create_remote_node(body: RemoteNodeCreate) -> dict[str, Any]:
             'base_url': node.get('base_url'),
             'enabled': node.get('enabled') is not False,
             'has_token': bool(str(node.get('api_token') or '').strip()),
+            'share_gpu': node.get('share_gpu') is True,
+            'ssh_host': str(node.get('ssh_host') or ''),
             **health,
         },
     }
@@ -2360,7 +2414,9 @@ def _build_servers_payload(*, include_external: bool, fresh: bool) -> dict[str, 
         status_trace=trace,
     )
     build_ms = max(0, int((time.time() - build_started) * 1000))
-    payload['gpus'] = gpus
+    from core.remote_gpu import with_shared_gpus
+
+    payload['gpus'] = with_shared_gpus(gpus)
     payload['all_servers'] = [normalize_server(s) for s in list_servers(cfg)]
     payload['external_scan_skipped'] = not include_external
     payload['status_trace'] = trace
@@ -2387,7 +2443,7 @@ def _ensure_status_build(*, include_external: bool) -> None:
 def _attach_external_scan() -> None:
     """Add external GPU cards onto the latest engine snapshot without blocking it."""
     from core.gpu_processes import get_external_gpu_loads
-    from core.runtime import _cached_status_payload, _store_status_payload
+    from core.runtime import _attach_gpu_other_usage, _cached_status_payload, _store_status_payload
 
     cached = _cached_status_payload(False)
     if not isinstance(cached, dict):
@@ -2395,17 +2451,28 @@ def _attach_external_scan() -> None:
     cfg = load_config()
     enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
     payload = dict(cached)
+    gpus = payload.get('gpus') if isinstance(payload.get('gpus'), list) else None
     started = time.time()
     try:
         payload['external_gpu_loads'] = get_external_gpu_loads(
             servers=enabled,
-            gpus=payload.get('gpus') if isinstance(payload.get('gpus'), list) else None,
+            gpus=gpus,
             cfg=cfg,
             fast=True,
         )
         payload.pop('external_scan_error', None)
     except Exception as exc:
         payload['external_scan_error'] = str(exc)[:240]
+        payload['external_gpu_loads'] = payload.get('external_gpu_loads') or []
+    try:
+        # Model cards and the smaller GPU apps come from the same scan.
+        # Skipping this left Hermes on the page and hid every other process.
+        _attach_gpu_other_usage(payload, servers=enabled, gpus=gpus)
+    except Exception:
+        payload['gpu_other_usage'] = payload.get('gpu_other_usage') or {
+            'processes': [],
+            'total_other_vram_gb': 0.0,
+        }
     payload['external_scan_skipped'] = False
     payload['quick'] = False
     payload['updated_at'] = time.time()

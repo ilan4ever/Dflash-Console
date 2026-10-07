@@ -4,7 +4,7 @@ This directory records the user-facing UI contract and the settings that are
 implemented in the current Console. The browser and Electron shell serve the
 same `static/` application, so the views and documentation are shared.
 
-**End-user docs:** [USER-GUIDE.md](../USER-GUIDE.md) · [CLI.md](../CLI.md) ·
+**End-user docs:** [USER-GUIDE.md](../USER-GUIDE.md) · [SHARE-A-GPU.md](../SHARE-A-GPU.md) · [CLI.md](../CLI.md) ·
 in-app **Documentation → User guide** and **Terminal CLI** · in-app **About**
 
 ## Views
@@ -16,7 +16,7 @@ in-app **Documentation → User guide** and **Terminal CLI** · in-app **About**
 | Models | [models-view.md](./models-view.md) | Local library, DFlash stacks, filters, and loading |
 | Downloads | `static/js/downloads-live.js` | Downloading now and last downloads |
 | Terminal CLI | [CLI.md](../CLI.md) | `dflash list`, embed, delete, nodes, settings, search, pull |
-| Nodes | [devices-view.md](./devices-view.md) + [nodes-v1-plan.md](./nodes-v1-plan.md) | Remote Console registration, health, test chat |
+| Nodes | [devices-view.md](./devices-view.md) + [SHARE-A-GPU.md](../SHARE-A-GPU.md) | Share another Console’s GPU, plus health and test chat |
 | Model catalog | [model-search.md](./model-search.md) | Hugging Face search, detail, README, and downloads |
 | Settings | settings/*.md | Workspace, locations, hardware, gateway, presets, and MCP |
 | Documentation | `core/api_catalog.py` + `docs/USER-GUIDE.md` | API reference and user guide |

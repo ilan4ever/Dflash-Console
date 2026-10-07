@@ -133,16 +133,22 @@ def listening_ports_map(*, force: bool = False) -> dict[int, list[int]]:
         cached_at, cached = _LISTEN_PORTS_CACHE
         if not force and cached and (now - cached_at) < _LISTEN_PORTS_TTL_SECONDS:
             return {pid: list(ports) for pid, ports in cached.items()}
+        cached_copy = {pid: list(ports) for pid, ports in cached.items()} if cached else {}
 
+    if sys.platform == 'win32':
+        # psutil and Get-NetTCPConnection walk every connection and can
+        # stall for minutes right after boot. One netstat snapshot is enough.
         mapping: dict[int, list[int]] = {}
-        if sys.platform == 'win32':
-            mapping = _listening_ports_map_psutil() or _listening_ports_map_powershell()
-        else:
-            mapping = _listening_ports_map_lsof()
+        for listen_port, pid in _netstat_listen_pids().items():
+            mapping.setdefault(int(pid), []).append(int(listen_port))
+        mapping = {pid: sorted(set(ports)) for pid, ports in mapping.items()}
+    else:
+        mapping = _listening_ports_map_lsof()
 
-        if not mapping and cached:
-            return {pid: list(ports) for pid, ports in cached.items()}
-        _LISTEN_PORTS_CACHE = (now, {pid: list(ports) for pid, ports in mapping.items()})
+    if not mapping and cached_copy:
+        return cached_copy
+    with _LISTEN_PORTS_LOCK:
+        _LISTEN_PORTS_CACHE = (time.time(), {pid: list(ports) for pid, ports in mapping.items()})
         return {pid: list(ports) for pid, ports in mapping.items()}
 
 
@@ -224,16 +230,13 @@ def _netstat_listen_pids() -> dict[int, int]:
         if cached and (now - cached_at) < _NETSTAT_TTL_SECONDS:
             return dict(cached)
     try:
-        result = subprocess.run(
-            ['netstat', '-ano', '-p', 'tcp'],
-            capture_output=True,
-            timeout=2,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
+        from core.bounded_proc import run_bounded
+
+        code, text = run_bounded(['netstat', '-ano', '-p', 'tcp'], timeout=2)
     except (OSError, subprocess.SubprocessError):
         return dict(cached)
-    text = (result.stdout or b'').decode('utf-8', errors='replace')
+    if code is None:
+        return dict(cached)
     found: dict[int, int] = {}
     for line in text.splitlines():
         if 'LISTENING' not in line.upper():

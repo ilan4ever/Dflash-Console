@@ -247,7 +247,10 @@ dflash nodes health Lab
 dflash nodes remove Lab
 ```
 
-The Nodes tab in the UI shows the same list.
+The Nodes tab in the UI shows the same list. To use the other computer’s GPU
+from this one, add the node in **Nodes** and leave **Use this computer’s GPU**
+on. The other GPU then appears in the model list with that computer’s name in
+brackets. Steps: [SHARE-A-GPU.md](./SHARE-A-GPU.md).
 
 ---
 

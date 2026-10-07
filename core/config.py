@@ -425,12 +425,29 @@ def normalize_remote_node(raw: Any, *, existing_ids: set[str] | None = None) -> 
     if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
         raise ValueError('remote node base_url must be http(s)://host[:port]')
     api_token = str(raw.get('api_token') or '').strip()
+    ssh_host = str(raw.get('ssh_host') or '').strip()
+    try:
+        ssh_local_port = int(raw.get('ssh_local_port') or 0)
+    except (TypeError, ValueError):
+        ssh_local_port = 0
+    try:
+        ssh_remote_port = int(raw.get('ssh_remote_port') or 0)
+    except (TypeError, ValueError):
+        ssh_remote_port = 0
+    if ssh_host and ssh_local_port <= 0:
+        ssh_local_port = 8901
+    if ssh_host and ssh_remote_port <= 0:
+        ssh_remote_port = 8900
     return {
         'id': node_id,
         'label': label,
         'base_url': base_url,
         'api_token': api_token,
         'enabled': raw.get('enabled') is not False,
+        'ssh_host': ssh_host,
+        'ssh_local_port': ssh_local_port,
+        'ssh_remote_port': ssh_remote_port,
+        'share_gpu': raw.get('share_gpu') is True,
     }
 
 

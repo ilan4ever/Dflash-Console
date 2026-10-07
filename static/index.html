@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.264</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.268</span>
           </div>
         </div>
       </div>
@@ -101,6 +101,11 @@
         </div>
       </div>
     </section>
+
+    <div id="dfReleaseNotice" class="df-release-notice hidden" role="status">
+      <span id="dfReleaseNoticeText">A new release is available.</span>
+      <a id="dfReleaseNoticeLink" href="https://github.com/ilan4ever/Dflash-Console/releases/latest" target="_blank" rel="noopener">View release</a>
+    </div>
 
       <header class="df-pagehead">
         <h1 class="df-page-title" id="dfPageTitle">Engines</h1>
@@ -277,12 +282,12 @@ try {
                     </svg>
                   </button>
                   <label class="lm-toggle lm-engine-power-toggle" title="Start or stop engine">
-                    <input type="checkbox" id="serverRunningToggle">
+                    <input type="checkbox" id="serverRunningToggle" checked>
                     <span class="lm-toggle-track"></span>
                   </label>
                   <div class="lm-engine-status-labels">
                     <span class="lm-status-label">Engine:</span>
-                    <span class="lm-status-running" id="serverStatusText">Stopped</span>
+                    <span class="lm-status-running" id="serverStatusText">Running</span>
                   </div>
                   <button class="lm-btn ghost small lm-engine-dropdowns-toggle" type="button" id="serverEngineDropdownsToggle" aria-expanded="false" aria-controls="serverEngineDropdowns" title="Show engine and model pickers">Pickers</button>
                 </div>
@@ -314,17 +319,17 @@ try {
                 <div id="serverLoadMemoryNotice" class="lm-engine-load-notice hidden" role="status" aria-live="polite"></div>
               </div>
             </div>
-            <div id="enginePageNotice" class="lm-engine-page-notice hidden" role="status" aria-live="polite">
+            <div id="enginePageNotice" class="lm-engine-page-notice" role="status" aria-live="polite">
               <div class="lm-engine-page-notice-inner">
                 <span class="lm-engine-page-notice-spinner" aria-hidden="true"></span>
                 <div class="lm-engine-page-notice-copy">
-                  <strong id="enginePageNoticeTitle">Starting engine services…</strong>
-                  <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail"></span>
+                  <strong id="enginePageNoticeTitle">Loading GPU list…</strong>
+                  <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail">Scanning the GPU for loaded models and other apps.</span>
                 </div>
               </div>
             </div>
             <div class="lm-section-head lm-engine-cards-head">
-              <span class="lm-section-label" id="engineCardsSectionLabel">Loading models…</span>
+              <span class="lm-section-label" id="engineCardsSectionLabel">Loading GPU list…</span>
               <div class="lm-engine-cards-filters">
                 <span class="lm-engine-cards-refresh-meta" id="engineCardsRefreshMeta" aria-live="polite"></span>
                 <button type="button" class="lm-icon-btn tiny" id="engineCardsRefreshBtn" title="Refresh engine cards" aria-label="Refresh engine cards">↻</button>
@@ -332,7 +337,7 @@ try {
               </div>
             </div>
             <div id="serverModelCards" class="lm-server-cards"></div>
-            <div id="serverEmptyState" class="lm-server-empty">Loading models…</div>
+            <div id="serverEmptyState" class="lm-server-empty">Loading GPU list…</div>
           </div>
           <div class="lm-logs-dock" id="serverLogsDock">
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
@@ -489,7 +494,7 @@ try {
             <div class="lm-nodes-header">
               <div>
                 <h1>Remote inference nodes</h1>
-                <p class="lm-setting-desc">Connect other DFlash Console instances on your network. Check health and send a test chat through each node.</p>
+                <p class="lm-setting-desc">Connect another DFlash Console and use its GPU from this PC. That GPU shows up in the model list with the other computer’s name in brackets.</p>
               </div>
               <div class="lm-nodes-header-actions">
                 <button class="lm-btn ghost" type="button" id="nodesConnectBtn">Connect securely</button>
@@ -499,7 +504,7 @@ try {
             <div class="lm-nodes-list" id="nodesList">
               <p class="lm-setting-desc">Loading nodes…</p>
             </div>
-            <p class="lm-nodes-footer lm-setting-desc">Use <strong>Connect securely</strong> for Tailscale or SSH tunnel setup, or add a LAN URL manually.</p>
+            <p class="lm-nodes-footer lm-setting-desc">Add the other computer, leave <strong>Use this computer’s GPU</strong> on, then pick that GPU when you load a model. Use <strong>Connect securely</strong> when it is not already on your network.</p>
           </div>
         </div>
 
@@ -539,7 +544,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.264</strong>
+                <strong id="dfAboutVersion">v0.3.268</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1784,6 +1789,11 @@ try {
             <span>API token (optional)</span>
             <input class="lm-input" id="nodeAddToken" type="password" placeholder="Shared secret" autocomplete="off">
           </label>
+          <label class="lm-field lm-check-field">
+            <input type="checkbox" id="nodeAddShareGpu" checked>
+            <span>Use this computer’s GPU</span>
+          </label>
+          <p class="lm-setting-desc">Its GPU appears in the model list here. Loading a model runs it on that computer. If the file is missing there, it is downloaded there first.</p>
         </div>
         <div class="lm-modal-foot">
           <button class="lm-btn ghost" type="button" data-action="close-modal">Cancel</button>
@@ -2083,6 +2093,7 @@ try {
   <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
   <script src="/static/js/desktop-shell.js"></script>
+  <script src="/static/js/release-notice.js"></script>
   <script src="/static/js/nodes-live.js"></script>
   <script src="/static/js/about-live.js"></script>
   <script src="/static/js/bug-report-live.js"></script>

@@ -36,26 +36,17 @@ def _subprocess_no_window_kwargs() -> dict[str, Any]:
 
 
 def _query_gpus() -> list[dict[str, str]]:
-    try:
-        result = subprocess.run(
-            [
-                'nvidia-smi',
-                '--query-gpu=index,name,memory.total,memory.used,memory.free',
-                '--format=csv,noheader,nounits',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
+    from core.bounded_proc import run_nvidia_smi
+
+    text = run_nvidia_smi([
+        '--query-gpu=index,name,memory.total,memory.used,memory.free',
+        '--format=csv,noheader,nounits',
+    ])
+    if not text:
         return []
 
     gpus: list[dict[str, str]] = []
-    for line in result.stdout.splitlines():
+    for line in text.splitlines():
         parts = [part.strip() for part in line.split(',')]
         if len(parts) < 2:
             continue

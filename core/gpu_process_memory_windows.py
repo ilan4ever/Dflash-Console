@@ -57,21 +57,16 @@ foreach ($kv in $agg.GetEnumerator()) {
 }
 $out | ConvertTo-Json -Compress
 """
-    try:
-        result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            capture_output=True,
-            text=True,
-            timeout=12,
-            check=False,
-            **_subprocess_no_window_kwargs(),
-        )
-    except Exception:
-        return {}
-    if result.returncode != 0 or not result.stdout.strip():
+    from core.bounded_proc import run_bounded
+
+    code, text = run_bounded(
+        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        timeout=4,
+    )
+    if code != 0 or not text:
         return {}
     try:
-        payload = json.loads(result.stdout.strip())
+        payload = json.loads(text)
     except json.JSONDecodeError:
         return {}
     rows = payload if isinstance(payload, list) else [payload]

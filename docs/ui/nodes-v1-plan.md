@@ -19,7 +19,7 @@ This is the minimum before lab-wide routing, encrypted tunnels, or pairing codes
 | Test chat via proxy | Yes | Route Playground/Engines picks |
 | Persist in `config.json` | Yes | Trusted-device store |
 | Encrypted transport | Tailscale + SSH wizard | mTLS / pairing codes |
-| Load models on remote node | No | Remote engine picker |
+| Load models on remote node | Yes, when **Share GPU** is on | Playground routing by node |
 | Workload scheduler | No | Queue + failover |
 
 ## Data model (`config.json`)

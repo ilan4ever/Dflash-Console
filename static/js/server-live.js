@@ -842,28 +842,19 @@
     let detail = '';
     let mode = 'loading';
 
-    if (!initialStatusSettled) {
-      title = 'Starting engine services…';
-      detail = formatStatusTraceDetail() || 'Checking llama-server listeners and loaded models.';
-      mode = 'loading';
-    } else if (externalScanError && !externalGpuLoads.length && externalInitialFetchDone) {
-      title = 'Could not scan external GPU models';
-      detail = `${externalScanError} Restart the Console API (server.ps1 -ApiRestart), then refresh this page.`;
-      mode = 'loading';
-    } else if (externalFetchPending && !externalGpuLoads.length && !externalInitialFetchDone) {
-      title = 'Scanning external GPU models…';
-      detail = formatStatusTraceDetail()
-        || 'Looking for models loaded by LM Studio, Ollama, and other apps.';
-      mode = 'loading';
-    } else if (gpuRescanPending && !hasVisibleGpuCards()) {
-      title = 'Scanning Loaded Models on GPU…';
-      detail = formatStatusTraceDetail()
-        || 'Scanning the GPU for DFlash and external app models. Cards will appear here when ready.';
-      mode = 'loading';
-    } else if (action === 'starting' || startingCount > 0) {
+    if (action === 'starting' || startingCount > 0) {
       title = startingCount > 1 ? `Starting ${startingCount} engines…` : 'Starting engine…';
       detail = 'The llama-server process is launching. Cards and chat stay disabled until the listener is up.';
       mode = 'starting';
+    } else if (!externalInitialFetchDone || (gpuRescanPending && !hasVisibleGpuCards())) {
+      title = 'Loading GPU list…';
+      detail = formatStatusTraceDetail()
+        || 'Scanning the GPU for loaded models and other apps.';
+      mode = 'loading';
+    } else if (externalScanError && !externalGpuLoads.length) {
+      title = 'Could not scan external GPU models';
+      detail = `${externalScanError} Restart the Console API (server.ps1 -ApiRestart), then refresh this page.`;
+      mode = 'loading';
     }
 
     if (!title) {
@@ -1029,8 +1020,11 @@
     }
     const useFresh = Boolean(fresh);
     externalFetchPromise = (async () => {
+      let scanComplete = false;
       try {
-        const data = await api(`/api/servers?include_external=1${useFresh ? '&fresh=1' : ''}`);
+        const data = await api(`/api/servers?include_external=1${useFresh ? '&fresh=1' : ''}`, {
+          timeoutMs: 20000,
+        });
         const staleRevision = noteStatusSnapshot(data);
         applyExternalPayload(data, { mergeExternal: true });
         if (!staleRevision) {
@@ -1041,19 +1035,18 @@
         lastStatusTrace = Array.isArray(data?.status_trace) ? data.status_trace : lastStatusTrace;
         lastStatusBuildMs = Number(data?.status_build_ms || 0);
         externalScanError = String(data?.external_scan_error || '').trim();
-        if (externalScanIsComplete(data)) {
+        scanComplete = externalScanIsComplete(data);
+        if (scanComplete) {
           externalInitialFetchDone = true;
         }
         if (shouldRender) renderCards();
         return data;
       } catch {
-        /* keep previous external cards */
+        /* keep previous external cards; a timeout is not an empty GPU */
         return null;
       } finally {
-        if (showScanNotice && externalInitialFetchDone) {
-          externalFetchPending = false;
-          updateEnginePageNotice();
-        }
+        externalFetchPending = false;
+        updateEnginePageNotice();
         externalFetchPromise = null;
       }
     })();
@@ -2050,7 +2043,7 @@
     const el = document.getElementById('engineCardsSectionLabel');
     if (!el) return;
     if (engineCardsPending() && !collectLoadedEntries().length) {
-      el.textContent = 'Loading models…';
+      el.textContent = 'Loading GPU list…';
       return;
     }
     const count = collectLoadedEntries().length;
@@ -2157,8 +2150,14 @@
     return 'Stopped';
   }
 
+  function savedEngineOn(server = activeServer()) {
+    if (server?.engine_on === true) return true;
+    return servers.some((row) => row?.enabled !== false && row?.engine_on === true)
+      || allServers.some((row) => row?.enabled !== false && row?.engine_on === true);
+  }
+
   function aggregateStatusLabel() {
-    if (!initialStatusSettled) return 'Starting engine';
+    if (!initialStatusSettled) return savedEngineOn() ? 'Running' : 'Stopped';
     const dflashLoaded = dflashLoadedCount();
     const booting = bootingServerCount();
     const starting = [...serverActions.values()].filter((a) => a === 'starting').length;
@@ -2289,10 +2288,32 @@
     ].filter(Boolean).join(' · ');
   }
 
-  function cardComponentAttributionHtml(row, server) {
-    const text = cardComponentAttributionText(row, server);
-    if (!text) return '';
-    return `<span class="lm-loaded-by-app-badge is-component" title="${escapeHtml(`GPU consumer: ${text}`)}">${escapeHtml(text)}</span>`;
+  function cardAgentLabels(row, server) {
+    const list = Array.isArray(row?.active_components) && row.active_components.length
+      ? row.active_components
+      : (Array.isArray(server?.active_components) ? server.active_components : []);
+    const labels = [];
+    const seen = new Set();
+    for (const item of list) {
+      const label = String(item?.component_label || '').trim();
+      const key = label.toLowerCase();
+      if (!label || seen.has(key)) continue;
+      seen.add(key);
+      labels.push(label);
+    }
+    if (labels.length) return labels;
+    const single = cardComponent(row, server);
+    return single ? [single] : [];
+  }
+
+  function cardProcessIdText(row, server) {
+    const fromList = Array.isArray(row?.pids) && row.pids.length
+      ? row.pids
+      : (Array.isArray(server?.pids) ? server.pids : []);
+    const ids = fromList.map((pid) => Number(pid)).filter((pid) => Number.isFinite(pid) && pid > 0);
+    if (ids.length) return `PID ${ids.join(', ')}`;
+    const single = Number(row?.pid || server?.pid);
+    return Number.isFinite(single) && single > 0 ? `PID ${single}` : '';
   }
 
   function cardSizeGb(row) {
@@ -2467,24 +2488,34 @@
 
   function loadedByPrompt({ row, server, ready }) {
     if (row?.external || !ready) return '';
-    const clients = activeClientLabels(row);
-    if (!clients.length) return '';
-    const multi = clients.length > 1;
-    const badges = clients.map((label) => {
-      const isUnknown = /^unknown api client$/i.test(label);
+    const agents = cardAgentLabels(row, server);
+    const clients = activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label));
+    const titles = clients.length ? clients : agents;
+    if (!titles.length) return '';
+    const multi = titles.length > 1;
+    const badges = titles.map((label) => {
       const isConsole = /^dflash console$/i.test(label);
-      return `<span class="lm-loaded-by-app-badge${isUnknown ? ' is-unknown' : ''}${isConsole ? ' is-console' : ''}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+      return `<span class="lm-loaded-by-app-badge${isConsole ? ' is-console' : ''}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
     }).join('');
-    const soloUnknown = !multi && /^unknown api client$/i.test(clients[0]);
-    const soloConsole = !multi && /^dflash console$/i.test(clients[0]);
+    const titleSet = new Set(titles.map((label) => label.toLowerCase()));
+    const extraAgents = agents.filter((label) => !titleSet.has(label.toLowerCase()));
+    const detail = [extraAgents.join(', '), cardProcessIdText(row, server)].filter(Boolean).join(' · ');
+    const detailHtml = detail
+      ? `<span class="lm-loaded-by-detail">${escapeHtml(detail)}</span>`
+      : '';
+    const soloConsole = !multi && /^dflash console$/i.test(titles[0]);
     const stackChip = engineHeadStackChip(row);
     const vramCell = engineHeadVramCtxCell(row, server);
-    const componentBadge = cardComponentAttributionHtml(row, server);
-    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloUnknown ? ' is-unknown' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}" title="${escapeHtml(multi ? 'Clients using this model' : `Active client: ${clients[0]}`)}">
+    const hint = detail
+      ? `${titles.join(', ')} · ${detail}`
+      : (multi ? 'Clients using this model' : `Active client: ${titles[0]}`);
+    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}" title="${escapeHtml(hint)}">
             ${stackChip}
             ${vramCell}
-            ${componentBadge}
-            <span class="lm-loaded-by-badges">${badges}</span>
+            <span class="lm-loaded-by-identity">
+              <span class="lm-loaded-by-badges">${badges}</span>
+              ${detailHtml}
+            </span>
           </div>`;
   }
 
@@ -3636,7 +3667,7 @@
     const selected = String(server.gpu_device || 'auto').trim().toLowerCase() || 'auto';
     const options = [
       `<option value="auto"${selected === 'auto' ? ' selected' : ''}>Auto</option>`,
-      ...gpus.map((gpu) => {
+      ...gpus.filter((gpu) => /^\d+$/.test(String(gpu.index))).map((gpu) => {
         const index = String(gpu.index);
         const name = gpu.display_name || gpu.name || `GPU ${index}`;
         return `<option value="${escapeHtml(index)}"${selected === index ? ' selected' : ''}>${escapeHtml(name)}</option>`;
@@ -3666,6 +3697,7 @@
       : (window.DFlashModelCard?.detailsHtml?.(cardModelPresentation(row), {
         includeTarget: true,
         includeAccelerator: true,
+        includeSize: !stackDiskBreakdown(row)?.hasDraft,
       }) || '');
     const kindBadge = modelKindBadge(row);
     const statusInCard = desktopLayout ? '' : statusBadge;
@@ -3752,7 +3784,7 @@
       wrap.innerHTML = '';
       lastEngineCardsMarkup = '';
       lastGpuOverheadMarkup = '';
-      empty.textContent = 'Loading models…';
+      empty.textContent = 'Loading GPU list…';
       empty.classList.remove('hidden');
       syncEngineCardsSectionLabel();
       updateEnginePageNotice();
@@ -3773,7 +3805,7 @@
       lastGpuOverheadMarkup = overheadHtml;
       if (!overheadHtml) {
         if (engineCardsPending()) {
-          empty.textContent = 'Loading models…';
+          empty.textContent = 'Loading GPU list…';
         } else if (allEntries.length) {
           empty.textContent = 'No models match the current filters.';
         } else {
@@ -4266,6 +4298,14 @@
     renderEngineModelPicker();
 
     if (!server) {
+      if (!initialStatusSettled) {
+        if (statusText) {
+          statusText.textContent = 'Running';
+          statusText.className = 'lm-status-running';
+        }
+        if (toggle) setRunningToggle(true);
+        return;
+      }
       if (statusText) { statusText.textContent = 'No server'; statusText.className = 'lm-status-stopped'; }
       if (toggle) setRunningToggle(false);
       if (urlEl) urlEl.textContent = '—';
@@ -4285,7 +4325,13 @@
         || serverIsLive(server);
       statusText.className = anyActive ? 'lm-status-running' : 'lm-status-stopped';
     }
-    if (toggle) setRunningToggle(serverIsLive(server) && getServerAction(server.id) !== 'stopping');
+    if (toggle) {
+      const stopping = getServerAction(server.id) === 'stopping';
+      const on = stopping
+        ? false
+        : (serverIsLive(server) || (!initialStatusSettled && server.engine_on === true) || (!initialStatusSettled && savedEngineOn()));
+      setRunningToggle(on);
+    }
     if (urlEl) {
       urlEl.textContent = gatewayUrl || server.reachable_url || '—';
       if (!gatewayUrl) void loadGatewayUrl({ rerender: true });
@@ -4824,9 +4870,12 @@
     document.getElementById('serverSettingsProfile').value = server.profile;
     const gpuSel = document.getElementById('serverSettingsGpu');
     if (gpuSel) {
-      gpuSel.innerHTML = '<option value="auto">Automatic</option>' + gpus.map((g) =>
-        `<option value="${g.index}"${String(server.gpu_device) === String(g.index) ? ' selected' : ''}>${escapeHtml(g.display_name || g.name)}</option>`,
-      ).join('');
+      gpuSel.innerHTML = '<option value="auto">Automatic</option>' + gpus
+        .filter((g) => /^\d+$/.test(String(g.index)))
+        .map((g) => (
+          `<option value="${g.index}"${String(server.gpu_device) === String(g.index) ? ' selected' : ''}>${escapeHtml(g.display_name || g.name)}</option>`
+        ))
+        .join('');
     }
     fillInspectorLoadSettings(server);
     fillLlamaSettingsForm(server);
@@ -5920,13 +5969,27 @@
     void rescanEngineCardsAfterPipelineWake();
   }
 
+  async function paintEnginePowerFromProfiles() {
+    try {
+      const data = await api('/api/servers/profiles', { timeoutMs: 4000 });
+      if (initialStatusSettled) return;
+      allServers = data.all_servers || data.servers || [];
+      servers = data.servers || allServers;
+      if (!activeId || !allServers.some((row) => row.id === activeId)) {
+        const preferred = servers.find((row) => row.engine_on === true) || servers[0];
+        if (preferred?.id) activeId = preferred.id;
+      }
+      renderToolbar(activeServer());
+    } catch {
+      /* keep the switch on until live status arrives */
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     bind();
-    renderToolbar(activeServer());
     updateEnginePageNotice();
     void loadGatewayUrl();
-    // Paint configured engines first. The external GPU scan must not run ahead
-    // of that, or the Engines page sits on "Starting engine services".
+    void paintEnginePowerFromProfiles();
     void initEngineFilters()
       .then(() => refreshStatus(true, { includeExternal: false, fresh: false }))
       .then(() => {

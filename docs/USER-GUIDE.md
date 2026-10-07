@@ -263,11 +263,30 @@ dflash downloads --range 7
 
 ---
 
-## 3b. Nodes
+## 3b. Nodes — share a GPU
 
-**Nodes** registers other DFlash Console PCs on your network. Add a label and
-the remote UI URL (same port as that Console). Check health or send a test chat
-from the page.
+**Nodes** connects this DFlash Console to another one. The useful part is GPU
+sharing: the other computer’s GPU shows up in the model list here, with that
+computer’s name in brackets, such as **TITAN (lab)**.
+
+### Use another computer’s GPU
+
+1. Start DFlash Console on both computers. Leave both running.
+2. On the computer where you pick models, open **Nodes**.
+3. Click **Add node**. If the other computer is not on your network, use **Connect securely** (Tailscale or SSH) instead.
+4. Enter a short name and the other Console’s address, for example `http://192.168.1.50:8900`.
+5. Leave **Use this computer’s GPU** on, then add the node.
+6. The card should say **GPU shared with this PC**. If it does not, click **Share GPU**.
+7. Open **Models** or **Engines**, choose a model, and pick the GPU with the other computer’s name in brackets.
+
+The model runs on the other computer. If that file is not there yet, this
+Console downloads it there and then loads it. A folder that is not one
+downloadable file must already be on that computer.
+
+Turn sharing off with **Stop sharing GPU** if you only want a health check or a
+test chat.
+
+A shorter copy of these steps is in [SHARE-A-GPU.md](./SHARE-A-GPU.md).
 
 ```powershell
 dflash nodes
@@ -275,6 +294,11 @@ dflash nodes add http://192.168.1.10:8900 --label Lab
 dflash nodes health Lab
 dflash nodes remove Lab
 ```
+
+People who run the server from a clone or from pip, without the desktop app,
+also see a note at the top of the page when a newer release is on GitHub. Pull
+the latest code and restart the server. The note does not update the copy by
+itself.
 
 ---
 

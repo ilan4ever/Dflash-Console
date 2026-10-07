@@ -1,4 +1,4 @@
-"""Tests for loopback listener discovery without netstat."""
+"""Tests for loopback listener discovery without a full connection-table scan."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from core import net_listeners
 def test_listening_ports_map_uses_cache(monkeypatch):
     calls = {'count': 0}
 
-    def fake_powershell() -> dict[int, list[int]]:
+    def fake_netstat() -> dict[int, int]:
         calls['count'] += 1
-        return {1234: [8911]}
+        return {8911: 1234}
 
-    monkeypatch.setattr(net_listeners, '_listening_ports_map_powershell', fake_powershell)
-    monkeypatch.setattr(net_listeners, '_listening_ports_map_psutil', lambda: None)
+    monkeypatch.setattr(net_listeners.sys, 'platform', 'win32')
+    monkeypatch.setattr(net_listeners, '_netstat_listen_pids', fake_netstat)
     net_listeners._LISTEN_PORTS_CACHE = (0.0, {})
     first = net_listeners.listening_ports_map(force=True)
     second = net_listeners.listening_ports_map()

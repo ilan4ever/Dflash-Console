@@ -43,14 +43,51 @@
     void ui?.flush?.();
   }
 
+  const ACTION_COL_MIN_PX = 300;
+
+  function fitActionColumn(table, widths) {
+    const next = widths.slice();
+    if (!table || next.length < 2) return next;
+    const available = table.parentElement?.getBoundingClientRect().width
+      || table.getBoundingClientRect().width;
+    if (!(available > 480)) return next;
+    const total = next.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0) || 1;
+    const actionIndex = next.length - 1;
+    const actionPx = (next[actionIndex] / total) * available;
+    if (actionPx >= ACTION_COL_MIN_PX) return next;
+    const scale = total / available;
+    const maxAction = available * 0.48 * scale;
+    let need = Math.min((ACTION_COL_MIN_PX - actionPx) * scale, Math.max(0, maxAction - next[actionIndex]));
+    for (let i = 0; i < actionIndex && need > 0.5; i += 1) {
+      const floor = (i === 0 ? 120 : 28) * scale;
+      const spare = Math.max(0, next[i] - floor);
+      const take = Math.min(spare, need);
+      next[i] -= take;
+      next[actionIndex] += take;
+      need -= take;
+    }
+    return next;
+  }
+
   function applyWidths(colEls, widths) {
-    const total = widths.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+    const table = colEls[0]?.closest('table');
+    const fitted = fitActionColumn(table, widths);
+    if (table) table._dfColWidths = widths.slice();
+    const total = fitted.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
     const base = total > 0 ? total : 1;
     colEls.forEach((col, index) => {
-      const value = Number.isFinite(widths[index]) ? widths[index] : 0;
+      const value = Number.isFinite(fitted[index]) ? fitted[index] : 0;
       col.style.width = `${((value / base) * 100).toFixed(3)}%`;
       col.style.minWidth = '';
     });
+  }
+
+  function reflowTable(table) {
+    const widths = table?._dfColWidths;
+    if (!widths || !table.classList.contains('lm-resizable-table')) return;
+    const colEls = Array.from(table.querySelectorAll('colgroup col'));
+    if (colEls.length !== widths.length) return;
+    applyWidths(colEls, widths);
   }
 
   function defaultWidthFor(th) {
@@ -243,6 +280,21 @@
     });
 
     table.dataset.colsReady = '1';
+    watchTableWidth(table);
+  }
+
+  function watchTableWidth(table) {
+    const wrap = table.parentElement;
+    if (!wrap || table._dfColObserver || typeof ResizeObserver === 'undefined') return;
+    let last = wrap.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const width = wrap.getBoundingClientRect().width;
+      if (Math.abs(width - last) < 1) return;
+      last = width;
+      reflowTable(table);
+    });
+    observer.observe(wrap);
+    table._dfColObserver = observer;
   }
 
   function initAll(root = document) {
@@ -273,7 +325,9 @@
       if (!table.classList.contains('lm-resizable-table')) {
         table.dataset.colsReady = '0';
         initTable(table);
+        return;
       }
+      reflowTable(table);
     });
   });
 
