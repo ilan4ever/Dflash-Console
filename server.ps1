@@ -8,6 +8,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# PowerShell 7 turns pip's progress notes into a fatal error. A failed note
+# must not stop the server from starting.
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $Root = Split-Path -Parent $PSCommandPath
 Set-Location $Root
 
@@ -460,11 +465,7 @@ function Test-SkippedPython {
     return $false
 }
 
-function Resolve-PythonPath {
-    $venvPython = Join-Path $Root '.venv\Scripts\python.exe'
-    if (Test-Path -LiteralPath $venvPython) {
-        return (Resolve-Path -LiteralPath $venvPython).Path
-    }
+function Resolve-BootstrapPython {
     foreach ($name in @('python', 'python3')) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
@@ -491,6 +492,21 @@ function Resolve-PythonPath {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
     }
     return $null
+}
+
+function Resolve-PythonPath {
+    $venvPython = Join-Path $Root '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPython) {
+        return (Resolve-Path -LiteralPath $venvPython).Path
+    }
+    $bootstrap = Resolve-BootstrapPython
+    if (-not $bootstrap) { return $null }
+    Write-StartupLine 'Creating a local Python environment for DFlash Console...' 'Gray'
+    & $bootstrap -m venv (Join-Path $Root '.venv')
+    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $venvPython)) {
+        return (Resolve-Path -LiteralPath $venvPython).Path
+    }
+    return $bootstrap
 }
 
 $pythonPath = Resolve-PythonPath
@@ -521,15 +537,27 @@ if (-not (Test-Path $requirementsLock)) {
     exit 1
 }
 $requirementsHash = (Get-FileHash -Algorithm SHA256 $requirementsLock).Hash
-$installedHash = if (Test-Path $requirementsStamp) { (Get-Content $requirementsStamp -Raw).Trim() } else { '' }
-if ($requirementsHash -ne $installedHash) {
+$stampValue = "$requirementsHash|$pythonPath"
+$installedStamp = if (Test-Path $requirementsStamp) { (Get-Content $requirementsStamp -Raw).Trim() } else { '' }
+$pythonReady = $false
+$preference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $pythonPath -c "import fastapi, uvicorn" *> $null
+    if ($LASTEXITCODE -eq 0) { $pythonReady = $true }
+} catch {
+    $pythonReady = $false
+} finally {
+    $ErrorActionPreference = $preference
+}
+if ($installedStamp -ne $stampValue -or -not $pythonReady) {
     Write-StartupLine 'Installing pinned Python dependencies...' 'Gray'
-    & python -m pip install -q -r $requirementsLock
+    & $pythonPath -m pip install -q -r $requirementsLock
     if ($LASTEXITCODE -ne 0) {
         Write-StartupLine 'ERROR: pip install failed' 'Red'
         exit 1
     }
-    Set-Content -Path $requirementsStamp -Value $requirementsHash
+    Set-Content -Path $requirementsStamp -Value $stampValue
 } else {
     Write-StartupLine 'Pinned Python dependencies already installed' 'DarkGray'
 }
@@ -541,7 +569,7 @@ if ($Foreground) {
     Write-StartupLine 'Press Ctrl+C to stop.' 'Gray'
     Write-Host ''
     $env:PYTHONPATH = $Root
-    & python -m uvicorn api.app:app --host 127.0.0.1 --port $Port
+    & $pythonPath -m uvicorn api.app:app --host 127.0.0.1 --port $Port
     exit $LASTEXITCODE
 }
 

@@ -15,7 +15,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.268
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.269
 
 ## Download (Windows)
 
@@ -110,8 +110,9 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.268)
+### Recent improvements (v0.3.269)
 
+- **Startup** — the desktop app keeps its own Python environment, so an upgrade no longer stops when the computer’s Python is missing the server
 - **Share a GPU** — another DFlash Console’s GPU appears in the model list as `NAME (computer)`. Load runs on that machine, and a missing file is downloaded there first. See [Share a GPU](./docs/SHARE-A-GPU.md)
 - **Release note for the server** — people who clone or pip-install and run the server see a note at the top when a newer GitHub release is published
 - **Model library** — loading clears when the model is on the GPU; Engine and GPU column headers stay visible
