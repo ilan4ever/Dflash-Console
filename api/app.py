@@ -2452,7 +2452,21 @@ def _attach_external_scan() -> None:
     enabled = [s for s in list_servers(cfg) if s.get('enabled', True)]
     payload = dict(cached)
     gpus = payload.get('gpus') if isinstance(payload.get('gpus'), list) else None
+    from core.engine_state import console_pipeline_active
+
     started = time.time()
+    if not console_pipeline_active(cfg):
+        payload['external_gpu_loads'] = []
+        payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}
+        payload['gpu_models_scan'] = 'skipped'
+        payload['gpu_other_scan'] = 'skipped'
+        payload['external_scan_skipped'] = True
+        payload['quick'] = False
+        payload['updated_at'] = time.time()
+        payload = _merge_adapter_engine_rows(payload)
+        payload['boot_id'] = _BOOT_ID
+        _store_status_payload(payload, include_external=True)
+        return
     try:
         payload['external_gpu_loads'] = get_external_gpu_loads(
             servers=enabled,
@@ -2464,15 +2478,29 @@ def _attach_external_scan() -> None:
     except Exception as exc:
         payload['external_scan_error'] = str(exc)[:240]
         payload['external_gpu_loads'] = payload.get('external_gpu_loads') or []
+    # Hand the model result to the page before scanning other GPU processes.
+    # Those two searches used to finish together, so the page showed "no
+    # models" and then other processes appeared with no loading message.
+    payload['gpu_models_scan'] = 'done'
+    payload['gpu_other_scan'] = 'pending'
+    payload['gpu_other_usage'] = {
+        'processes': [],
+        'total_other_vram_gb': 0.0,
+    }
+    payload['external_scan_skipped'] = False
+    payload['quick'] = False
+    payload['updated_at'] = time.time()
+    payload = _merge_adapter_engine_rows(payload)
+    payload['boot_id'] = _BOOT_ID
+    _store_status_payload(payload, include_external=True)
     try:
-        # Model cards and the smaller GPU apps come from the same scan.
-        # Skipping this left Hermes on the page and hid every other process.
         _attach_gpu_other_usage(payload, servers=enabled, gpus=gpus)
     except Exception:
         payload['gpu_other_usage'] = payload.get('gpu_other_usage') or {
             'processes': [],
             'total_other_vram_gb': 0.0,
         }
+    payload['gpu_other_scan'] = 'done'
     payload['external_scan_skipped'] = False
     payload['quick'] = False
     payload['updated_at'] = time.time()

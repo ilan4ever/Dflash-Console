@@ -74,3 +74,15 @@ tmp_*
 
 # LAN deployment config (copy example → config.production-deploy.json)
 scripts/deployment/config.production-deploy.json
+/_verify-0.3.232/DFlash-Console-Portable-0.3.232-x64.exe
+/_verify-0.3.232/DFlash-Console-Setup-0.3.232-x64.exe
+/_verify-*/
+*.bak*
+/.current-dflash-diff.txt
+*.exe
+/.tmp-*
+*-bak
+/scripts/test-report-upload.sh
+/scripts/check-wp-mail.php
+/scripts/test-wp-mail-send.php
+/scripts/resend-latest-dflash-report-mail.php

@@ -162,6 +162,10 @@
     tab.addEventListener('click', () => setView(tab.dataset.tab));
   });
 
+  document.getElementById('settingsCloseBtn')?.addEventListener('click', () => {
+    setView('server');
+  });
+
   function syncSysbarHeightVar() {
     const sysbar = document.querySelector('.lm-sysbar');
     if (!sysbar) return;

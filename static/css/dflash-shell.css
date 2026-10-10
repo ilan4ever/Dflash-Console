@@ -1126,8 +1126,8 @@ html:not(.df-narrow) .df-shell .lm-library-card-handle {
 
 html:not(.df-narrow) .df-shell .lm-library-handle-title {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
   width: 100%;
@@ -1138,24 +1138,19 @@ html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-model-pin {
 }
 
 html:not(.df-narrow) .df-shell .lm-library-handle-title .dflash-logo-label {
-  flex: 0 0 auto;
-  width: 98px;
-  height: 12px;
-  margin: 0 0 0 8px;
-  padding: 0;
-  background-color: transparent;
-  background-image: url('/assets/dflash_txt_logo_clear.png');
-  background-size: 98px 12px;
-  background-position: left center;
-  background-repeat: no-repeat;
+  /* The source column already identifies DFlash. Keeping this second logo in
+     a narrow model column leaves no room for the actual model name. */
+  display: none;
 }
 
 html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-model-title-text {
-  flex: 1 1 auto;
+  flex: 1 1 calc(100% - 20px);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-size: 12px;
   line-height: 1.25;
 }
@@ -1167,6 +1162,10 @@ html:not(.df-narrow) .df-shell .lm-library-handle-badges {
   gap: 4px;
   flex: 0 0 auto;
   min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-library-handle-badges {
+  flex-basis: 100%;
 }
 
 html:not(.df-narrow) .df-shell .lm-library-handle-badges .lm-tag,
@@ -2692,6 +2691,27 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
   color: var(--text-muted, #94a3b8);
   line-height: 1.4;
   letter-spacing: 0.02em;
+}
+
+.df-shell .lm-gpu-scan-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.df-shell .lm-gpu-scan-note-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #93c5fd;
+  animation: lm-engine-notice-spin 0.85s linear infinite;
+  flex: 0 0 auto;
 }
 
 .df-shell .lm-gpu-overhead-sep::before {
@@ -5586,6 +5606,23 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
 
 .df-shell .lm-view[data-view="catalog"] {
   --ready-frame-width: 0.5px;
+}
+
+.df-shell .lm-settings-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.df-shell .lm-settings-search-bar .lm-settings-search-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.df-shell #settingsCloseBtn {
+  flex: 0 0 auto;
 }
 
 .df-shell .df-settings-shell,

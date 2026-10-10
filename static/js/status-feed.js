@@ -59,6 +59,8 @@
   }
 
   let pipelineStandby = true;
+  const ENGINE_STARTUP_GRACE_MS = 30000;
+  let engineStartupSince = 0;
 
   function primaryEl() {
     return document.getElementById('statusFeedPrimary');
@@ -132,6 +134,22 @@
     return count === 1 ? ' · 1 process on GPU' : ` · ${count} processes on GPU`;
   }
 
+  function enginesStarting(servers) {
+    const configured = servers.some((server) => server?.enabled !== false && server?.engine_on === true);
+    const live = servers.some((server) => (
+      server?.running
+      || server?.status === 'booting'
+      || server?.status === 'loaded'
+      || server?.warming
+    ));
+    if (!configured || live) {
+      engineStartupSince = 0;
+      return false;
+    }
+    if (!engineStartupSince) engineStartupSince = Date.now();
+    return Date.now() - engineStartupSince < ENGINE_STARTUP_GRACE_MS;
+  }
+
   function mergeGpuOtherUsage(block) {
     const next = block && Array.isArray(block.processes) ? block : null;
     if (!next) return;
@@ -184,6 +202,12 @@
       if (pipelineStandby) continue;
       const port = row?.listen_port || row?.port || '—';
       loaded.push(`${externalModelLabel(row)} ready${port !== '—' ? ` on :${port}` : ''}`);
+    }
+    if (!loading.length && enginesStarting(servers)) {
+      return {
+        primary: 'Starting engines…',
+        secondary: 'Restoring configured engine listeners',
+      };
     }
     const procSuffix = gpuOtherProcessSuffix();
     if (loading.length) {

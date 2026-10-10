@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.269</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.273</span>
           </div>
         </div>
       </div>
@@ -323,13 +323,13 @@ try {
               <div class="lm-engine-page-notice-inner">
                 <span class="lm-engine-page-notice-spinner" aria-hidden="true"></span>
                 <div class="lm-engine-page-notice-copy">
-                  <strong id="enginePageNoticeTitle">Loading GPU list…</strong>
-                  <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail">Scanning the GPU for loaded models and other apps.</span>
+                  <strong id="enginePageNoticeTitle">Starting engines…</strong>
+                  <span id="enginePageNoticeDetail" class="lm-engine-page-notice-detail">Connecting to the Console API and checking engine listeners…</span>
                 </div>
               </div>
             </div>
             <div class="lm-section-head lm-engine-cards-head">
-              <span class="lm-section-label" id="engineCardsSectionLabel">Loading GPU list…</span>
+              <span class="lm-section-label" id="engineCardsSectionLabel">Starting engines…</span>
               <div class="lm-engine-cards-filters">
                 <span class="lm-engine-cards-refresh-meta" id="engineCardsRefreshMeta" aria-live="polite"></span>
                 <button type="button" class="lm-icon-btn tiny" id="engineCardsRefreshBtn" title="Refresh engine cards" aria-label="Refresh engine cards">↻</button>
@@ -337,7 +337,7 @@ try {
               </div>
             </div>
             <div id="serverModelCards" class="lm-server-cards"></div>
-            <div id="serverEmptyState" class="lm-server-empty">Loading GPU list…</div>
+            <div id="serverEmptyState" class="lm-server-empty">Starting engines…</div>
           </div>
           <div class="lm-logs-dock" id="serverLogsDock">
             <div class="lm-logs-resize-handle" id="serverLogsResizeHandle" role="separator" aria-orientation="horizontal" aria-label="Resize developer logs" tabindex="0"></div>
@@ -544,7 +544,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.269</strong>
+                <strong id="dfAboutVersion">v0.3.273</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -720,6 +720,7 @@ try {
           <div class="df-settings-shell">
             <div class="lm-settings-search-bar">
               <input type="search" class="lm-input lm-settings-search-input" id="settingsSearchInput" placeholder="Search settings…" autocomplete="off" aria-label="Search settings" aria-controls="settingsSearchResults">
+              <button type="button" class="lm-icon-btn" id="settingsCloseBtn" aria-label="Close settings" title="Back to the main page">✕</button>
               <div class="lm-settings-search-results hidden" id="settingsSearchResults" role="listbox" aria-label="Settings search results"></div>
             </div>
             <div class="lm-settings-layout">

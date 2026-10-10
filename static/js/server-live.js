@@ -38,6 +38,8 @@
   let pollTimer = null;
   const serverActions = new Map();
   const pendingLoads = new Map();
+  const ENGINE_STARTUP_GRACE_MS = 30000;
+  let engineStartupGraceUntil = 0;
   const PREFS_KEY = 'dflashConsole.modelPrefs';
   let catalogModels = [];
   let suppressRunningToggle = false;
@@ -55,9 +57,13 @@
   let externalInitialFetchDone = false;
   let externalScanError = '';
   let gpuRescanPending = false;
+  // Separate from the model list. "pending" until that search publishes a result,
+  // so an empty page is not treated as "nothing on the GPU" while a scan is still running.
+  let gpuModelsScan = 'pending';
+  let gpuOtherScan = 'pending';
+  let gpuScanRevision = 0;
   let lastStatusTrace = [];
   let lastStatusBuildMs = 0;
-  let engineStatusLoadingDetail = '';
   let externalMissingPolls = 0;
   let externalPollCounter = 0;
   let inferenceStatsTimer = null;
@@ -78,7 +84,8 @@
     }
     gpuRescanPending = false;
     externalFetchPending = false;
-    externalInitialFetchDone = true;
+    noteGpuScanState(data);
+    if (gpuScansSettled()) externalInitialFetchDone = true;
     if (enginesViewActive()) {
       renderCards();
       updateEnginePageNotice();
@@ -111,12 +118,13 @@
     syncPipelineStandbyFromPayload(data);
     if (!mergeExternal) return;
 
+    noteGpuScanState(data);
     const externalRows = Array.isArray(data?.external_gpu_loads) ? data.external_gpu_loads : [];
     if (externalRows.length) {
       pipelineStandby = false;
       gpuRescanPending = false;
       externalFetchPending = false;
-      externalInitialFetchDone = true;
+      if (gpuScansSettled()) externalInitialFetchDone = true;
       mergeExternalGpuLoads(externalRows);
       if (data?.gpu_other_usage) {
         mergeGpuOtherUsage(data.gpu_other_usage);
@@ -137,6 +145,8 @@
     externalGpuLoads = [];
     externalMissingPolls = 0;
     gpuOtherUsage = { processes: [], total_other_vram_gb: 0 };
+    gpuModelsScan = 'skipped';
+    gpuOtherScan = 'skipped';
     if (window.DFlashStatusFeed?.setGpuOtherUsage) {
       window.DFlashStatusFeed.setGpuOtherUsage(gpuOtherUsage);
     }
@@ -571,6 +581,24 @@
     }) || pendingLoads.size > 0;
   }
 
+  function hasStatusFeedLoadActivity() {
+    const feedServers = window.DFlashStatusFeed?.getServers?.();
+    if (!Array.isArray(feedServers)) return false;
+    return feedServers.some((server) => {
+      const cards = Array.isArray(server?.visible_cards) ? server.visible_cards : [];
+      return server?.status === 'loading'
+        || serverIsWarming(server)
+        || cards.some((row) => row?.card_state === 'loading');
+    });
+  }
+
+  function hasEngineLoadActivity() {
+    return hasDflashLoadingCards()
+      || hasStatusFeedLoadActivity()
+      || bootingServerCount() > 0
+      || [...serverActions.values()].some((action) => action === 'starting' || action === 'loading');
+  }
+
   function hasVisibleLoadingCards() {
     return hasDflashLoadingCards()
       || externalGpuLoads.some((row) => row?.card_state === 'loading');
@@ -697,12 +725,27 @@
     return server.running || server.status === 'booting' || server.status === 'loaded';
   }
 
+  function engineStartupPending() {
+    const configured = (allServers.length ? allServers : servers)
+      .some((server) => server?.enabled !== false && server?.engine_on === true);
+    const live = [...servers, ...allServers].some((server) => serverIsLive(server));
+    if (!configured || live) {
+      engineStartupGraceUntil = 0;
+      return false;
+    }
+    if (!engineStartupGraceUntil) {
+      engineStartupGraceUntil = Date.now() + ENGINE_STARTUP_GRACE_MS;
+    }
+    return Date.now() < engineStartupGraceUntil;
+  }
+
   /** Follow backend when another profile was started via API while the UI had a stopped selection. */
   function syncActiveIdFromLiveState() {
     if (isServerBusy(activeId)) return;
     if (getServerAction(activeId) === 'stopping') return;
     if (serverIsLive(activeServer())) return;
-    const live = servers.find((s) => serverIsLive(s));
+    const live = servers.find((s) => serverIsLive(s))
+      || allServers.find((s) => serverIsLive(s));
     if (live && live.id !== activeId) {
       activeId = live.id;
       localStorage.setItem('dflashConsole.activeServerId', activeId);
@@ -805,22 +848,6 @@
     return filterLoadedEntries(collectLoadedEntries()).length > 0;
   }
 
-  function formatStatusTraceDetail() {
-    if (!Array.isArray(lastStatusTrace) || !lastStatusTrace.length) {
-      return engineStatusLoadingDetail;
-    }
-    const lines = lastStatusTrace.map((row) => {
-      const detail = String(row?.detail || row?.step || '').trim();
-      const ms = Number(row?.ms || 0);
-      if (!detail) return '';
-      return ms > 0 ? `${detail} (${ms} ms)` : detail;
-    }).filter(Boolean);
-    if (lastStatusBuildMs > 0) {
-      lines.push(`Total ${lastStatusBuildMs} ms`);
-    }
-    return lines.join(' · ');
-  }
-
   function gpuCardsSectionReady() {
     // Show DFlash cards as soon as /api/servers returns. Do not block the page
     // on the slower external GPU scan — that continues in the background.
@@ -846,11 +873,18 @@
       title = startingCount > 1 ? `Starting ${startingCount} engines…` : 'Starting engine…';
       detail = 'The llama-server process is launching. Cards and chat stay disabled until the listener is up.';
       mode = 'starting';
-    } else if (!externalInitialFetchDone || (gpuRescanPending && !hasVisibleGpuCards())) {
-      title = 'Loading GPU list…';
-      detail = formatStatusTraceDetail()
-        || 'Scanning the GPU for loaded models and other apps.';
+    } else if (hasEngineLoadActivity()) {
+      title = 'Loading models…';
+      detail = 'The engine is on while model weights are loading into the GPU.';
       mode = 'loading';
+    } else if (!serverIsLive(server) && engineStartupPending()) {
+      title = 'Starting engines…';
+      detail = 'Configured engines are coming online after the Console restart.';
+      mode = 'starting';
+    } else if (!initialStatusSettled) {
+      title = 'Starting engines…';
+      detail = 'Connecting to the Console API and checking engine listeners…';
+      mode = 'starting';
     } else if (externalScanError && !externalGpuLoads.length) {
       title = 'Could not scan external GPU models';
       detail = `${externalScanError} Restart the Console API (server.ps1 -ApiRestart), then refresh this page.`;
@@ -877,6 +911,46 @@
     const count = gpuOtherProcessCount();
     if (!count) return '';
     return count === 1 ? ' · 1 process on GPU' : ` · ${count} processes on GPU`;
+  }
+
+  function gpuScansSettled() {
+    return gpuModelsScan !== 'pending' && gpuOtherScan !== 'pending';
+  }
+
+  function noteGpuScanState(data) {
+    if (!data || typeof data !== 'object') return;
+    const revision = Number(data.snapshot_revision || 0);
+    if (revision > 0 && gpuScanRevision > 0 && revision < gpuScanRevision) return;
+    const known = (value) => value === 'pending' || value === 'done' || value === 'skipped';
+    const models = String(data.gpu_models_scan || '');
+    const other = String(data.gpu_other_scan || '');
+    // A local engine snapshot did not run these searches. Do not let its
+    // empty "pending" flag wipe a result that already arrived.
+    const finishedReply = data.external_scan_skipped !== true && data.quick !== true;
+    if (known(models)) {
+      const downgrade = (gpuModelsScan === 'done' || gpuModelsScan === 'skipped') && models === 'pending';
+      if (finishedReply || !downgrade) gpuModelsScan = models;
+    }
+    if (known(other)) {
+      const downgrade = (gpuOtherScan === 'done' || gpuOtherScan === 'skipped') && other === 'pending';
+      if (finishedReply || !downgrade) gpuOtherScan = other;
+    }
+    if (revision > gpuScanRevision) gpuScanRevision = revision;
+  }
+
+  function searchingGpuModels() {
+    return gpuModelsScan === 'pending' && consolePipelineActive() && !collectLoadedEntries().length;
+  }
+
+  function searchingOtherGpuProcesses() {
+    if (gpuOtherScan !== 'pending' || !consolePipelineActive()) return false;
+    if (gpuOtherProcessCount() > 0 || gpuOtherUsage?.unattributed_gb) return false;
+    return true;
+  }
+
+  function gpuOtherScanNoteHtml() {
+    if (!searchingOtherGpuProcesses()) return '';
+    return `<div class="lm-gpu-scan-note" role="status"><span class="lm-gpu-scan-note-spinner" aria-hidden="true"></span><span>Searching for other GPU processes…</span></div>`;
   }
 
   function mergeGpuOtherUsage(block) {
@@ -996,7 +1070,11 @@
   let externalPollEarliestMs = 0;
 
   function externalScanIsComplete(data) {
-    if (!data || data.stale === true) return false;
+    if (!data) return false;
+    // A non-fresh response is still a usable snapshot. External discovery is
+    // deliberately built in the background, so it must not keep the Engines
+    // page in its startup state while the API serves that snapshot.
+    if (data.stale === true) return true;
     const trace = Array.isArray(data.status_trace) ? data.status_trace : [];
     const step = trace.find((row) => String(row?.step || '') === 'external_scan');
     const detail = String(step?.detail || '');
@@ -1035,7 +1113,7 @@
         lastStatusTrace = Array.isArray(data?.status_trace) ? data.status_trace : lastStatusTrace;
         lastStatusBuildMs = Number(data?.status_build_ms || 0);
         externalScanError = String(data?.external_scan_error || '').trim();
-        scanComplete = externalScanIsComplete(data);
+        scanComplete = gpuScansSettled() && externalScanIsComplete(data);
         if (scanComplete) {
           externalInitialFetchDone = true;
         }
@@ -2036,18 +2114,33 @@
   }
 
   function engineCardsPending() {
-    return !initialStatusSettled || !externalInitialFetchDone;
+    // External GPU discovery is asynchronous. The configured engine snapshot
+    // is enough to render the page; external cards fill in when that scan
+    // completes.
+    return !initialStatusSettled;
   }
 
   function syncEngineCardsSectionLabel() {
     const el = document.getElementById('engineCardsSectionLabel');
     if (!el) return;
-    if (engineCardsPending() && !collectLoadedEntries().length) {
-      el.textContent = 'Loading GPU list…';
+    const entries = collectLoadedEntries();
+    if (hasEngineLoadActivity() && !entries.length) {
+      el.textContent = 'Loading models…';
       return;
     }
-    const count = collectLoadedEntries().length;
-    const loadingCount = collectLoadedEntries().filter(({ row }) => row?.card_state === 'loading').length;
+    if (
+      (engineCardsPending() || (!serverIsLive(activeServer()) && engineStartupPending()))
+      && !entries.length
+    ) {
+      el.textContent = 'Starting engines…';
+      return;
+    }
+    if (searchingGpuModels()) {
+      el.textContent = 'Searching for GPU models…';
+      return;
+    }
+    const count = entries.length;
+    const loadingCount = entries.filter(({ row }) => row?.card_state === 'loading').length;
     const readyCount = Math.max(0, count - loadingCount);
     const procSuffix = gpuOtherProcessSuffix();
     if (count === 0) {
@@ -2094,9 +2187,11 @@
     const quiet = hasVisibleGpuCards();
     if (!quiet) {
       externalInitialFetchDone = false;
+      gpuModelsScan = 'pending';
       gpuRescanPending = true;
       updateEnginePageNotice();
     }
+    if (!gpuOtherProcessCount()) gpuOtherScan = 'pending';
     try {
       // Fast scan paints external cards immediately. A fresh scan blocks the
       // page for a long time on GPU and app probes.
@@ -2157,7 +2252,9 @@
   }
 
   function aggregateStatusLabel() {
-    if (!initialStatusSettled) return savedEngineOn() ? 'Running' : 'Stopped';
+    if (!initialStatusSettled || (!serverIsLive(activeServer()) && engineStartupPending())) {
+      return hasEngineLoadActivity() ? 'Loading models…' : 'Starting engines…';
+    }
     const dflashLoaded = dflashLoadedCount();
     const booting = bootingServerCount();
     const starting = [...serverActions.values()].filter((a) => a === 'starting').length;
@@ -2172,10 +2269,10 @@
     if (ejecting > 0) return `${ejecting} unloading · ${dflashLoaded} loaded`;
     if (starting === 1 && dflashLoaded === 0 && booting === 0) return 'Starting engine…';
     if (starting > 0) return `${starting} starting · ${dflashLoaded} loaded`;
-    if (hasDflashLoadingCards() || loading > 0 || booting > 0) {
+    if (hasEngineLoadActivity()) {
       if (dflashLoaded > 1) return `${dflashLoaded} models loaded`;
       if (dflashLoaded === 1) return '1 model loaded';
-      if (engineLive || active?.running || active?.status === 'booting') return 'Running';
+      return 'Running';
     }
     if (loading > 0 && booting > 0 && dflashLoaded > 0) return `${dflashLoaded} loaded · ${Math.max(loading, booting)} loading`;
     if (loading > 1 || booting > 1) return `${Math.max(loading, booting)} models loading`;
@@ -3744,7 +3841,9 @@
     if (action === 'stopping') return 'Stopping server…';
     if (action === 'ejecting') return 'Unloading model…';
     if (action === 'starting') return 'Starting engine…';
-    if (action === 'loading' || serverIsWarming(server)) {
+    if (action === 'loading' || hasEngineLoadActivity()) return 'Loading models…';
+    if (!serverIsLive(activeServer()) && engineStartupPending()) return 'Starting engines…';
+    if (serverIsWarming(server)) {
       const progress = normalizeLoadProgress(server?.load_progress);
       if (server?.warming || server?.runtime_id === 'freetoken') {
         return progress.pct != null
@@ -3769,10 +3868,19 @@
 
   function syncGpuOverheadTail(wrap, overheadHtml) {
     if (!wrap) return;
-    wrap.querySelectorAll('.lm-gpu-overhead-sep, .lm-gpu-overhead-card').forEach((node) => node.remove());
+    wrap.querySelectorAll('.lm-gpu-overhead-sep, .lm-gpu-overhead-card, .lm-gpu-scan-note').forEach((node) => node.remove());
     if (overheadHtml) {
       wrap.insertAdjacentHTML('beforeend', overheadHtml);
     }
+  }
+
+  function paintEngineEmptyState(empty, message) {
+    const note = gpuOtherScanNoteHtml();
+    if (!note) {
+      empty.textContent = message;
+      return;
+    }
+    empty.innerHTML = `<div class="lm-server-empty-copy">${escapeHtml(message)}</div>${note}`;
   }
 
   function renderCards() {
@@ -3784,7 +3892,7 @@
       wrap.innerHTML = '';
       lastEngineCardsMarkup = '';
       lastGpuOverheadMarkup = '';
-      empty.textContent = 'Loading GPU list…';
+      paintEngineEmptyState(empty, hasEngineLoadActivity() ? 'Loading models…' : 'Starting engines…');
       empty.classList.remove('hidden');
       syncEngineCardsSectionLabel();
       updateEnginePageNotice();
@@ -3796,7 +3904,7 @@
       clearLoadedCardSelection();
     }
     const entries = filterLoadedEntries(allEntries);
-    const overheadHtml = renderGpuOverheadCardHtml();
+    const overheadHtml = renderGpuOverheadCardHtml() + (entries.length ? gpuOtherScanNoteHtml() : '');
     if (!entries.length) {
       if (overheadHtml !== lastEngineCardsMarkup) {
         wrap.innerHTML = overheadHtml;
@@ -3804,13 +3912,12 @@
       lastEngineCardsMarkup = overheadHtml;
       lastGpuOverheadMarkup = overheadHtml;
       if (!overheadHtml) {
-        if (engineCardsPending()) {
-          empty.textContent = 'Loading GPU list…';
-        } else if (allEntries.length) {
-          empty.textContent = 'No models match the current filters.';
-        } else {
-          empty.textContent = emptyMessage(activeServer());
-        }
+        let emptyCopy = emptyMessage(activeServer());
+        if (searchingGpuModels()) emptyCopy = 'Searching for GPU models…';
+        else if (hasEngineLoadActivity()) emptyCopy = 'Loading models…';
+        else if (engineCardsPending()) emptyCopy = 'Starting engines…';
+        else if (allEntries.length) emptyCopy = 'No models match the current filters.';
+        paintEngineEmptyState(empty, emptyCopy);
         empty.classList.remove('hidden');
       } else {
         empty.classList.add('hidden');
@@ -4300,7 +4407,7 @@
     if (!server) {
       if (!initialStatusSettled) {
         if (statusText) {
-          statusText.textContent = 'Running';
+          statusText.textContent = hasEngineLoadActivity() ? 'Loading models…' : 'Starting engines…';
           statusText.className = 'lm-status-running';
         }
         if (toggle) setRunningToggle(true);
@@ -4320,6 +4427,8 @@
       const anyStarting = [...serverActions.values()].some((a) => a === 'starting');
       const anyActive = !initialStatusSettled
         || anyStarting
+        || hasEngineLoadActivity()
+        || engineStartupPending()
         || dflashLoadedCount() > 0
         || bootingServerCount() > 0
         || serverIsLive(server);
@@ -4329,7 +4438,14 @@
       const stopping = getServerAction(server.id) === 'stopping';
       const on = stopping
         ? false
-        : (serverIsLive(server) || (!initialStatusSettled && server.engine_on === true) || (!initialStatusSettled && savedEngineOn()));
+        : (
+          !initialStatusSettled
+          || serverIsLive(server)
+          || hasEngineLoadActivity()
+          || engineStartupPending()
+          || (!initialStatusSettled && server.engine_on === true)
+          || (!initialStatusSettled && savedEngineOn())
+        );
       setRunningToggle(on);
     }
     if (urlEl) {
@@ -5108,9 +5224,6 @@
     const onEngines = enginesViewActive();
     const includeExt = includeExternal ?? onEngines;
     const wantFresh = fresh === true;
-    engineStatusLoadingDetail = includeExt
-      ? 'Building engine status and scanning external GPU apps…'
-      : 'Checking configured llama-server listeners and loaded models…';
     updateEnginePageNotice();
     try {
       const data = await api(serversStatusUrl(includeExt, wantFresh), {
@@ -5121,12 +5234,15 @@
         externalScanError = String(data?.external_scan_error || '').trim();
       }
       initialStatusSettled = true;
-      engineStatusLoadingDetail = '';
       syncActiveIdFromLiveState();
       if (shouldRender) {
         renderAll();
         updateEnginePageNotice();
-        if (!hasPendingEngineActions() && !anyServerGenerating()) await refreshLogs();
+        // Log retrieval can wait on a stopped or newly restarting listener.
+        // Never hold the status poll (and first-paint startup state) behind it.
+        if (!hasPendingEngineActions() && !anyServerGenerating()) {
+          void refreshLogs().catch(() => {});
+        }
       }
     } catch {
       /* keep last known state */

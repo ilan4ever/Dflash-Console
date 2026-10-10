@@ -1804,10 +1804,16 @@ def get_status_payload(
             'processes': [],
             'total_other_vram_gb': 0.0,
         }
+        # Empty lists here are not a result. The Engines page keeps showing
+        # a search message until each scan publishes its own snapshot.
+        early['gpu_models_scan'] = 'pending'
+        early['gpu_other_scan'] = 'pending'
         _store_status_payload(early, include_external=False)
     if include_external and not pipeline_active:
         payload['external_gpu_loads'] = []
         payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}
+        payload['gpu_models_scan'] = 'skipped'
+        payload['gpu_other_scan'] = 'skipped'
         _append_status_trace(
             status_trace,
             step='external_scan',
@@ -1841,17 +1847,48 @@ def get_status_payload(
                 started_at=external_started,
                 detail=f'external scan failed — using cached cards ({exc})',
             )
+        # Publish model cards before the slower non-model process scan so the
+        # page can say "no models" while other GPU processes are still loading.
+        payload['gpu_models_scan'] = 'done'
+        payload['gpu_other_scan'] = 'pending'
+        payload['gpu_other_usage'] = {
+            'processes': [],
+            'total_other_vram_gb': 0.0,
+        }
+        if live_probe:
+            _store_status_payload(payload, include_external=True)
+        other_started = time.time()
+        _attach_gpu_other_usage(payload, servers=servers, gpus=resolved_gpus)
+        payload['gpu_other_scan'] = 'done'
+        other_block = payload.get('gpu_other_usage') if isinstance(payload.get('gpu_other_usage'), dict) else {}
+        other_count = len(other_block.get('processes') or [])
+        _append_status_trace(
+            status_trace,
+            step='gpu_other_scan',
+            started_at=other_started,
+            detail=f'{other_count} other GPU process(es)',
+        )
     else:
         payload['external_gpu_loads'] = []
+        # This snapshot did not search the GPU. Keep a finished result so the
+        # next local poll does not put the page back on "Searching…".
+        previous_scan = _cached_status_payload(True) or {}
+        default_scan = 'pending' if pipeline_active else 'skipped'
+
+        def _kept_scan_flag(key: str) -> str:
+            current = str(previous_scan.get(key) or '')
+            if current in ('done', 'skipped', 'pending'):
+                return current
+            return default_scan
+
+        payload['gpu_models_scan'] = _kept_scan_flag('gpu_models_scan')
+        payload['gpu_other_scan'] = _kept_scan_flag('gpu_other_scan')
         _append_status_trace(
             status_trace,
             step='external_scan',
             started_at=time.time(),
             detail='skipped (include_external=0)',
         )
-    if include_external and pipeline_active:
-        _attach_gpu_other_usage(payload, servers=servers, gpus=resolved_gpus)
-    else:
         payload['gpu_other_usage'] = _cached_gpu_other_usage() if pipeline_active else {'processes': [], 'total_other_vram_gb': 0.0}
     if live_probe:
         _store_status_payload(payload, include_external=include_external)
