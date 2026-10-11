@@ -58,6 +58,16 @@ def _log_line(text: str) -> None:
         pass
 
 
+def _log_since(offset: int) -> str:
+    """Bytes appended to the vLLM log after a launch started."""
+    try:
+        with VLLM_LOG.open('rb') as handle:
+            handle.seek(max(0, int(offset)))
+            return handle.read().decode('utf-8', errors='replace')
+    except OSError:
+        return ''
+
+
 def _tcp_open(host: str, port: int, *, timeout: float = 1.0) -> bool:
     import socket
 
@@ -92,6 +102,33 @@ def model_needs_chat_template(model_path: Path) -> bool:
     if not isinstance(data, dict):
         return True
     return not str(data.get('chat_template') or '').strip()
+
+
+def vllm_exit_reason(text: str, returncode: int | None = None) -> str:
+    """Explain a vLLM process that quit before its port opened.
+
+    Only the text from this launch should be passed in. An older log full of
+    successful health checks must not be reported as a missing GPU.
+    """
+    blob = str(text or '')
+    memory = re.search(r'ValueError: (Free memory on device.+)', blob)
+    if memory:
+        return memory.group(1).strip()
+    for line in reversed(blob.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for marker in ('RuntimeError:', 'AssertionError:', 'ValueError:', 'OSError:'):
+            if marker in stripped:
+                reason = stripped.split(marker, 1)[-1].strip()
+                if reason:
+                    return reason[:400]
+    if re.search(r'no cuda|cuda not available|nvidia gpu is required|no nvidia', blob, re.I):
+        return 'An NVIDIA GPU is required.'
+    code = '' if returncode is None else f' (exit code {returncode})'
+    if not blob.strip():
+        return f'The launcher quit before it wrote an error{code}.'
+    return f'The launcher quit{code}.'
 
 
 def fit_gpu_memory_utilization(text: str, current: float) -> float | None:
@@ -634,6 +671,7 @@ class VllmRuntimeAdapter:
         retried_for_memory = False
         profile_retries = 0
         while True:
+            log_mark = VLLM_LOG.stat().st_size if VLLM_LOG.is_file() else 0
             log_file = VLLM_LOG.open('a', encoding='utf-8')
             popen_kwargs['stdout'] = log_file
             popen_kwargs['stderr'] = subprocess.STDOUT
@@ -652,13 +690,9 @@ class VllmRuntimeAdapter:
                     _log_line(f'vLLM up on {host}:{port}')
                     return {'success': True, 'port': port}
                 if proc.poll() is not None:
-                    tail = ''
-                    try:
-                        tail = VLLM_LOG.read_text(encoding='utf-8', errors='replace')[-6000:]
-                    except OSError:
-                        pass
+                    fresh = _log_since(log_mark)
                     fitted = None if retried_for_memory else fit_gpu_memory_utilization(
-                        tail,
+                        fresh,
                         float(settings.get('gpu_memory_utilization') or 0.85),
                     )
                     if fitted is not None:
@@ -674,28 +708,17 @@ class VllmRuntimeAdapter:
                             f'GPU is busy — retrying vLLM using {int(fitted * 100)}% of the card'
                         )
                         break
-                    if 'Error in memory profiling' in tail and profile_retries < 2:
+                    if 'Error in memory profiling' in fresh and profile_retries < 2:
                         profile_retries += 1
                         _log_line('GPU memory shifted while starting — trying again')
                         time.sleep(2.0)
                         break
-                    reason = 'An NVIDIA GPU is required.'
-                    memory = re.search(r'ValueError: (Free memory on device.+)', tail)
-                    if memory:
-                        reason = memory.group(1).strip()
-                    else:
-                        for line in reversed(tail.splitlines()):
-                            for marker in ('RuntimeError:', 'AssertionError:', 'ValueError:'):
-                                if marker in line:
-                                    reason = line.split(marker, 1)[-1].strip() or reason
-                                    break
-                            else:
-                                continue
-                            break
+                    reason = vllm_exit_reason(fresh, proc.returncode)
+                    _log_line(f'vLLM exited before it was ready. {reason}')
                     return {
                         'success': False,
                         'error': f'vLLM exited before it was ready. {reason} See logs/runtimes/vllm.log.',
-                        'detail': tail,
+                        'detail': fresh[-6000:],
                     }
                 time.sleep(1.0)
             else:

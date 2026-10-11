@@ -332,17 +332,11 @@
     }
     document.body.classList.toggle('df-layout-compact', narrow);
 
+    applyStoredSidenav();
     if (narrow) {
-      if (!mobileSidenavOpen) {
-        setSidenavCollapsed(true, { persist: false });
-      } else {
-        setSidenavCollapsed(false, { persist: false });
-      }
       applyMobileSidenavWidth();
       setMobileEngineDropdownsOpen(mobileEngineDropdownsOpen);
     } else {
-      mobileSidenavOpen = false;
-      applyStoredSidenav();
       setMobileEngineDropdownsOpen(false);
     }
 
@@ -536,15 +530,24 @@
         document.body.style.removeProperty('--sidenav-width');
       }
     }
-    if (persist) layoutPrefs()?.setBool?.('sidenav_hidden', collapsed);
+    if (persist) layoutPrefs()?.setBool?.(sidenavHiddenStorageKey(), collapsed);
+  }
+
+  function sidenavHiddenStorageKey() {
+    return isNarrowLayout() ? 'sidenav_hidden_mobile' : 'sidenav_hidden';
+  }
+
+  function storedSidenavCollapsed() {
+    const key = sidenavHiddenStorageKey();
+    const prefs = layoutPrefs();
+    if (key === 'sidenav_hidden_mobile' && !prefs?.has?.(key)) return true;
+    return prefs?.getBool?.(key) === true;
   }
 
   function applyStoredSidenav() {
-    if (layoutPrefs()?.getBool?.('sidenav_hidden')) {
-      setSidenavCollapsed(true, { persist: false });
-    } else {
-      setSidenavCollapsed(false, { persist: false });
-    }
+    const collapsed = storedSidenavCollapsed();
+    mobileSidenavOpen = isNarrowLayout() && !collapsed;
+    setSidenavCollapsed(collapsed, { persist: false });
   }
 
   function setupSidenavCollapse({ skipApplyStored = false } = {}) {
@@ -554,11 +557,11 @@
 
     collapseBtn.addEventListener('click', () => {
       if (isNarrowLayout()) mobileSidenavOpen = false;
-      setSidenavCollapsed(true, { persist: !isNarrowLayout() });
+      setSidenavCollapsed(true);
     });
     restoreBtn.addEventListener('click', () => {
       if (isNarrowLayout()) mobileSidenavOpen = true;
-      setSidenavCollapsed(false, { persist: !isNarrowLayout() });
+      setSidenavCollapsed(false);
     });
     if (!skipApplyStored) applyStoredSidenav();
   }

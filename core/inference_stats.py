@@ -28,6 +28,9 @@ _SLOT_WAVE_EPOCH: dict[str, dict[int, int]] = {}
 _WAVE_TASK_SNAPSHOT: dict[str, dict[int, int]] = {}
 _STATS_CACHE: dict[str, dict[str, Any]] = {}
 _LIVE_CACHE_MAX_AGE = 1.0
+# Console profile ids are not the llama-server router model id. Remember the
+# loaded name after the first /slots 400 so later polls do not repeat the miss.
+_ROUTER_SLOT_MODEL: dict[str, str] = {}
 
 
 def _proxy_inference_started_at(server_id: str) -> float | None:
@@ -462,6 +465,132 @@ def _fetch_json(url: str, *, timeout: float = 0.9, headers: dict[str, str] | Non
         return json.loads(resp.read().decode('utf-8', errors='replace') or 'null')
 
 
+def _auth_headers(api_key: str) -> dict[str, str] | None:
+    key = str(api_key or '').strip()
+    if not key:
+        return None
+    return {'Authorization': f'Bearer {key}'}
+
+
+def _parse_slots_payload(payload: Any) -> list[dict[str, Any]]:
+    raw = payload if isinstance(payload, list) else (payload or {}).get('slots') or []
+    return [row for row in raw if isinstance(row, dict)]
+
+
+def _slots_url(base: str, model: str) -> str:
+    url = f'{base}/slots'
+    name = str(model or '').strip()
+    if name:
+        url = f'{url}?{urlencode({"model": name})}'
+    return url
+
+
+def _router_loaded_model_ids(base: str, *, headers: dict[str, str] | None, timeout: float) -> list[str]:
+    try:
+        fetch_kwargs: dict[str, Any] = {'timeout': timeout}
+        if headers:
+            fetch_kwargs['headers'] = headers
+        payload = _fetch_json(f'{base}/v1/models', **fetch_kwargs)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+        return []
+    rows = payload.get('data') if isinstance(payload, dict) else None
+    ids: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get('id') or '').strip()
+        if not model_id:
+            continue
+        status = row.get('status') if isinstance(row.get('status'), dict) else {}
+        state = str(status.get('value') or '').strip().lower()
+        if state and state not in {'loaded', 'loading'}:
+            continue
+        ids.append(model_id)
+    return ids
+
+
+def _fetch_raw_slots(
+    base: str,
+    model: str,
+    *,
+    api_key: str = '',
+    timeout: float = 0.9,
+) -> list[dict[str, Any]]:
+    """Read llama-server slots, falling back to the loaded router model name.
+
+    A router build returns 400 when /slots is asked for the Console profile id
+    (for example ``qwen3-8-...-dflash``) instead of the id it actually loaded.
+    """
+    headers = _auth_headers(api_key)
+    primary = str(model or '').strip()
+    cache_key = f'{base}|{primary}'
+    alias = _ROUTER_SLOT_MODEL.get(cache_key) or ''
+    names: list[str] = []
+    if alias:
+        names.append(alias)
+    names.append(primary)
+    seen: set[str] = set()
+    needs_router_lookup = False
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            # A router rejects the Console profile id. That call can hang
+            # instead of returning 400, so keep the first miss short.
+            attempt_timeout = timeout if (alias and name == alias) else min(timeout, 0.4)
+            fetch_kwargs: dict[str, Any] = {'timeout': attempt_timeout}
+            if headers:
+                fetch_kwargs['headers'] = headers
+            rows = _parse_slots_payload(_fetch_json(
+                _slots_url(base, name),
+                **fetch_kwargs,
+            ))
+            return rows
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {400, 404}:
+                raise
+            needs_router_lookup = True
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+            needs_router_lookup = True
+    if not needs_router_lookup:
+        return []
+    router_ids = [
+        name for name in _router_loaded_model_ids(base, headers=headers, timeout=timeout)
+        if name not in seen
+    ]
+    if not router_ids and primary:
+        try:
+            fetch_kwargs: dict[str, Any] = {'timeout': timeout}
+            if headers:
+                fetch_kwargs['headers'] = headers
+            return _parse_slots_payload(_fetch_json(
+                _slots_url(base, primary),
+                **fetch_kwargs,
+            ))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+            return []
+    for name in router_ids:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            fetch_kwargs = {'timeout': timeout}
+            if headers:
+                fetch_kwargs['headers'] = headers
+            rows = _parse_slots_payload(_fetch_json(
+                _slots_url(base, name),
+                **fetch_kwargs,
+            ))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, OSError):
+            continue
+        if rows:
+            _ROUTER_SLOT_MODEL[cache_key] = name
+            return rows
+    _ROUTER_SLOT_MODEL.pop(cache_key, None)
+    return []
+
+
 def _int_or_none(value: Any) -> int | None:
     if value is None:
         return None
@@ -816,22 +945,11 @@ def fetch_inference_stats(
     slot_rows: list[dict[str, Any]] = []
     raw_slots: list[dict[str, Any]] = []
     try:
-        slots_url = f'{base}/slots'
-        model = str(model_id or '').strip()
-        if model:
-            slots_url = f'{slots_url}?{urlencode({"model": model})}'
-        # LM Studio workers (and some llama-server setups) require an API key on
-        # their native endpoints — without it /slots returns 401. Only pass the
-        # header when a key is available so plain llama-server calls are unchanged.
-        if api_key:
-            slots_payload = _fetch_json(
-                slots_url,
-                headers={'Authorization': f'Bearer {api_key.strip()}'},
-            )
-        else:
-            slots_payload = _fetch_json(slots_url)
-        raw = slots_payload if isinstance(slots_payload, list) else (slots_payload or {}).get('slots') or []
-        raw_slots = [row for row in raw if isinstance(row, dict)]
+        raw_slots = _fetch_raw_slots(
+            base,
+            str(model_id or ''),
+            api_key=api_key,
+        )
         stats['parallel_slots'] = len(raw_slots) or None
         any_raw_generating = any(_slot_generation_state(slot)[0] for slot in raw_slots)
         _note_generating_wave(sid, any_generating=any_raw_generating, raw_slots=raw_slots)

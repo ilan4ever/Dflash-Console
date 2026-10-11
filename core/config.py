@@ -526,6 +526,8 @@ def normalize_ui_layout(raw: Any) -> dict[str, Any]:
         result['logs_hidden'] = raw.get('logs_hidden') is True
     if 'sidenav_hidden' in raw:
         result['sidenav_hidden'] = raw.get('sidenav_hidden') is True
+    if 'sidenav_hidden_mobile' in raw:
+        result['sidenav_hidden_mobile'] = raw.get('sidenav_hidden_mobile') is True
     for key in ('engines_show_dflash', 'engines_show_external'):
         if key in raw:
             result[key] = raw.get(key) is not False

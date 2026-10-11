@@ -885,7 +885,7 @@
       title = 'Starting engines…';
       detail = 'Connecting to the Console API and checking engine listeners…';
       mode = 'starting';
-    } else if (externalScanError && !externalGpuLoads.length) {
+    } else if (showExternalScanFailure()) {
       title = 'Could not scan external GPU models';
       detail = `${externalScanError} Restart the Console API (server.ps1 -ApiRestart), then refresh this page.`;
       mode = 'loading';
@@ -905,6 +905,30 @@
 
   function gpuOtherProcessCount() {
     return gpuOtherUsage?.processes?.length || 0;
+  }
+
+  function gpuListAlreadyVisible() {
+    return externalGpuLoads.length > 0
+      || gpuOtherProcessCount() > 0
+      || !!gpuOtherUsage?.unattributed_gb;
+  }
+
+  function showExternalScanFailure() {
+    // A background scan can fail and recover a few seconds later. Do not
+    // cover the page with "could not scan" while that list is already shown
+    // or while another search is still running.
+    if (!externalScanError || gpuListAlreadyVisible()) return false;
+    if (!gpuScansSettled() || externalFetchPending) return false;
+    return true;
+  }
+
+  function noteExternalScanError(data) {
+    const next = String(data?.external_scan_error || '').trim();
+    if (!next || gpuListAlreadyVisible() || !gpuScansSettled() || externalFetchPending) {
+      externalScanError = '';
+      return;
+    }
+    externalScanError = next;
   }
 
   function gpuOtherProcessSuffix() {
@@ -1112,7 +1136,7 @@
         }
         lastStatusTrace = Array.isArray(data?.status_trace) ? data.status_trace : lastStatusTrace;
         lastStatusBuildMs = Number(data?.status_build_ms || 0);
-        externalScanError = String(data?.external_scan_error || '').trim();
+        noteExternalScanError(data);
         scanComplete = gpuScansSettled() && externalScanIsComplete(data);
         if (scanComplete) {
           externalInitialFetchDone = true;
@@ -2583,12 +2607,39 @@
     return `<span class="lm-engine-head-stack-chip">${dflashLogoLabel(label)}</span>`;
   }
 
-  function loadedByPrompt({ row, server, ready }) {
-    if (row?.external || !ready) return '';
-    const agents = cardAgentLabels(row, server);
-    const clients = activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label));
+  function shortGpuLabel(name) {
+    return String(name || '')
+      .replace(/^NVIDIA\s+/i, '')
+      .replace(/^GeForce\s+/i, '')
+      .trim();
+  }
+
+  function loadedGpuNowHtml(row, server) {
+    const name = cardVramGpuName(row, server);
+    if (!name) return '';
+    const short = shortGpuLabel(name) || name;
+    return `<span class="lm-engine-head-gpu-now" title="This model is loaded on ${escapeHtml(name)}">${escapeHtml(short)}</span>`;
+  }
+
+  function engineHeadControlsHtml(gpuPick, gpuNow, action) {
+    if (!gpuPick && !gpuNow && !action) return '';
+    const gpu = (gpuPick || gpuNow)
+      ? `<span class="lm-engine-head-gpu">${gpuPick || ''}${gpuNow || ''}</span>`
+      : '';
+    const actions = action ? `<span class="lm-engine-head-actions">${action}</span>` : '';
+    return `<span class="lm-engine-head-controls">${gpu}${actions}</span>`;
+  }
+
+  function loadedByPrompt({ row, server, ready, gpuPick = '', action = '' }) {
+    if (row?.external) return '';
+    const gpuNow = loadedGpuNowHtml(row, server);
+    const controls = engineHeadControlsHtml(gpuPick, gpuNow, action);
+    const agents = ready ? cardAgentLabels(row, server) : [];
+    const clients = ready
+      ? activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label))
+      : [];
     const titles = clients.length ? clients : agents;
-    if (!titles.length) return '';
+    if (!titles.length && !controls) return '';
     const multi = titles.length > 1;
     const badges = titles.map((label) => {
       const isConsole = /^dflash console$/i.test(label);
@@ -2600,19 +2651,25 @@
     const detailHtml = detail
       ? `<span class="lm-loaded-by-detail">${escapeHtml(detail)}</span>`
       : '';
-    const soloConsole = !multi && /^dflash console$/i.test(titles[0]);
-    const stackChip = engineHeadStackChip(row);
-    const vramCell = engineHeadVramCtxCell(row, server);
-    const hint = detail
-      ? `${titles.join(', ')} · ${detail}`
-      : (multi ? 'Clients using this model' : `Active client: ${titles[0]}`);
-    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}" title="${escapeHtml(hint)}">
-            ${stackChip}
-            ${vramCell}
-            <span class="lm-loaded-by-identity">
+    const soloConsole = !multi && titles.length && /^dflash console$/i.test(titles[0]);
+    const stackChip = titles.length ? engineHeadStackChip(row) : '';
+    const vramCell = titles.length ? engineHeadVramCtxCell(row, server) : '';
+    const identity = titles.length
+      ? `<span class="lm-loaded-by-identity">
               <span class="lm-loaded-by-badges">${badges}</span>
               ${detailHtml}
-            </span>
+            </span>`
+      : '';
+    const hint = titles.length
+      ? (detail
+        ? `${titles.join(', ')} · ${detail}`
+        : (multi ? 'Clients using this model' : `Active client: ${titles[0]}`))
+      : 'Engine GPU';
+    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}${controls ? ' has-head-controls' : ''}${titles.length ? '' : ' is-controls-only'}" title="${escapeHtml(hint)}">
+            ${stackChip}
+            ${vramCell}
+            ${identity}
+            ${controls}
           </div>`;
   }
 
@@ -2996,12 +3053,11 @@
     isGenerating = false,
   } = {}) {
     const diskSpan = cardDiskMetricsHtml(row);
-    const gpuPick = engineGpuPickerHtml(server, row);
     if (!desktopLayout) {
       const ctx = cardContextMetric(row, server);
       const pair = ctx ? [`<div class="lm-external-foot-pair">${ctx}</div>`] : [];
-      const top = `<div class="lm-stats-top">${diskSpan || ''}${gpuPick}${action || ''}</div>`;
-      if (!diskSpan && !gpuPick && !action && !pair.length) return '';
+      const top = diskSpan ? `<div class="lm-stats-top">${diskSpan}</div>` : '';
+      if (!diskSpan && !pair.length) return '';
       return `<div class="lm-external-stats-col">${top}${pair.join('')}</div>`;
     }
     const foot = desktopEngineMetricsFootHtml({
@@ -3012,9 +3068,8 @@
       isGenerating,
       includeAccelerator: false,
     });
-    if (!action && !gpuPick && !diskSpan && !foot) return '';
+    if (!diskSpan && !foot) return '';
     return `<div class="lm-external-stats-col lm-desktop-engine-stats">
-      ${(action || gpuPick) ? `<div class="lm-desktop-engine-actions">${gpuPick}${action}</div>` : ''}
       ${diskSpan ? `<div class="lm-desktop-engine-sizes">${diskSpan}</div>` : ''}
       ${foot}
     </div>`;
@@ -3320,7 +3375,7 @@
           <span class="lbl">OUT</span><span class="val" data-live-metric="out">0</span>
         </span>
         <span class="lm-token-metric-speed">
-          <span class="lbl">DECODE</span><span class="val" data-live-metric="decode">0 t/s</span>
+          <span class="lbl" data-live-metric="speed-label">DECODE</span><span class="val" data-live-metric="decode">0 t/s</span>
           <span class="lm-model-card-token-separator">·</span>
           <span class="lbl peak">PEAK</span><span class="val" data-live-metric="peak">0 t/s</span>
         </span>
@@ -3391,6 +3446,10 @@
       : slot.generating_tokens_per_second;
     const peakSpeed = updatePeakSpeed(cacheKey, inPrefill, liveSpeed);
     const stickyKey = peakSpeedCacheKey(cacheKey, inPrefill);
+    const speedLabel = inPrefill ? 'PREFILL' : 'DECODE';
+    const speedTitle = inPrefill
+      ? 'Reading the prompt into context. This is not generation speed.'
+      : 'Live generation speed';
     const prev = lastLiveSpeeds.get(stickyKey) || {};
     const inText = (promptTok == null && prefillTok == null && prev.in != null)
       ? prev.in
@@ -3413,8 +3472,11 @@
     };
     setMetric('in', inText);
     setMetric('out', outText);
+    setMetric('speed-label', speedLabel);
     setMetric('decode', decodeText);
     setMetric('peak', peakText);
+    const metric = root.querySelector('.lm-model-card-token-generating');
+    if (metric) metric.title = speedTitle;
     if (outTok > 0 && cacheKey) {
       lastTokenMetrics.set(cacheKey, mergePeakMetric({
         prompt_tokens: slot.prompt_tokens,
@@ -3515,14 +3577,17 @@
       const speed = inPrefill
         ? slot.prefill_tokens_per_second
         : slot.generating_tokens_per_second;
-      const title = inPrefill ? 'Reading the prompt into context' : 'Live generation';
+      const title = inPrefill
+        ? 'Reading the prompt into context. This is not generation speed.'
+        : 'Live generation speed';
+      const speedLabel = inPrefill ? 'PREFILL' : 'DECODE';
       return `
         <span class="lm-model-card-token-metric is-live lm-model-card-token-generating" title="${escapeHtml(title)}">
           <span class="lbl">IN</span>${escapeHtml(formatInTokenDisplay(inputTok))}
           <span class="lm-model-card-token-separator">·</span>
           <span class="lbl">OUT</span>${escapeHtml(String(outTok))}
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl">DECODE</span>${escapeHtml(formatLiveTokenSpeed(speed))}
+          <span class="lbl" data-live-metric="speed-label">${speedLabel}</span>${escapeHtml(formatLiveTokenSpeed(speed))}
           <span class="lm-model-card-token-separator">·</span>
           <span class="lbl peak">PEAK</span>${escapeHtml(formatLiveTokenSpeed(peakSpeed))}
         </span>`;
@@ -4036,7 +4101,14 @@
           action,
         })}`;
       }
-      const loadedByBanner = loadedByPrompt({ row, server, ready });
+      const gpuPick = row.external ? '' : engineGpuPickerHtml(server, row);
+      const loadedByBanner = loadedByPrompt({
+        row,
+        server,
+        ready,
+        gpuPick,
+        action: row.external ? '' : action,
+      });
       const statsOpts = {
         desktopLayout,
         ready,
@@ -4045,7 +4117,7 @@
       };
       const statsHtml = row.external
         ? externalCardStatsHtml(row, server, action, statsOpts)
-        : dflashCardStatsHtml(row, server, action, statsOpts);
+        : dflashCardStatsHtml(row, server, '', statsOpts);
       const desktopCls = desktopLayout ? ' lm-engine-card-desktop' : '';
       return `
         ${groupSep}
@@ -5231,7 +5303,7 @@
       });
       if (!applyServersPayload(data, { mergeExternal: includeExt })) return;
       if (includeExt) {
-        externalScanError = String(data?.external_scan_error || '').trim();
+        noteExternalScanError(data);
       }
       initialStatusSettled = true;
       syncActiveIdFromLiveState();

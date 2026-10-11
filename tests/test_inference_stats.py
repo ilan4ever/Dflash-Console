@@ -1,4 +1,6 @@
+import io
 import time
+import urllib.error
 
 from core.inference_stats import (
     _slot_generation_state,
@@ -651,3 +653,34 @@ def test_fetch_inference_stats_retains_live_decode_rate_on_unchanged_sample(monk
 
     assert moving['generating_tokens_per_second'] == 32.0
     assert steady['generating_tokens_per_second'] == 32.0
+
+
+def test_fetch_inference_stats_uses_router_model_id_when_profile_id_is_rejected(monkeypatch):
+    import core.inference_stats as stats_mod
+
+    stats_mod._ROUTER_SLOT_MODEL.clear()
+
+    def fake_fetch(url: str, *, timeout: float = 0.9, headers=None):
+        if url.endswith('/v1/models'):
+            return {'data': [{'id': 'qwen3.8-27b', 'status': {'value': 'loaded'}}]}
+        if 'model=console-profile-dflash' in url:
+            raise urllib.error.HTTPError(url, 400, 'Bad Request', hdrs=None, fp=io.BytesIO(b'{}'))
+        if 'model=qwen3.8-27b' in url:
+            return [{
+                'id': 0,
+                'is_processing': True,
+                'n_prompt_tokens': 2048,
+                'n_prompt_tokens_processed': 2048,
+                'next_token': [{'has_next_token': True, 'n_decoded': 36}],
+            }]
+        return []
+
+    monkeypatch.setattr('core.inference_stats._fetch_json', fake_fetch)
+    stats = fetch_inference_stats(
+        'http://127.0.0.1:8101/v1',
+        server_id='router-model-id',
+        model_id='console-profile-dflash',
+    )
+    assert stats['generating'] is True
+    assert stats['generating_tokens'] == 36
+    assert stats['prefill_tokens'] == 2048

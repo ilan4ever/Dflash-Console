@@ -1503,6 +1503,21 @@
     else renderDetailPlaceholder('Select a model to view details, README, and download GGUF files.');
   }
 
+  function focusFirstSearchResult() {
+    const visible = visibleModels();
+    if (!visible.length) {
+      selectedId = '';
+      selectedDetail = null;
+      renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
+      return;
+    }
+    void selectModel(visible[0].id, { preferCache: true, backgroundDetail: false });
+  }
+
+  function detailPaneStillLoading() {
+    return Boolean(detailPane()?.querySelector('.df-catalog-loading'));
+  }
+
   function requestDetail(repoId, category) {
     const key = detailCacheKey(repoId, category);
     const cached = detailCache.get(key);
@@ -2398,14 +2413,15 @@
     const copy = loadingCopy(category, query);
     const cached = getCachedSearch(query, sort, category);
     const canShowCached = !!(cached?.models?.length);
+    const userSearch = !background;
     const gen = ++searchRefreshGen;
 
-    if (canShowCached && !background) {
+    if (canShowCached && userSearch) {
       models = cached.models;
       populateCatalogFilters();
       renderList();
       void warmListDetails(visibleModels(), category);
-      restoreVisibleSelection({ preferCache: true });
+      focusFirstSearchResult();
       background = true;
     } else if (!background) {
       renderCatalogLoading('both', copy);
@@ -2436,26 +2452,28 @@
       models = data.models || [];
       putCachedSearch(query, sort, category, models);
       populateCatalogFilters();
-      if (!models.length || !models.some((m) => m.id === selectedId)) {
+      if (!models.length) {
         selectedId = '';
         selectedDetail = null;
-        if (!models.length) {
-          renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
-        } else if (!background) {
-          renderDetailPlaceholder();
-        }
+        renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
+      } else if (selectedId && !models.some((model) => model.id === selectedId)) {
+        selectedId = '';
+        selectedDetail = null;
       }
       renderList();
       void warmListDetails(visibleModels(), category);
       const visible = visibleModels();
-      if (!visible.length) {
+      if (userSearch) {
+        focusFirstSearchResult();
+      } else if (!visible.length) {
         selectedId = '';
         selectedDetail = null;
         renderDetailPlaceholder('No models found. Try the Hugging Face repo id (org/name) without the filename.');
-      } else if (!selectedId && visible[0]) {
-        void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
-      } else if (selectedId && !visible.some((model) => model.id === selectedId)) {
-        void selectModel(visible[0].id, { preferCache: background, backgroundDetail: background });
+      } else if (!selectedId || !visible.some((model) => model.id === selectedId) || detailPaneStillLoading()) {
+        const nextId = selectedId && visible.some((model) => model.id === selectedId)
+          ? selectedId
+          : visible[0].id;
+        void selectModel(nextId, { preferCache: true, backgroundDetail: false });
       }
     } catch (err) {
       if (gen !== searchRefreshGen) return;

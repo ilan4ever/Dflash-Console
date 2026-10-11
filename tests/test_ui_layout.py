@@ -7,6 +7,8 @@ def test_normalize_ui_layout_clamps_and_filters():
         'inspector_width': '320',
         'logs_height': 50,
         'logs_hidden': True,
+        'sidenav_hidden': False,
+        'sidenav_hidden_mobile': True,
         'table_columns': {
             'models-library': {
                 'model': 420,
@@ -19,6 +21,8 @@ def test_normalize_ui_layout_clamps_and_filters():
     assert result['inspector_width'] == 320
     assert result['logs_height'] == 80
     assert result['logs_hidden'] is True
+    assert result['sidenav_hidden'] is False
+    assert result['sidenav_hidden_mobile'] is True
     assert result['table_columns']['models-library'] == {'model': 420}
 
 

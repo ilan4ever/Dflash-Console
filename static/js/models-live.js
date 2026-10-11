@@ -113,13 +113,43 @@
     return `<select class="${cls}" data-gpu-pick="${escapeHtml(gpuPreferenceKey(model))}" aria-label="GPU for ${escapeHtml(model.label || model.filename || model.id || 'model')}" title="${escapeHtml(title)}"${loadingAttrs}>${options}</select>`;
   }
 
+  // Words that show up in a pasted Hugging Face link but are not the model.
+  const SEARCH_NOISE = new Set([
+    'http', 'https', 'www', 'huggingface', 'hf', 'co', 'com',
+    'blob', 'tree', 'resolve', 'main', 'master', 'refs', 'download',
+    'models', 'model', 'gguf', 'safetensors', 'bin', 'pt', 'pth', 'onnx', 'ggml',
+  ]);
+
+  // Turn a pasted Hugging Face link or repo id into the name itself.
+  // `https://huggingface.co/org/name/blob/main/file.gguf` becomes `org/name/file.gguf`.
+  function searchQueryText(value) {
+    let text = String(value || '')
+      .replace(/[\u2010-\u2015\u2212]/g, '-')
+      .replace(/[\u200b-\u200d\ufeff]/g, '')
+      .replace(/[\n\r\t]+/g, ' ')
+      .trim();
+    text = text.replace(/^https?:\/\/(?:www\.)?huggingface\.co\//i, '');
+    text = text.replace(/^(?:www\.)?huggingface\.co\//i, '');
+    text = text.replace(/[?#].*$/, '');
+    text = text.replace(/\/(?:blob|tree|resolve)\/[^/]+\/?/i, '/');
+    text = text.replace(/^['"`[{(]+|['"`\])},;]+$/g, '');
+    return text.trim();
+  }
+
+  function searchTokens(value) {
+    return searchQueryText(value)
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 2 && !SEARCH_NOISE.has(token));
+  }
+
   // Normalize a search string so HF/name separators are interchangeable:
   // `baidu/Unlimited-OCR` (Hugging Face style) also matches a local file
   // `baidu.Unlimited-OCR.Q3_K_M` (dots), `baidu-unlimited-ocr`, or spaces.
   function normalizeSearchText(value) {
-    return String(value || '')
+    return searchQueryText(value)
       .toLowerCase()
-      .replace(/[/._\-\s\\]+/g, '');
+      .replace(/[^a-z0-9]+/g, '');
   }
 
   function isCloudApiModel(model) {
@@ -2060,7 +2090,12 @@
     })();
     return normalizeSearchText([
       model?.label,
+      model?.display_name,
+      model?.display_name_full,
+      model?.family,
       model?.id,
+      model?.model_id,
+      model?.catalog_id,
       model?.path,
       model?.publisher,
       model?.hf_repo,
@@ -2082,17 +2117,37 @@
     ].join(' '));
   }
 
-  function modelMatchesSearch(model, needle) {
+  function modelSearchScore(model, rawQuery) {
+    const needle = normalizeSearchText(rawQuery);
+    if (!needle) return 0;
+    const hay = modelSearchHaystack(model);
+    if (!hay) return 0;
+    const tokens = searchTokens(rawQuery);
+    let score = hay.includes(needle) ? 1000 : 0;
+    let hits = 0;
+    for (const token of tokens) {
+      if (!hay.includes(token)) continue;
+      hits += 1;
+      score += token.length * 10;
+    }
+    if (tokens.length && hits === tokens.length) score += 200;
+    return score;
+  }
+
+  function modelMatchesSearch(model, rawQuery) {
+    const needle = normalizeSearchText(rawQuery);
     if (!needle) return true;
     const hay = modelSearchHaystack(model);
     if (!hay) return false;
-    // Full name, or only the beginning of it: "Xing" and "XingChen-AGI/TeleOCR"
-    // both find XingChen-AGI/TeleOCR.
+    // The whole pasted name, a Hugging Face link, or just the start of it.
     if (hay.includes(needle)) return true;
-    const raw = String(document.getElementById('modelsFilterInput')?.value || '');
-    const parts = raw.split(/[/\\]+/).map((part) => normalizeSearchText(part)).filter((part) => part.length >= 2);
-    if (parts.length > 1 && parts.every((part) => hay.includes(part))) return true;
-    return parts.some((part) => part.startsWith(needle) && hay.includes(part));
+    const tokens = searchTokens(rawQuery);
+    if (!tokens.length) return false;
+    // One word while typing: every model that contains those letters.
+    // Several words, or a full name: every word has to be in that model.
+    // Sharing a single word such as "27B" is not enough.
+    if (tokens.length === 1) return hay.includes(tokens[0]);
+    return tokens.every((token) => hay.includes(token));
   }
 
   function showingAcceleratorsOnly() {
@@ -2106,16 +2161,16 @@
   function modelsRenderSignature(filterText) {
     const needle = normalizeSearchText(filterText);
     const rows = models.filter((model) => {
-      if (shouldHideAcceleratorRow(model)) return false;
-      if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
+      if (shouldHideAcceleratorRow(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      if (typeFilter === 'dflash' && !isDflashStack(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
       if (model?.incomplete) return false;
       // Text search must still find HF SafeTensors folders even when the type
       // filter is DFlash/GGUF — otherwise installed FreeToken/vLLM models vanish.
-      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, needle))) return false;
-      return modelMatchesSearch(model, needle);
+      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      return modelMatchesSearch(model, filterText);
     }).map((model) => [
       modelKey(model),
       model.label,
@@ -2316,8 +2371,8 @@
     const activeDownloads = filterDownloadJobs(getActiveDownloadJobs(), needle);
     const visibleDownloads = modelTypeFilter === 'hf-accelerator' ? [] : activeDownloads;
     const catalogRows = models.filter((model) => {
-      if (shouldHideAcceleratorRow(model)) return false;
-      if (typeFilter === 'dflash' && !isDflashStack(model)) return false;
+      if (shouldHideAcceleratorRow(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      if (typeFilter === 'dflash' && !isDflashStack(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
       if (modelFileMissing(model)) return false; // never show a card for a missing file
@@ -2325,9 +2380,13 @@
       if (model?.incomplete) return false;
       // Text search must still find HF SafeTensors folders even when the type
       // filter is DFlash/GGUF — otherwise installed FreeToken/vLLM models vanish.
-      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, needle))) return false;
-      return modelMatchesSearch(model, needle);
+      if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      return modelMatchesSearch(model, filterText);
     }).sort((a, b) => {
+      if (needle) {
+        const byScore = modelSearchScore(b, filterText) - modelSearchScore(a, filterText);
+        if (byScore !== 0) return byScore;
+      }
       const aPin = pinned.has(modelKey(a)) ? 0 : 1;
       const bPin = pinned.has(modelKey(b)) ? 0 : 1;
       if (aPin !== bPin) return aPin - bPin;

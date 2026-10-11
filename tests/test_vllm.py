@@ -28,6 +28,24 @@ def test_parse_vllm_load_progress_uses_weight_and_graph_percents():
     assert graphs['pct'] > weights['pct']
 
 
+def test_vllm_exit_reason_ignores_a_missing_gpu_guess():
+    from core.runtimes.vllm import vllm_exit_reason
+
+    health_checks = '\n'.join(
+        '(APIServer pid=1) INFO:     127.0.0.1:1 - "GET /v1/models HTTP/1.1" 200 OK'
+        for _ in range(40)
+    )
+    assert 'NVIDIA GPU' not in vllm_exit_reason('', 1)
+    assert 'exit code 1' in vllm_exit_reason('', 1)
+    assert 'NVIDIA GPU' not in vllm_exit_reason(health_checks, 1)
+    memory = (
+        'ValueError: Free memory on device cuda:0 (1.00/24.00 GiB) on startup is less than '
+        'desired GPU memory utilization (0.85, 20.40 GiB).'
+    )
+    assert vllm_exit_reason(memory, 1).startswith('Free memory on device')
+    assert vllm_exit_reason('RuntimeError: UVA is not available', 1) == 'UVA is not available'
+
+
 def test_fit_gpu_memory_utilization_leaves_headroom():
     from core.runtimes.vllm import fit_gpu_memory_utilization
 
