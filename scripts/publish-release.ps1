@@ -30,6 +30,9 @@ Write-Host "Release version: $version"
 
 if (-not $SkipBuild) {
     & (Join-Path $Root 'scripts\run-electron.ps1') -Build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows installer build failed with exit code $LASTEXITCODE. Release tag was not created."
+    }
 }
 
 if (-not $SkipTag) {
@@ -50,12 +53,17 @@ if (-not $SkipPyPI) {
 
 if ($WaitForGitHub) {
     Write-Host 'Waiting for GitHub Windows release workflow...'
-    Start-Sleep -Seconds 10
-    $run = gh run list --workflow release-windows.yml --limit 1 --json databaseId,status,conclusion,url | ConvertFrom-Json | Select-Object -First 1
-    if ($run) {
-        gh run watch $run.databaseId --exit-status | Out-Host
-        Write-Host "GitHub release workflow: $($run.url)"
+    $run = $null
+    for ($attempt = 0; $attempt -lt 36 -and -not $run; $attempt++) {
+        $runs = gh run list --workflow release-windows.yml --branch $tag --limit 10 --json databaseId,status,conclusion,url,headBranch | ConvertFrom-Json
+        $run = $runs | Where-Object { $_.headBranch -eq $tag } | Select-Object -First 1
+        if (-not $run) { Start-Sleep -Seconds 5 }
     }
+    if (-not $run) {
+        throw "No GitHub Windows release workflow run was found for $tag."
+    }
+    gh run watch $run.databaseId --exit-status | Out-Host
+    Write-Host "GitHub release workflow: $($run.url)"
 }
 
 Write-Host ''

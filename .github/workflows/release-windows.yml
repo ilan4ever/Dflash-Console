@@ -4,6 +4,9 @@ name: Windows release
 # Automatic runs disabled to avoid GitHub Actions minute usage.
 # Run manually from Actions tab when needed.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 permissions:
   contents: write
