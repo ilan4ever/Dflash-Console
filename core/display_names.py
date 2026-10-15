@@ -226,6 +226,72 @@ def _title_core(
     return ''
 
 
+def _best_source_name(*texts: str) -> str:
+    """Prefer a filename that still has version dots (1.0) over a flattened id."""
+    candidates: list[str] = []
+    for text in texts:
+        raw = str(text or '').strip()
+        if not raw:
+            continue
+        if any(sep in raw for sep in ('/', '\\')) or raw.lower().endswith('.gguf'):
+            candidates.append(Path(raw).stem)
+        else:
+            candidates.append(raw)
+    for item in candidates:
+        if re.search(r'\d\.\d', item):
+            return item
+    return candidates[0] if candidates else ''
+
+
+def _humanize_model_stem(stem: str) -> str:
+    """Readable title that keeps the source word order, including the size."""
+    text = str(stem or '').strip()
+    if not text:
+        return ''
+    text = text.replace('_', ' ')
+    text = re.sub(r'(?<!\d)\.(?!\d)', ' ', text)
+    text = text.replace('-', ' ')
+    text = re.sub(r'\s+', ' ', text).strip()
+    words: list[str] = []
+    for word in text.split():
+        lower = word.lower()
+        if lower in {'gguf'}:
+            continue
+        if re.fullmatch(r'\d+(?:\.\d+)?b', lower):
+            words.append(re.sub(r'b$', 'B', word, flags=re.I))
+            continue
+        if re.fullmatch(r'(?:iq|q|bq)\d+(?:[._][a-z0-9]+)*', lower) or lower in {'f16', 'f32', 'bf16'}:
+            words.append(word.upper())
+            continue
+        if re.fullmatch(r'\d+(?:\.\d+)+', word):
+            words.append(word)
+            continue
+        words.append(word[:1].upper() + word[1:])
+    return ' '.join(words)
+
+
+def _title_without_leading_size(
+    title: str,
+    *sources: str,
+    family: str,
+    parameter_size: str,
+) -> str:
+    """Never move a size in front of a name that does not start with that size."""
+    source_title = _humanize_model_stem(_best_source_name(*sources))
+    if not source_title:
+        return title
+    if not family:
+        return source_title
+    size = str(parameter_size or '').strip()
+    if (
+        size
+        and str(title or '').lower().startswith(size.lower())
+        and not source_title.lower().startswith(size.lower())
+    ):
+        return source_title
+    return title
+
+
 _FRIENDLY_QUANT_RE = re.compile(
     r'(?i)(?:^|[\s_\-])(?:Q\d(?:[_A-Z0-9]+)?|IQ\d[_A-Z0-9]+|F16|F32|BF16)(?:$|[\s_\-])'
 )
@@ -366,14 +432,28 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
     )
     if not title_core_ui:
         title_core_ui = str(server.get('label') or api_model_id or 'Model').strip()
+    title_core_ui = _title_without_leading_size(
+        title_core_ui,
+        target_filename,
+        str(server.get('label') or ''),
+        target_model_id,
+        api_model_id,
+        family=family,
+        parameter_size=parameter_size,
+    )
     mode_suffix = _engine_mode_suffix(
         profile=str(server.get('profile') or ''),
         draft=draft if draft else None,
     )
     title_core_ui = _append_mode_suffix(title_core_ui, mode_suffix)
+    quant_already_shown = bool(
+        quantization
+        and re.sub(r'[^A-Z0-9]', '', quantization.upper())
+        in re.sub(r'[^A-Z0-9]', '', title_core_ui.upper())
+    )
     title_core_full = (
         f'{title_core_ui} {quantization}'.strip()
-        if quantization
+        if quantization and not quant_already_shown
         else title_core_ui
     )
 

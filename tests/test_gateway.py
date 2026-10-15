@@ -100,6 +100,16 @@ def test_upstream_error_payload_insufficient_vram():
     assert payload['error']['gpu_required_gb'] == 24.0
 
 
+def test_upstream_error_payload_adds_status_and_retryability():
+    payload = gateway_module._upstream_error_payload(
+        json.dumps({'detail': {'error': 'model_loading', 'message': 'still loading'}}).encode(),
+        503,
+    )
+    assert payload['error']['code'] == 503
+    assert payload['error']['reason'] == 'model_loading'
+    assert payload['error']['retryable'] is True
+
+
 def test_pick_headers_forwards_harness_integrator_headers():
     request = Request({
         'type': 'http',

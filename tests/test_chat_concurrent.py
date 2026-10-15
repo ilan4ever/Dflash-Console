@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import pytest
+from fastapi import HTTPException
 
 from api.app import _ensure_server_ready_for_chat
 from core.chat_queue import chat_server_gate, reset_chat_server_gates_for_tests
@@ -34,11 +35,11 @@ def _patch_listener(monkeypatch):
             'reason': 'ours',
         },
     )
-    monkeypatch.setattr('core.engine_state.note_engine_active_client', lambda sid, client_label='': None)
+    monkeypatch.setattr('core.engine_state.note_engine_active_client', lambda sid, client_label='', **kwargs: None)
     monkeypatch.setattr('api.app.tcp_port_open', lambda host, port: True)
 
 
-def test_ensure_ready_skips_jit_while_generating(monkeypatch):
+def test_ensure_ready_does_not_synthesize_readiness_while_generating(monkeypatch):
     server = _idle_server()
     empty = {
         'status': 'running',
@@ -54,12 +55,17 @@ def test_ensure_ready_skips_jit_while_generating(monkeypatch):
         'api.app.load_server_checkpoint',
         lambda srv, cfg=None, **kwargs: load_calls.append(str(srv.get('id') or '')) or {'success': True},
     )
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda api_url: ([], [], True, None, True),
+    )
     _patch_listener(monkeypatch)
 
-    live = _ensure_server_ready_for_chat('gemma-12b-ar', server, {'servers': [server]})
+    with pytest.raises(HTTPException) as exc:
+        _ensure_server_ready_for_chat('gemma-12b-ar', server, {'servers': [server]})
     assert load_calls == []
-    assert live['loaded_models'] == ['gemma-4-12b-it-qat']
-    assert live['status'] == 'loaded'
+    assert exc.value.status_code == 503
+    assert exc.value.detail['reason'] == 'model_not_loaded'
 
 
 def test_ensure_ready_retries_busy_probe_before_jit(monkeypatch):

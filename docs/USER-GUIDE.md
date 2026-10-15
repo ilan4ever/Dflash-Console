@@ -189,7 +189,7 @@ Console can stop or release that process safely.
 External cards flip to **READY** once the app reports a loaded model. They no
 longer stay on **Loading** indefinitely when the model is already serving.
 
-Use **Import model to Flash Console** on GGUF or STT paths when you want the
+Use **Import model to DFlash Console** on GGUF or STT paths when you want the
 same weights in your Console library.
 
 ### Other GPU processes

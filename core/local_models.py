@@ -1056,12 +1056,15 @@ def _scan_gguf(
     rows: list[dict[str, Any]] = []
     try:
         from core.hf_local_match import is_auxiliary_gguf_filename
+        from core.vision_setup import _is_mmproj_name
 
         for path in root.rglob('*.gguf'):
             if len(rows) >= max_files:
                 break
             name = path.name
-            if is_auxiliary_gguf_filename(name):
+            # Keep projectors visible so the UI can label them as sidecars;
+            # hide other auxiliary GGUF files from the model picker.
+            if is_auxiliary_gguf_filename(name) and not _is_mmproj_name(name):
                 continue
             row = {
                 'id': path.stem.replace('_', '-').lower()[:120],

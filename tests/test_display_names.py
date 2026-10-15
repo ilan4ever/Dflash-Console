@@ -240,3 +240,43 @@ def test_disambiguate_colliding_gemma_profiles_by_engine_id():
     ]
     disambiguate_engine_display_names(rows)
     assert rows[0]['display_name'] != rows[1]['display_name']
+
+
+def test_unknown_family_keeps_size_where_the_name_has_it():
+    server = {
+        'id': 'underdog-saluki-27b-1-0-iq2-mix',
+        'label': 'Underdog-Saluki-27B-1.0-IQ2-mix',
+        'profile': 'generic-ar',
+        'model_id': 'underdog-saluki-27b-1.0-iq2-mix',
+    }
+    stack = [
+        {
+            'role': 'target',
+            'id': 'underdog-saluki-27b-1.0-iq2-mix',
+            'path': r'C:\models\ConwayResearch\Underdog-Saluki-27B-1.0\Underdog-Saluki-27B-1.0-IQ2-mix.gguf',
+            'source': 'custom',
+        },
+    ]
+    catalog = build_model_catalog(server, stack)
+    assert catalog['display_name'] == 'Underdog Saluki 27B 1.0 IQ2 Mix — AR'
+    assert not catalog['display_name'].startswith('27B')
+    assert '1.0' in catalog['display_name']
+
+
+def test_size_stays_first_only_when_the_name_starts_with_it():
+    server = {
+        'id': '27b-coder',
+        'label': '27B-coder',
+        'profile': 'generic-ar',
+        'model_id': '27b-coder',
+    }
+    stack = [
+        {
+            'role': 'target',
+            'id': '27b-coder',
+            'path': r'C:\models\27B-coder.gguf',
+            'source': 'custom',
+        },
+    ]
+    catalog = build_model_catalog(server, stack)
+    assert catalog['display_name'].startswith('27B')

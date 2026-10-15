@@ -1476,9 +1476,23 @@ def find_target_loaded_elsewhere(
         other_id = str(other.get('id') or '')
         port = int(other.get('port') or 0)
         api_url = str(other.get('api_url') or '').strip()
-        if port <= 0 or port not in open_ports or not api_url:
-            continue
-        loaded = probe_models(api_url)
+        loaded: list[str] = []
+        if port > 0 and port in open_ports and api_url:
+            loaded = probe_models(api_url)
+        if not loaded:
+            # Prefer the cheap /v1/models probe, but retain a status-builder
+            # fallback for routers that temporarily hide that endpoint.
+            try:
+                from core.runtime import build_server_status
+
+                snapshot = build_server_status(other, cfg=config)
+                loaded = [
+                    str(item).strip()
+                    for item in (snapshot.get('loaded_models') or [])
+                    if str(item).strip()
+                ]
+            except Exception:
+                loaded = []
         if not loaded:
             continue
         return {

@@ -1084,11 +1084,11 @@
     const paths = importPathsForModel(model);
     if (paths.length > 1) {
       return {
-        copy: `Import all ${paths.length} shards to Flash Console`,
-        move: `Move all ${paths.length} shards to Flash Console`,
+        copy: `Import all ${paths.length} shards to DFlash Console`,
+        move: `Move all ${paths.length} shards to DFlash Console`,
       };
     }
-    return { copy: 'Import to Flash Console', move: 'Move to Flash Console' };
+    return { copy: 'Import to DFlash Console', move: 'Move to DFlash Console' };
   }
 
   // External models that are not already inside the Console's own library can
@@ -1542,7 +1542,7 @@
     if (shard && shard.part !== 1) {
       return {
         reason_code: 'split-shard',
-        reason: `This is shard ${shard.part} of ${shard.total}. Use shard 00001-of-${String(shard.total).padStart(5, '0')} for DFlash stacks, or import all shards into Flash Console first.`,
+        reason: `This is shard ${shard.part} of ${shard.total}. Use shard 00001-of-${String(shard.total).padStart(5, '0')} for DFlash stacks, or import all shards into DFlash Console first.`,
       };
     }
     if (!/\.gguf$/i.test(String(model.path))) {
@@ -4244,11 +4244,11 @@
       const backdrop = modal.querySelector('.lm-modal-backdrop');
       const closeBtn = modal.querySelector('[data-action="close-modal"]');
       const label = name || String(path || '').split(/[\\/]/).pop() || 'this model';
-      // Respect the requested default mode (Move for "Move to Flash Console").
+      // Respect the requested default mode (Move for "Move to DFlash Console").
       modal.querySelectorAll('input[name="importMode"]').forEach((radio) => {
         radio.checked = radio.value === (defaultMode === 'move' ? 'move' : 'copy');
       });
-      if (titleEl) titleEl.textContent = `Import ${label} to Flash Console?`;
+      if (titleEl) titleEl.textContent = `Import ${label} to DFlash Console?`;
       if (pathEl) pathEl.textContent = path || '';
       const cleanup = (result) => {
         modal.classList.remove('open');
@@ -4296,7 +4296,7 @@
 
   // After importing a model, refresh BOTH the Model library and the Engines
   // dropdown catalog, then confirm the copy is actually registered in the
-  // catalog (i.e. really present in the Flash Console folder + visible).
+  // catalog (i.e. really present in the DFlash Console folder + visible).
   function importedModelFilename(path) {
     return String(path || '').split(/[/\\]/).pop()?.trim().toLowerCase() || '';
   }
@@ -4377,10 +4377,10 @@
     const total = formatImportBytes(row.bytes_total);
     const sizeHint = done && total ? ` · ${done} / ${total}` : (done ? ` · ${done}` : '');
     if (phase === 'unloading') return 'Releasing model in the external app…';
-    if (phase === 'moving') return `Moving into Flash Console${suffix}${sizeHint}`;
-    if (phase === 'copying') return `Copying into Flash Console${suffix}${sizeHint}`;
+    if (phase === 'moving') return `Moving into DFlash Console${suffix}${sizeHint}`;
+    if (phase === 'copying') return `Copying into DFlash Console${suffix}${sizeHint}`;
     if (phase === 'refreshing') return 'Updating model library…';
-    return mode === 'move' ? 'Moving into Flash Console…' : 'Copying into Flash Console…';
+    return mode === 'move' ? 'Moving into DFlash Console…' : 'Copying into DFlash Console…';
   }
 
   function setImportProgressUi({ title, text, hint, progress = null, indeterminate = false } = {}) {
@@ -4495,7 +4495,7 @@
       closeImportProgressUi();
       const overwrite = await openConfirmDialog({
         title: 'Model already exists',
-        message: `${label} is already in the Flash Console library. Overwrite the existing copy?`,
+        message: `${label} is already in the DFlash Console library. Overwrite the existing copy?`,
         sub: data.existing_path || path,
         confirmLabel: 'Overwrite',
         cancelLabel: 'Abort',
@@ -4504,7 +4504,7 @@
       if (!overwrite) {
         stopPolling();
         closeImportProgressUi();
-        toast('Import cancelled — the model already exists in Flash Console');
+        toast('Import cancelled — the model already exists in DFlash Console');
         return { canceled: true };
       }
       setImportProgressUi({
@@ -4542,9 +4542,9 @@
     const libraryPath = data?.library_path || data?.path || '';
     const verified = await refreshImportedModelViews(libraryPath, path);
     if (verified) {
-      toast(`${mode === 'move' ? 'Moved' : 'Imported'} ${label} into Flash Console`);
+      toast(`${mode === 'move' ? 'Moved' : 'Imported'} ${label} into DFlash Console`);
     } else if (data?.success) {
-      toast(`${label} copied to Flash Console — still updating the model list…`);
+      toast(`${label} copied to DFlash Console — still updating the model list…`);
       void refresh({ forceCatalogRefresh: true, rebindInspector: true });
     } else {
       toast(`Could not confirm ${label} in the model library`, false);

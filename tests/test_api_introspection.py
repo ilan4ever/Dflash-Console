@@ -44,6 +44,8 @@ def test_list_app_endpoints_shape():
     assert payload['success'] is True
     assert payload['count'] == 2
     assert {row['path'] for row in payload['endpoints']} == {'/api/health', '/api/blank'}
+    assert payload['gateway']['base_url'].endswith('/v1')
+    assert any(row['path'] == '/v1/chat/completions' for row in payload['gateway']['routes'])
 
 
 def test_installed_payload_has_providers():

@@ -468,12 +468,16 @@
 
   async function checkNode(nodeId) {
     try {
-      await api(`/api/nodes/${encodeURIComponent(nodeId)}/health`, { method: 'POST', timeoutMs: 20000 });
+      const data = await api(`/api/nodes/${encodeURIComponent(nodeId)}/health`, { method: 'POST', timeoutMs: 20000 });
+      const index = nodes.findIndex((row) => row.id === nodeId);
+      if (index >= 0) {
+        nodes[index] = { ...nodes[index], ...data };
+        renderNodes();
+      }
       toast('Health check complete');
-      await refreshNodes({ fresh: false });
     } catch (err) {
       toast(err.message || 'Health check failed', false);
-      await refreshNodes({ fresh: false });
+      await refreshNodes({ fresh: true }).catch(() => {});
     }
   }
 
@@ -483,11 +487,15 @@
     try {
       const resp = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Disable-Reasoning': '1',
+        },
         body: JSON.stringify({
           model: 'remote-test',
           messages: [{ role: 'user', content: 'Reply with one short greeting word only.' }],
-          max_tokens: 32,
+          max_tokens: 128,
+          reasoning_effort: 'none',
           stream: false,
         }),
       });

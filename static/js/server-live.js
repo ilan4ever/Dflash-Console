@@ -180,6 +180,12 @@
   let gatewayUrl = '';
   let gatewayUrlFetch = null;
 
+  function syncServerWebAddress() {
+    const el = document.getElementById('serverWebAddress');
+    if (!el) return;
+    el.textContent = `${window.location.protocol}//${window.location.host}/`;
+  }
+
   async function loadGatewayUrl({ rerender = false } = {}) {
     if (gatewayUrlFetch) return gatewayUrlFetch;
     gatewayUrlFetch = (async () => {
@@ -467,17 +473,30 @@
       .replace(/"/g, '&quot;');
   }
 
-  // An external path is importable when it is a .gguf file OR a directory-like
-  // path (faster-whisper model directories have no file extension and often
-  // live under HF snapshot folders). Files with an obvious extension are not
-  // importable through import-into-console.
-  function isImportableSttDir(pathValue) {
+  // The import endpoint accepts GGUF files and actual faster-whisper model
+  // directories. Do not infer a faster-whisper directory from a path alone:
+  // external app runtimes (for example F5-TTS) also expose checkpoint paths.
+  function isImportableSttDir(pathValue, row) {
     const text = String(pathValue || '').trim();
     if (!text) return false;
+    const kind = String(row?.model_kind || '').trim().toLowerCase();
+    const runtime = String(row?.runtime_id || '').trim().toLowerCase();
+    const metadata = [
+      row?.component_role,
+      row?.component_key,
+      row?.component_label,
+      row?.model_name,
+      row?.title,
+      row?.command_line,
+    ].filter(Boolean).join(' ').toLowerCase();
+    const isStt = kind === 'stt'
+      || runtime === 'faster-whisper'
+      || /faster[-_ ]whisper/.test(metadata);
+    if (!isStt) return false;
     const last = String(text.split(/[\\/]/).pop() || '');
     if (/\.gguf$/i.test(text)) return false; // handled by the .gguf branch
-    if (/\.[a-z0-9]{1,8}$/i.test(last)) return false; // looks like a file
-    return true; // extension-less path → likely a model directory
+    if (/\.(?:safetensors?|bin|pt|pth|onnx|ckpt|zip)$/i.test(last)) return false;
+    return true;
   }
 
   function getServerAction(serverId) {
@@ -2623,8 +2642,11 @@
 
   function engineHeadControlsHtml(gpuPick, gpuNow, action) {
     if (!gpuPick && !gpuNow && !action) return '';
-    const gpu = (gpuPick || gpuNow)
-      ? `<span class="lm-engine-head-gpu">${gpuPick || ''}${gpuNow || ''}</span>`
+    const gpuPicker = gpuPick
+      ? `<span class="lm-engine-gpu-label" aria-hidden="true">GPU</span>${gpuPick}`
+      : '';
+    const gpu = (gpuPicker || gpuNow)
+      ? `<span class="lm-engine-head-gpu">${gpuPicker}${gpuNow || ''}</span>`
       : '';
     const actions = action ? `<span class="lm-engine-head-actions">${action}</span>` : '';
     return `<span class="lm-engine-head-controls">${gpu}${actions}</span>`;
@@ -2654,22 +2676,27 @@
     const soloConsole = !multi && titles.length && /^dflash console$/i.test(titles[0]);
     const stackChip = titles.length ? engineHeadStackChip(row) : '';
     const vramCell = titles.length ? engineHeadVramCtxCell(row, server) : '';
-    const identity = titles.length
-      ? `<span class="lm-loaded-by-identity">
-              <span class="lm-loaded-by-badges">${badges}</span>
-              ${detailHtml}
-            </span>`
+    const desktop = desktopEngineCardLayout();
+    const badgesHtml = titles.length
+      ? `<span class="lm-loaded-by-badges">${badges}</span>`
+      : '';
+    const identityBody = `${desktop ? '' : badgesHtml}${detailHtml}`.trim();
+    const identity = identityBody
+      ? `<span class="lm-loaded-by-identity">${desktop ? '' : badgesHtml}${detailHtml}</span>`
       : '';
     const hint = titles.length
       ? (detail
         ? `${titles.join(', ')} · ${detail}`
         : (multi ? 'Clients using this model' : `Active client: ${titles[0]}`))
       : 'Engine GPU';
+    const cluster = (identity || controls)
+      ? `<span class="lm-engine-head-cluster">${identity}${controls}</span>`
+      : '';
     return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}${controls ? ' has-head-controls' : ''}${titles.length ? '' : ' is-controls-only'}" title="${escapeHtml(hint)}">
             ${stackChip}
             ${vramCell}
-            ${identity}
-            ${controls}
+            ${desktop ? badgesHtml : ''}
+            ${cluster}
           </div>`;
   }
 
@@ -2879,7 +2906,9 @@
       // card (see externalPrompt), not as a tag in the labels row.
       return '';
     }
-    const shared = window.DFlashModelCard?.classificationTags?.(cardModelPresentation(row));
+    const shared = window.DFlashModelCard?.classificationTags?.(cardModelPresentation(row), {
+      includeLogo: !omitStackLogo,
+    });
     if (shared) return shared;
     if (row.role === 'draft-dflash') {
       const gen = row?.dflash_generation_label || window.DFlashModelGroups?.acceleratorGenerationLabel?.(row) || 'DFlash 1';
@@ -3081,7 +3110,7 @@
     loading = false,
     isGenerating = false,
   } = {}) {
-    const footHtml = cardFootMetricsHtml(row);
+    const footHtml = cardFootMetricsHtml(row, server, { omitVram: desktopLayout });
     if (!desktopLayout) {
       if (!action && !footHtml) return '';
       return `<div class="lm-external-stats-col">${action || ''}${footHtml}</div>`;
@@ -3266,13 +3295,13 @@
 
   function externalPromptActionsHtml(row) {
     const externalPath = row?.model_path || row?.path || '';
-    const importablePath = externalPath && (/\.gguf$/i.test(externalPath) || isImportableSttDir(externalPath)) ? externalPath : '';
+    const importablePath = externalPath && (/\.gguf$/i.test(externalPath) || isImportableSttDir(externalPath, row)) ? externalPath : '';
     const inConsoleLibrary = !!importablePath && window.DFlashModelsLive?.isModelAlreadyImported?.(importablePath) === true;
     if (inConsoleLibrary) {
       return `<span class="lm-tag teal" title="Same model is registered in DFlash Console. Load it from Models or the engine dropdown above instead of ${escapeHtml(cardAppLabel(row))}.">In Console library</span>`;
     }
     if (importablePath) {
-      return `<button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(importablePath)}" title="Import this model into the DFlash Console library to manage, load and run it here">Import model to Flash Console</button>`;
+      return `<button type="button" class="lm-btn ghost tiny" data-action="copy-to-console" data-path="${escapeHtml(importablePath)}" title="Import this model into the DFlash Console library to manage, load and run it here">Import model to DFlash Console</button>`;
     }
     return '';
   }
@@ -3286,7 +3315,7 @@
     const vramVal = formatCardVramGb(cardVramTotal(row, server));
     if (!vramVal) return '';
     const gpu = cardVramGpuName(row, server);
-    const shown = gpu ? `${vramVal} · ${gpu}` : vramVal;
+    const shown = vramVal;
     const title = gpu ? `GPU memory in use on ${gpu}` : 'GPU memory in use';
     return `<span class="lm-engine-head-vram" title="${escapeHtml(title)}"><span class="lbl">VRAM</span><span class="val">${escapeHtml(shown)}</span></span>`;
   }
@@ -3317,12 +3346,15 @@
     const actions = externalPromptActionsHtml(row);
     const kindCell = externalHeaderKindCell(row);
     const vramCell = engineHeadVramCtxCell(row, server);
+    const appName = escapeHtml(cardAppLabel(row));
     return `<div class="lm-model-card-external-prompt">
             <span class="lm-external-origin">External</span>
             ${kindCell}
             ${vramCell}
-            <span class="lm-external-app-name" title="Loaded outside DFlash Console by ${escapeHtml(cardAppLabel(row))}">${escapeHtml(cardAppLabel(row))}</span>
-            <span class="lm-external-prompt-actions">${actions}</span>
+            <span class="lm-engine-head-cluster">
+              <span class="lm-external-app-name" title="Loaded outside DFlash Console by ${appName}">${appName}</span>
+              <span class="lm-external-prompt-actions">${actions}</span>
+            </span>
           </div>`;
   }
 
@@ -3370,14 +3402,14 @@
     return `<div class="lm-model-card-center-row lm-model-card-token-row lm-token-metrics-live">
       <span class="lm-model-card-token-metric is-live lm-model-card-token-generating">
         <span class="lm-token-metric-io">
-          <span class="lbl">IN</span><span class="val" data-live-metric="in">0</span>
+          <span class="lm-token-part lm-token-part-in"><span class="lbl">IN</span><span class="val" data-live-metric="in">0</span></span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl">OUT</span><span class="val" data-live-metric="out">0</span>
+          <span class="lm-token-part lm-token-part-out"><span class="lbl">OUT</span><span class="val" data-live-metric="out">0</span></span>
         </span>
         <span class="lm-token-metric-speed">
-          <span class="lbl" data-live-metric="speed-label">DECODE</span><span class="val" data-live-metric="decode">0 t/s</span>
+          <span class="lm-token-part lm-token-part-speed"><span class="lbl" data-live-metric="speed-label">DECODE</span><span class="val" data-live-metric="decode">0 t/s</span></span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl peak">PEAK</span><span class="val" data-live-metric="peak">0 t/s</span>
+          <span class="lm-token-part lm-token-part-peak"><span class="lbl peak">PEAK</span><span class="val" data-live-metric="peak">0 t/s</span></span>
         </span>
       </span>
     </div>`;
@@ -3583,13 +3615,13 @@
       const speedLabel = inPrefill ? 'PREFILL' : 'DECODE';
       return `
         <span class="lm-model-card-token-metric is-live lm-model-card-token-generating" title="${escapeHtml(title)}">
-          <span class="lbl">IN</span>${escapeHtml(formatInTokenDisplay(inputTok))}
+          <span class="lm-token-part lm-token-part-in"><span class="lbl">IN</span>${escapeHtml(formatInTokenDisplay(inputTok))}</span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl">OUT</span>${escapeHtml(String(outTok))}
+          <span class="lm-token-part lm-token-part-out"><span class="lbl">OUT</span>${escapeHtml(String(outTok))}</span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl" data-live-metric="speed-label">${speedLabel}</span>${escapeHtml(formatLiveTokenSpeed(speed))}
+          <span class="lm-token-part lm-token-part-speed"><span class="lbl" data-live-metric="speed-label">${speedLabel}</span>${escapeHtml(formatLiveTokenSpeed(speed))}</span>
           <span class="lm-model-card-token-separator">·</span>
-          <span class="lbl peak">PEAK</span>${escapeHtml(formatLiveTokenSpeed(peakSpeed))}
+          <span class="lm-token-part lm-token-part-peak"><span class="lbl peak">PEAK</span>${escapeHtml(formatLiveTokenSpeed(peakSpeed))}</span>
         </span>`;
     }
     const inTok = formatTokenCount(slot?.prompt_tokens);
@@ -3597,12 +3629,12 @@
     const decode = formatLiveTokenSpeed(slot?.tokens_per_second);
     const peak = formatLiveTokenSpeed(slot?.peak_tokens_per_second);
     const body = [
-      `<span class="lbl">IN</span>${escapeHtml(String(inTok))}`,
-      `<span class="lbl">OUT</span>${escapeHtml(String(outTok))}`,
-      `<span class="lbl">DECODE</span>${escapeHtml(decode)}`,
-      `<span class="lbl peak">PEAK</span>${escapeHtml(peak)}`,
+      `<span class="lm-token-part lm-token-part-in"><span class="lbl">IN</span>${escapeHtml(String(inTok))}</span>`,
+      `<span class="lm-token-part lm-token-part-out"><span class="lbl">OUT</span>${escapeHtml(String(outTok))}</span>`,
+      `<span class="lm-token-part lm-token-part-speed"><span class="lbl">DECODE</span>${escapeHtml(decode)}</span>`,
+      `<span class="lm-token-part lm-token-part-peak"><span class="lbl peak">PEAK</span>${escapeHtml(peak)}</span>`,
     ].join('<span class="lm-model-card-token-separator">·</span>');
-    return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="${escapeHtml(recentCompletionsTitle(recent))}"><span class="lbl">LAST</span>${body}</span>`;
+    return `<span class="lm-model-card-token-metric lm-model-card-token-last" title="${escapeHtml(recentCompletionsTitle(recent))}"><span class="lm-token-part lm-token-part-extra"><span class="lbl">LAST</span></span>${body}</span>`;
   }
 
   function mobileEngineVramHtml(row, server) {
@@ -6044,6 +6076,10 @@
       const url = document.getElementById('serverReachableUrl')?.textContent;
       if (url && url !== '—') navigator.clipboard.writeText(url).then(() => toast('URL copied'));
     });
+    document.getElementById('serverCopyWebAddress')?.addEventListener('click', () => {
+      const url = `${window.location.protocol}//${window.location.host}/`;
+      navigator.clipboard.writeText(url).then(() => toast('Web address copied'));
+    });
     document.getElementById('serverLogsRefresh')?.addEventListener('click', () => void refreshLogs().catch((e) => toast(e.message, false)));
     document.getElementById('serverLogsCopy')?.addEventListener('click', () => void copyVisibleLogs());
     document.getElementById('serverLogsClear')?.addEventListener('click', () => void clearLogs());
@@ -6175,6 +6211,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     bind();
+    syncServerWebAddress();
     updateEnginePageNotice();
     void loadGatewayUrl();
     void paintEnginePowerFromProfiles();

@@ -60,8 +60,10 @@ def _file_size_gb(path: Path) -> float | None:
                 if item.is_file() and pattern.match(item.name)
             )
             if shard_total:
-                return round(shard_total / (1024 ** 3), 2)
-        return round(path.stat().st_size / (1024 ** 3), 2)
+                size_gb = shard_total / (1024 ** 3)
+                return round(size_gb, 6 if size_gb < 0.01 else 2)
+        size_gb = path.stat().st_size / (1024 ** 3)
+        return round(size_gb, 6 if size_gb < 0.01 else 2)
     except OSError:
         return None
 
@@ -312,6 +314,14 @@ def resolve_model_stack(server: dict[str, Any], *, cfg: dict[str, Any] | None = 
         return stack
 
     if profile == 'qwen-dflash':
+        # Do not attach an arbitrary discovered Qwen pair to an unrelated
+        # legacy profile (for example an orphan alias called ``orphan-dflash``).
+        # Explicit target_path remains authoritative; discovery is only safe
+        # when the configured alias identifies the same family.
+        if alias and 'qwen' not in alias.lower():
+            return [
+                _stack_entry(role='alias', label='API alias', path=None, source='api', api_id=alias),
+            ]
         qwen_target, qwen_draft = _discover_qwen_dflash_stack(cfg=cfg)
         if qwen_target and qwen_draft:
             stack = [

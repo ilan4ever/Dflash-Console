@@ -541,7 +541,9 @@ class ConfigTests(unittest.TestCase):
         }):
             result = asyncio.run(list_models())
         ids = {m['id'] for m in result['data']}
-        self.assertEqual(ids, {'gemma-4-12b-it-qat', 'nomic-embed'})
+        # The public gateway list includes both the canonical model id and the
+        # configured engine alias so external apps can address either one.
+        self.assertEqual(ids, {'gemma-4-12b-it-qat', 'gemma-12b-ar', 'nomic-embed'})
 
     def test_shared_port_registry_rejects_cross_list_collisions(self):
         # A runtime port colliding with a server port must be rejected.

@@ -1632,7 +1632,7 @@ async def proxy_remote_node_chat(node_id: str, request: Request):
     import urllib.error
 
     from core.chat_proxy import open_upstream_chat_stream, upstream_chat_completion, wants_stream
-    from core.remote_nodes import _node_headers, get_remote_node, node_chat_url
+    from core.remote_nodes import _node_headers, get_remote_node, resolve_node_chat_target
 
     node = get_remote_node(node_id)
     if not node:
@@ -1642,7 +1642,15 @@ async def proxy_remote_node_chat(node_id: str, request: Request):
 
     raw = await request.body()
     content_type = request.headers.get('content-type') or 'application/json'
-    url = node_chat_url(node)
+    try:
+        url, remote_server_id = resolve_node_chat_target(node)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise HTTPException(status_code=502, detail=detail or f'Remote node server list returned HTTP {exc.code}') from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'Could not inspect remote node engines: {exc}') from exc
+    if not url or not remote_server_id:
+        raise HTTPException(status_code=409, detail='Remote node has no loaded model ready for chat')
     headers = _node_headers(node)
 
     if wants_stream(raw):
@@ -2952,7 +2960,9 @@ def runtime_logs(
     lines: int = Query(default=120, ge=1, le=2000),
 ) -> dict[str, Any]:
     """Tail the per-runtime log file (logs/runtimes/<runtime_id>.log)."""
-    log_path = ROOT / 'logs' / 'runtimes' / f'{str(runtime_id).strip()}.log'
+    cfg = load_config()
+    runtime_key = _resolve_runtime_log_id(cfg, runtime_id)
+    log_path = _runtime_log_path(runtime_key)
     rows: list[str] = []
     if log_path.is_file():
         try:
@@ -2960,7 +2970,45 @@ def runtime_logs(
             rows = content[-int(lines):]
         except OSError:
             rows = []
-    return {'success': True, 'runtime_id': runtime_id, 'lines': rows, 'log_file': str(log_path)}
+    return {'success': True, 'runtime_id': runtime_key, 'lines': rows, 'log_file': str(log_path)}
+
+
+def _runtime_log_path(runtime_id: str) -> Path:
+    """Return a runtime log path after the caller has validated its id."""
+    return ROOT / 'logs' / 'runtimes' / f'{runtime_id}.log'
+
+
+def _resolve_runtime_log_id(cfg: dict[str, Any], requested_id: str) -> str:
+    """Resolve a runtime id safely without allowing path traversal."""
+    requested = str(requested_id or '').strip()
+    for entry in list_runtimes(cfg):
+        if not isinstance(entry, dict):
+            continue
+        runtime_id = str(entry.get('runtime_id') or '').strip()
+        entry_id = str(entry.get('id') or '').strip()
+        if requested and requested in {runtime_id, entry_id}:
+            return runtime_id
+    raise HTTPException(status_code=404, detail=f'unknown runtime: {requested}')
+
+
+def _resolve_runtime_log_id_if_known(cfg: dict[str, Any], requested_id: str) -> str:
+    """Return a runtime id for compatibility routing, or an empty string."""
+    try:
+        return _resolve_runtime_log_id(cfg, requested_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return ''
+        raise
+
+
+@app.delete('/api/runtimes/{runtime_id}/logs')
+def clear_runtime_logs(runtime_id: str) -> dict[str, Any]:
+    """Clear one validated runtime log file."""
+    runtime_key = _resolve_runtime_log_id(load_config(), runtime_id)
+    log_path = _runtime_log_path(runtime_key)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text('', encoding='utf-8')
+    return {'success': True, 'runtime_id': runtime_key, 'lines': [], 'log_file': str(log_path)}
 
 
 @app.get('/api/servers/{server_id}/status')
@@ -3454,27 +3502,68 @@ def _ensure_server_ready_for_chat(
         raise HTTPException(status_code=503, detail=chat_ready_http_error_detail(gate))
 
     def _wait_until_loaded(*, timeout_seconds: float = 180.0) -> dict[str, Any]:
+        """Wait for the runtime to expose the checkpoint as actually loaded.
+
+        A listening router is not sufficient for chat.  In particular, do not
+        return a running/stopped status with an empty model list: the caller
+        would then forward the request and llama-server would answer with the
+        misleading 400 ``model is not loaded`` response.
+        """
+        from core.runtime import probe_runtime_state
+
+        def _not_ready(status: dict[str, Any], *, reason: str, message: str) -> HTTPException:
+            return HTTPException(
+                status_code=503,
+                detail={
+                    'error': 'model_not_loaded',
+                    'message': message,
+                    'type': 'unavailable_error',
+                    'code': 503,
+                    'reason': reason,
+                    'retryable': True,
+                    'status': status.get('status'),
+                    'model_id': status.get('model_id') or server.get('model_id'),
+                    'loaded_models': status.get('loaded_models') or [],
+                },
+            )
+
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             live_status = build_server_status(server, cfg=cfg)
             if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
                 return live_status
-            if live_status.get('status') in {'booting', 'running'}:
+            loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+                str(server.get('api_url') or '')
+            )
+            if loaded_now:
+                return {
+                    **live_status,
+                    'status': 'loaded',
+                    'loaded_models': loaded_now,
+                    'active_model_id': loaded_now[0],
+                    'ready_for_chat': True,
+                }
+            if live_status.get('status') in {'stopped', 'offline', 'failed', 'error'}:
+                raise _not_ready(
+                    live_status,
+                    reason='model_load_failed',
+                    message='Model loading stopped before the checkpoint became ready; retry chat shortly.',
+                )
+            if loading_now or live_status.get('status') in {'booting', 'running'}:
                 time.sleep(2.0)
                 continue
-            return live_status
+            raise _not_ready(
+                live_status,
+                reason='model_not_loaded',
+                message='Model is not ready for chat; retry shortly while the engine recovers.',
+            )
         live_status = build_server_status(server, cfg=cfg)
         if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
             return live_status
-        raise HTTPException(
-            status_code=503,
-            detail={
-                'error': 'model_not_loaded',
-                'message': 'Checkpoint load did not complete — retry chat shortly.',
-                'status': live_status.get('status'),
-                'model_id': live_status.get('model_id'),
-                'loaded_models': live_status.get('loaded_models') or [],
-            },
+        raise _not_ready(
+            live_status,
+            reason='model_load_timeout',
+            message='Checkpoint load did not complete before the readiness timeout; retry chat shortly.',
         )
 
     from core.inference_stats import is_proxy_generating
@@ -3483,20 +3572,6 @@ def _ensure_server_ready_for_chat(
         if status.get('status') != 'loaded':
             status = {**status, 'status': 'loaded'}
         return status
-
-    def _synthetic_loaded_from_config() -> dict[str, Any]:
-        """When a probe fails under concurrent load, trust the configured id."""
-        model_id = str(server.get('model_id') or '').strip()
-        loaded = [model_id] if model_id else []
-        return {
-            **server,
-            'running': True,
-            'status': 'loaded' if loaded else 'running',
-            'booting': False,
-            'loaded_models': loaded,
-            'active_model_id': loaded[0] if loaded else '',
-            'ready_for_chat': bool(loaded),
-        }
 
     # Already-loaded engines answer /v1/models in a fraction of a second.
     # The full status build checks GPU, logs, and the Windows process list,
@@ -3539,10 +3614,43 @@ def _ensure_server_ready_for_chat(
 
     # Another chat is already mid-flight on this engine: never JIT-load (that
     # path raises model_already_loaded_elsewhere / stack-repair 409s and can
-    # stop_server under DFlash draft profiles). Share the live or configured id.
+    # stop_server under DFlash draft profiles). Share it only after the
+    # runtime confirms that a checkpoint is actually loaded. The old fallback
+    # synthesized a loaded model from config when the probe was empty, which
+    # let llama-server return HTTP 400 ``model is not loaded`` during stale
+    # inference/load transitions.
     if is_proxy_generating(server_id):
         if not live.get('loaded_models'):
-            live = _synthetic_loaded_from_config()
+            from core.runtime import probe_runtime_state
+
+            loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+                str(server.get('api_url') or '')
+            )
+            if loaded_now:
+                live = {
+                    **live,
+                    'status': 'loaded',
+                    'loaded_models': loaded_now,
+                    'active_model_id': loaded_now[0],
+                    'ready_for_chat': True,
+                }
+            elif loading_now or live.get('status') == 'booting':
+                return _wait_until_loaded()
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        'error': 'model_not_loaded',
+                        'message': 'A chat is marked active, but the checkpoint is not ready; retry shortly.',
+                        'type': 'unavailable_error',
+                        'code': 503,
+                        'reason': 'model_not_loaded',
+                        'retryable': True,
+                        'status': live.get('status'),
+                        'model_id': live.get('model_id') or server.get('model_id'),
+                        'loaded_models': [],
+                    },
+                )
         live = _status_as_loaded(live)
         if required_context and cfg.get('context_auto_grow') is not False:
             loaded_ctx = _loaded_per_slot_context(server)
@@ -3609,7 +3717,36 @@ def _ensure_server_ready_for_chat(
             if live.get('loaded_models') or is_proxy_generating(server_id):
                 break
         if is_proxy_generating(server_id) and not live.get('loaded_models'):
-            live = _synthetic_loaded_from_config()
+            from core.runtime import probe_runtime_state
+
+            loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+                str(server.get('api_url') or '')
+            )
+            if loaded_now:
+                live = {
+                    **live,
+                    'status': 'loaded',
+                    'loaded_models': loaded_now,
+                    'active_model_id': loaded_now[0],
+                    'ready_for_chat': True,
+                }
+            elif loading_now or live.get('status') == 'booting':
+                return _wait_until_loaded()
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        'error': 'model_not_loaded',
+                        'message': 'A chat is marked active, but the checkpoint is not ready; retry shortly.',
+                        'type': 'unavailable_error',
+                        'code': 503,
+                        'reason': 'model_not_loaded',
+                        'retryable': True,
+                        'status': live.get('status'),
+                        'model_id': live.get('model_id') or server.get('model_id'),
+                        'loaded_models': [],
+                    },
+                )
         if live.get('loaded_models'):
             live = _status_as_loaded(live)
             note_engine_active_client(
@@ -3684,6 +3821,10 @@ def _ensure_server_ready_for_chat(
             detail={
                 'error': 'model_load_failed',
                 'message': str(result.get('error') or 'model load failed'),
+                'type': 'unavailable_error',
+                'code': 503,
+                'reason': 'model_load_failed',
+                'retryable': True,
                 'status': live.get('status'),
                 'model_id': live.get('model_id'),
             },
@@ -4807,6 +4948,13 @@ def server_logs(server_id: str, tail: int = 200) -> dict[str, Any]:
     from core.log_utils import read_tail_lines
 
     cfg = load_config()
+    # Keep the older log path useful for runtime clients and older Console UI
+    # builds.  Runtime logs are not engine logs and must not go through
+    # _require_server(), which previously turned /api/logs/transformers into a
+    # noisy 404 even though the runtime log endpoint existed.
+    runtime_id = _resolve_runtime_log_id_if_known(cfg, server_id)
+    if runtime_id:
+        return runtime_logs(runtime_id, lines=max(1, min(int(tail), 2000)))
     server = _require_server(cfg, server_id)
     log_path = ROOT / 'logs' / f'{server_id}.log'
     if not log_path.is_file():
@@ -4828,7 +4976,11 @@ def server_logs(server_id: str, tail: int = 200) -> dict[str, Any]:
 
 @app.delete('/api/logs/{server_id}')
 def clear_server_logs(server_id: str) -> dict[str, Any]:
-    _require_server(load_config(), server_id)
+    cfg = load_config()
+    runtime_id = _resolve_runtime_log_id_if_known(cfg, server_id)
+    if runtime_id:
+        return clear_runtime_logs(runtime_id)
+    _require_server(cfg, server_id)
     log_path = ROOT / 'logs' / f'{server_id}.log'
     LOG_DIR = log_path.parent
     LOG_DIR.mkdir(parents=True, exist_ok=True)

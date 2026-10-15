@@ -119,9 +119,9 @@ class ModelStackTests(unittest.TestCase):
             first = root / 'demo-model-00001-of-00003.gguf'
             second = root / 'demo-model-00002-of-00003.gguf'
             third = root / 'demo-model-00003-of-00003.gguf'
-            first.write_bytes(b'1234')
-            second.write_bytes(b'5678')
-            third.write_bytes(b'9')
+            first.write_bytes(b'0' * 1234)
+            second.write_bytes(b'0' * 5678)
+            third.write_bytes(b'0' * 9)
             size = _file_size_gb(first)
             self.assertAlmostEqual(size or 0.0, (1234 + 5678 + 9) / (1024 ** 3), places=6)
 

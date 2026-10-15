@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from core.config import load_config, normalize_remote_node, normalize_remote_nodes, save_config
 
@@ -108,9 +108,38 @@ def remove_remote_node(node_id: str, *, cfg: dict[str, Any] | None = None) -> bo
     return True
 
 
-def node_chat_url(node: dict[str, Any]) -> str:
+def node_chat_url(node: dict[str, Any], server_id: str = '') -> str:
     base = str(node.get('base_url') or '').strip().rstrip('/')
+    if server_id:
+        return f'{base}/api/servers/{quote(str(server_id), safe="")}/v1/chat/completions'
     return f'{base}/v1/chat/completions'
+
+
+def resolve_node_chat_target(node: dict[str, Any], *, timeout: float = 8.0) -> tuple[str, str]:
+    """Return the UI-proxy chat URL for the first remote server ready for chat."""
+    base = str(node.get('base_url') or '').strip().rstrip('/')
+    if not base:
+        return '', ''
+    req = urllib.request.Request(
+        f'{base}/api/servers',
+        headers=_node_headers(node),
+        method='GET',
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    servers = payload.get('servers') if isinstance(payload, dict) else None
+    if not isinstance(servers, list):
+        return '', ''
+    ready = [
+        row for row in servers
+        if isinstance(row, dict)
+        and row.get('enabled') is not False
+        and (row.get('ready_for_chat') is True or row.get('status') == 'loaded')
+    ]
+    if not ready:
+        return '', ''
+    server_id = str(ready[0].get('id') or '').strip()
+    return (node_chat_url(node, server_id), server_id) if server_id else ('', '')
 
 
 def node_health_url(node: dict[str, Any]) -> str:

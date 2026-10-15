@@ -797,6 +797,10 @@ def _siblings_for_download_list(
     merged = _siblings_with_sizes(rows, [])
     if _siblings_have_file_sizes(merged):
         return merged
+    # Non-GGUF repositories already have a usable file list in ``siblings``.
+    # Do not walk the Hub tree merely to fill optional size metadata.
+    if not any(_entry_name(row).lower().endswith('.gguf') for row in rows):
+        return merged
     tree = _resolve_repo_tree(repo, rows, deadline=deadline)
     enriched = _siblings_with_sizes(rows, tree)
     return enriched if enriched else merged
@@ -858,7 +862,10 @@ def _preferred_gguf_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
 
     pool = [
         row for row in files
-        if str(row.get('format')) == 'gguf'
+        if (
+            str(row.get('format') or '').lower() == 'gguf'
+            or str(row.get('filename') or '').lower().endswith('.gguf')
+        )
         and not is_auxiliary_gguf_filename(str(row.get('filename') or ''))
     ]
     if not pool:
@@ -1530,6 +1537,13 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         if disk_gb and disk_gb > 0:
             size_gb = disk_gb
             size_label = f'{disk_gb:g} GB'
+    if not size_gb or float(size_gb) <= 0:
+        # ``usedStorage`` is authoritative when the Hub omits per-file sizes.
+        # Prefer it over a parameter-count estimate for complete repositories.
+        stored_gb, stored_label = _size_from_hub_storage(raw)
+        if stored_gb and stored_gb > 0:
+            size_gb = stored_gb
+            size_label = stored_label
     if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
         est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=has_gguf)
         if est_gb:
@@ -1601,6 +1615,10 @@ def _row_needs_size_enrich(row: dict[str, Any]) -> bool:
     if isinstance(size_gb, (int, float)) and 0 < float(size_gb) < 0.05 and has_gguf:
         return True
     label = str(row.get('size_label') or '').strip()
+    if label.startswith('~'):
+        # Parameter-name estimates should be replaced by measured Hub sizes
+        # when the caller explicitly requested enrichment.
+        return True
     if label and label not in ('—', '0 GB', '0.0 GB'):
         return False
     if isinstance(size_gb, (int, float)) and float(size_gb) > 0:
@@ -3955,6 +3973,11 @@ def _supplemental_history_paths() -> list[Path]:
         primary = _HISTORY_PATH.resolve()
     except OSError:
         primary = _HISTORY_PATH
+    default_primary = (ROOT / 'logs' / 'hf-download-history.json').resolve()
+    if primary != default_primary:
+        # Custom history paths are isolated profiles (or test fixtures). Do
+        # not merge machine-wide history into them.
+        return []
     candidates: list[Path] = [
         PACKAGE_ROOT / 'logs' / 'hf-download-history.json',
         default_user_data_root() / 'logs' / 'hf-download-history.json',

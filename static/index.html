@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.274</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.275</span>
           </div>
         </div>
       </div>
@@ -92,7 +92,6 @@
       <div class="lm-sysbar-row">
         <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
         <div class="lm-sysbar-spacer" aria-hidden="true"></div>
-        <button type="button" class="lm-console-url" id="dfConsoleUrl" title="This Console’s web address — same for the browser and the desktop app. Click to copy.">http://127.0.0.1:8900/</button>
         <div class="lm-server-link-badge developer hidden" id="devServerBadge" role="status" title="Developer build — served from the git checkout">Developer</div>
         <div class="lm-server-link-badge starting" id="serverLinkBadge" role="status" aria-live="polite" title="Starting the Console API and checking engine services…">Starting…</div>
         <div class="lm-status-feed" id="statusFeed" aria-live="polite" title="Activity status">
@@ -110,7 +109,7 @@
       <header class="df-pagehead">
         <h1 class="df-page-title" id="dfPageTitle">Engines</h1>
         <div class="df-page-actions">
-          <button class="lm-btn ghost small" data-action="toggle-inspector" title="Show/hide runtime panel">Runtime panel</button>
+          <button class="lm-btn ghost small df-runtime-panel-btn" data-action="toggle-inspector" title="Show/hide runtime panel">Runtime panel</button>
         </div>
       </header>
 
@@ -294,6 +293,8 @@ try {
                 <div class="lm-server-api">
                   <span class="lm-reachable">API: <code id="serverReachableUrl">—</code></span>
                   <button class="lm-icon-btn small" id="serverCopyUrl" title="Copy API URL">⧉</button>
+                  <span class="lm-web-address" title="DFlash Console web address">Web: <code id="serverWebAddress">—</code></span>
+                  <button class="lm-icon-btn small" id="serverCopyWebAddress" title="Copy web address">⧉</button>
                 </div>
               </div>
               <div class="lm-server-bar-row lm-server-bar-row-load">
@@ -544,7 +545,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.274</strong>
+                <strong id="dfAboutVersion">v0.3.275</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1905,7 +1906,7 @@ try {
         <div class="lm-modal-head df-confirm-head">
           <div>
             <div class="df-update-kicker">Import model</div>
-            <h2 id="importToConsoleTitle">Import model to Flash Console?</h2>
+            <h2 id="importToConsoleTitle">Import model to DFlash Console?</h2>
           </div>
           <button class="lm-icon-btn" type="button" data-action="close-modal" aria-label="Close">✕</button>
         </div>
@@ -1917,14 +1918,14 @@ try {
               <input type="radio" name="importMode" value="copy" checked>
               <div>
                 <strong>Copy to Console library</strong>
-                <span class="lm-setting-desc">Keeps the original model where it is and adds a copy under Flash Console.</span>
+                <span class="lm-setting-desc">Keeps the original model where it is and adds a copy under DFlash Console.</span>
               </div>
             </label>
             <label class="df-import-option">
               <input type="radio" name="importMode" value="move">
               <div>
                 <strong>Move to Console library</strong>
-                <span class="lm-setting-desc">Removes the model from its current location and moves it under Flash Console.</span>
+                <span class="lm-setting-desc">Removes the model from its current location and moves it under DFlash Console.</span>
               </div>
             </label>
           </div>

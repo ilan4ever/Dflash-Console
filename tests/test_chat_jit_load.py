@@ -96,7 +96,7 @@ def test_ensure_ready_notes_active_client_when_already_loaded(monkeypatch):
     )
     monkeypatch.setattr(
         'core.engine_state.note_engine_active_client',
-        lambda sid, client_label='': active_calls.append((sid, client_label)) or {'loaded_by_changed': True},
+        lambda sid, client_label='', **kwargs: active_calls.append((sid, client_label)) or {'loaded_by_changed': True},
     )
 
     live = _ensure_server_ready_for_chat(
@@ -197,7 +197,7 @@ def test_ensure_ready_reuses_checkpoint_loaded_on_other_engine(monkeypatch):
     )
     monkeypatch.setattr(
         'core.engine_state.note_engine_active_client',
-        lambda sid, client_label='': active_calls.append((sid, client_label)) or {'loaded_by_changed': True},
+        lambda sid, client_label='', **kwargs: active_calls.append((sid, client_label)) or {'loaded_by_changed': True},
     )
     monkeypatch.setattr('api.app.load_server_checkpoint', lambda *args, **kwargs: {'success': False})
 

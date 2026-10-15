@@ -13,6 +13,7 @@ from core.remote_nodes import (
     node_chat_url,
     node_health_url,
     remove_remote_node,
+    resolve_node_chat_target,
     save_remote_nodes,
 )
 
@@ -37,6 +38,32 @@ def test_remote_node_urls():
     node = {'base_url': 'http://192.168.1.10:8900'}
     assert node_health_url(node) == 'http://192.168.1.10:8900/api/health'
     assert node_chat_url(node) == 'http://192.168.1.10:8900/v1/chat/completions'
+    assert node_chat_url(node, 'engine one') == 'http://192.168.1.10:8900/api/servers/engine%20one/v1/chat/completions'
+
+
+def test_resolve_node_chat_target_uses_ready_remote_server():
+    payload = json.dumps({
+        'servers': [
+            {'id': 'stopped', 'enabled': True, 'ready_for_chat': False, 'status': 'stopped'},
+            {'id': 'ready-engine', 'enabled': True, 'ready_for_chat': True, 'status': 'loaded'},
+        ],
+    }).encode('utf-8')
+
+    class FakeResp:
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    node = {'base_url': 'http://192.168.1.10:8900'}
+    with patch('core.remote_nodes.urllib.request.urlopen', return_value=FakeResp()):
+        url, server_id = resolve_node_chat_target(node)
+    assert server_id == 'ready-engine'
+    assert url.endswith('/api/servers/ready-engine/v1/chat/completions')
 
 
 def test_add_and_remove_remote_node(tmp_path, monkeypatch):

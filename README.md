@@ -15,7 +15,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.274
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.275
 
 ## Download (Windows)
 
@@ -110,7 +110,7 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.274)
+### Recent improvements (v0.3.275)
 
 - **Engines and library** — live token counts follow the name the engine actually loaded, prompt reading is labeled separately from generation speed, a full model name stays on that model, and the phone and desktop sidebars remember their own menu state
 - **Startup** — the desktop app keeps its own Python environment, so an upgrade no longer stops when the computer’s Python is missing the server
@@ -174,14 +174,24 @@ header, callers appear as **Unknown API client**. See [docs/CLIENT-IDENTITY.md](
 **Cursor IDE:** same machine → `http://127.0.0.1:8001/v1`, placeholder API key, model id from
 `GET /v1/models`. Not `dflash serve --model …` and not ngrok for local use. [docs/CURSOR.md](./docs/CURSOR.md)
 
+The complete external-control reference, including engine, runtime, download,
+node, provider, DFlash-stack, GPU-budget, and diagnostics routes is in
+[docs/API.md](./docs/API.md). The running app exposes the same reference in
+**Documentation → External API reference**.
+
 Selected Console routes (UI/API on port **8900**):
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/api/health` | Liveness |
 | `GET` | `/api/servers` | Engine status |
+| `GET` | `/api/servers/{id}/chat-ready` | Authoritative readiness/JIT state |
+| `GET` | `/api/servers/{id}/load-plan` | VRAM-aware load plan and unload suggestions |
 | `POST` | `/api/models/load` | Load any catalog model; pick engine with `runtime_id` |
+| `POST` | `/api/servers/{id}/load` | Load one exact engine/checkpoint |
+| `POST` | `/api/servers/{id}/unload` | Unload a model |
 | `POST` | `/api/servers/{id}/v1/chat/completions` | Chat through a llama-server / DFlash engine |
+| `POST` | `/api/servers/{id}/cancel-inference` | Cancel active inference |
 | `POST` | `/api/servers/vllm/v1/chat/completions` | Chat through vLLM |
 | `POST` | `/api/servers/transformers/v1/chat/completions` | Chat through Transformers |
 | `POST` | `/api/servers/freetoken/v1/chat/completions` | Chat through FreeToken |
@@ -190,6 +200,11 @@ Selected Console routes (UI/API on port **8900**):
 | `POST` | `/api/runtimes/stt/v1/audio/transcriptions` | Whisper STT |
 | `GET` | `/api/models` | Full local library |
 | `GET` | `/api/runtimes` | All runtimes and adapters |
+| `GET` | `/api/system-stats` | CPU, RAM, GPU, and VRAM telemetry |
+| `GET` | `/api/gpu/budget` | VRAM budget and load guardrail details |
+| `GET` | `/api/status/report` | Full machine/runtime/engine report |
+| `GET` | `/api/console/logs?errors_only=true` | Structured error report |
+| `GET` | `/api/endpoints` | Live Console and gateway route inventory |
 | `GET` | `/api/docs/catalog` | In-app documentation |
 
 Load a Hugging Face folder on a specific engine:
@@ -205,6 +220,17 @@ Use `"runtime_id": "transformers"` or `"freetoken"` the same way.
 
 Full list: **Documentation** in the app, or Swagger at
 `http://127.0.0.1:8900/docs`.
+
+### Errors and memory pressure
+
+Direct Console errors use FastAPI's `{"detail": ...}` envelope. Gateway errors
+use an OpenAI-shaped `{"error": ...}` envelope with a message, type, code,
+reason, and (when applicable) `retryable`. A first chat request can JIT-load a
+model; callers should poll `/api/servers/{id}/chat-ready` or retry a 503 marked
+`retryable=true`, not switch models. A VRAM refusal reports
+`insufficient_vram`, the free/required VRAM, and an `unload_first` list. Console
+never silently kills unrelated GPU applications. See [docs/API.md](./docs/API.md)
+for request examples and the complete status/error matrix.
 
 ---
 

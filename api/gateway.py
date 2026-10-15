@@ -37,7 +37,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.chat_proxy import wants_stream
 from core.config import is_embedding_server, list_runtimes, list_servers, load_config, normalize_inference_settings
@@ -58,6 +59,46 @@ from core.model_presets import server_target_path_on_disk
 logger = logging.getLogger(__name__)
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
+
+
+def _gateway_error(error: Any, status_code: int) -> dict[str, Any]:
+    if isinstance(error, dict) and isinstance(error.get('error'), dict):
+        payload = dict(error['error'])
+    elif isinstance(error, dict):
+        payload = dict(error)
+    else:
+        payload = {'message': str(error or f'gateway HTTP {status_code}')}
+    payload.setdefault('message', f'gateway HTTP {status_code}')
+    payload.setdefault('type', 'invalid_request_error' if status_code < 500 else 'gateway_error')
+    payload.setdefault('code', status_code)
+    payload.setdefault('retryable', status_code in {408, 409, 425, 429, 500, 502, 503, 504})
+    return {'error': payload}
+
+
+@gateway_app.exception_handler(HTTPException)
+async def gateway_http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+    """Keep gateway failures OpenAI-shaped, including local routing errors."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_gateway_error(exc.detail, exc.status_code),
+    )
+
+
+@gateway_app.exception_handler(RequestValidationError)
+async def gateway_validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            'error': {
+                'message': 'Request validation failed',
+                'type': 'invalid_request_error',
+                'code': 422,
+                'param': 'request',
+                'details': exc.errors(),
+                'retryable': False,
+            },
+        },
+    )
 
 
 def gateway_cloud_chat_enabled(cfg: dict[str, Any]) -> bool:
@@ -85,50 +126,38 @@ _STREAM_HEADERS = {
 
 def _upstream_error_payload(raw: bytes, status_code: int) -> dict[str, Any]:
     """Normalize Console/FastAPI error bodies for gateway clients (Harness, OpenAI SDK)."""
+    def normalized(error: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(error)
+        payload.setdefault('code', status_code)
+        payload.setdefault('retryable', status_code in {408, 409, 425, 429, 500, 502, 503, 504})
+        return {'error': payload}
+
     text = raw.decode('utf-8', errors='replace').strip()
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        return {
-            'error': {
-                'message': text or f'upstream HTTP {status_code}',
-                'type': 'upstream_error',
-                'code': status_code,
-            }
-        }
+        return normalized({
+            'message': text or f'upstream HTTP {status_code}',
+            'type': 'upstream_error',
+        })
     if not isinstance(parsed, dict):
-        return {
-            'error': {
-                'message': text,
-                'type': 'upstream_error',
-                'code': status_code,
-            }
-        }
+        return normalized({'message': text, 'type': 'upstream_error'})
     detail = parsed.get('detail')
     if isinstance(detail, dict):
         nested = detail.get('error')
         if isinstance(nested, dict):
-            return {'error': nested}
+            return normalized(nested)
         if isinstance(nested, str):
-            return {
-                'error': {
-                    'message': str(detail.get('message') or nested),
-                    'type': 'invalid_request_error',
-                    'code': status_code,
-                    'reason': nested,
-                    **{k: v for k, v in detail.items() if k not in {'error', 'message'}},
-                }
-            }
-        return {'error': detail}
+            return normalized({
+                'message': str(detail.get('message') or nested),
+                'type': 'invalid_request_error',
+                'reason': nested,
+                **{k: v for k, v in detail.items() if k not in {'error', 'message'}},
+            })
+        return normalized(detail)
     if isinstance(parsed.get('error'), dict):
-        return parsed
-    return {
-        'error': {
-            'message': text,
-            'type': 'upstream_error',
-            'code': status_code,
-        }
-    }
+        return normalized(parsed['error'])
+    return normalized({'message': text, 'type': 'upstream_error'})
 
 
 def _console_base(cfg: dict[str, Any]) -> str:
@@ -164,8 +193,15 @@ def _pick_headers(request: Request) -> dict[str, str]:
         for key, value in request.headers.items()
         if key.lower() in _FORWARD_HEADERS
     }
-    headers.setdefault('X-DFlash-Client', 'OpenAI Gateway')
-    headers.setdefault('X-DFlash-Component', 'external.openai_gateway')
+    # Starlette preserves the incoming header spelling.  ``dict.setdefault``
+    # is case-sensitive, so an incoming lower-case ``x-dflash-client`` used to
+    # be silently shadowed by the default ``X-DFlash-Client`` value.  External
+    # clients rely on this identity for attribution in the Engines panel.
+    lower = {key.lower() for key in headers}
+    if 'x-dflash-client' not in lower:
+        headers['X-DFlash-Client'] = 'OpenAI Gateway'
+    if 'x-dflash-component' not in lower:
+        headers['X-DFlash-Component'] = 'external.openai_gateway'
     return headers
 
 
@@ -404,6 +440,12 @@ async def list_models() -> dict[str, Any]:
     listed_ids = {str(row.get('id') or '').lower() for row in data}
     try:
         default_server = default_gateway_chat_server(cfg)
+        # Cursor compatibility aliases are useful only when the default local
+        # engine has a real target.  Advertising them for an incomplete test or
+        # repair profile makes the public model list look like it has working
+        # models that cannot actually serve requests.
+        if not server_target_path_on_disk(default_server, cfg=cfg):
+            return {'object': 'list', 'data': data}
         canonical = catalog_model_id(default_server)
         default_label = str(default_server.get('label') or default_server.get('id') or canonical)
         for alias in sorted(CURSOR_COMPAT_MODEL_IDS):
@@ -483,17 +525,18 @@ async def _forward_chat(
         try:
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream('POST', url, content=body, headers=headers) as upstream:
-                    if upstream.status_code >= 400:
+                    status_code = int(getattr(upstream, 'status_code', 200) or 200)
+                    if status_code >= 400:
                         raw_err = await upstream.aread()
                         # Re-raise as HTTPStatusError with body already buffered.
                         response = httpx.Response(
-                            upstream.status_code,
+                            status_code,
                             content=raw_err,
                             request=upstream.request,
                             headers=upstream.headers,
                         )
                         raise httpx.HTTPStatusError(
-                            f'Client error {upstream.status_code}',
+                            f'Client error {status_code}',
                             request=upstream.request,
                             response=response,
                         )

@@ -169,7 +169,13 @@ def _advertised_engine_server(server: dict[str, Any], *, cfg: dict[str, Any]) ->
         return server.get('enabled', True) is not False
     from core.model_presets import server_target_path_on_disk
 
-    return bool(server_target_path_on_disk(server, cfg=cfg))
+    if server_target_path_on_disk(server, cfg=cfg):
+        return True
+    # Keep a configured engine visible to OpenAI clients even while its local
+    # checkpoint is missing.  The model list is also the discovery surface for
+    # external control apps; the subsequent load/chat call returns the precise
+    # repair/readiness error instead of making the engine disappear silently.
+    return bool(str(server.get('model_id') or '').strip()) and server.get('enabled', True) is not False
 
 
 def enabled_chat_servers(cfg: dict[str, Any]) -> list[dict[str, Any]]:

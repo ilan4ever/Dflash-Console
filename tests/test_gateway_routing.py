@@ -103,6 +103,20 @@ def test_resolve_chat_server_matches_dotted_model_id():
     assert server['id'] == 'qwen3-8-27b-q6-k-l-dflash'
 
 
+def test_resolve_underdog_dotted_alias_to_hyphenated_server():
+    cfg = _cfg()
+    cfg['servers'].append({
+        'id': 'underdog-saluki-27b-1-0-iq2-mix',
+        'enabled': True,
+        'port': 8099,
+        'label': 'Underdog Saluki',
+        'model_id': 'underdog-saluki-27b-1.0-iq2-mix',
+        'target_path': r'C:\models\underdog.gguf',
+    })
+    server = resolve_chat_server(cfg, 'underdog-saluki-27b-1.0-iq2-mix')
+    assert server['id'] == 'underdog-saluki-27b-1-0-iq2-mix'
+
+
 def test_gateway_public_model_ids_includes_dflash_suffix_when_stack_ready():
     qwen = {
         'id': 'qwen3-8-27b-q6-k-l-dflash',
@@ -121,19 +135,20 @@ def test_gateway_public_model_ids_omits_dflash_suffix_without_real_stack():
         'model_id': 'qwen3.8-27b-q6-k-l',
         'profile': 'qwen-dflash',
     }
-    ids = gateway_public_model_ids(qwen)
-    assert 'qwen3-8-27b-q6-k-l' in ids
-    assert 'qwen3.8-27b-q6-k-l' in ids
-    assert 'qwen3-8-27b-q6-k-l-dflash' not in ids
-
     mtp = {
         'id': 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash',
         'model_id': 'qwen3.8-27b-gsq-rco-iq3-xxs-mtp',
         'profile': 'qwen-dflash',
     }
-    mtp_ids = gateway_public_model_ids(mtp)
-    assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp' in mtp_ids
-    assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash' not in mtp_ids
+    with patch('core.model_presets.server_dflash_stack_ready', return_value=False):
+        ids = gateway_public_model_ids(qwen)
+        assert 'qwen3-8-27b-q6-k-l' in ids
+        assert 'qwen3.8-27b-q6-k-l' in ids
+        assert 'qwen3-8-27b-q6-k-l-dflash' not in ids
+
+        mtp_ids = gateway_public_model_ids(mtp)
+        assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp' in mtp_ids
+        assert 'qwen3-8-27b-gsq-rco-iq3-xxs-mtp-dflash' not in mtp_ids
 
 
 def test_resolve_chat_server_still_matches_dflash_suffix():

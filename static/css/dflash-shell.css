@@ -460,6 +460,43 @@ body.lm-resizing-sidenav {
   flex-shrink: 0;
 }
 
+.df-shell .df-runtime-panel-btn {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid #30343b !important;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #292d33 0%, #1c2026 46%, #101216 100%) !important;
+  color: #c7cbd1 !important;
+  font-weight: 650;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.28),
+    0 2px 0 #111827,
+    0 4px 8px rgba(0, 0, 0, 0.34);
+}
+
+.df-shell .df-runtime-panel-btn:hover {
+  border-color: #4b515b !important;
+  background: linear-gradient(180deg, #383d45 0%, #292e36 46%, #171a1f 100%) !important;
+  color: #e5e7eb !important;
+}
+
+.df-shell .df-runtime-panel-btn.active {
+  border-color: #3f454e !important;
+  background: linear-gradient(180deg, #20242a 0%, #15181d 52%, #0b0d10 100%) !important;
+  color: #d7dbe0 !important;
+  box-shadow:
+    inset 0 2px 3px rgba(0, 0, 0, 0.38),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    0 1px 0 #111827,
+    0 2px 5px rgba(0, 0, 0, 0.28);
+}
+
+.df-shell .df-runtime-panel-btn:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.9);
+  outline-offset: 2px;
+}
+
 .df-shell .lm-topnav {
   display: none;
 }
@@ -2615,7 +2652,9 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
 }
 
 .df-shell .lm-server-cards {
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .df-shell .lm-gpu-overhead-card {
@@ -3838,6 +3877,290 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   flex: 0 1 auto;
 }
 
+/* Desktop engine cards: one aligned row. A second row is only the paths
+   and live stats, and only when that extra text is actually present. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 3px;
+  padding: 7px 12px 6px;
+  box-shadow: inset 0 34px 0 rgba(20, 83, 45, 0.28);
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready::after {
+  content: "";
+  order: 9;
+  flex: 0 0 100%;
+  height: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.external-gpu {
+  box-shadow: inset 0 34px 0 rgba(15, 23, 42, 0.45);
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.selected {
+  box-shadow: inset 0 0 0 1px rgba(42, 107, 92, 0.35);
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-loaded-by-prompt,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-external-prompt,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-top,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-top > .lm-model-card-center,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-title-row {
+  display: contents;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-tags {
+  display: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-origin {
+  order: 2;
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip .lm-tag.dflash-logo-label {
+  width: 148px;
+  height: 32px;
+  padding: 0;
+  background-color: transparent;
+  background-size: contain;
+  background-position: left center;
+  background-repeat: no-repeat;
+  mix-blend-mode: screen;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-identity {
+  order: 1;
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-name-line,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-path {
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-path {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-labels,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-kind {
+  order: 3;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: none;
+  min-width: max-content;
+  justify-content: flex-start;
+  overflow: visible;
+  flex-wrap: nowrap;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-vram-ctx {
+  order: 5;
+  flex: 0 0 auto;
+  width: max-content;
+  justify-content: flex-start;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-loaded-by-prompt > .lm-loaded-by-badges {
+  order: 6;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  margin: 0 0 0 auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster {
+  order: 10;
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin-left: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-identity,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-app-name {
+  order: 1;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  overflow: visible;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-badges {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-app-badge {
+  flex-shrink: 0;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-detail {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  text-align: left;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-controls,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-prompt-actions,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-actions {
+  order: 2;
+  flex: 0 0 auto;
+  width: max-content;
+  margin: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-engine-head-controls,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-external-prompt-actions {
+  margin-left: auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-details,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+  order: 10;
+  flex: 1 1 240px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  min-width: 0;
+  margin: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-detail-line,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.lm-model-card-compact .lm-model-stats,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-stats {
+  order: 11;
+  flex: 0 1 auto;
+  margin-left: auto;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  overflow: hidden;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+  margin: 0 0 0 auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-sizes {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-foot,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-foot-metrics,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-live-metrics-host {
+  flex: 1 1 auto;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 1180px) {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    box-shadow: none;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-identity {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-origin {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-controls,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-actions,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-prompt-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-labels,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-kind {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-vram-ctx,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-identity,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-app-name {
+    grid-column: 3;
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-loaded-by-identity,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-external-app-name {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-details,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-stats,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-stats {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+}
+
 .df-shell .lm-model-card-compact .lm-model-stats .lm-btn,
 .df-shell .lm-model-card-compact .lm-engine-head-actions .lm-btn {
   min-width: 64px;
@@ -4137,6 +4460,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   min-width: 0;
 }
 
+.df-shell .lm-engine-gpu-label {
+  color: rgba(186, 198, 214, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .df-shell .lm-engine-head-gpu-now {
   max-width: 11rem;
   overflow: hidden;
@@ -4146,18 +4478,18 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
   font-weight: 650;
   line-height: 1.2;
   letter-spacing: 0.01em;
-  color: #d8ffef;
+  color: #dbeafe;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(16, 120, 90, 0.32);
-  border: 1px solid rgba(110, 231, 183, 0.38);
+  background: rgba(37, 99, 235, 0.28);
+  border: 1px solid rgba(96, 165, 250, 0.55);
 }
 
 .df-shell .lm-engine-head-gpu-now::before {
   content: "on ";
   font-weight: 500;
   letter-spacing: 0;
-  color: rgba(187, 247, 208, 0.78);
+  color: rgba(191, 219, 254, 0.9);
 }
 
 .df-shell .lm-engine-head-actions {
@@ -5659,6 +5991,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
 
 .df-shell .lm-server-api code {
   word-break: break-all;
+}
+
+.df-shell .lm-web-address {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.df-shell .lm-web-address code {
+  color: var(--text-dim);
 }
 
 @media (max-width: 900px) {
@@ -9202,7 +9543,7 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
 
   .df-shell .lm-server-cards,
   .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards {
-    gap: 5px;
+    gap: 6px;
   }
 
   html.df-narrow .df-shell .lm-view[data-view="models"] .lm-models-mobile-cards:not(.hidden) {
@@ -10093,17 +10434,70 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
 
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-row {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: baseline;
-    justify-content: flex-start;
+    justify-content: flex-end;
     gap: 4px;
     min-width: 0;
     max-width: 100%;
     margin: 0;
-    overflow: visible;
-    white-space: normal;
+    overflow: hidden;
+    white-space: nowrap;
     font-size: 11px;
     line-height: 1.3;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-generating,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-last,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-slot-metric-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 0 8px;
+    width: 100%;
+    max-height: 1.35em;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-metric-io,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-metric-speed {
+    display: contents;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-separator {
+    display: none;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    overflow: visible;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part-extra {
+    order: 0;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part-out {
+    order: 1;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part-peak {
+    order: 2;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part-in,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part-speed {
+    order: 3;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-token-part .val,
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .val {
+    overflow: visible;
+    text-overflow: clip;
+    min-width: auto;
   }
 
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-metric {
@@ -10152,17 +10546,20 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
     content: none;
   }
 
-  /* Narrow cards: memory size first, model name left, tokens only on the next line. */
+  /* Narrow cards: the model name stays whole. Memory and GPU drop off the line when zoomed. */
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head,
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head.lm-model-card-loaded-by-prompt,
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card.external-gpu .lm-mobile-engine-head.lm-model-card-external-prompt {
+    position: relative;
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-start;
     gap: 8px;
     grid-template-columns: none;
-    padding: 5px 8px 4px;
+    padding: 5px 78px 4px 8px;
+    max-height: 32px;
+    overflow: hidden;
     min-width: 0;
     background: transparent;
     border-bottom: 0;
@@ -10175,12 +10572,14 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
     align-items: baseline;
     flex: 0 0 auto;
     gap: 4px;
-    min-width: 0;
-    order: 0;
+    min-width: max-content;
+    order: 1;
+    margin-left: 0;
     font-size: 11px;
     font-weight: 600;
     line-height: 1.2;
     white-space: nowrap;
+    overflow: visible;
     color: rgba(248, 250, 252, 0.96);
   }
 
@@ -10193,11 +10592,11 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
   }
 
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-gpu {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 7.5em;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex: 0 0 auto;
+    min-width: max-content;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
     font-size: 10px;
     font-weight: 500;
     color: rgba(203, 213, 225, 0.78);
@@ -10206,9 +10605,10 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-mobile-engine-meta-title,
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-model-path {
     display: block;
-    flex: 1 1 auto;
-    order: 1;
+    flex: 0 1 auto;
+    order: 0;
     min-width: 0;
+    max-width: 100%;
     margin: 0;
     font-size: 12px;
     font-weight: 600;
@@ -10216,14 +10616,18 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
     text-align: left;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
+    text-overflow: clip;
     color: var(--lm-text-bright, #f8fafc);
   }
 
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-mobile-engine-unload {
+    position: absolute;
+    right: 8px;
+    top: 4px;
     order: 2;
     grid-column: auto;
     margin-left: 0;
+    z-index: 1;
   }
 
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-head .lm-mobile-engine-head-chip,
@@ -10245,8 +10649,16 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
   }
 
   .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-token-row {
-    justify-content: flex-start;
-    text-align: left;
+    justify-content: flex-end;
+    text-align: right;
+  }
+
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-tokens .lm-model-card-slot-metric-group {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
   }
 }
 

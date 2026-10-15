@@ -1770,7 +1770,7 @@ def _probe_loaded_model(host: str, port: int) -> dict[str, Any]:
     return {}
 
 
-def _build_external_card(
+def _build_external_card_base(
     entry: dict[str, Any],
     *,
     details: dict[str, Any],
@@ -2454,6 +2454,84 @@ def _place_external_card_on_measured_gpu(
 def _normalize_model_token(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
 
+
+
+# --- Owner labels (process_labels.json) -------------------------------------
+_OWNER_LABELS_CACHE: dict[str, Any] = {'mtime': None, 'rules': []}
+
+
+def _owner_label_rules() -> list[dict[str, Any]]:
+    import json as _json
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'process_labels.json')
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    if _OWNER_LABELS_CACHE.get('mtime') != mtime:
+        try:
+            with open(path, encoding='utf-8-sig') as fh:
+                data = _json.load(fh)
+            rules = [r for r in (data.get('rules') or []) if isinstance(r, dict)]
+        except Exception:
+            rules = []
+        _OWNER_LABELS_CACHE.update({'mtime': mtime, 'rules': rules})
+    return list(_OWNER_LABELS_CACHE.get('rules') or [])
+
+
+def _apply_owner_labels(card: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    exe_path = str(details.get('executable_path') or '')
+    process_name = str(details.get('process_name') or card.get('process_name') or '')
+    command_line = str(details.get('command_line') or card.get('command_line') or '')
+    exe_base = os.path.basename(exe_path) or process_name
+    hay = f'{exe_path} {command_line}'
+    for rule in _owner_label_rules():
+        try:
+            if rule.get('match_exe') and not re.search(str(rule['match_exe']), exe_base, re.I):
+                continue
+            if rule.get('match_cmd') and not re.search(str(rule['match_cmd']), hay, re.I):
+                continue
+        except re.error:
+            continue
+        if not (rule.get('match_exe') or rule.get('match_cmd')):
+            continue
+        for key in ('app_source', 'app_label', 'component_label'):
+            if rule.get(key):
+                card[key] = str(rule[key])
+        arg = rule.get('model_path_from_arg')
+        if arg:
+            m = re.search(re.escape(str(arg)) + r'\s+(?:"([^"]+)"|(\S+))', command_line)
+            if m:
+                card['model_path'] = m.group(1) or m.group(2)
+        card['owner_label_rule'] = rule.get('match_exe') or rule.get('match_cmd')
+        if exe_base and not exe_base.lower().startswith(('python', 'pythonw')):
+            card['process_tag'] = exe_base[:-4] if exe_base.lower().endswith('.exe') else exe_base
+        break
+    return card
+
+
+def _build_external_card(
+    entry: dict[str, Any],
+    *,
+    details: dict[str, Any],
+    gpus: list[dict[str, Any]],
+    managed_pids: set[int],
+    configured_ports: set[int],
+    dflash_root: str,
+) -> dict[str, Any] | None:
+    card = _build_external_card_base(
+        entry,
+        details=details,
+        gpus=gpus,
+        managed_pids=managed_pids,
+        configured_ports=configured_ports,
+        dflash_root=dflash_root,
+    )
+    if card:
+        try:
+            card = _apply_owner_labels(card, details or {})
+        except Exception:
+            pass
+    return card
 
 def _external_cards_refer_same_model(api_card: dict[str, Any], process_card: dict[str, Any]) -> bool:
     """True when an API-derived external card is just another view of the same

@@ -34,6 +34,11 @@ def get_api_catalog(*, console_base: str = 'http://127.0.0.1:8900') -> dict[str,
                 'markdown': _load_cli_guide(),
             },
             {
+                'id': 'api-reference',
+                'title': 'External API reference',
+                'markdown': _load_api_reference(),
+            },
+            {
                 'id': 'client-identity',
                 'title': 'Client identity (X-DFlash-Client)',
                 'markdown': _load_client_identity_guide(),
@@ -97,6 +102,10 @@ def _load_user_guide() -> str:
 
 def _load_cli_guide() -> str:
     return _load_markdown_doc('CLI.md')
+
+
+def _load_api_reference() -> str:
+    return _load_markdown_doc('API.md')
 
 
 def _load_client_identity_guide() -> str:
@@ -253,6 +262,8 @@ def _engine_endpoints() -> list[dict[str, Any]]:
     return [
         {'method': 'GET', 'path': '/api/servers', 'summary': 'List engines with live status and inference stats. Each server includes model_id, status, loaded_models, active_model_id, and ready_for_chat (true only when status is loaded).'},
         {'method': 'GET', 'path': f'/api/servers/{sid}/status', 'summary': 'Status for one engine profile.'},
+        {'method': 'GET', 'path': f'/api/servers/{sid}/chat-ready', 'summary': 'Readiness gate for chat/JIT loading. Returns ready_for_chat, loaded_models, reason, and retryable state.'},
+        {'method': 'GET', 'path': f'/api/servers/{sid}/load-plan', 'summary': 'VRAM-aware load plan; reports already_loaded, required/free VRAM, and unload_first suggestions.'},
         {
             'method': 'PATCH',
             'path': f'/api/servers/{sid}',
@@ -286,6 +297,7 @@ def _engine_endpoints() -> list[dict[str, Any]]:
             ),
         },
         {'method': 'POST', 'path': f'/api/servers/{sid}/unload', 'summary': 'Unload checkpoint; router stays up.'},
+        {'method': 'POST', 'path': f'/api/servers/{sid}/cancel-inference', 'summary': 'Cancel the active inference on this engine.'},
         {'method': 'POST', 'path': f'/api/servers/{sid}/stop', 'summary': 'Stop the engine process.'},
         {'method': 'POST', 'path': f'/api/servers/{sid}/engine/stop', 'summary': 'Alias for /stop — shut down engine process.'},
         {'method': 'POST', 'path': f'/api/servers/{sid}/reload', 'summary': 'Stop and restart with saved settings.'},
@@ -324,7 +336,16 @@ def _engine_openai_endpoints() -> list[dict[str, Any]]:
 def _other_endpoints() -> list[dict[str, Any]]:
     return [
         {'method': 'GET', 'path': '/api/health', 'summary': 'Console liveness.'},
+        {'method': 'GET', 'path': '/api/system-stats', 'summary': 'Live CPU, RAM, GPU utilization, and VRAM totals.'},
+        {'method': 'GET', 'path': '/api/status/loaded', 'summary': 'Loaded model inventory across Console engines and runtimes.'},
+        {'method': 'GET', 'path': '/api/status/report', 'summary': 'Full machine report including CPU/RAM/VRAM, engines, runtimes, and loaded models.'},
+        {'method': 'GET', 'path': '/api/gpu/contention', 'summary': 'GPU processes and Console/external-app contention report.'},
+        {'method': 'GET', 'path': '/api/gpu/budget', 'summary': 'VRAM budget, reserve, loaded engines, per-GPU free memory, and load guardrail inputs.'},
+        {'method': 'GET', 'path': '/api/gpu-devices', 'summary': 'Detected local and shared GPUs with stable indices and display names.'},
+        {'method': 'GET', 'path': '/api/remote-gpus', 'summary': 'Shared/remote GPUs visible to this Console.'},
+        {'method': 'POST', 'path': '/api/remote-gpus/load', 'summary': 'Request a model load on a shared remote GPU.'},
         {'method': 'GET', 'path': '/api/endpoints', 'summary': 'Live list of every console HTTP route (for external apps).'},
+        {'method': 'GET', 'path': '/api/gateway', 'summary': 'Gateway base URL, running state, default engine, error, and live gateway routes.'},
         {'method': 'GET', 'path': '/api/installed', 'summary': 'Installed local models grouped by library/provider preset.'},
         {'method': 'GET', 'path': '/api/console/logs?tail=200', 'summary': 'Console, startup, engine, and API-call logs (optional errors_only=1).'},
         {'method': 'GET', 'path': '/api/models', 'summary': 'Full local model library (same list as the Models tab). Optional source=ollama|lmstudio|dflash|library, quick=1 for engine profiles only, refresh=1 to rescan.'},

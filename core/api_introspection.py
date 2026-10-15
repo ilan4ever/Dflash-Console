@@ -41,6 +41,43 @@ def list_app_endpoints(app: Any, *, console_base: str = '') -> dict[str, Any]:
             })
     rows.sort(key=lambda row: (row['path'], row['method']))
     base = console_base.rstrip('/')
+    gateway: dict[str, Any] = {
+        'base_url': '',
+        'health_url': '',
+        'routes': [],
+    }
+    try:
+        from api.gateway import gateway_app
+
+        cfg = load_config()
+        gateway_port = int(cfg.get('gateway_port') or 8001)
+        gateway_base = f'http://127.0.0.1:{gateway_port}'
+        gateway_rows: list[dict[str, Any]] = []
+        for route in getattr(gateway_app, 'routes', []) or []:
+            methods = getattr(route, 'methods', None)
+            path = getattr(route, 'path', None)
+            if not methods or not path or path.startswith('/docs') or path in {'/openapi.json', '/redoc'}:
+                continue
+            endpoint = getattr(route, 'endpoint', None)
+            doc_lines = str(getattr(endpoint, '__doc__', '') or '').strip().splitlines() if endpoint else []
+            summary = doc_lines[0] if doc_lines else ''
+            for method in sorted(methods - {'HEAD', 'OPTIONS'}):
+                gateway_rows.append({
+                    'method': method,
+                    'path': path,
+                    'url': f'{gateway_base}{path}',
+                    'summary': summary,
+                })
+        gateway_rows.sort(key=lambda row: (row['path'], row['method']))
+        gateway = {
+            'base_url': f'{gateway_base}/v1',
+            'health_url': f'{gateway_base}/health',
+            'routes': gateway_rows,
+        }
+    except Exception:
+        # Endpoint discovery must remain available even if the optional gateway
+        # module cannot be imported during a partial install.
+        pass
     return {
         'success': True,
         'app': 'DFlash Console',
@@ -49,6 +86,7 @@ def list_app_endpoints(app: Any, *, console_base: str = '') -> dict[str, Any]:
         'openapi_url': f'{base}/openapi.json' if base else '/openapi.json',
         'swagger_url': f'{base}/docs' if base else '/docs',
         'endpoints': rows,
+        'gateway': gateway,
     }
 
 
