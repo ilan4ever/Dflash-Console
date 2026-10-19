@@ -170,19 +170,16 @@ def _model_state(entry: dict[str, Any]) -> str:
 
 
 def router_unload_available(api_url: str) -> bool:
-    url = f'{api_base_url(api_url)}/models/unload'
-    request = urllib.request.Request(
-        url,
-        data=b'{}',
-        method='POST',
-        headers={'Content-Type': 'application/json'},
-    )
+    """Detect router mode without unloading the active checkpoint."""
+    url = f'{api_base_url(api_url)}/props'
+    request = urllib.request.Request(url, method='GET')
     try:
-        with urllib.request.urlopen(request, timeout=2.5):
-            return True
-    except urllib.error.HTTPError as exc:
-        return exc.code != 404
-    except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError):
+        with urllib.request.urlopen(request, timeout=2.5) as response:
+            payload = json.loads(response.read().decode('utf-8', errors='replace') or '{}')
+        return isinstance(payload, dict) and str(payload.get('role') or '').lower() == 'router'
+    except urllib.error.HTTPError:
+        return False
+    except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError, json.JSONDecodeError, ValueError):
         return False
 
 

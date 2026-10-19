@@ -305,8 +305,36 @@ def _require_pipeline_active() -> None:
         raise HTTPException(status_code=503, detail=engine_standby_http_error())
 
 
+# Clients with a plain model dropdown (Cline, Continue, ...) cannot tell that
+# ``*-dflash``, dotted or Cursor-compat ids all route to the same engine.  They
+# can opt into a duplicate-free list with this request header.
+COMPACT_MODELS_HEADER = 'x-dflash-compact-models'
+
+
+def _compact_models_requested(request: Request) -> bool:
+    raw = str(request.headers.get(COMPACT_MODELS_HEADER) or '').strip().lower()
+    return raw in {'1', 'true', 'yes', 'on'}
+
+
+def _drop_alias_model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one public id per engine: drop ids that merely alias another row."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        meta = row.get('meta') if isinstance(row.get('meta'), dict) else {}
+        if meta.get('alias_of'):
+            continue
+        kept.append(row)
+    return kept
+
+
+def _model_list_payload(request: Request, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if _compact_models_requested(request):
+        rows = _drop_alias_model_rows(rows)
+    return {'object': 'list', 'data': rows}
+
+
 @gateway_app.get('/v1/models')
-async def list_models() -> dict[str, Any]:
+async def list_models(request: Request) -> dict[str, Any]:
     cfg = load_config()
     from core.display_names import build_engine_client_metadata, disambiguate_engine_display_names
     from core.model_stack import resolve_model_stack
@@ -445,9 +473,15 @@ async def list_models() -> dict[str, Any]:
         # repair profile makes the public model list look like it has working
         # models that cannot actually serve requests.
         if not server_target_path_on_disk(default_server, cfg=cfg):
-            return {'object': 'list', 'data': data}
+            return _model_list_payload(request, data)
         canonical = catalog_model_id(default_server)
-        default_label = str(default_server.get('label') or default_server.get('id') or canonical)
+        # Same public name as the model list (repo + D1/D2 bracket), not the raw profile label.
+        default_label = str(
+            catalog_model_id(default_server, cfg=cfg)
+            or default_server.get('label')
+            or default_server.get('id')
+            or canonical
+        )
         for alias in sorted(CURSOR_COMPAT_MODEL_IDS):
             if alias in listed_ids:
                 continue
@@ -474,7 +508,7 @@ async def list_models() -> dict[str, Any]:
     from core.api_providers import cloud_model_entries, with_api_label
 
     if not gateway_cloud_chat_enabled(cfg):
-        return {'object': 'list', 'data': data}
+        return _model_list_payload(request, data)
 
     for entry in cloud_model_entries(cfg):
         mid = str(entry.get('id') or '').strip()
@@ -503,7 +537,7 @@ async def list_models() -> dict[str, Any]:
             },
         })
         listed_ids.add(mid.lower())
-    return {'object': 'list', 'data': data}
+    return _model_list_payload(request, data)
 
 
 async def _forward_chat(

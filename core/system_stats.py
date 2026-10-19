@@ -28,12 +28,9 @@ def _subprocess_no_window_kwargs() -> dict[str, Any]:
 
 
 def _run_powershell_json(script: str, *, timeout: float = 5) -> dict[str, Any] | None:
-    from core.bounded_proc import run_bounded
+    from core.bounded_proc import powershell_argv, run_bounded
 
-    code, text = run_bounded(
-        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-        timeout=timeout,
-    )
+    code, text = run_bounded(powershell_argv(script), timeout=timeout)
     if code != 0 or not text:
         return None
     try:
@@ -56,6 +53,17 @@ def _apply_cpu_smoothing(cpu_load: int) -> int:
     else:
         _cpu_load_smoothed = float(cpu_load)
     return int(_cpu_load_smoothed)
+
+
+def cpu_load_hint() -> int | None:
+    """Last smoothed CPU load without probing.
+
+    Callers that only need a rough CPU figure (e.g. tuning recommendations)
+    should use this instead of :func:`get_system_stats_payload`, which shells
+    out to PowerShell and can take several seconds.  Returns ``None`` until the
+    sysbar has taken its first sample.
+    """
+    return None if _cpu_load_smoothed is None else int(_cpu_load_smoothed)
 
 
 def _cpu_from_process_delta(total_cpu_seconds: float) -> int | None:

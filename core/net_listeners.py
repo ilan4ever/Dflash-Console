@@ -70,8 +70,10 @@ def _listening_ports_map_powershell() -> dict[int, list[int]]:
         "| ForEach-Object { Write-Output (\"{0}:{1}\" -f $_.OwningProcess, $_.LocalPort) }"
     )
     try:
+        from core.bounded_proc import powershell_argv
+
         result = subprocess.run(
-            ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+            powershell_argv(script, hidden=False),
             capture_output=True,
             text=True,
             timeout=8,

@@ -21,6 +21,59 @@ _ROW_RE = re.compile(
 )
 
 
+def process_working_set_mb(pid: int) -> float | None:
+    """Working-set (task-manager style) memory for one Windows process, in MB."""
+    if sys.platform != 'win32':
+        return None
+    try:
+        numeric = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return None
+
+    class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+        _fields_ = [
+            ('cb', wintypes.DWORD),
+            ('PageFaultCount', wintypes.DWORD),
+            ('PeakWorkingSetSize', ctypes.c_size_t),
+            ('WorkingSetSize', ctypes.c_size_t),
+            ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+            ('QuotaPagedPoolUsage', ctypes.c_size_t),
+            ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+            ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+            ('PagefileUsage', ctypes.c_size_t),
+            ('PeakPagefileUsage', ctypes.c_size_t),
+            ('PrivateUsage', ctypes.c_size_t),
+        ]
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    try:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        psapi = ctypes.WinDLL('psapi', use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, numeric)
+        if not handle:
+            return None
+        try:
+            counters = PROCESS_MEMORY_COUNTERS_EX()
+            counters.cb = ctypes.sizeof(counters)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return None
+            bytes_used = int(counters.WorkingSetSize) or int(counters.PrivateUsage)
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+    if bytes_used <= 0:
+        return None
+    return round(bytes_used / (1024 ** 2), 1)
+
+
 def _subprocess_no_window_kwargs() -> dict[str, Any]:
     if sys.platform == 'win32':
         startupinfo = subprocess.STARTUPINFO()
@@ -57,11 +110,11 @@ foreach ($kv in $agg.GetEnumerator()) {
 }
 $out | ConvertTo-Json -Compress
 """
-    from core.bounded_proc import run_bounded
+    from core.bounded_proc import powershell_argv, run_bounded
 
     code, text = run_bounded(
-        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-        timeout=4,
+        powershell_argv(script),
+        timeout=8,
     )
     if code != 0 or not text:
         return {}
@@ -189,7 +242,9 @@ def query_windows_process_gpu_bytes() -> dict[tuple[int, int], int]:
             return dict(cached_map)
         per_pid_luid = _fetch_windows_process_gpu_bytes()
         mapping = _mapping_from_luid_rows(per_pid_luid)
-        _CACHE['at'] = time.time()
+        # A failed/slow counter read must not poison the cache for the full TTL:
+        # retry sooner so RAM/VRAM show up on the next poll.
+        _CACHE['at'] = time.time() if mapping else time.time() - _CACHE_TTL_SECONDS + 5.0
         _CACHE['map'] = dict(mapping)
         return mapping
 

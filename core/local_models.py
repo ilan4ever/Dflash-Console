@@ -1489,6 +1489,7 @@ def _server_catalog_row(
         'display_name': display_name,
         'display_name_full': catalog_meta.get('display_name_full') or display_name,
         'model_catalog': catalog_meta,
+        'hf_repo': str(catalog_meta.get('hf_repo') or ''),
         'engine_mode': catalog_meta.get('engine_mode') or '',
         'profile': profile,
         'port': int(server.get('port') or 0),
@@ -2260,6 +2261,27 @@ def _build_models_payload(
             filename=str(row.get('filename') or ''),
             path=str(row.get('path') or ''),
         )
+    from core.config import get_model_parallel_slots, normalize_load_settings
+
+    default_slots = normalize_load_settings({})['parallel_slots']
+    for row in models:
+        profile_slots = None
+        load = row.get('load_settings') if isinstance(row.get('load_settings'), dict) else {}
+        if row.get('server_id') and load:
+            try:
+                profile_slots = int(load.get('parallel_slots') or 0) or None
+            except (TypeError, ValueError):
+                profile_slots = None
+        saved_slots = get_model_parallel_slots(config, str(row.get('path') or ''))
+        if profile_slots:
+            row['parallel_slots'] = profile_slots
+            row['slots_source'] = 'profile'
+        elif saved_slots:
+            row['parallel_slots'] = saved_slots
+            row['slots_source'] = 'model'
+        else:
+            row['parallel_slots'] = default_slots
+            row['slots_source'] = 'default'
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from api.gateway import list_models
+
+
+def _request():
+    """Minimal request stub for the /v1/models handler."""
+    return SimpleNamespace(headers={})
 
 
 def test_gateway_list_models_includes_vision_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -33,7 +39,7 @@ def test_gateway_list_models_includes_vision_metadata(tmp_path: Path, monkeypatc
         }],
     }
     with patch('api.gateway.load_config', return_value=cfg):
-        result = asyncio.run(list_models())
+        result = asyncio.run(list_models(_request()))
     row = next(item for item in result['data'] if item['id'] == 'gemma-4-12b-it-q4-k-m')
     assert row['meta']['supports_vision'] is True
     assert row['meta']['imageInput'] is True
@@ -63,7 +69,7 @@ def test_gateway_list_models_supports_vision_for_gemma_chat_31b(tmp_path: Path, 
     }
     (tmp_path / 'draft.gguf').write_bytes(b'draft')
     with patch('api.gateway.load_config', return_value=cfg):
-        result = asyncio.run(list_models())
+        result = asyncio.run(list_models(_request()))
     row = next(item for item in result['data'] if item['id'] == 'gemma-4-31b-q4-0-it')
     assert row['meta']['supports_vision'] is True
     assert row['meta']['imageInput'] is True

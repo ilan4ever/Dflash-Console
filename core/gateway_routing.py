@@ -78,8 +78,21 @@ def normalize_model_token(value: str) -> str:
     return text
 
 
-def catalog_model_id(server: dict[str, Any]) -> str:
-    """Client-facing id advertised on GET /v1/models."""
+def catalog_model_id(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> str:
+    """Client-facing id advertised on GET /v1/models.
+
+    Downloaded Hugging Face models use their repo id (``org/repo`` plus a
+    ``(D1)``/``(D2)`` bracket for DFlash stacks) so OpenAI clients see the same
+    model names as the Console UI.
+    """
+    try:
+        from core.display_names import engine_public_model_name
+
+        public_name = engine_public_model_name(server, cfg=cfg)
+    except Exception:
+        public_name = ''
+    if public_name:
+        return public_name
     model_id = str(server.get('model_id') or '').strip()
     if model_id and model_id.lower() not in _GENERIC_MODEL_IDS:
         return model_id.replace('.', '-').replace('_', '-')
@@ -90,7 +103,7 @@ def catalog_model_id(server: dict[str, Any]) -> str:
 
 def gateway_public_model_ids(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> list[str]:
     """All OpenAI ``id`` strings to advertise for one engine (canonical first)."""
-    primary = catalog_model_id(server)
+    primary = catalog_model_id(server, cfg=cfg)
     ordered: list[str] = [primary]
     seen = {primary.lower()}
 
@@ -148,6 +161,22 @@ def gateway_model_aliases(server: dict[str, Any], *, cfg: dict[str, Any] | None 
                 aliases.add(normalized)
     if server_id.endswith('-dflash'):
         aliases.add(server_id[: -len('-dflash')].strip('-'))
+    # The public (repo-based) names shown in /v1/models must also route back here.
+    # Runtime pseudo-servers (vLLM/Transformers/FreeToken) resolve to the same
+    # folder and must not claim the engine's public name.
+    public_names: list[str] = []
+    if not str(server.get('runtime_id') or '').strip():
+        try:
+            from core.display_names import engine_public_model_names
+
+            public_names = engine_public_model_names(server, cfg=cfg)
+        except Exception:
+            public_names = []
+    for public_name in public_names:
+        for raw in (public_name, normalize_model_token(public_name)):
+            token = str(raw or '').strip()
+            if token:
+                aliases.add(token)
     try:
         from core.model_stack import resolve_model_stack
 

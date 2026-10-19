@@ -7,6 +7,8 @@ that wait freezes the Engines page and the GPU lights in the top bar.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -16,6 +18,41 @@ from typing import Any
 _NVIDIA_LOCK = threading.Lock()
 _NVIDIA_COOLDOWN_UNTIL = 0.0
 _NVIDIA_LAST_OK: dict[tuple[str, ...], str] = {}
+_POWERSHELL_EXE: str | None = None
+
+
+def powershell_exe() -> str:
+    """Absolute path to Windows PowerShell.
+
+    The Console server is often started hidden by the desktop shell with a
+    trimmed ``PATH`` that does not contain ``System32\\WindowsPowerShell\\v1.0``.
+    A bare ``powershell`` lookup then fails to spawn, which silently removes
+    CPU/RAM stats, per-process VRAM and model-path detection.
+    """
+    global _POWERSHELL_EXE
+    if _POWERSHELL_EXE:
+        return _POWERSHELL_EXE
+    candidates: list[str] = []
+    root = os.environ.get('SystemRoot') or r'C:\Windows'
+    candidates.append(os.path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+    found = shutil.which('powershell')
+    if found:
+        candidates.append(found)
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            _POWERSHELL_EXE = candidate
+            return candidate
+    _POWERSHELL_EXE = 'powershell'
+    return _POWERSHELL_EXE
+
+
+def powershell_argv(script: str, *, hidden: bool = True) -> list[str]:
+    """Command line for a one-shot PowerShell script."""
+    argv = [powershell_exe(), '-NoProfile', '-NonInteractive']
+    if hidden:
+        argv += ['-WindowStyle', 'Hidden']
+    argv += ['-Command', script]
+    return argv
 
 
 def _no_window_kwargs() -> dict[str, Any]:
@@ -36,6 +73,7 @@ def run_bounded(argv: list[str], *, timeout: float = 3.0) -> tuple[int | None, s
     try:
         proc = subprocess.Popen(
             argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             **_no_window_kwargs(),

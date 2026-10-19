@@ -8,7 +8,7 @@ from typing import Any
 from core.config import load_config, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings
 from core.memory_guardrails import _enabled_gpu_indices, _vram_budget
 from core.model_stack import resolve_model_stack
-from core.system_stats import get_cpu_info_payload, get_system_stats_payload
+from core.system_stats import _query_gpus_live, cpu_load_hint
 
 CONTEXT_LADDER = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144]
 MAX_TOKEN_LADDER = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
@@ -93,8 +93,9 @@ def _stack_weight_gb(server: dict[str, Any], cfg: dict[str, Any]) -> tuple[float
 
 def _cpu_thread_recommendation(cfg: dict[str, Any]) -> tuple[int, str]:
     logical = os.cpu_count() or 8
-    stats = get_system_stats_payload()
-    cpu_pct = stats.get('cpu_percent')
+    # Use the sysbar's last smoothed sample; probing PowerShell here made this
+    # endpoint take several seconds each time the inspector refreshed.
+    cpu_pct = cpu_load_hint()
     base = max(4, min(logical - 1, 16))
     if isinstance(cpu_pct, int) and cpu_pct >= 85:
         base = max(4, base - 2)
@@ -138,8 +139,7 @@ def _hardware_summary(free_gb: float, total_gb: float, gpu_count: int, cfg: dict
         return 'No enabled NVIDIA GPU — recommendations assume CPU-heavy loading.'
     indices = _enabled_gpu_indices(cfg)
     devices = []
-    stats = get_system_stats_payload()
-    for gpu in stats.get('gpus') or []:
+    for gpu in _query_gpus_live():
         if int(gpu.get('index', -1)) in indices:
             name = gpu.get('display_name') or gpu.get('name') or f'GPU {gpu.get("index")}'
             devices.append(str(name))

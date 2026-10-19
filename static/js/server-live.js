@@ -892,10 +892,6 @@
       title = startingCount > 1 ? `Starting ${startingCount} engines…` : 'Starting engine…';
       detail = 'The llama-server process is launching. Cards and chat stay disabled until the listener is up.';
       mode = 'starting';
-    } else if (hasEngineLoadActivity()) {
-      title = 'Loading models…';
-      detail = 'The engine is on while model weights are loading into the GPU.';
-      mode = 'loading';
     } else if (!serverIsLive(server) && engineStartupPending()) {
       title = 'Starting engines…';
       detail = 'Configured engines are coming online after the Console restart.';
@@ -2537,7 +2533,11 @@
     const genericName = (value) => !value || /^default$/i.test(String(value).trim());
     const basename = (path) => {
       if (!path) return '';
-      const base = String(path).split(/[/\\]/).pop();
+      const text = String(path).trim();
+      if (!text) return '';
+      // "OneVoice App/API" is a name, not a path — only split real paths.
+      const looksLikePath = /^[a-zA-Z]:[\\/]/.test(text) || (/[\\/]/.test(text) && !/\s/.test(text));
+      const base = looksLikePath ? text.split(/[/\\]/).pop() : text;
       return genericName(base) ? '' : base;
     };
     if (row?.external) {
@@ -2640,22 +2640,37 @@
     return `<span class="lm-engine-head-gpu-now" title="This model is loaded on ${escapeHtml(name)}">${escapeHtml(short)}</span>`;
   }
 
-  function engineHeadControlsHtml(gpuPick, gpuNow, action) {
-    if (!gpuPick && !gpuNow && !action) return '';
+  function engineSlotsPickerHtml(server, row) {
+    if (!server || row?.external || server.external || !server.id) return '';
+    const current = Math.max(1, Math.min(16, Number((server.load_settings || {}).parallel_slots) || 4));
+    const choices = [1, 2, 3, 4, 6, 8, 12, 16];
+    if (!choices.includes(current)) choices.push(current);
+    choices.sort((a, b) => a - b);
+    const options = choices
+      .map((count) => `<option value="${count}"${count === current ? ' selected' : ''}>${count}</option>`)
+      .join('');
+    return `<span class="lm-engine-slots-label" aria-hidden="true">Slots</span><select class="lm-select small lm-engine-slots-pick" data-action="slots-pick" data-slots-server-id="${escapeHtml(server.id)}" aria-label="Parallel slots for ${escapeHtml(row?.label || server.label || 'model')}" title="Parallel slots used when this engine loads the model. Changing it offers a reload.">${options}</select>`;
+  }
+
+  function engineHeadControlsHtml(gpuPick, gpuNow, action, slotsPick = '') {
+    if (!gpuPick && !gpuNow && !action && !slotsPick) return '';
     const gpuPicker = gpuPick
       ? `<span class="lm-engine-gpu-label" aria-hidden="true">GPU</span>${gpuPick}`
       : '';
     const gpu = (gpuPicker || gpuNow)
       ? `<span class="lm-engine-head-gpu">${gpuPicker}${gpuNow || ''}</span>`
       : '';
+    const slots = slotsPick
+      ? `<span class="lm-engine-head-slots">${slotsPick}</span>`
+      : '';
     const actions = action ? `<span class="lm-engine-head-actions">${action}</span>` : '';
-    return `<span class="lm-engine-head-controls">${gpu}${actions}</span>`;
+    return `<span class="lm-engine-head-controls">${gpu}${slots}${actions}</span>`;
   }
 
-  function loadedByPrompt({ row, server, ready, gpuPick = '', action = '' }) {
+  function loadedByPrompt({ row, server, ready, gpuPick = '', action = '', slotsPick = '' }) {
     if (row?.external) return '';
     const gpuNow = loadedGpuNowHtml(row, server);
-    const controls = engineHeadControlsHtml(gpuPick, gpuNow, action);
+    const controls = engineHeadControlsHtml(gpuPick, gpuNow, action, slotsPick);
     const agents = ready ? cardAgentLabels(row, server) : [];
     const clients = ready
       ? activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label))
@@ -2675,8 +2690,7 @@
       : '';
     const soloConsole = !multi && titles.length && /^dflash console$/i.test(titles[0]);
     const stackChip = titles.length ? engineHeadStackChip(row) : '';
-    const vramCell = titles.length ? engineHeadVramCtxCell(row, server) : '';
-    const desktop = desktopEngineCardLayout();
+    const vramCell = titles.length ? engineHeadVramCtxCell(row, server, { includeDisk: true }) : '';    const desktop = desktopEngineCardLayout();
     const badgesHtml = titles.length
       ? `<span class="lm-loaded-by-badges">${badges}</span>`
       : '';
@@ -2693,9 +2707,9 @@
       ? `<span class="lm-engine-head-cluster">${identity}${controls}</span>`
       : '';
     return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}${controls ? ' has-head-controls' : ''}${titles.length ? '' : ' is-controls-only'}" title="${escapeHtml(hint)}">
-            ${stackChip}
+            ${desktop ? '' : stackChip}
             ${vramCell}
-            ${desktop ? badgesHtml : ''}
+            <span class="lm-engine-head-right">${desktop ? badgesHtml : ''}</span>
             ${cluster}
           </div>`;
   }
@@ -3110,7 +3124,12 @@
     loading = false,
     isGenerating = false,
   } = {}) {
-    const footHtml = cardFootMetricsHtml(row, server, { omitVram: desktopLayout });
+    // Desktop cards already list Disk/VRAM (plus RAM, GPU, PID, port and the
+    // model path) in the subline; only the narrow layout needs the pills.
+    const footHtml = cardFootMetricsHtml(row, server, {
+      omitDisk: desktopLayout,
+      omitVram: desktopLayout,
+    });
     if (!desktopLayout) {
       if (!action && !footHtml) return '';
       return `<div class="lm-external-stats-col">${action || ''}${footHtml}</div>`;
@@ -3131,17 +3150,214 @@
     </div>`;
   }
 
-  function externalCardSublineHtml(row) {
+  function formatRamMb(value) {
+    const mb = Number(value);
+    if (!Number.isFinite(mb) || mb <= 0) return '';
+    if (mb >= 1024) {
+      const gb = mb / 1024;
+      return `${gb >= 10 ? Math.round(gb) : gb.toFixed(1).replace(/\.0$/, '')} GB`;
+    }
+    return `${Math.round(mb)} MB`;
+  }
+
+  // One line under the title: everything the GPU scan knows about the process
+  // (GPU, PID, RAM, VRAM, disk size, API, executable/model path).
+  function externalCardSublineHtml(row, server) {
     const parts = [];
+    const kind = inferModelKind(row);
+    if (kind?.label) parts.push(kind.label);
     const gpu = String(row?.gpu_display || '').trim();
     if (gpu) parts.push(gpu);
+    const pids = (Array.isArray(row?.pids) && row.pids.length ? row.pids : [row?.pid])
+      .filter((pid) => pid != null && String(pid).trim() !== '');
+    if (pids.length) parts.push(`PID ${pids.join(', ')}`);
+    const ram = formatRamMb(row?.ram_mb);
+    if (ram) parts.push(`RAM ${ram}`);
+    // Show how much of the card the app holds, not just its own VRAM.
+    const vramGb = Number(row?.vram_total_gb ?? row?.vram_gb);
+    const gpuTotalGb = gpuTotalVramGb(row?.gpu_index);
+    if (Number.isFinite(vramGb) && vramGb > 0) {
+      const mine = formatCardVramGb(vramGb);
+      const total = formatCardVramGb(gpuTotalGb);
+      parts.push(mine && total && gpuTotalGb > vramGb ? `VRAM ${mine} / ${total}` : `VRAM ${mine || `${vramGb} GB`}`);
+    }
+    const disk = formatCardGb(resolveCardSizeGb(row, server));
+    if (disk) parts.push(`Disk ${disk}`);
     const port = Number(row?.listen_port);
     if (Number.isFinite(port) && port > 0) parts.push(`:${port}`);
-    const detail = inferCardDetail(row);
-    if (detail) parts.push(detail);
+    const apiUrl = String(row?.api_url || '').trim();
+    if (apiUrl) parts.push(apiUrl);
+    const modelPath = String(row?.model_path || '').trim();
+    const processName = String(row?.process_name || '').trim();
+    if (modelPath) parts.push(modelPath);
+    else if (processName) parts.push(processName);
+    else {
+      const detail = inferCardDetail(row);
+      if (detail) parts.push(detail);
+    }
     if (!parts.length) return '';
     const text = parts.join(' · ');
     return `<span class="lm-external-subline" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`;
+  }
+
+  /** Strip credentials from a process command line before it is shown in the UI. */
+  function externalCommandText(row) {
+    const raw = String(row?.command_line || '').trim();
+    if (!raw) return '';
+    return raw
+      .replace(/(--?(?:api[-_]?key|auth[-_]?token|token|password|passwd|secret|access[-_]?key|key|hf[-_]?token|huggingface[-_]?token)\s*[= ]\s*)("[^"]*"|'[^']*'|\S+)/gi, '$1***')
+      .replace(/([?&](?:token|api_key|apikey|access_token)=)[^&\s"']+/gi, '$1***')
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+\/=-]+/gi, '$1***')
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-***');
+  }
+
+  function externalDetailItem(label, value, { wide = false, gpu = false, className = '' } = {}) {
+    const text = String(value ?? '').trim();
+    if (!text) return '';
+    return `<span class="lm-external-detail${wide ? ' is-wide' : ''}${gpu ? ' is-gpu' : ''}${className ? ` ${className}` : ''}" title="${escapeHtml(text)}"><span class="lbl">${escapeHtml(label)}</span><span class="val">${escapeHtml(text)}</span></span>`;
+  }
+
+  function externalListenAddress(row) {
+    const port = Number(row?.listen_port);
+    if (Number.isFinite(port) && port > 0) return `:${port}`;
+    const cmd = String(row?.command_line || '');
+    const listen = cmd.match(/--(?:listen|host)(?:=|\s+)["']?([^\s"']+)/i);
+    if (listen) return listen[1];
+    const portFlag = cmd.match(/--port(?:=|\s+)["']?(\d+)/i);
+    if (portFlag) return `:${portFlag[1]}`;
+    const apiUrl = String(row?.api_url || '').trim();
+    if (apiUrl) {
+      try {
+        return new URL(apiUrl).host;
+      } catch {
+        return apiUrl;
+      }
+    }
+    return '';
+  }
+
+  function externalQuantLabel(row) {
+    const direct = String(row?.quantization || row?.quant || '').trim();
+    if (direct) return direct;
+    const hay = `${row?.model_name || ''} ${row?.model_path || ''}`;
+    const match = hay.match(/\b(?:IQ\d[_A-Z0-9]*|Q\d[_A-Z0-9]*|F16|BF16|FP16|F32|FP32)\b/i);
+    return match ? String(match[0]).toUpperCase() : '';
+  }
+
+  /** Read a value from the external process command line (launch flags the app chose). */
+  function externalFlagValue(row, names) {
+    const cmd = String(row?.command_line || '');
+    if (!cmd) return '';
+    for (const name of names) {
+      const re = new RegExp(`(?:^|\\s)--?${name}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|(\\S+))`, 'i');
+      const match = cmd.match(re);
+      if (match) return String(match[1] ?? match[2] ?? match[3] ?? '').trim();
+    }
+    return '';
+  }
+
+  function externalFlagPresent(row, names) {
+    const cmd = String(row?.command_line || '');
+    if (!cmd) return false;
+    return names.some((name) => new RegExp(`(?:^|\\s)--?${name}(?:\\s|$)`, 'i').test(cmd));
+  }
+
+  /**
+   * Everything the GPU scan knows about an external app, as labeled facts.
+   * Only stable values go in here; continuously changing counters are patched
+   * into [data-external-token-val] by syncEngineCardLiveMetrics so the card
+   * markup (and therefore its height) stays put.
+   */
+  function externalCardDetailsHtml(row, server) {
+    if (!row?.external && !server?.external) return '';
+    const appLabel = String(row?.app_label || '').trim() || cardAppLabel(row);
+    const component = String(row?.component_label || '').trim();
+    const gpu = String(row?.gpu_display || row?.vram_gpu_name || '').trim();
+    const gpuIndex = Number(row?.gpu_index);
+    const gpuText = gpu
+      ? (Number.isFinite(gpuIndex) ? `${gpu} · #${gpuIndex}` : gpu)
+      : (Number.isFinite(gpuIndex) ? `GPU ${gpuIndex}` : '');
+    const usedVram = Number(row?.vram_total_gb ?? row?.vram_gb);
+    const totalVram = gpuTotalVramGb(row?.gpu_index);
+    const usedText = formatCardVramGb(usedVram);
+    const totalText = formatCardVramGb(totalVram);
+    const vramText = usedText
+      ? (totalText && totalVram > usedVram ? `${usedText} / ${totalText}` : usedText)
+      : '';
+    const vramByGpu = row?.vram_by_gpu && typeof row.vram_by_gpu === 'object'
+      ? Object.entries(row.vram_by_gpu)
+      : [];
+    const vramByGpuText = vramByGpu.length > 1
+      ? vramByGpu
+        .map(([index, gb]) => {
+          const label = formatCardVramGb(gb);
+          return label ? `#${index} ${label}` : '';
+        })
+        .filter(Boolean)
+        .join(' · ')
+      : '';
+    const ctxTokens = cardContextSize(row, server);
+    const ctxText = ctxTokens
+      ? formatContextTokens(ctxTokens)
+      : formatContextTokens(externalFlagValue(row, ['ctx-size', 'c']));
+    const deviceText = externalFlagValue(row, ['device']);
+    const layersText = externalFlagValue(row, ['n-gpu-layers', 'ngl', 'gpu-layers']);
+    const slotsText = externalFlagValue(row, ['parallel', 'np']);
+    const flashText = externalFlagValue(row, ['flash-attn', 'fa'])
+      || (externalFlagPresent(row, ['flash-attn', 'fa']) ? 'on' : '');
+    const pids = (Array.isArray(row?.pids) && row.pids.length ? row.pids : [row?.pid])
+      .filter((pid) => pid != null && String(pid).trim() !== '');
+    const items = [
+      externalDetailItem('App', appLabel),
+      externalDetailItem('Component', component && component.toLowerCase() !== appLabel.toLowerCase() ? component : ''),
+      externalDetailItem('Publisher', String(row?.publisher || '').trim()),
+      externalDetailItem('Quant', externalQuantLabel(row)),
+      externalDetailItem('GPU', gpuText, { gpu: true }),
+      externalDetailItem('VRAM', vramText),
+      externalDetailItem('VRAM/GPU', vramByGpuText, { wide: true }),
+      externalDetailItem('RAM', formatRamMb(row?.ram_mb)),
+      externalDetailItem('Disk', formatCardGb(resolveCardSizeGb(row, server))),
+      externalDetailItem('Device', deviceText),
+      externalDetailItem('Layers', layersText),
+      externalDetailItem('Slots', slotsText),
+      externalDetailItem('Flash', flashText),
+      externalDetailItem('CTX', ctxText),
+      externalDetailItem('ADDR', externalListenAddress(row)),
+      externalDetailItem('API', String(row?.api_url || '').trim(), { wide: true }),
+      externalDetailItem('PID', pids.length ? pids.join(', ') : ''),
+      externalDetailItem('Process', String(row?.process_name || '').trim()),
+      externalDetailItem('Model', String(row?.model_path || '').trim(), { wide: true }),
+      externalDetailItem('Model ID', String(row?.model_id || '').trim(), { wide: true }),
+      externalDetailItem('Draft', String(row?.draft_filename || '').trim(), { wide: true }),
+      externalDetailItem('Command', externalCommandText(row), { wide: true }),
+      `<span class="lm-external-detail lm-external-tokens" data-external-token-summary title="Token counters reported by this app's llama-server /slots endpoint when it exposes one"><span class="lbl">Tokens</span><span class="val" data-external-token-val>—</span></span>`,
+    ];
+    return `<div class="lm-external-details" aria-label="External engine details">${items.join('')}</div>`;
+  }
+
+  function externalTokenSummary(stats) {
+    if (!stats) return '—';
+    const slots = Array.isArray(stats.slots) ? stats.slots : [];
+    const active = slots.filter((slot) => (
+      slot?.generating
+      || slot?.generation_tokens != null
+      || slot?.prompt_tokens != null
+    ));
+    const slot = active.find((entry) => entry?.generating) || active[0] || null;
+    const src = slot || stats;
+    const generating = inferenceIsGenerating(stats);
+    const inTok = src?.prompt_tokens;
+    const outTok = src?.generating_tokens ?? src?.generation_tokens;
+    const tps = src?.generating_tokens_per_second ?? src?.tokens_per_second;
+    if (inTok == null && outTok == null && tps == null) {
+      return generating ? 'LIVE · waiting for tokens…' : '—';
+    }
+    const inPrefill = generating && !(Number(outTok) > 0);
+    const parts = [generating ? (inPrefill ? 'PREFILL' : 'LIVE') : 'LAST'];
+    if (inTok != null) parts.push(`IN ${formatTokenCount(inTok)}`);
+    if (outTok != null) parts.push(`OUT ${formatTokenCount(outTok)}`);
+    if (tps != null) parts.push(`${formatTokenCount(tps)} t/s`);
+    return parts.join(' · ');
   }
 
   function gpuTotalVramGb(gpuIndex) {
@@ -3333,13 +3549,25 @@
     return `<span class="lm-engine-head-ctx" title="${escapeHtml(title)}"><span class="lbl">CTX</span><span class="val">${escapeHtml(formatContextTokens(tokens))}</span></span>`;
   }
 
-  function engineHeadVramCtxCell(row, server) {
+  function engineHeadDiskHtml(row, server) {
+    const sizeGb = resolveCardSizeGb(row, server);
+    const label = formatCardGb(sizeGb);
+    if (!label) return '';
+    const root = String(catalogModelForLoadedRow(server, row)?.path || row?.path || row?.model_path || '').trim();
+    const title = root
+      ? `Size on disk: ${label} (${root})`
+      : `Size on disk: ${label}`;
+    return `<span class="lm-engine-head-disk" title="${escapeHtml(title)}"><span class="lbl">Disk</span><span class="val">${escapeHtml(label)}</span></span>`;
+  }
+
+  function engineHeadVramCtxCell(row, server, { includeDisk = false } = {}) {
     const vramPart = engineHeadVramHtml(row, server);
+    const diskPart = includeDisk ? engineHeadDiskHtml(row, server) : '';
     const ctxPart = engineHeadCtxMetric(row, server);
-    if (!vramPart && !ctxPart) {
+    if (!vramPart && !diskPart && !ctxPart) {
       return '<span class="lm-engine-head-vram-ctx is-empty" aria-hidden="true"></span>';
     }
-    return `<span class="lm-engine-head-vram-ctx">${vramPart}${ctxPart}</span>`;
+    return `<span class="lm-engine-head-vram-ctx">${vramPart}${diskPart}${ctxPart}</span>`;
   }
 
   function externalCardPromptHtml(row, server) {
@@ -3680,6 +3908,7 @@
     const isSelected = actionKey === selectedLoadedKey;
     const head = mobileEngineHeadHtml({ row, server, ready, action });
     const meta = mobileEngineMetaHtml(row, server, { ready });
+    const details = externalCardDetailsHtml(row, server);
     const metricsShell = engineCardMetricsShellHtml({ ready, loading: false, isGenerating });
     const tokens = metricsShell
       ? `<div class="lm-mobile-engine-tokens"${metricsShell.includes('data-engine-live-metrics') ? '' : ' aria-hidden="true"'}">${metricsShell}</div>`
@@ -3689,6 +3918,7 @@
           ${loadChrome}
           ${ejectChrome}
           ${head}
+          ${details}
           ${meta}
           ${tokens}
         </article>`;
@@ -3734,6 +3964,66 @@
       || wrap.querySelector(`.lm-model-card[data-server-id="${escaped}"]`);
   }
 
+  const slotRowLast = new Map();
+
+  function multiSlotRows(row, server) {
+    const stats = row?.inference_stats || server?.inference_stats || {};
+    const rows = Array.isArray(stats.slot_rows) ? stats.slot_rows : [];
+    return rows.length > 1 ? rows : null;
+  }
+
+  function multiSlotMetricsHtml(server, row, rows) {
+    const metricKey = loadedCardKey(server, row);
+    const stateLabel = { idle: 'Idle', prefill: 'Prefill', generating: 'Generating', waiting: 'Waiting' };
+    const parts = rows.map((slot) => {
+      const key = `${metricKey}:multislot:${slot.slot_id}`;
+      let state = slot.state || (slot.generating ? 'generating' : 'idle');
+      const busy = state !== 'idle';
+      const prefill = state === 'prefill';
+      let inText; let outText; let speedText; let peakText;
+      if (busy) {
+        const promptTok = slot.prompt_tokens;
+        const prefillTok = slot.prefill_tokens;
+        let inputTok = prefillTok ?? promptTok ?? 0;
+        if (prefill && promptTok != null && prefillTok != null && Number(prefillTok) < Number(promptTok)) {
+          inputTok = `${prefillTok}/${promptTok}`;
+        }
+        const liveSpeed = prefill ? slot.prefill_tokens_per_second : slot.generating_tokens_per_second;
+        const peak = updatePeakSpeed(key, prefill, liveSpeed);
+        inText = formatInTokenDisplay(inputTok);
+        outText = String(formatTokenCount(slot.generating_tokens));
+        speedText = formatLiveTokenSpeed(liveSpeed);
+        peakText = formatLiveTokenSpeed(peak);
+        slotRowLast.set(key, { in: inText, out: outText, speed: speedText, peak: peakText, prefill });
+      } else {
+        const last = slotRowLast.get(key) || {};
+        inText = slot.prompt_tokens != null ? formatInTokenDisplay(slot.prompt_tokens) : (last.in ?? '0');
+        outText = slot.generation_tokens != null ? String(formatTokenCount(slot.generation_tokens)) : (last.out ?? '0');
+        speedText = slot.tokens_per_second != null ? formatLiveTokenSpeed(slot.tokens_per_second) : (last.speed ?? '0 t/s');
+        peakText = last.peak ?? '0 t/s';
+      }
+      if (state === 'idle' && slot.queued_requests) state = 'waiting';
+      const label = prefill ? 'PREFILL' : 'DECODE';
+      return `<div class="lm-model-card-center-row lm-model-card-token-row lm-token-metrics-live lm-slot-row is-${state}">
+        <span class="lm-slot-head"><span class="lm-slot-name">Slot ${Number(slot.index || 1)}</span><span class="lm-slot-badge is-${state}">${stateLabel[state] || state}</span></span>
+        <span class="lm-model-card-token-metric is-live lm-model-card-token-generating">
+          <span class="lm-token-metric-io">
+            <span class="lm-token-part"><span class="lbl">IN</span><span class="val">${escapeHtml(inText)}</span></span>
+            <span class="lm-model-card-token-separator">&middot;</span>
+            <span class="lm-token-part"><span class="lbl">OUT</span><span class="val">${escapeHtml(outText)}</span></span>
+          </span>
+          <span class="lm-token-metric-speed">
+            <span class="lm-token-part"><span class="lbl">${label}</span><span class="val">${escapeHtml(speedText)}</span></span>
+            <span class="lm-model-card-token-separator">&middot;</span>
+            <span class="lm-token-part"><span class="lbl peak">PEAK</span><span class="val">${escapeHtml(peakText)}</span></span>
+          </span>
+        </span>
+      </div>`;
+    });
+    const queued = Number(rows[0]?.queued_requests || 0);
+    const summary = `${rows.filter((s) => s.generating).length}/${rows.length} slots busy${queued ? ` - ${queued} queued` : ''}`;
+    return `<div class="lm-token-metrics-live lm-token-metrics-slots" title="${escapeHtml(summary)}" data-slot-count="${rows.length}" style="--slot-count:${rows.length}">${parts.join('')}</div>`;
+  }
   function syncEngineCardLiveMetrics(wrap) {
     if (!wrap) return;
     const entries = filterLoadedEntries(collectLoadedEntries());
@@ -3743,10 +4033,28 @@
       const host = card.querySelector('[data-engine-live-metrics]');
       const generating = cardIsGenerating(row, server);
       card.classList.toggle('generating', generating);
+
+      // External cards: keep the labeled token chip current without touching
+      // the card markup (which would re-render and risk layout movement).
+      const externalTokenVal = card.querySelector('[data-external-token-val]');
+      if (externalTokenVal) {
+        const summary = externalTokenSummary(row?.inference_stats || server?.inference_stats || {});
+        if (externalTokenVal.textContent !== summary) externalTokenVal.textContent = summary;
+      }
+
       if (!host) continue;
 
       let hasMetrics = false;
-      if (generating) {
+      const multiRows = multiSlotRows(row, server);
+      if (multiRows) {
+        const html = multiSlotMetricsHtml(server, row, multiRows);
+        if (host.dataset.slotHtml !== html) {
+          host.innerHTML = html;
+          host.dataset.slotHtml = html;
+        }
+        hasMetrics = true;
+      } else if (generating) {
+        delete host.dataset.slotHtml;
         // Nuclear: every generating sync must be a pure single-child live shell.
         // Never leave LAST HTML as siblings of live (desktop foot overlap).
         const needsLiveWipe = !isPureLiveTokenMetricsShell(host)
@@ -3763,6 +4071,7 @@
         }
       } else {
         // Idle: clear live-only shell and show last-only completion metrics.
+        delete host.dataset.slotHtml;
         const tokenHtml = cardTokenMetricsRow({ server, row }) || '';
         hasMetrics = !!tokenHtml;
         if (host.innerHTML !== tokenHtml) {
@@ -3895,6 +4204,7 @@
       }) || '');
     const kindBadge = modelKindBadge(row);
     const statusInCard = desktopLayout ? '' : statusBadge;
+    const stackChip = desktopLayout && !isExternal ? engineHeadStackChip(row) : '';
     if (isExternal) {
       return `
       <div class="lm-model-card-center lm-external-center${hasTokenRow ? ' has-token-row' : ''}">
@@ -3904,28 +4214,31 @@
               <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
               ${statusInCard ? `<span class="lm-external-status-badges">${statusInCard}</span>` : ''}
             </span>
-            ${externalCardSublineHtml(row)}
           </span>
         </div>
+        ${externalCardDetailsHtml(row, server)}
         ${metricsShell}
       </div>`;
     }
     return `
       <div class="lm-model-card-center${hasTokenRow ? ' has-token-row' : ''}">
         <div class="lm-model-card-center-row lm-model-card-title-row">
-          <span class="lm-model-card-identity">
-            <span class="lm-model-card-name-line">
-              <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
-              ${isExternal ? kindBadge : ''}
+          <span class="lm-engine-head-left">
+            ${stackChip}
+            <span class="lm-model-card-identity">
+              <span class="lm-model-card-name-line">
+                <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
+                ${isExternal ? kindBadge : ''}
+              </span>
             </span>
-          </span>
-          <span class="lm-model-card-labels">
-            ${installedBadge}
-            ${statusInCard}
-            ${isExternal ? '' : kindBadge}
-            ${accelerationBadge(row)}
-            ${roleBadge(row, { omitStackLogo: desktopLayout })}
-            ${cardDetailHtml(row)}
+            <span class="lm-model-card-labels">
+              ${installedBadge}
+              ${statusInCard}
+              ${isExternal ? '' : kindBadge}
+              ${accelerationBadge(row)}
+              ${roleBadge(row, { omitStackLogo: desktopLayout })}
+              ${cardDetailHtml(row)}
+            </span>
           </span>
         </div>
         ${sharedDetails}
@@ -4134,11 +4447,13 @@
         })}`;
       }
       const gpuPick = row.external ? '' : engineGpuPickerHtml(server, row);
+      const slotsPick = row.external ? '' : engineSlotsPickerHtml(server, row);
       const loadedByBanner = loadedByPrompt({
         row,
         server,
         ready,
         gpuPick,
+        slotsPick,
         action: row.external ? '' : action,
       });
       const statsOpts = {
@@ -4182,6 +4497,7 @@
     lastGpuOverheadMarkup = overheadHtml;
     wrap.innerHTML = cardsMarkup + overheadHtml;
     bindEngineGpuPickers(wrap);
+    bindEngineSlotsPickers(wrap);
     syncEngineCardLiveMetrics(wrap);
 
     wrap.querySelectorAll('.lm-model-card').forEach((card) => {
@@ -5846,6 +6162,49 @@
           await refresh(true, { fresh: true, includeExternal: false });
         } catch (err) {
           toast(err.message || 'Could not save the GPU selection', false);
+        }
+      });
+    });
+  }
+
+  function bindEngineSlotsPickers(wrap) {
+    if (!wrap) return;
+    wrap.querySelectorAll('select[data-action="slots-pick"]').forEach((pick) => {
+      if (pick.dataset.slotsBound === '1') return;
+      pick.dataset.slotsBound = '1';
+      pick.addEventListener('click', (event) => event.stopPropagation());
+      pick.addEventListener('change', async (event) => {
+        event.stopPropagation();
+        const serverId = pick.dataset.slotsServerId || '';
+        if (!serverId) return;
+        const slots = parseInt(pick.value || '4', 10);
+        const card = pick.closest('.lm-model-card');
+        const loaded = !!card?.classList.contains('ready');
+        try {
+          await api(`/api/servers/${encodeURIComponent(serverId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ parallel_slots: slots }),
+          });
+          toast(`${slots} slot${slots === 1 ? '' : 's'} saved for this engine`);
+          if (loaded) {
+            const confirmFn = window.DFlashModelsLive?.openConfirmDialog;
+            const reload = confirmFn
+              ? await confirmFn({
+                kicker: 'Slots changed',
+                title: `Reload with ${slots} slot${slots === 1 ? '' : 's'}?`,
+                message: 'The model is loaded with the previous slot count. Reload it now to apply the new number of parallel slots.',
+                confirmLabel: 'Reload now',
+              })
+              : window.confirm(`Reload the model with ${slots} slot${slots === 1 ? '' : 's'}?`);
+            if (reload) {
+              window.DFlashStatusFeed?.setTransient(`Reloading with ${slots} slot${slots === 1 ? '' : 's'}…`, { ttlMs: 120000 });
+              await api(`/api/servers/${encodeURIComponent(serverId)}/reload`, { method: 'POST' });
+              toast('Reloading the model with the new slot count');
+            }
+          }
+          await refresh(true, { fresh: true, includeExternal: false });
+        } catch (err) {
+          toast(err.message || 'Could not save the slot count', false);
         }
       });
     });

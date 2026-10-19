@@ -903,6 +903,46 @@ def _promote_primary_stats(stats: dict[str, Any], slot_rows: list[dict[str, Any]
                 stats[key] = primary[key]
 
 
+def _requests_deferred(base: str, api_key: str = '') -> int | None:
+    """Best-effort queued-request count from llama-server /metrics (needs --metrics)."""
+    try:
+        request = urllib.request.Request(
+            f'{base}/metrics', method='GET', headers=_auth_headers(api_key) or {},
+        )
+        with urllib.request.urlopen(request, timeout=0.6) as resp:
+            text = resp.read().decode('utf-8', errors='replace')
+    except Exception:
+        return None
+    for line in text.splitlines():
+        if line.startswith('llamacpp:requests_deferred'):
+            try:
+                return int(float(line.rsplit(' ', 1)[-1]))
+            except ValueError:
+                return None
+    return None
+
+
+def _build_slot_rows(slot_rows: list[dict[str, Any]], base: str, api_key: str = '') -> list[dict[str, Any]]:
+    """One row per llama-server slot (idle ones included) with a display state."""
+    if len(slot_rows) < 2:
+        return []
+    rows = sorted(slot_rows, key=lambda r: int(r.get('slot_id') or 0))
+    all_busy = all(r.get('generating') for r in rows)
+    deferred = _requests_deferred(base, api_key) if all_busy else None
+    out: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        item = dict(row)
+        item['index'] = index + 1
+        if row.get('generating'):
+            item['state'] = 'prefill' if not row.get('generating_tokens') else 'generating'
+        else:
+            item['state'] = 'idle'
+        out.append(item)
+    if deferred:
+        for item in out:
+            item['queued_requests'] = deferred
+    return out
+
 def fetch_inference_stats(
     api_url: str,
     *,
@@ -984,7 +1024,7 @@ def fetch_inference_stats(
         seen.add(int(slot_id))
     visible_slots.sort(key=lambda row: (0 if row.get('generating') else 1, int(row.get('slot_id') or 0)))
     stats['slots'] = visible_slots
-
+    stats['slot_rows'] = _build_slot_rows(slot_rows, base, api_key)
     any_generating = any(row.get('generating') for row in slot_rows)
     if any_generating or proxy_active:
         if not any_generating and proxy_active:

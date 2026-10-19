@@ -121,6 +121,16 @@ def test_apply_reasoning_policy_strips_for_non_reasoning_model():
     assert body['messages'] == [{'role': 'user', 'content': 'hi'}]
 
 
+def test_apply_reasoning_policy_forwards_none_when_non_reasoning_model_is_disabled():
+    raw = json.dumps({
+        'model': 'underdog-saluki',
+        'messages': [{'role': 'user', 'content': 'hi'}],
+    }).encode()
+    out = apply_reasoning_policy(raw, reasoning=False, disable_reasoning=True)
+    body = json.loads(out)
+    assert body['reasoning_effort'] == 'none'
+
+
 def test_apply_reasoning_policy_keeps_for_reasoning_model():
     raw = json.dumps({
         'model': 'gemma-4-12b-it-qat',

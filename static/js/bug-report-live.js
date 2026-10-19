@@ -56,58 +56,118 @@
     }
   }
 
-  async function submitReport() {
-    const status = el('dfBugReportStatus');
-    const btn = el('dfBugReportSubmit');
-    const reproduction = String(el('dfBugReportRepro')?.value || '').trim();
-    const userNote = String(el('dfBugReportActual')?.value || '').trim();
-    const uploadPrivate = !!el('dfBugReportPrivateUpload')?.checked;
-    if (btn) btn.disabled = true;
-    if (status) status.textContent = 'Preparing diagnostic report…';
-    try {
-      const data = await sendReport({ reproduction, user_note: userNote, upload_private: uploadPrivate });
-      const text = String(data?.clipboard_text || '');
-      if (!text) throw new Error('Empty diagnostic report');
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      }
-      const prefill = data?.github_prefill || {};
-      const summary = [
-        `Report ID: ${data?.report_id || 'n/a'}`,
-        `Version: ${prefill.version || ''}`,
-        `Environment: ${prefill.environment || ''}`,
-        '',
-        '**Reproduction**',
-        reproduction || prefill.reproduction || '(see clipboard diagnostic report)',
-        '',
-        '**Actual behavior**',
-        userNote || prefill.actual || '',
-        '',
-        'Diagnostic report was copied to clipboard — paste below if needed (remove paths you do not want to share).',
-      ].join('\n');
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(`${summary}\n\n---\n\n${text}`);
-      }
-      if (status) {
-        status.textContent = data?.uploaded
-          ? 'Report copied. Private upload sent. Opening GitHub…'
-          : data?.upload_error && uploadPrivate
-            ? `Report copied. Private upload failed: ${data.upload_error}`
-            : 'Diagnostic report copied. Opening GitHub bug form…';
-      }
-      if (typeof toast === 'function') {
-        toast(data?.uploaded ? 'Report copied and uploaded privately' : 'Diagnostic report copied to clipboard');
-      }
-      window.open(String(data?.github_url || GITHUB_URL), '_blank', 'noopener,noreferrer');
-      closeModal();
-    } catch (err) {
-      if (status) status.textContent = err?.message || 'Could not prepare report';
-      if (typeof toast === 'function') toast(err?.message || 'Could not prepare report', false);
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
-
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fall through to legacy copy
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return !!ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function openGithub(url) {
+    const target = String(url || GITHUB_URL);
+    try {
+      const w = window.open(target, '_blank', 'noopener,noreferrer');
+      if (w) return;
+    } catch {
+      // fall through
+    }
+    const a = document.createElement('a');
+    a.href = target;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function offlineReportText(reproduction, userNote, reason) {
+    return [
+      '**DFlash Console bug report (generated offline: Console API unreachable)**',
+      `Time: ${new Date().toISOString()}`,
+      `Page: ${window.location.href}`,
+      `User agent: ${navigator.userAgent}`,
+      `API error: ${reason}`,
+      '',
+      '**Reproduction**',
+      reproduction || '(none)',
+      '',
+      '**Actual behavior**',
+      userNote || '(none)',
+    ].join('\n');
+  }
+
+  async function submitReport() {
+    const status = el('dfBugReportStatus');
+    const btn = el('dfBugReportSubmit');
+    const reproduction = String(el('dfBugReportRepro')?.value || '').trim();
+    const userNote = String(el('dfBugReportActual')?.value || '').trim();
+    const uploadPrivate = !!el('dfBugReportPrivateUpload')?.checked;
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Preparing diagnostic report...';
+    let data = null;
+    let apiError = '';
+    try {
+      data = await sendReport({ reproduction, user_note: userNote, upload_private: uploadPrivate });
+    } catch (err) {
+      apiError = err?.message || 'Console API unreachable';
+    }
+    try {
+      let text = String(data?.clipboard_text || '');
+      let githubUrl = data?.github_url;
+      if (!text) {
+        // API unreachable: still let the user file the issue with what we know client-side.
+        text = offlineReportText(reproduction, userNote, apiError || 'empty report');
+      } else {
+        const prefill = data?.github_prefill || {};
+        const summary = [
+          `Report ID: ${data?.report_id || 'n/a'}`,
+          `Version: ${prefill.version || ''}`,
+          `Environment: ${prefill.environment || ''}`,
+          '',
+          '**Reproduction**',
+          reproduction || prefill.reproduction || '(see clipboard diagnostic report)',
+          '',
+          '**Actual behavior**',
+          userNote || prefill.actual || '',
+          '',
+          'Diagnostic report was copied to clipboard - paste below if needed (remove paths you do not want to share).',
+        ].join('\n');
+        text = `${summary}\n\n---\n\n${text}`;
+      }
+      const copied = await copyText(text);
+      openGithub(githubUrl);
+      const note = apiError ? ' (Console API was unreachable, so only a basic report was generated)' : '';
+      const msg = copied
+        ? (data?.uploaded ? 'Report copied. Private upload sent. GitHub opened.' : `Report copied to clipboard. GitHub opened.${note}`)
+        : `GitHub opened, but the clipboard was blocked. Copy the text from the issue form manually.${note}`;
+      if (status) status.textContent = msg;
+      if (typeof toast === 'function') toast(msg, copied);
+      if (copied || data) closeModal();
+    } catch (err) {
+      if (status) status.textContent = err?.message || 'Could not prepare report';
+      if (typeof toast === 'function') toast(err?.message || 'Could not prepare report', false);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   async function sendReport(payload) {
     if (typeof api !== 'function') throw new Error('Console API is unavailable');
     return api('/api/diagnostics/report', {

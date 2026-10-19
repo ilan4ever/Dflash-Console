@@ -371,28 +371,10 @@ def _load_windows_parent_pid_map() -> dict[int, int]:
         "Get-CimInstance Win32_Process | "
         "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
     )
-    try:
-        proc = subprocess.Popen(
-            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            **_subprocess_no_window_kwargs(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    try:
-        out, _err = proc.communicate(timeout=3)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.communicate(timeout=0.4)
-        except subprocess.TimeoutExpired:
-            pass
-        return {}
-    if proc.returncode not in (0, None) or not out:
-        return {}
-    text = out.decode('utf-8', errors='replace').strip()
-    if not text:
+    from core.bounded_proc import powershell_argv, run_bounded
+
+    code, text = run_bounded(powershell_argv(script), timeout=8)
+    if code != 0 or not text:
         return {}
     try:
         payload = json.loads(text)
@@ -839,10 +821,10 @@ def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, An
         "$payload = @{ processes = @($rows); parents = @($parentRows) };"
         "$payload | ConvertTo-Json -Depth 4 -Compress"
     )
-    from core.bounded_proc import run_bounded
+    from core.bounded_proc import powershell_argv, run_bounded
 
     code, text = run_bounded(
-        ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        powershell_argv(script),
         timeout=3,
     )
     if code != 0 or not text:
@@ -2382,6 +2364,7 @@ def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = 
         if attach_stats:
             row = _attach_external_inference_stats(row)
         row = _place_external_card_on_measured_gpu(row, gpus=measured_gpus)
+        row = _attach_external_process_usage(row)
         enriched.append(row)
     return enriched
 
@@ -2448,6 +2431,42 @@ def _place_external_card_on_measured_gpu(
     name = _gpu_display_for_index(devices, int(primary))
     card['gpu_display'] = name
     card['vram_gpu_name'] = name
+    return card
+
+
+def _attach_external_process_usage(card: dict[str, Any]) -> dict[str, Any]:
+    """Attach RAM + VRAM for an external card, measured across its process tree."""
+    pid = int(card.get('pid') or 0)
+    if pid <= 0:
+        return card
+    pids = _descendant_pids(pid)
+    if not card.get('vram_gb'):
+        measured = measured_vram_by_gpu_for_pids(pids)
+        if measured:
+            primary = max(measured, key=lambda index: measured[index])
+            card['vram_by_gpu'] = {
+                str(int(index)): round(float(value), 2)
+                for index, value in measured.items()
+            }
+            card['vram_total_gb'] = round(sum(float(value) for value in measured.values()), 2)
+            card['vram_gb'] = round(float(measured[primary]), 3)
+            card['vram_mb'] = round(float(measured[primary]) * 1024, 1)
+            card['vram_source'] = 'windows'
+            card['gpu_index'] = int(primary)
+    total_mb = 0.0
+    try:
+        from core.gpu_process_memory_windows import process_working_set_mb
+
+        for proc_id in sorted(pids):
+            value = process_working_set_mb(proc_id)
+            if value:
+                total_mb += float(value)
+    except Exception:
+        total_mb = 0.0
+    if total_mb > 0:
+        card['ram_mb'] = round(total_mb, 1)
+        card['ram_gb'] = round(total_mb / 1024, 3)
+    card['pids'] = sorted(int(item) for item in pids if int(item) > 0)
     return card
 
 

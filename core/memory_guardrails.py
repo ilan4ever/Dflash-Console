@@ -16,7 +16,7 @@ from core.config import (
 from core.gpu_devices import VRAM_HEADROOM_GB, get_gpu_devices_payload, resolve_role_gpu_launch_params
 from core.gpu_policy import gpu_performance_mode, gpu_policy_for_config, vram_headroom_gb
 from core.model_stack import resolve_model_stack
-from core.system_stats import get_system_stats_payload
+from core.system_stats import _query_gpus_live
 
 _MODEL_SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)(?:[-_])\d{5}-of-\d{5}(?P<suffix>\.[^.]+)$',
@@ -248,9 +248,14 @@ def _load_components(server: dict[str, Any], cfg: dict[str, Any]) -> dict[str, f
 
 
 def _gpu_snapshot(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return enabled GPUs with current free VRAM in the launcher's field names."""
+    """Return enabled GPUs with current free VRAM in the launcher's field names.
+
+    Only GPU memory is needed here, so query the GPUs directly.  The full
+    system-stats payload also shells out to PowerShell for CPU/RAM, which made
+    VRAM-budget callers (runtime recommendations, load plans) take 2-6s.
+    """
     indices = set(_enabled_gpu_indices(cfg))
-    stats = get_system_stats_payload()
+    stats = {'gpus': _query_gpus_live()}
     detected = {
         int(gpu.get('index')): gpu
         for gpu in get_gpu_devices_payload().get('gpus') or []

@@ -72,6 +72,11 @@ Thumbs.db
 tmp-*
 tmp_*
 
+# Local UI screenshots and Playwright test artifacts
+shots/
+test-results/
+playwright-report/
+
 # LAN deployment config (copy example → config.production-deploy.json)
 scripts/deployment/config.production-deploy.json
 /_verify-0.3.232/DFlash-Console-Portable-0.3.232-x64.exe

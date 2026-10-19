@@ -13,6 +13,10 @@ const {
 } = require('./app-settings');
 const { UpdateService } = require('./update-service');
 const { compareVersions } = require('./update-contract');
+const {
+  hasPostInstallLaunchArg,
+  shouldSuppressAutomaticUpdateCheck,
+} = require('./update-lifecycle');
 const { registerContextMenus } = require('./context-menu');
 
 const DEFAULT_PORT = 8900;
@@ -38,13 +42,8 @@ let updatePopupShownFor = '';
 let postInstallWelcomeActive = false;
 let postInstallSetupActive = false;
 
-const POST_INSTALL_LAUNCH_ARGS = new Set(['--dflash-post-update', '--dflash-post-install']);
 const POST_INSTALL_SETUP_ARG = '--dflash-post-install';
 const STARTUP_LAUNCH_ARG = '--dflash-startup';
-
-function hasPostInstallLaunchArg() {
-  return process.argv.some((arg) => POST_INSTALL_LAUNCH_ARGS.has(arg));
-}
 
 function hasPostInstallSetupArg() {
   return process.argv.includes(POST_INSTALL_SETUP_ARG);
@@ -359,6 +358,15 @@ function flushPendingUpdatePrompt() {
 
 async function checkAndDownloadUpdate() {
   if (!updateService || loadAppSettings().allowAutomaticUpdates === false) return;
+  // The setup UI relaunches the freshly installed app with a post-install
+  // marker. Do not run the normal feed check during that handoff: the feed can
+  // still report the just-installed release while the app is finishing its
+  // first-run setup, which would reopen the install prompt immediately.
+  if (shouldSuppressAutomaticUpdateCheck({
+    argv: process.argv,
+    postInstallWelcomeActive,
+    postInstallSetupActive,
+  })) return;
   const status = updateService.getStatus();
   if (status.ready) {
     return;
@@ -384,6 +392,11 @@ function closeUpdatePopup() {
 function showUpdatePopup(manifest) {
   if (!manifest) return;
   if (updatePromptDeferred) return;
+  if (shouldSuppressAutomaticUpdateCheck({
+    argv: process.argv,
+    postInstallWelcomeActive,
+    postInstallSetupActive,
+  })) return;
   const version = String(manifest.version || '').trim();
   if (!version || version === updatePopupShownFor) return;
   updatePopupShownFor = version;

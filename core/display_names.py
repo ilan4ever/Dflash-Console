@@ -8,6 +8,68 @@ from typing import Any
 
 _DFLASH_ENGINE_MARKER = 'dflash'
 
+_HF_REPO_FILE_RE = re.compile(r'\.(gguf|bin|onnx|safetensors|part)$', re.I)
+_HF_HUB_REPO_RE = re.compile(r'models--([^/]+?)--([^/]+)', re.I)
+
+
+def hf_repo_from_path(path: str | Path) -> str:
+    """Return the Hugging Face ``org/repo`` a model file was downloaded from.
+
+    Handles both download layouts:
+      * ``<root>/<org>/<repo>/<file>.gguf`` (Console / LM Studio downloads)
+      * ``~/.cache/huggingface/hub/models--<org>--<repo>/snapshots/<sha>/<file>``
+    Returns ``''`` when the path does not look like a Hugging Face repo.
+    """
+    text = str(path or '').replace('\\', '/').strip()
+    if not text:
+        return ''
+    hub = _HF_HUB_REPO_RE.search(text)
+    if hub and hub.group(1) and hub.group(2):
+        return f'{hub.group(1)}/{hub.group(2)}'
+    parts = [part for part in text.split('/') if part]
+    lowered = [part.lower() for part in parts]
+    if 'models' in lowered:
+        index = lowered.index('models')
+        if len(parts) > index + 2:
+            org, repo = parts[index + 1], parts[index + 2]
+            if org and repo and not _HF_REPO_FILE_RE.search(repo):
+                return f'{org}/{repo}'
+    return ''
+
+
+def engine_name_bracket(mode_suffix: str) -> str:
+    """Short bracketed engine marker: D1 / D2 (empty for plain models)."""
+    text = str(mode_suffix or '').strip().lower()
+    if not text:
+        return ''
+    if 'dflash 2' in text or 'dflash2' in text or 'dspark 2' in text:
+        return 'D2'
+    if 'dflash' in text or 'dspark' in text:
+        return 'D1'
+    return ''
+
+
+def bracket_model_name(name: str, bracket: str) -> str:
+    """Model name + `` (D1)``/`` (D2)`` when it runs as a DFlash stack."""
+    base = str(name or '').strip()
+    if not base:
+        return ''
+    tag = str(bracket or '').strip()
+    if not tag:
+        return base
+    if re.search(rf'\(\s*{re.escape(tag)}\s*\)\s*$', base, re.I):
+        return base
+    return f'{base} ({tag})'
+
+
+def model_name_without_org(name: str) -> str:
+    """``org/repo`` → ``repo`` (the card already shows the lab/org separately)."""
+    text = str(name or '').strip()
+    if '/' not in text:
+        return text
+    return text.rsplit('/', 1)[-1].strip()
+
+
 _FAMILY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r'gemma[-\s]?4', re.I), 'Gemma 4'),
     (re.compile(r'gemma[-\s]?3', re.I), 'Gemma 3'),
@@ -456,11 +518,21 @@ def build_model_catalog(server: dict[str, Any], model_stack: list[dict[str, Any]
         if quantization and not quant_already_shown
         else title_core_ui
     )
+    # Downloaded Hugging Face models keep the repo name as their name, so the
+    # library, engine cards and the OpenAI model list all show the same name the
+    # user searched for / downloaded. The org is already shown as the Lab, so the
+    # model name itself drops the ``org/`` prefix. DFlash stacks add a bracket.
+    hf_repo = hf_repo_from_path(target_path)
+    if hf_repo:
+        hf_name = bracket_model_name(model_name_without_org(hf_repo), engine_name_bracket(mode_suffix))
+        title_core_ui = hf_name
+        title_core_full = hf_name
 
     return {
         'display_name': title_core_ui,
         'display_name_full': title_core_full,
         'engine_mode': mode_suffix,
+        'hf_repo': hf_repo,
         'family': family,
         'parameter_size': parameter_size,
         'quantization': quantization,
@@ -610,6 +682,60 @@ def build_engine_client_metadata(
         'display_name_full': catalog['display_name_full'],
         'model_catalog': catalog,
     }
+
+
+def _engine_catalog(server: dict[str, Any], *, cfg: dict[str, Any] | None) -> dict[str, Any]:
+    try:
+        if cfg is not None:
+            from core.model_stack import resolve_model_stack
+
+            stack = resolve_model_stack(server, cfg=cfg)
+        else:
+            # No config context: never fall back to the global config here, just
+            # use the explicit target this profile already carries.
+            target_path = str(server.get('target_path') or '').strip()
+            stack = [{'role': 'target', 'path': target_path}] if target_path else []
+    except Exception:
+        stack = []
+    try:
+        return build_model_catalog(server, stack)
+    except Exception:
+        return {}
+
+
+def engine_public_model_names(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> list[str]:
+    """Accepted public spellings for a Hugging Face engine, display name first.
+
+    ``repo (D1)`` is the name shown in the UI/API; ``org/repo (D1)`` stays valid
+    so clients that used the full repo id keep working.
+    """
+    catalog = _engine_catalog(server, cfg=cfg)
+    repo = str(catalog.get('hf_repo') or '').strip()
+    if not repo:
+        return []
+    names = [str(catalog.get('display_name') or '').strip()]
+    full = bracket_model_name(repo, engine_name_bracket(str(catalog.get('engine_mode') or '')))
+    if full and full.lower() not in {name.lower() for name in names}:
+        names.append(full)
+    return [name for name in names if name]
+
+
+def engine_public_model_name(
+    server: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """Public engine name shown in the UI and on ``GET /v1/models``.
+
+    Returns ``''`` for engines whose target is not a Hugging Face download, so
+    their existing ids keep working unchanged.
+    """
+    names = engine_public_model_names(server, cfg=cfg)
+    return names[0] if names else ''
 
 
 def client_display_name(server: dict[str, Any], model_stack: list[dict[str, Any]] | None = None) -> str:

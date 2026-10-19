@@ -8,10 +8,12 @@ from typing import Any
 from fastapi import HTTPException
 
 from core.config import (
+    get_model_parallel_slots,
     get_server,
     is_embedding_server,
     list_servers,
     load_config,
+    model_slots_key,
     normalize_inference_settings,
     normalize_load_settings,
     normalize_server,
@@ -297,6 +299,17 @@ def execute_catalog_load(
         candidate['context_size'] = int(context_size)
     if load_settings:
         candidate['load_settings'] = normalize_load_settings(load_settings)
+    else:
+        # Per-model default saved from the Model library "Slots" picker. Only
+        # overrides when this load is an ad-hoc model on another engine; a
+        # profile's own load_settings are already kept in sync by the API.
+        mapped_slots = get_model_parallel_slots(config, resolved_path)
+        profile_target = model_slots_key(str(server.get('target_path') or ''))
+        if mapped_slots and profile_target != model_slots_key(resolved_path):
+            candidate['load_settings'] = {
+                **normalize_load_settings(candidate.get('load_settings')),
+                'parallel_slots': int(mapped_slots),
+            }
     if inference_settings:
         candidate['inference_settings'] = normalize_inference_settings(inference_settings)
 

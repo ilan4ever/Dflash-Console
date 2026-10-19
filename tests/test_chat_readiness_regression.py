@@ -94,3 +94,57 @@ def test_jit_timeout_never_forwards_unloaded_model(monkeypatch: pytest.MonkeyPat
     assert exc.value.detail['error'] == 'model_not_loaded'
     assert exc.value.detail['reason'] == 'model_load_timeout'
     assert exc.value.detail['retryable'] is True
+
+
+def test_stale_loaded_status_is_verified_against_runtime(monkeypatch: pytest.MonkeyPatch):
+    server = _server()
+    cfg = {'servers': [server], 'context_auto_grow': False}
+    _patch_idle(monkeypatch, server, cfg)
+    stale = {
+        'status': 'loaded',
+        'loaded_models': [server['model_id']],
+        'active_model_id': server['model_id'],
+        'model_id': server['model_id'],
+    }
+    monkeypatch.setattr('core.runtime.build_server_status', lambda *args, **kwargs: stale)
+    monkeypatch.setattr('core.runtime.probe_runtime_state', lambda url: ([], [], True, None, True))
+    monkeypatch.setattr('api.app.load_server_checkpoint', lambda *args, **kwargs: {'success': True})
+    monkeypatch.setattr(time, 'sleep', lambda *_args, **_kwargs: None)
+    clock = {'now': 0.0}
+
+    def advance_time() -> float:
+        clock['now'] += 181.0
+        return clock['now']
+
+    monkeypatch.setattr(time, 'time', advance_time)
+
+    with pytest.raises(HTTPException) as exc:
+        _ensure_server_ready_for_chat(server['id'], server, cfg)
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail['reason'] == 'model_load_timeout'
+
+
+def test_unloaded_model_loads_when_request_context_exceeds_configured_cap(monkeypatch: pytest.MonkeyPatch):
+    server = _server()
+    cfg = {'servers': [server], 'context_auto_grow': True}
+    _patch_idle(monkeypatch, server, cfg)
+    loaded = {'done': False}
+    empty = {'status': 'running', 'loaded_models': [], 'model_id': server['model_id']}
+    monkeypatch.setattr('core.runtime.build_server_status', lambda *args, **kwargs: empty)
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda url: ([server['model_id']], [], True, None, True)
+        if loaded['done'] else ([], [], True, None, True),
+    )
+    monkeypatch.setattr('api.app._grow_context_for_chat', lambda *args, **kwargs: pytest.fail('must not grow an unloaded model'))
+
+    def load_checkpoint(*args, **kwargs):
+        loaded['done'] = True
+        return {'success': True}
+
+    monkeypatch.setattr('api.app.load_server_checkpoint', load_checkpoint)
+
+    live = _ensure_server_ready_for_chat(server['id'], server, cfg, required_context=262144)
+
+    assert live['loaded_models'] == [server['model_id']]

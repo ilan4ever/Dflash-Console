@@ -47,6 +47,12 @@ def test_register_overrides_and_lists():
 
 
 def test_process_identity_tokens_include_llama_and_registered():
+    class FakeAdapter(NoopRuntimeAdapter):
+        runtime_id = 'fake-test'
+        process_identity_tokens = ('fake-engine', 'fake-runtime')
+
+    # Register here too: this test must pass even when it is run on its own.
+    register_runtime_adapter(FakeAdapter())
     tokens = set(runtime_process_identity_tokens())
     assert 'llama-server' in tokens
     assert 'start_llama_server.ps1' in tokens

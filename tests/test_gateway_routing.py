@@ -17,6 +17,13 @@ from core.gateway_routing import (
 )
 
 
+def _request():
+    """Minimal request stub for the /v1/models handler."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(headers={})
+
+
 def _cfg() -> dict:
     return {
         'ui_port': 8900,
@@ -209,7 +216,7 @@ def test_gateway_list_models_uses_catalog_ids(tmp_path, monkeypatch: pytest.Monk
     cfg['servers'][3]['draft_path'] = str(draft31)
     cfg['servers'][3]['mmproj_path'] = str(mmproj)
     with patch('api.gateway.load_config', return_value=cfg):
-        result = asyncio.run(list_models())
+        result = asyncio.run(list_models(_request()))
     by_id = {row['id']: row for row in result['data']}
     assert 'gemma-4-12b-it-q4-k-m' in by_id
     assert by_id['gemma-4-12b-it-q4-k-m']['meta']['server_id'] == 'gemma-4-12b-it-q4-k-m-dflash'
@@ -231,7 +238,7 @@ def test_gateway_list_models_deduplicates_registered_model_ids(tmp_path):
         'port': 8093,
     })
     with patch('api.gateway.load_config', return_value=cfg):
-        result = asyncio.run(list_models())
+        result = asyncio.run(list_models(_request()))
 
     rows = [row for row in result['data'] if row['id'] == 'gemma-4-31b-q4-0-it']
     assert len(rows) == 1
@@ -247,7 +254,7 @@ def test_gateway_list_models_includes_target_only_dflash_profiles(tmp_path, monk
     cfg['servers'][1]['target_path'] = str(qwen_target)
     cfg['servers'][2]['target_path'] = str(gemma_target)
     with patch('api.gateway.load_config', return_value=cfg):
-        result = asyncio.run(list_models())
+        result = asyncio.run(list_models(_request()))
     ids = {row['meta']['server_id'] for row in result['data']}
     assert 'qwen3-8-27b-q6-k-l-dflash' in ids
     assert 'gemma-4-12b-it-q4-k-m-dflash' in ids

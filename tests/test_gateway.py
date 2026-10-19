@@ -25,6 +25,37 @@ def test_prepare_upstream_stream_body_forces_stream_and_usage():
     assert body['stream_options']['include_usage'] is True
 
 
+class _FakeRequest:
+    def __init__(self, headers: dict[str, str] | None = None):
+        self.headers = headers or {}
+
+
+_MODEL_ROWS = [
+    {'id': 'canonical', 'meta': {'alias_of': ''}},
+    {'id': 'canonical-dflash', 'meta': {'alias_of': 'canonical'}},
+    {'id': 'gpt-4o', 'meta': {'alias_of': 'canonical'}},
+    {'id': 'other', 'meta': {}},
+]
+
+
+def test_compact_model_list_drops_alias_rows():
+    payload = gateway_module._model_list_payload(
+        _FakeRequest({gateway_module.COMPACT_MODELS_HEADER: '1'}),
+        _MODEL_ROWS,
+    )
+    assert [row['id'] for row in payload['data']] == ['canonical', 'other']
+
+
+def test_compact_model_list_requires_header():
+    payload = gateway_module._model_list_payload(_FakeRequest(), _MODEL_ROWS)
+    assert [row['id'] for row in payload['data']] == [
+        'canonical',
+        'canonical-dflash',
+        'gpt-4o',
+        'other',
+    ]
+
+
 def test_sse_stream_complete_detects_done_marker():
     raw = b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n'
     assert sse_stream_complete(raw) is True

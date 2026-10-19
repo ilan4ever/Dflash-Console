@@ -75,6 +75,12 @@ def test_chat_arms_engine_when_off(client, monkeypatch):
             'active_model_id': 'gemma-4-12b-it-qat',
         },
     )
+    # _wait_until_loaded re-probes the router after arming the engine; without
+    # this stub the real HTTP probe runs against a port that is not serving.
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda url: (['gemma-4-12b-it-qat'], [], True, None, True),
+    )
     monkeypatch.setattr('api.app.load_server_checkpoint', lambda *args, **kwargs: load_calls.append('load') or {'success': True})
     monkeypatch.setattr('core.engine_state.update_server_runtime', lambda sid, **kw: {'engine_on': True})
 

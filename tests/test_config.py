@@ -528,6 +528,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_gateway_list_models_lists_engines(self):
         import asyncio
+        from types import SimpleNamespace
 
         from api.gateway import list_models
 
@@ -539,7 +540,7 @@ class ConfigTests(unittest.TestCase):
                 {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'label': 'Nomic Embed', 'engine_mode': 'embedding'},
             ],
         }):
-            result = asyncio.run(list_models())
+            result = asyncio.run(list_models(SimpleNamespace(headers={})))
         ids = {m['id'] for m in result['data']}
         # The public gateway list includes both the canonical model id and the
         # configured engine alias so external apps can address either one.

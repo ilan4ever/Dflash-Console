@@ -1,0 +1,12 @@
+﻿{
+  "_comment": "Owner labels for external GPU processes. First matching rule wins. Regexes are case-insensitive; match_exe = exe basename, match_cmd = full command line + exe path. Edited live: Console re-reads on change.",
+  "rules": [
+    {"match_cmd": "deepseek-harness[\\\\/].*speech_hermes", "app_source": "deepseek-harness", "app_label": "DeepSeek Harness", "component_label": "DeepSeek Harness Hermes STT"},
+    {"match_cmd": "deepseek-harness[\\\\/].*stt_manager", "app_source": "deepseek-harness", "app_label": "DeepSeek Harness", "component_label": "DeepSeek Harness STT manager"},
+    {"match_exe": "^DeepHarness-", "app_source": "deepseek-harness", "app_label": "DeepSeek Harness"},
+    {"match_cmd": "deepseek-harness[\\\\/]", "app_source": "deepseek-harness", "app_label": "DeepSeek Harness"},
+    {"match_cmd": "warm_server\\.py", "app_source": "onevoice", "app_label": "OneVoice", "component_label": "OneVoice F5", "model_path_from_arg": "--ckpt"},
+    {"match_exe": "^OneVoice-", "app_source": "onevoice", "app_label": "OneVoice"},
+    {"match_cmd": "[\\\\/]dev[\\\\/]onevoice[\\\\/]", "app_source": "onevoice", "app_label": "OneVoice"}
+  ]
+}

@@ -17,6 +17,10 @@ const {
   verifyManifestSignature,
 } = require('../electron/update-integrity');
 const { UpdateService, safeArtifactName } = require('../electron/update-service');
+const {
+  hasPostInstallLaunchArg,
+  shouldSuppressAutomaticUpdateCheck,
+} = require('../electron/update-lifecycle');
 const packageJson = require('../package.json');
 
 function manifest() {
@@ -137,4 +141,29 @@ test('owns the ready prompt in the dark renderer instead of native Electron dial
   assert.match(settings, /updatePromptVersion/);
   assert.match(settings, /localStorage\.setItem\(UPDATE_PROMPT_VERSION_KEY, version\)/);
   assert.match(index, /id="desktopUpdateModal"/);
+});
+
+test('suppresses automatic update prompts during the installer relaunch handoff', () => {
+  assert.equal(hasPostInstallLaunchArg(['electron', '--dflash-post-update']), true);
+  assert.equal(hasPostInstallLaunchArg(['electron', '--dflash-post-install']), true);
+  assert.equal(hasPostInstallLaunchArg(['electron']), false);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({
+    argv: ['electron', '--dflash-post-update'],
+  }), true);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({
+    argv: ['electron'],
+    postInstallWelcomeActive: true,
+  }), true);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({
+    argv: ['electron'],
+    postInstallSetupActive: true,
+  }), true);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({ argv: ['electron'] }), false);
+});
+
+test('wires the post-install guard into both automatic check and popup paths', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  assert.equal((main.match(/shouldSuppressAutomaticUpdateCheck\(\{/g) || []).length, 2);
+  assert.match(main, /postInstallWelcomeActive/);
+  assert.match(main, /postInstallSetupActive/);
 });

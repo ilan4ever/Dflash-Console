@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -326,7 +327,7 @@ def test_gateway_lists_only_active_cloud_models():
          patch('api.gateway.list_runtimes', return_value=[]), \
          patch('core.gateway_routing.default_gateway_chat_server', side_effect=HTTPException(status_code=503)), \
          patch('api.gateway.default_gateway_chat_server', side_effect=HTTPException(status_code=503)):
-        payload = asyncio.run(list_models())
+        payload = asyncio.run(list_models(SimpleNamespace(headers={})))
     ids = {row['id'] for row in payload['data']}
     assert 'deepseek-flash' in ids
     assert 'deepseek-v4-pro' not in ids

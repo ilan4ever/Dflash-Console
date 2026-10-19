@@ -14,4 +14,6 @@ if (-not $env:DFLASH_ROOT) {
 }
 $env:PYTHONPATH = $Root
 
-& python -m uvicorn api.app:app --host 127.0.0.1 --port $Port
+$py = Join-Path $Root '.venv\Scripts\python.exe'
+if (-not (Test-Path $py)) { $py = 'python' }
+& $py -m uvicorn api.app:app --host 127.0.0.1 --port $Port --loop core.win_loop:loop_factory

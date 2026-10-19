@@ -315,6 +315,40 @@ def normalize_load_settings(raw: Any) -> dict[str, Any]:
     }
 
 
+def model_slots_key(path: str | Path) -> str:
+    """Stable key for per-model defaults (resolved checkpoint path, lowercase)."""
+    text = str(path or '').strip()
+    if not text:
+        return ''
+    try:
+        return str(Path(text).expanduser().resolve()).lower()
+    except OSError:
+        return text.lower()
+
+
+def normalize_model_slots(raw: Any) -> dict[str, int]:
+    """Per-model default parallel slots, keyed by checkpoint path."""
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        path_key = model_slots_key(str(key or ''))
+        if not path_key:
+            continue
+        try:
+            slots = int(value)
+        except (TypeError, ValueError):
+            continue
+        result[path_key] = max(1, min(16, slots))
+    return result
+
+
+def get_model_parallel_slots(cfg: dict[str, Any] | None, path: str | Path) -> int | None:
+    """Default slot count saved for one model file (None when never set)."""
+    slots = normalize_model_slots((cfg or {}).get('model_slots'))
+    return slots.get(model_slots_key(path))
+
+
 def normalize_inference_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(DEFAULT_INFERENCE_SETTINGS)
@@ -623,6 +657,7 @@ def load_config() -> dict[str, Any]:
     data['gateway_server_id'] = str(data.get('gateway_server_id') or '').strip()
     data['hardware_settings'] = normalize_hardware_settings(data.get('hardware_settings'))
     data['download_settings'] = normalize_download_settings(data.get('download_settings'))
+    data['model_slots'] = normalize_model_slots(data.get('model_slots'))
     if 'remote_nodes' in data:
         data['remote_nodes'] = normalize_remote_nodes(data.get('remote_nodes'))
     from core.api_providers import normalize_api_providers

@@ -619,6 +619,14 @@
     return repoId.includes('/') ? repoId.split('/')[0] : '';
   }
 
+  // Cards name the account that actually uploaded the repo; the inferred "lab"
+  // (e.g. Google for any Gemma repo) is only a family grouping.
+  function modelCardAuthor(model) {
+    const uploader = modelUploader(model);
+    if (uploader) return uploader;
+    return String(model?.lab || '').trim() || '—';
+  }
+
   function visibleModels() {
     let rows = models;
     if (installedOnly()) {
@@ -920,9 +928,10 @@
   }
 
   function modelTitle(model) {
-    const title = String(model?.title || model?.label || '').trim();
+    // The card already shows the uploader/org, so the name is the repo alone.
     const id = String(model?.id || '').trim();
-    return title || id || '—';
+    if (id) return id.includes('/') ? id.split('/').pop() : id;
+    return String(model?.title || model?.label || '').trim() || '—';
   }
 
   function modelDescription(model) {
@@ -1895,7 +1904,7 @@
       const ready = catalogReadyToLoad(model) ? ' ready-to-load' : '';
       const listBadges = catalogListBadges(model);
       const description = modelDescription(model);
-      const labName = modelLab(model);
+      const labName = modelCardAuthor(model);
       const descLine = description
         ? `<span class="lm-search-item-summary">${escapeHtml(description)}</span>`
         : `<span class="lm-search-item-summary">${escapeHtml(catalogListTaskLabel(model))}</span>`;
@@ -2310,12 +2319,10 @@
               </div>
               <div class="df-catalog-model-badges">${catalogDetailBadges(model)}</div>
               <p class="lm-search-stats">
-                <span class="lm-search-item-author">${escapeHtml(modelLab(model))}</span>
-                · ${escapeHtml(model.author || '—')}
+                <span class="lm-search-item-author">${escapeHtml(modelCardAuthor(model))}</span>
                 · ${escapeHtml(model.downloads_label || '0')} downloads · ★ ${model.likes || 0}
                 · Updated ${escapeHtml(model.updated_ago || '—')}${model.size_label && model.size_label !== '—' ? ` · ${escapeHtml(model.size_label)}` : ''}
               </p>
-              <p class="lm-search-repo-id">${escapeHtml(model.id)}</p>
               ${summaryHtml}
               <div class="df-catalog-quant-download-row">
                 ${filePick}

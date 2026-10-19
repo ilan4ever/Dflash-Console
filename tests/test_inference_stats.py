@@ -684,3 +684,14 @@ def test_fetch_inference_stats_uses_router_model_id_when_profile_id_is_rejected(
     assert stats['generating'] is True
     assert stats['generating_tokens'] == 36
     assert stats['prefill_tokens'] == 2048
+
+
+def test_build_slot_rows_includes_idle_slot_and_states():
+    from core import inference_stats as s
+    rows = s._build_slot_rows([
+        {'slot_id': 0, 'generating': True, 'generating_tokens': 0},
+        {'slot_id': 1, 'generating': False},
+    ], '')
+    assert [r['state'] for r in rows] == ['prefill', 'idle']
+    assert [r['index'] for r in rows] == [1, 2]
+    assert s._build_slot_rows([{'slot_id': 0}], '') == []

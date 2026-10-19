@@ -324,7 +324,35 @@
     return withQuantSuffix(label, { ...model, quant: quantToken || model?.quant });
   }
 
+  // Hugging Face repo a local file came from (org/repo layout or hub cache).
+  function hfRepoFromPath(model) {
+    const explicit = String(model?.hf_repo || model?.repo_id || '').trim().replace(/^\/+|\/+$/g, '');
+    if (explicit.includes('/')) return explicit;
+    const path = String(model?.path || '').replace(/\\/g, '/');
+    if (!path) return '';
+    const hub = path.match(/models--([^/]+?)--([^/]+)/i);
+    if (hub?.[1] && hub?.[2]) return `${hub[1]}/${hub[2]}`;
+    const parts = path.split('/').filter(Boolean);
+    const idx = parts.findIndex((part) => part.toLowerCase() === 'models');
+    if (idx >= 0 && parts.length > idx + 2) {
+      const org = parts[idx + 1];
+      const repo = parts[idx + 2];
+      if (org && repo && !/\.(gguf|bin|onnx|safetensors|part)$/i.test(repo)) return `${org}/${repo}`;
+    }
+    return '';
+  }
+
+  function engineBracket(model) {
+    const generation = String(model?.dflash_generation || '').toLowerCase();
+    if (generation === 'dflash2') return ' (D2)';
+    if (generation === 'dflash1') return ' (D1)';
+    return '';
+  }
+
   function stackDisplayName(model) {
+    const repoName = hfRepoFromPath(model);
+    // The card already shows the org as the Lab, so the name is the repo alone.
+    if (repoName) return `${repoName.split('/').pop()}${engineBracket(model)}`;
     const apiLabel = String(model?.label || '').trim().replace(/\.gguf$/i, '');
     if (apiLabel && /\bd-?flash\b/i.test(apiLabel)) {
       if (/\([A-Z][A-Z0-9_]*\)\s*$/.test(apiLabel)) return apiLabel;
@@ -342,6 +370,8 @@
       return String(model.label || model.id || model.model_id || 'Model').trim() || 'Model';
     }
     const isStack = isDflashStack(model);
+    const repoName = hfRepoFromPath(model);
+    if (repoName) return `${repoName.split('/').pop()}${engineBracket(model)}`;
     const name = isStack
       ? stackDisplayName(model)
       : String(model.label || model.filename || model.id || 'Model').replace(/\.gguf$/i, '');
@@ -546,6 +576,7 @@
     friendlyStackLabel,
     stackDisplayName,
     withQuantSuffix,
+    hfRepoFromPath,
     extractQuantTokenFromModel,
     isPickerVisibleModel,
     dedupePickerModels,

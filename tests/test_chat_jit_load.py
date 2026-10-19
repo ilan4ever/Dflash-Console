@@ -59,6 +59,11 @@ def test_ensure_ready_loads_idle_engine(monkeypatch):
     )
     monkeypatch.setattr('core.memory_guardrails.assess_load', lambda srv, cfg=None: {'level': 'ok'})
     monkeypatch.setattr('core.engine_state.note_engine_loaded', lambda sid, **kwargs: None)
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda url: (['gemma-4-12b-it-qat'], [], True, None, True)
+        if loaded_flag['done'] else ([], [], True, None, True),
+    )
 
     def _fake_load(srv, cfg=None, **kwargs):
         load_calls.append(str(srv.get('id') or ''))
@@ -97,6 +102,10 @@ def test_ensure_ready_notes_active_client_when_already_loaded(monkeypatch):
     monkeypatch.setattr(
         'core.engine_state.note_engine_active_client',
         lambda sid, client_label='', **kwargs: active_calls.append((sid, client_label)) or {'loaded_by_changed': True},
+    )
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda url: (['gemma-4-12b-it-qat'], [], True, None, True),
     )
 
     live = _ensure_server_ready_for_chat(

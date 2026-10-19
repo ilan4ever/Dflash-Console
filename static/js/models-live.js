@@ -634,6 +634,7 @@
       if (!apiId) return '';
       return `<div class="lm-library-card-paths"><div class="lm-model-path-hint" title="${escapeHtml(apiId)}">${escapeHtml(apiId)}</div></div>`;
     }
+    const repoHint = modelRepoHintHtml(model);
     const stack = isDflashStack(model);
     if (stack) {
       const details = window.DFlashModelCard?.detailsHtml?.(model, {
@@ -641,15 +642,15 @@
         includeAccelerator: true,
         alwaysForStack: true,
       }) || '';
-      if (!details) return '';
-      return `<div class="lm-library-card-paths lm-model-card-details">${details}</div>`;
+      if (!details) return repoHint ? `<div class="lm-library-card-paths lm-model-card-details">${repoHint}</div>` : '';
+      return `<div class="lm-library-card-paths lm-model-card-details">${repoHint}${details}</div>`;
     }
     const path = String(model?.path || '').trim();
-    if (!path) return '';
+    if (!path) return repoHint ? `<div class="lm-library-card-paths">${repoHint}</div>` : '';
     const label = model.draft_path && model.draft_filename
       ? `Target · ${shortPath(path)}`
       : shortPath(path);
-    return `<div class="lm-library-card-paths"><div class="lm-model-path-hint" title="${escapeHtml(path)}">${escapeHtml(label)}</div></div>`;
+    return `<div class="lm-library-card-paths">${repoHint}<div class="lm-model-path-hint" title="${escapeHtml(path)}">${escapeHtml(label)}</div></div>`;
   }
 
   function libraryModelFooterHtml(model, visibleCount) {
@@ -704,16 +705,17 @@
           <td class="lm-col-meta lm-library-handle-meta">${modelSourceCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(size)}</td>
           <td class="lm-col-meta lm-col-updated lm-library-handle-meta">${libraryUpdatedCell(model)}</td>
+          <td class="lm-col-meta lm-library-handle-meta">${modelSlotsCell(model)}</td>
           <td class="${actionCls}" rowspan="${actionRowspan}">${loadBtn}</td>
         </tr>`,
     ];
     if (paths) {
-      rows.push(`<tr class="${rowClass} lm-library-card-line2" ${dataAttrs}><td class="lm-library-card-span" colspan="7">${paths}</td></tr>`);
+      rows.push(`<tr class="${rowClass} lm-library-card-line2" ${dataAttrs}><td class="lm-library-card-span" colspan="8">${paths}</td></tr>`);
     }
     if (foot) {
-      rows.push(`<tr class="${rowClass} lm-library-card-line3" ${dataAttrs}><td class="lm-library-card-span" colspan="7">${foot}</td></tr>`);
+      rows.push(`<tr class="${rowClass} lm-library-card-line3" ${dataAttrs}><td class="lm-library-card-span" colspan="8">${foot}</td></tr>`);
     }
-    rows.push('<tr class="lm-library-card-spacer" aria-hidden="true"><td colspan="8"></td></tr>');
+    rows.push('<tr class="lm-library-card-spacer" aria-hidden="true"><td colspan="9"></td></tr>');
     return rows;
   }
 
@@ -988,14 +990,45 @@
     return `<div class="lm-model-path-hint" title="${escapeHtml(model.path)}">${escapeHtml(shortPath(model.path))}</div>`;
   }
 
+  // The Hugging Face repo a model file was downloaded from:
+  //   <root>/<org>/<repo>/<file>.gguf   or   .../models--<org>--<repo>/snapshots/<sha>/<file>
+  function modelHfRepoFromPath(model) {
+    const explicit = String(model?.hf_repo || model?.repo_id || '').trim().replace(/^\/+|\/+$/g, '');
+    if (explicit.includes('/')) return explicit;
+    const path = String(model?.path || '').replace(/\\/g, '/');
+    if (!path) return '';
+    const hub = path.match(/models--([^/]+?)--([^/]+)/i);
+    if (hub?.[1] && hub?.[2]) return `${hub[1]}/${hub[2]}`;
+    const parts = path.split('/').filter(Boolean);
+    const modelsIdx = parts.findIndex((part) => part.toLowerCase() === 'models');
+    if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
+      const org = parts[modelsIdx + 1];
+      const repo = parts[modelsIdx + 2];
+      if (org && repo && !/\.(gguf|bin|onnx|safetensors|part)$/i.test(repo)) return `${org}/${repo}`;
+    }
+    return '';
+  }
+
   function modelHfRepoId(model) {
-    const hfRepo = String(model?.hf_repo || model?.repo_id || '').trim();
-    if (hfRepo && hfRepo.includes('/')) return hfRepo;
+    const repo = modelHfRepoFromPath(model);
+    if (repo) return repo;
     const publisher = String(model?.publisher || '').trim();
     const label = String(model?.label || '').trim();
     if (label.includes('/')) return label;
-    if (publisher && label) return `${publisher}/${label}`;
+    if ((model?.arch === 'hf' || model?.kind === 'dir') && publisher && label) return `${publisher}/${label}`;
     return '';
+  }
+
+  // Show the downloaded repo when the row title does not already contain it, so a
+  // search for "org/repo" lands on a row that visibly carries that name.
+  function modelRepoHintHtml(model) {
+    if (isCloudApiModel(model)) return '';
+    const repo = modelHfRepoFromPath(model);
+    if (!repo) return '';
+    const repoName = String(repo.split('/').pop() || '').replace(/-gguf$/i, '');
+    const hay = normalizeSearchText(`${modelTitleLine(model)} ${model?.filename || ''}`);
+    if (repoName && hay.includes(normalizeSearchText(repoName))) return '';
+    return `<div class="lm-model-path-hint lm-model-repo-hint" title="Downloaded from Hugging Face: ${escapeHtml(repo)}"><span class="lm-repo-label">Hugging Face</span>${escapeHtml(repo)}</div>`;
   }
 
   function libraryFamilyCell(model) {
@@ -1019,6 +1052,36 @@
     if (modified) return escapeHtml(modified);
     if (isCloudApiModel(model)) return 'Cloud';
     return '—';
+  }
+
+  const PARALLEL_SLOT_CHOICES = [1, 2, 3, 4, 6, 8, 12, 16];
+
+  function modelParallelSlots(model) {
+    const value = Number(model?.parallel_slots);
+    if (Number.isFinite(value) && value >= 1) return Math.max(1, Math.min(16, Math.round(value)));
+    return 4;
+  }
+
+  function modelSupportsSlots(model) {
+    if (!model?.path || isProjectorModel(model) || isCloudApiModel(model)) return false;
+    const runtime = String(model?.runtime_id || '').trim().toLowerCase();
+    return !runtime || runtime === 'llama-server';
+  }
+
+  function modelSlotsCell(model) {
+    if (!modelSupportsSlots(model)) return '—';
+    const current = modelParallelSlots(model);
+    const choices = PARALLEL_SLOT_CHOICES.includes(current)
+      ? PARALLEL_SLOT_CHOICES
+      : [...PARALLEL_SLOT_CHOICES, current].sort((a, b) => a - b);
+    const options = choices
+      .map((count) => `<option value="${count}"${count === current ? ' selected' : ''}>${count}</option>`)
+      .join('');
+    const loaded = (isStackLoadedOnGpu(model) || model?.runtime_loaded) ? '1' : '0';
+    const title = loaded === '1'
+      ? 'Parallel slots for the next load. Reload the model to apply a new value.'
+      : 'Parallel slots used when this model loads (saved as its default).';
+    return `<select class="lm-select small lm-slots-pick" data-slots-pick="1" data-slots-path="${escapeHtml(model.path || '')}" data-slots-loaded="${loaded}" aria-label="Parallel slots for ${escapeHtml(modelTitleLine(model))}" title="${escapeHtml(title)}">${options}</select>`;
   }
 
     function modelLabCell(model) {
@@ -1776,11 +1839,22 @@
     return `${parent} (${leaf.toUpperCase()})`;
   }
 
+  function modelEngineBracket(model) {
+    const generation = String(model?.dflash_generation || '').toLowerCase();
+    if (generation === 'dflash2') return ' (D2)';
+    if (generation === 'dflash1') return ' (D1)';
+    return '';
+  }
+
   function modelTitleLine(model) {
     // Cloud API cards: friendly label as title; API id is the path subtitle.
     if (isCloudApiModel(model)) {
       return String(model?.label || model?.id || model?.model_id || model?.filename || '—').trim() || '—';
     }
+    // Models downloaded from Hugging Face are named by their repo name (the Lab
+    // column already shows the org), with the DFlash generation in brackets.
+    const hfRepo = modelHfRepoFromPath(model);
+    if (hfRepo) return `${hfRepo.split('/').pop()}${modelEngineBracket(model)}`;
     const isStack = !!(model?.dflash_stack && model?.draft_path);
     const rawLabel = String(model?.label || model?.id || '—');
     let name = isStack && window.DFlashModelGroups?.stackDisplayName
@@ -2034,6 +2108,8 @@
 
   function isHfAcceleratorAvailable(model) {
     if (hfAcceleratorStatus !== 'ready' || isDflashAccelerator(model) || isNonDflashStackTarget(model)) return false;
+    // An accelerator is already paired to this model — "available on HF" would be noise.
+    if (String(model?.draft_path || '').trim()) return false;
     return hfAcceleratorCatalog.some((accelerator) => hfAcceleratorMatchesTarget(model, accelerator));
   }
 
@@ -2214,7 +2290,7 @@
   }
 
   function loadingRowHtml(message = 'Loading your model library…', note = 'Scanning configured folders. Your models will appear here shortly.') {
-    return `<tr class="lm-models-loading-row"><td colspan="8">
+    return `<tr class="lm-models-loading-row"><td colspan="9">
       <span class="lm-models-loading-spinner" aria-hidden="true"></span>
       <span>${escapeHtml(message)}</span>
       <small>${escapeHtml(note)}</small>
@@ -2326,7 +2402,7 @@
         labelsHtml: libraryMobileCardLabels(model),
         detailsHtml: isCloudApiModel(model)
           ? `<div class="lm-model-path-hint">${escapeHtml(String(model?.model_id || model?.id || ''))}</div>`
-          : '',
+          : modelRepoHintHtml(model),
         diskLabel: size,
         actionHtml,
         selected,
@@ -2344,7 +2420,7 @@
 
   function providerSectionHeaderHtml(label) {
     const text = String(label || 'API').trim() || 'API';
-    return `<tr class="lm-library-provider-section"><td class="lm-library-provider-section-cell" colspan="8"><span class="lm-library-provider-section-label">${escapeHtml(text)}</span></td></tr>`;
+    return `<tr class="lm-library-provider-section"><td class="lm-library-provider-section-cell" colspan="9"><span class="lm-library-provider-section-label">${escapeHtml(text)}</span></td></tr>`;
   }
 
   function providerSectionCompactHtml(label) {
@@ -2467,7 +2543,7 @@
           : typeFilter === 'loaded'
             ? 'No models are loaded on the GPU right now. Use Load on a model row or the Engines tab.'
             : 'No models match this filter.';
-      body.innerHTML = `<tr><td colspan="8" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="9" class="lm-models-empty">${escapeHtml(emptyLabel)}</td></tr>`;
       if (compact) {
         const cards = document.getElementById('modelsMobileCards');
         if (cards) cards.innerHTML = `<div class="lm-models-empty">${escapeHtml(emptyLabel)}</div>`;
@@ -2549,7 +2625,7 @@
         if (event.target.closest('[data-action="setup-stack"]')) return;
         if (event.target.closest('[data-action="unload-model"]')) return;
         if (event.target.closest('[data-action="open-chat"]')) return;
-        if (event.target.closest('[data-engine-pick], [data-load-engine-pick], [data-gpu-pick]')) return;
+        if (event.target.closest('[data-engine-pick], [data-load-engine-pick], [data-gpu-pick], [data-slots-pick]')) return;
         if (event.target.closest('.df-select-wrap[data-model-selector-wrap="1"], .df-select-trigger[data-model-selector-trigger], .df-select-menu[data-model-selector-menu]')) return;
         void selectModel(row.dataset.modelKey);
       });
@@ -2611,6 +2687,39 @@
         toast(pick.value === 'auto'
           ? 'GPU selection set to Automatic'
           : `GPU selection pinned to GPU ${pick.value}`);
+      });
+    });
+    root.querySelectorAll('[data-slots-pick]').forEach((pick) => {
+      pick.addEventListener('click', (event) => event.stopPropagation());
+      pick.addEventListener('change', async (event) => {
+        event.stopPropagation();
+        const model = modelForRow(pick.closest(rowSel));
+        if (!model) return;
+        const slots = parseInt(pick.value || '4', 10);
+        try {
+          await api('/api/models/slots', {
+            method: 'PATCH',
+            body: JSON.stringify({ path: model.path, slots }),
+          });
+          model.parallel_slots = slots;
+          toast(`Saved ${slots} slot${slots === 1 ? '' : 's'} for ${modelTitleLine(model)}`);
+          if (pick.dataset.slotsLoaded === '1' && model.server_id) {
+            const reload = await openConfirmDialog({
+              kicker: 'Slots changed',
+              title: `Reload with ${slots} slot${slots === 1 ? '' : 's'}?`,
+              message: 'This model is loaded with the previous slot count. Reload it now to apply the new number of parallel slots.',
+              confirmLabel: 'Reload now',
+            });
+            if (reload) {
+              await api(`/api/servers/${encodeURIComponent(model.server_id)}/reload`, { method: 'POST' });
+              toast('Reloading the model with the new slot count');
+            }
+          }
+          await refresh(true);
+        } catch (err) {
+          toast(err.message || 'Could not save the slot count', false);
+          pick.value = String(modelParallelSlots(model));
+        }
       });
     });
     root.querySelectorAll('[data-action="resume-download"]').forEach((btn) => {
@@ -4606,5 +4715,7 @@
     importModelWithWizard,
     isModelAlreadyImported,
     noteRuntimeServers,
+    openConfirmDialog,
+    modelParallelSlots,
   };
 })();

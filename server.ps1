@@ -569,7 +569,7 @@ if ($Foreground) {
     Write-StartupLine 'Press Ctrl+C to stop.' 'Gray'
     Write-Host ''
     $env:PYTHONPATH = $Root
-    & $pythonPath -m uvicorn api.app:app --host 127.0.0.1 --port $Port
+    & $pythonPath -m uvicorn api.app:app --host 127.0.0.1 --port $Port --loop core.win_loop:loop_factory
     exit $LASTEXITCODE
 }
 

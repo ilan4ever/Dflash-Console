@@ -190,9 +190,10 @@ def apply_reasoning_policy(
 ) -> bytes:
     """Rewrite a chat request body's reasoning controls for the target model.
 
-    Non-reasoning models must behave like a plain chat model: drop
-    ``reasoning_effort`` (and any thinking toggles) so the API never asks for
-    reasoning and the engine keeps its regular output.
+    Non-reasoning models normally drop ``reasoning_effort`` (and any thinking
+    toggles). An explicit disable request still forwards ``reasoning_effort:
+    none`` because llama templates can enter a thinking phase even when the
+    catalog marks the model as non-reasoning.
 
     Reasoning models keep the client's ``reasoning_effort`` unless the caller
     disables reasoning via ``X-Disable-Reasoning: 1`` or ``reasoning_effort:
@@ -234,10 +235,17 @@ def apply_reasoning_policy(
             return json.dumps(body).encode('utf-8')
         except (TypeError, ValueError):
             return raw
-    for key in ('reasoning_effort', 'thinking', 'enable_thinking'):
+    if disable_reasoning:
+        if body.get('reasoning_effort') != 'none':
+            body['reasoning_effort'] = 'none'
+            changed = True
+    for key in ('thinking', 'enable_thinking'):
         if key in body:
             body.pop(key, None)
             changed = True
+    if not disable_reasoning and 'reasoning_effort' in body:
+        body.pop('reasoning_effort', None)
+        changed = True
     if not changed:
         return raw
     try:

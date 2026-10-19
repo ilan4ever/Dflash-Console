@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DFlash Console</title>
   <link rel="stylesheet" href="/static/css/dflash-console.css">
-  <link rel="stylesheet" href="/static/css/dflash-shell.css">
+  <link rel="stylesheet" href="/static/css/dflash-shell.css?v=0.3.278-slots-full">
 </head>
 <body class="df-shell">
   <div class="lm-app df-app">
@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.275</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.276</span>
           </div>
         </div>
       </div>
@@ -437,6 +437,7 @@ try {
                   <th class="lm-col-meta" data-col-id="source" data-col-min="56">Source</th>
                   <th class="lm-col-meta" data-col-id="disk" data-col-min="48">Disk</th>
                   <th class="lm-col-meta" data-col-id="updated" data-col-min="96" data-col-default="108">Updated</th>
+                  <th class="lm-col-meta lm-col-slots" data-col-id="slots" data-col-min="56">Slots</th>
                   <th class="lm-col-action" data-col-id="action" data-col-min="132" data-col-default="200">
                     <span class="lm-action-col-heads">
                       <span class="lm-action-col-head">Engine</span>
@@ -447,7 +448,7 @@ try {
               </thead>
               <tbody id="modelsTableBody">
                 <tr class="lm-models-loading-row">
-                  <td colspan="8">
+                  <td colspan="9">
                     <span class="lm-models-loading-spinner" aria-hidden="true"></span>
                     <span>Loading your model library…</span>
                     <small>Scanning configured folders. Your models will appear here shortly.</small>
@@ -545,7 +546,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.275</strong>
+                <strong id="dfAboutVersion">v0.3.276</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -2088,7 +2089,7 @@ try {
   <script src="/static/js/log-format.js"></script>
   <script src="/static/js/model-catalog-groups.js"></script>
   <script src="/static/js/model-card.js"></script>
-  <script src="/static/js/server-live.js"></script>
+  <script src="/static/js/server-live.js?v=0.3.278-slots-full"></script>
   <script src="/static/js/status-feed.js"></script>
   <script src="/static/js/table-column-resize.js"></script>
   <script src="/static/js/models-live.js"></script>

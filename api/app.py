@@ -148,6 +148,55 @@ def _start_parent_watchdog() -> None:
 
     threading.Thread(target=watch, daemon=True, name='console-parent-watchdog').start()
 
+def _api_listen_port() -> int:
+    raw = str(os.environ.get('DFLASH_CONSOLE_PORT') or '').strip()
+    if raw.isdigit():
+        return int(raw)
+    import sys
+
+    argv = sys.argv
+    for i, a in enumerate(argv):
+        if a == '--port' and i + 1 < len(argv) and argv[i + 1].isdigit():
+            return int(argv[i + 1])
+        if a.startswith('--port=') and a[7:].isdigit():
+            return int(a[7:])
+    return 0
+
+
+def _start_listener_watchdog() -> None:
+    """Exit if our own HTTP listener dies (Windows Proactor accept failure, WinError 64).
+
+    Otherwise the process lingers as a zombie (gateway still up, :8900 dead) and the UI only
+    shows "Failed to fetch". Engines are separate processes and are preserved.
+    """
+    if os.environ.get('DFLASH_LISTENER_WATCHDOG', '0').strip().lower() not in ('1', 'true', 'yes'):
+        return
+    port = _api_listen_port()
+    if port <= 0:
+        return
+
+    def watch() -> None:
+        failures = 0
+        time.sleep(45)
+        while True:
+            time.sleep(10)
+            try:
+                with socket.create_connection(('127.0.0.1', port), timeout=3):
+                    failures = 0
+                    continue
+            except OSError:
+                failures += 1
+            if failures >= 3:
+                try:
+                    from core.support_journal import journal_event
+
+                    journal_event('error', 'Console API listener unreachable (warning only; process kept alive)', port=port)
+                except Exception:
+                    pass
+                failures = 0
+
+    threading.Thread(target=watch, daemon=True, name='console-listener-watchdog').start()
+
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -180,6 +229,7 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _start_background_tasks()
     _start_gateway_server()
     _start_parent_watchdog()
+    _start_listener_watchdog()
     try:
         yield
     finally:
@@ -600,6 +650,7 @@ class ServerPatch(BaseModel):
     context_max: int | None = None
     idle_unload_minutes: int | None = None
     enabled: bool | None = None
+    parallel_slots: int | None = Field(default=None, ge=1, le=16)
     load_settings: dict[str, Any] | None = None
     inference_settings: dict[str, Any] | None = None
     mmproj_path: str | None = None
@@ -621,12 +672,18 @@ class ConfigPatch(BaseModel):
     context_auto_grow: bool | None = None
     context_max: int | None = Field(default=None, ge=2048, le=1048576)
     download_settings: dict[str, Any] | None = None
+    model_slots: dict[str, int] | None = None
     remote_nodes: list[dict[str, Any]] | None = None
     api_providers: list[dict[str, Any]] | None = None
 
 
 class DownloadSettingsPatch(BaseModel):
     parallel_connections: int | None = Field(default=None, ge=1, le=8)
+
+
+class ModelSlotsPatch(BaseModel):
+    path: str = Field(..., min_length=3, max_length=2048)
+    slots: int = Field(..., ge=1, le=16)
 
 
 class DownloadBenchmarkRequest(BaseModel):
@@ -1305,6 +1362,11 @@ def put_config(body: ConfigPatch) -> dict[str, Any]:
             **data['download_settings'],
         })
         data.pop('download_settings')
+    if 'model_slots' in data and isinstance(data['model_slots'], dict):
+        from core.config import normalize_model_slots
+
+        cfg['model_slots'] = normalize_model_slots({**(cfg.get('model_slots') or {}), **data['model_slots']})
+        data.pop('model_slots')
     if 'remote_nodes' in data and isinstance(data['remote_nodes'], list):
         cfg['remote_nodes'] = normalize_remote_nodes(data['remote_nodes'])
         data.pop('remote_nodes')
@@ -3047,6 +3109,12 @@ def patch_server(server_id: str, body: ServerPatch) -> dict[str, Any]:
         patch = body.model_dump(exclude_none=True)
         if 'gpu_device' in patch:
             patch['gpu_device'] = _request_gpu_device(patch['gpu_device'])
+        if patch.get('parallel_slots') is not None:
+            from core.config import normalize_load_settings
+
+            load = normalize_load_settings(entry.get('load_settings'))
+            load['parallel_slots'] = int(patch.pop('parallel_slots'))
+            patch['load_settings'] = load
         merged = normalize_server({**entry, **patch, 'id': server_id})
         servers[idx] = merged
         found = True
@@ -3056,6 +3124,55 @@ def patch_server(server_id: str, body: ServerPatch) -> dict[str, Any]:
     cfg['servers'] = servers
     _save_config_checked(cfg)
     return {'success': True, 'server': merged}
+
+
+@app.patch('/api/models/slots')
+def patch_model_slots(body: ModelSlotsPatch) -> dict[str, Any]:
+    """Save the default parallel slots for one model file.
+
+    The value is the default used whenever that model is loaded; engine profiles
+    that point at the same checkpoint are updated too so a reload picks it up.
+    """
+    from core.config import model_slots_key, normalize_load_settings, normalize_model_slots
+    from core.model_stack import resolve_model_stack
+
+    cfg = load_config()
+    key = model_slots_key(body.path)
+    if not key:
+        raise HTTPException(status_code=422, detail='path is required')
+    slots = int(body.slots)
+    slots_map = normalize_model_slots(cfg.get('model_slots'))
+    slots_map[key] = slots
+    cfg['model_slots'] = slots_map
+    updated: list[str] = []
+    for entry in cfg.get('servers') or []:
+        if not isinstance(entry, dict):
+            continue
+        target_path = str(entry.get('target_path') or '').strip()
+        if not target_path:
+            try:
+                stack = resolve_model_stack(entry, cfg=cfg)
+            except Exception:
+                stack = []
+            target = next(
+                (row for row in stack if str(row.get('role') or '') == 'target'),
+                None,
+            )
+            target_path = str((target or {}).get('path') or '')
+        if not target_path or model_slots_key(target_path) != key:
+            continue
+        load = normalize_load_settings(entry.get('load_settings'))
+        load['parallel_slots'] = slots
+        entry['load_settings'] = load
+        updated.append(str(entry.get('id') or ''))
+    _save_config_checked(cfg)
+    invalidate_model_catalog_cache()
+    return {
+        'success': True,
+        'path': body.path,
+        'slots': slots,
+        'servers': updated,
+    }
 
 
 @app.get('/api/docs/catalog')
@@ -3530,8 +3647,6 @@ def _ensure_server_ready_for_chat(
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             live_status = build_server_status(server, cfg=cfg)
-            if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
-                return live_status
             loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
                 str(server.get('api_url') or '')
             )
@@ -3558,8 +3673,17 @@ def _ensure_server_ready_for_chat(
                 message='Model is not ready for chat; retry shortly while the engine recovers.',
             )
         live_status = build_server_status(server, cfg=cfg)
-        if live_status.get('status') == 'loaded' and live_status.get('loaded_models'):
-            return live_status
+        loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+            str(server.get('api_url') or '')
+        )
+        if loaded_now:
+            return {
+                **live_status,
+                'status': 'loaded',
+                'loaded_models': loaded_now,
+                'active_model_id': loaded_now[0],
+                'ready_for_chat': True,
+            }
         raise _not_ready(
             live_status,
             reason='model_load_timeout',
@@ -3620,37 +3744,36 @@ def _ensure_server_ready_for_chat(
     # let llama-server return HTTP 400 ``model is not loaded`` during stale
     # inference/load transitions.
     if is_proxy_generating(server_id):
-        if not live.get('loaded_models'):
-            from core.runtime import probe_runtime_state
+        from core.runtime import probe_runtime_state
 
-            loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
-                str(server.get('api_url') or '')
+        loaded_now, loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+            str(server.get('api_url') or '')
+        )
+        if loaded_now:
+            live = {
+                **live,
+                'status': 'loaded',
+                'loaded_models': loaded_now,
+                'active_model_id': loaded_now[0],
+                'ready_for_chat': True,
+            }
+        elif loading_now or live.get('status') == 'booting':
+            return _wait_until_loaded()
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    'error': 'model_not_loaded',
+                    'message': 'A chat is marked active, but the checkpoint is not ready; retry shortly.',
+                    'type': 'unavailable_error',
+                    'code': 503,
+                    'reason': 'model_not_loaded',
+                    'retryable': True,
+                    'status': live.get('status'),
+                    'model_id': live.get('model_id') or server.get('model_id'),
+                    'loaded_models': [],
+                },
             )
-            if loaded_now:
-                live = {
-                    **live,
-                    'status': 'loaded',
-                    'loaded_models': loaded_now,
-                    'active_model_id': loaded_now[0],
-                    'ready_for_chat': True,
-                }
-            elif loading_now or live.get('status') == 'booting':
-                return _wait_until_loaded()
-            else:
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        'error': 'model_not_loaded',
-                        'message': 'A chat is marked active, but the checkpoint is not ready; retry shortly.',
-                        'type': 'unavailable_error',
-                        'code': 503,
-                        'reason': 'model_not_loaded',
-                        'retryable': True,
-                        'status': live.get('status'),
-                        'model_id': live.get('model_id') or server.get('model_id'),
-                        'loaded_models': [],
-                    },
-                )
         live = _status_as_loaded(live)
         if required_context and cfg.get('context_auto_grow') is not False:
             loaded_ctx = _loaded_per_slot_context(server)
@@ -3680,6 +3803,22 @@ def _ensure_server_ready_for_chat(
         )
         return live
 
+    if live.get('loaded_models'):
+        from core.runtime import probe_runtime_state
+
+        loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+            str(server.get('api_url') or '')
+        )
+        if loaded_now:
+            live = {
+                **live,
+                'status': 'loaded',
+                'loaded_models': loaded_now,
+                'active_model_id': loaded_now[0],
+                'ready_for_chat': True,
+            }
+        else:
+            live = {**live, 'loaded_models': [], 'active_model_id': '', 'ready_for_chat': False}
     if live.get('loaded_models'):
         live = _status_as_loaded(live)
         # Already loaded.  Auto-grow if this request needs more context than
@@ -3748,15 +3887,29 @@ def _ensure_server_ready_for_chat(
                     },
                 )
         if live.get('loaded_models'):
-            live = _status_as_loaded(live)
-            note_engine_active_client(
-                server_id,
-                client_label=client_label,
-                component_key=component_key,
-                component_label=component_label,
-                component_role=component_role,
+            from core.runtime import probe_runtime_state
+
+            loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+                str(server.get('api_url') or '')
             )
-            return live
+            if loaded_now:
+                live = {
+                    **live,
+                    'status': 'loaded',
+                    'loaded_models': loaded_now,
+                    'active_model_id': loaded_now[0],
+                    'ready_for_chat': True,
+                }
+                live = _status_as_loaded(live)
+                note_engine_active_client(
+                    server_id,
+                    client_label=client_label,
+                    component_key=component_key,
+                    component_label=component_label,
+                    component_role=component_role,
+                )
+                return live
+            live = {**live, 'loaded_models': [], 'active_model_id': '', 'ready_for_chat': False}
 
     if live.get('status') == 'booting':
         return _wait_until_loaded()
@@ -3766,7 +3919,7 @@ def _ensure_server_ready_for_chat(
     # now so the JIT load (or router restart) uses the larger size.
     if required_context and cfg.get('context_auto_grow') is not False:
         configured_per_slot = _configured_per_slot(server)
-        if configured_per_slot and required_context > configured_per_slot:
+        if live.get('loaded_models') and configured_per_slot and required_context > configured_per_slot:
             return _grow_context_for_chat(
                 server_id,
                 server,

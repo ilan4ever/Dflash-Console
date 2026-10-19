@@ -16,6 +16,9 @@ window.ConsoleApi = (function () {
     if (normalized === '/api/models' || normalized.startsWith('/api/models/')) {
       return 15000;
     }
+    if (normalized === '/api/runtime-recommendations') {
+      return 30000;
+    }
     if (normalized.startsWith('/api/hf/')) {
       return SLOW_GET_TIMEOUT_MS;
     }
@@ -113,7 +116,7 @@ window.ConsoleApi = (function () {
           const activeMs = entry?.timeoutMs || timeoutMs;
           throw new Error(`Request timed out after ${activeMs}ms: ${dedupeKey}`);
         }
-        throw err;
+        throw explainNetworkError(err, dedupeKey);
       } finally {
         clearTimer();
       }
@@ -121,10 +124,25 @@ window.ConsoleApi = (function () {
 
     const entry = { promise, extendTimeout, timeoutMs };
     inflightGets.set(dedupeKey, entry);
-    promise.finally(() => {
+    // Clean up without creating an unhandled rejection: chaining .finally()
+    // would leave a derived promise whose rejection nobody observes, so every
+    // failed request also surfaced as an uncaught page error.
+    const release = () => {
       if (inflightGets.get(dedupeKey) === entry) inflightGets.delete(dedupeKey);
-    });
+    };
+    promise.then(release, release);
     return entry;
+  }
+
+  function explainNetworkError(err, path) {
+    if (err instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(String(err?.message || ''))) {
+      const where = String(path || '').split('?')[0];
+      const e = new Error(`Console API not reachable (${where || 'request'}). The Console server may be restarting or has stopped; wait a few seconds and retry, or restart DFlash Console.`);
+      e.network = true;
+      e.cause = err;
+      return e;
+    }
+    return err;
   }
 
   async function api(path, options = {}) {
@@ -178,7 +196,7 @@ window.ConsoleApi = (function () {
       if (err?.name === 'AbortError') {
         throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
       }
-      throw err;
+      throw explainNetworkError(err, path);
     } finally {
       if (timer) window.clearTimeout(timer);
     }

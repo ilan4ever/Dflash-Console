@@ -51,8 +51,11 @@ def test_build_model_catalog_gemma_12b_q4():
         },
     ]
     catalog = build_model_catalog(server, stack)
-    assert catalog['display_name'] == 'Gemma 4 12B it qat — DFlash 1'
-    assert catalog['display_name_full'] == 'Gemma 4 12B it qat — DFlash 1 Q4'
+    # Downloaded models are named by their Hugging Face repo, with the DFlash
+    # generation in brackets. The org is shown separately as the Lab.
+    assert catalog['display_name'] == 'gemma-4-12B-it-qat-q4_0-gguf (D1)'
+    assert catalog['display_name_full'] == 'gemma-4-12B-it-qat-q4_0-gguf (D1)'
+    assert catalog['hf_repo'] == 'google/gemma-4-12B-it-qat-q4_0-gguf'
     assert catalog['engine_mode'] == 'DFlash 1'
     assert 'display_name_ui' not in catalog
     assert catalog['source_suffix'] == 'it qat'
@@ -104,8 +107,8 @@ def test_build_model_catalog_uses_qwen38_target_name_over_api_alias():
 
     catalog = build_model_catalog(server, stack)
 
-    assert catalog['display_name'] == 'Qwen 3.8 27B — DFlash 1'
-    assert catalog['display_name_full'] == 'Qwen 3.8 27B — DFlash 1 Q6'
+    assert catalog['display_name'] == 'Qwen3.8-27B-GGUF (D1)'
+    assert catalog['display_name_full'] == 'Qwen3.8-27B-GGUF (D1)'
     assert catalog['engine_mode'] == 'DFlash 1'
     assert catalog['target_filename'] == 'Qwen3.8-27B-Q6_K_L.gguf'
     assert catalog['source_suffix'] == ''
@@ -242,7 +245,7 @@ def test_disambiguate_colliding_gemma_profiles_by_engine_id():
     assert rows[0]['display_name'] != rows[1]['display_name']
 
 
-def test_unknown_family_keeps_size_where_the_name_has_it():
+def test_unknown_family_uses_downloaded_repo_name():
     server = {
         'id': 'underdog-saluki-27b-1-0-iq2-mix',
         'label': 'Underdog-Saluki-27B-1.0-IQ2-mix',
@@ -258,9 +261,11 @@ def test_unknown_family_keeps_size_where_the_name_has_it():
         },
     ]
     catalog = build_model_catalog(server, stack)
-    assert catalog['display_name'] == 'Underdog Saluki 27B 1.0 IQ2 Mix — AR'
-    assert not catalog['display_name'].startswith('27B')
-    assert '1.0' in catalog['display_name']
+    # Hugging Face downloads carry the repo name as their name; plain local files
+    # keep the synthesized "family size suffix — mode" title.
+    assert catalog['display_name'] == 'Underdog-Saluki-27B-1.0'
+    assert catalog['display_name_full'] == 'Underdog-Saluki-27B-1.0'
+    assert catalog['hf_repo'] == 'ConwayResearch/Underdog-Saluki-27B-1.0'
 
 
 def test_size_stays_first_only_when_the_name_starts_with_it():
