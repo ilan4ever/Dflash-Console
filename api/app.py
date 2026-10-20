@@ -597,6 +597,29 @@ def _start_background_tasks() -> None:
 
     gpu_relief_watchdog()
 
+    def context_maintenance_loop() -> None:
+        """Give KV memory back when a multi-slot engine sits idle."""
+        import time as _time
+
+        try:
+            from core.config import load_config as _load_config
+
+            if _load_config().get('context_auto_shrink') is False:
+                return
+        except Exception:
+            pass
+        while True:
+            try:
+                from core.context_maintenance import auto_shrink_pass
+
+                for row in auto_shrink_pass():
+                    logger.info('context maintenance %s', row)
+            except Exception as exc:
+                logger.exception('context maintenance failed: %s', exc)
+            _time.sleep(60.0)
+
+    threading.Thread(target=context_maintenance_loop, daemon=True, name='context-maintenance').start()
+
 
 def _release_gpu_on_shutdown() -> None:
     """Unload managed engines on intentional Console shutdown."""
@@ -3576,38 +3599,49 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
 
 def _loaded_per_slot_context(server: dict[str, Any]) -> int:
     """Return the live per-slot context (``n_ctx``) of a loaded engine, or 0."""
-    import json as _json
-    import urllib.request
+    from core.runtime import loaded_per_slot_context
 
-    from core.runtime import api_base_url
+    return loaded_per_slot_context(server)
 
-    api_url = str(server.get('api_url') or '').strip()
-    base = api_base_url(api_url)
-    if not base:
-        return 0
-    try:
-        with urllib.request.urlopen(base.rstrip('/') + '/models', timeout=2.5) as resp:
-            payload = _json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
-    except Exception:
-        return 0
-    data = payload.get('data') if isinstance(payload, dict) else None
-    if not isinstance(data, list):
-        return 0
-    model_id = str(server.get('model_id') or '').strip()
-    for entry in data:
-        if not isinstance(entry, dict):
-            continue
-        if model_id and str(entry.get('id') or '') != model_id:
-            continue
-        meta = entry.get('meta')
-        if isinstance(meta, dict):
-            try:
-                nctx = int(meta.get('n_ctx') or 0)
-            except (TypeError, ValueError):
-                nctx = 0
-            if nctx > 0:
-                return nctx
-    return 0
+
+def _context_capability(server: dict[str, Any], cfg: dict[str, Any]) -> int:
+    """Hardest context the model can hold, regardless of slots."""
+    from core.model_presets import context_max_for_server
+
+    model_cap = context_max_for_server(server, cfg=cfg)
+    declared = max(2048, int(server.get('context_max') or cfg.get('context_max') or model_cap))
+    return int(min(declared, model_cap))
+
+
+def _reject_unservable_context(
+    server: dict[str, Any],
+    cfg: dict[str, Any],
+    required: int | None,
+) -> None:
+    """Fail fast when the model can never hold the request.
+
+    Without this the request reaches llama-server, which answers with a generic
+    ``context length exceeded`` after the prompt was already tokenized.  A 409
+    with both numbers lets the calling app decide immediately.
+    """
+    if not required:
+        return
+    capability = _context_capability(server, cfg)
+    if int(required) <= capability:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            'error': 'context_below_minimum',
+            'message': (
+                f'This model can hold {capability} tokens but the request needs '
+                f'{int(required)}.'
+            ),
+            'required_context': int(required),
+            'capability': capability,
+            'type': 'invalid_request_error',
+        },
+    )
 
 
 def _grow_context_for_chat(
@@ -3620,49 +3654,51 @@ def _grow_context_for_chat(
     component_key: str = '',
     component_label: str = '',
     component_role: str = '',
+    optimal_context: int = 0,
 ) -> dict[str, Any]:
-    """Reload a model with a larger per-slot context to fit ``required`` tokens.
+    """Reload a model with the smallest (context, slots) shape that fits.
 
-    Implements the auto-grow rule: requests that need more context than the
-    model is loaded with cause a reload to the larger context (capped by
-    ``context_max``).  Parallel slots are preserved where VRAM allows, reducing
-    them if the total context would exceed the cap.
+    The planner prefers fewer parallel slots over a larger total context: a
+    32K request served by one 32K slot costs a quarter of the KV memory of the
+    same request served by four 32K slots.  Slots are added only when more than
+    one client needs the engine at the same time.
     """
     import time
 
+    from core.client_identity import list_active_clients
     from core.config import normalize_load_settings
+    from core.context_policy import plan_context
     from core.engine_state import note_engine_loaded
     from core.runtime import build_server_status
     from core.server_boot import reload_server
 
     load = normalize_load_settings(server.get('load_settings'))
-    parallel = max(1, int(load.get('parallel_slots') or 1))
-    configured_ctx = max(2048, int(server.get('context_size') or 8192))
-    # Per-server hard limit: API requests may never grow the context beyond
-    # this.  Falls back to the global context_max, then the default.
-    from core.model_presets import context_max_for_server
-
-    model_cap = context_max_for_server(server, cfg=cfg)
-    max_total = max(2048, int(server.get('context_max') or cfg.get('context_max') or model_cap))
-    max_total = min(max_total, model_cap)
-    current_per_slot = _loaded_per_slot_context(server)
-    per_slot = max(required, current_per_slot, configured_ctx // parallel)
-    total = per_slot * parallel
-    if total > max_total:
-        parallel = max(1, max_total // per_slot)
-        total = per_slot * parallel
-    if total > max_total:
-        # Hard limit reached even at parallel=1: cap the per-slot context so
-        # API requests can never grow the model beyond the limit.
-        per_slot = max_total
-        total = max_total
-    if total <= configured_ctx and parallel <= int(load.get('parallel_slots') or 4):
+    configured_slots = max(1, int(load.get('parallel_slots') or 1))
+    capability = _context_capability(server, cfg)
+    current_per_slot = _loaded_per_slot_context(server) or 0
+    clients = max(1, len(list_active_clients(server_id)))
+    plan = plan_context(
+        min_context=required,
+        optimal_context=optimal_context,
+        clients=clients,
+        max_slots=max(1, configured_slots),
+        capability=capability,
+        current_per_slot=current_per_slot,
+        current_slots=configured_slots,
+    )
+    if plan.rejected:
+        _reject_unservable_context(server, cfg, required)
+        return build_server_status(server, cfg=cfg)
+    if plan.action == 'serve':
         return build_server_status(server, cfg=cfg)
 
     _persist_server_merge(
         cfg,
         server_id,
-        {'context_size': total, 'load_settings': {'parallel_slots': parallel}},
+        {
+            'context_size': int(plan.total),
+            'load_settings': {'parallel_slots': int(plan.slots)},
+        },
     )
     updated = _require_server(cfg, server_id)
     result = reload_server(updated, cfg=cfg)
@@ -3672,6 +3708,7 @@ def _grow_context_for_chat(
             detail={
                 'error': 'context_grow_failed',
                 'message': str(result.get('error') or 'failed to reload model with larger context'),
+                'plan': plan.as_dict(),
             },
         )
     note_engine_loaded(
@@ -3733,6 +3770,7 @@ def _ensure_server_ready_for_chat(
     component_label: str = '',
     component_role: str = '',
     required_context: int | None = None,
+    optimal_context: int = 0,
 ) -> dict[str, Any]:
     """JIT-load configured checkpoint when chat arrives.
 
@@ -3741,6 +3779,10 @@ def _ensure_server_ready_for_chat(
     model provides.
     """
     import time
+
+    from core.context_maintenance import note_engine_active
+
+    note_engine_active(server_id)
 
     from core.chat_ready import (
         assess_server_chat_ready,
@@ -3961,6 +4003,7 @@ def _ensure_server_ready_for_chat(
                         component_label=component_label,
                         component_role=component_role,
                         required_context=required_context,
+                        optimal_context=optimal_context,
                     )
                 # Still busy after wait: serve with current context rather than 409.
         note_engine_active_client(
@@ -4004,6 +4047,7 @@ def _ensure_server_ready_for_chat(
                     component_key=component_key,
                     component_label=component_label,
                     component_role=component_role,
+                    optimal_context=optimal_context,
                 )
         note_engine_active_client(
             server_id,
@@ -4098,6 +4142,7 @@ def _ensure_server_ready_for_chat(
                 component_key=component_key,
                 component_label=component_label,
                 component_role=component_role,
+                optimal_context=optimal_context,
             )
 
     _auto_stop_other_servers(cfg, server_id)
@@ -4581,14 +4626,36 @@ async def proxy_chat_completions(server_id: str, request: Request):
                     )
                 cfg = load_config()
                 server = _require_server(cfg, server_id)
-        from core.client_identity import chat_body_load_context_size, request_load_context_size
+        from core.client_identity import (
+            chat_body_load_context_size,
+            chat_body_min_context,
+            chat_body_optimal_context,
+            request_load_context_size,
+            request_min_context,
+            request_optimal_context,
+        )
 
         estimated_context = (
             estimate_request_context(body_json) if isinstance(body_json, dict) else 0
         )
-        header_context = request_load_context_size(request) or 0
-        body_context = chat_body_load_context_size(body_json) or 0
-        required_context = max(estimated_context or 0, header_context or 0, body_context or 0)
+        # Hard floor: an explicit minimum wins, otherwise the request estimate
+        # (prompt + max_tokens) is the floor.  ``X-DFlash-Load-Context`` keeps
+        # its old meaning as a minimum so existing clients keep working.
+        declared_min = (
+            request_min_context(request)
+            or chat_body_min_context(body_json)
+            or request_load_context_size(request)
+            or chat_body_load_context_size(body_json)
+            or 0
+        )
+        required_context = max(estimated_context or 0, declared_min or 0)
+        optimal_context = (
+            request_optimal_context(request)
+            or chat_body_optimal_context(body_json)
+            or declared_min
+            or 0
+        )
+        _reject_unservable_context(server, cfg, required_context)
         from core.chat_queue import chat_server_gate
 
         _chat_gate = chat_server_gate(server_id)
@@ -4604,6 +4671,7 @@ async def proxy_chat_completions(server_id: str, request: Request):
                 component_label=component_label,
                 component_role=component_role,
                 required_context=required_context or None,
+                optimal_context=optimal_context or 0,
             )
         except Exception:
             if _chat_gate_held:

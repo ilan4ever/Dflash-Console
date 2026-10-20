@@ -162,6 +162,42 @@ def _fetch_models_payload(api_url: str) -> list[dict[str, Any]]:
     return entries
 
 
+def loaded_per_slot_context(server: dict[str, Any]) -> int:
+    """Live per-slot context (``n_ctx``) of the checkpoint loaded on an engine.
+
+    llama-server reports the per-sequence window in ``/v1/models`` meta, which
+    is what a single request can actually use — ``context_size`` in the config
+    is the total across slots.
+    """
+    api_url = str(server.get('api_url') or '').strip()
+    base = api_base_url(api_url) if api_url else ''
+    if not base:
+        return 0
+    try:
+        with urllib.request.urlopen(base.rstrip('/') + '/models', timeout=2.5) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    except Exception:
+        return 0
+    data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return 0
+    model_id = str(server.get('model_id') or '').strip()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        if model_id and str(entry.get('id') or '') != model_id:
+            continue
+        meta = entry.get('meta')
+        if isinstance(meta, dict):
+            try:
+                nctx = int(meta.get('n_ctx') or 0)
+            except (TypeError, ValueError):
+                nctx = 0
+            if nctx > 0:
+                return nctx
+    return 0
+
+
 def _model_state(entry: dict[str, Any]) -> str:
     status = entry.get('status')
     if isinstance(status, dict):

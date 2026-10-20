@@ -9,6 +9,8 @@ from typing import Any
 CLIENT_HEADER = 'x-dflash-client'
 STRICT_MODEL_HEADER = 'x-dflash-strict-model'
 LOAD_CONTEXT_HEADER = 'x-dflash-load-context'
+MIN_CONTEXT_HEADER = 'x-dflash-min-context'
+OPTIMAL_CONTEXT_HEADER = 'x-dflash-optimal-context'
 COMPONENT_HEADER = 'x-dflash-component'
 ROLE_HEADER = 'x-dflash-role'
 MIN_LOAD_CONTEXT = 2048
@@ -210,6 +212,34 @@ def request_load_context_size(request: Any | None = None) -> int | None:
     """Minimum engine load context from ``X-DFlash-Load-Context`` (Harness and other integrators)."""
     raw = _header_value(request, LOAD_CONTEXT_HEADER) or _header_value(request, 'X-DFlash-Load-Context')
     return _normalize_load_context_value(raw)
+
+
+def request_min_context(request: Any | None = None) -> int | None:
+    """Hard per-request context floor from ``X-DFlash-Min-Context``.
+
+    If the engine cannot be loaded with at least this many tokens the request
+    is rejected instead of being truncated by llama-server.
+    """
+    return _normalize_load_context_value(_header_value(request, MIN_CONTEXT_HEADER))
+
+
+def request_optimal_context(request: Any | None = None) -> int | None:
+    """Preferred context from ``X-DFlash-Optimal-Context`` (free upgrade only)."""
+    return _normalize_load_context_value(_header_value(request, OPTIMAL_CONTEXT_HEADER))
+
+
+def chat_body_optimal_context(body: Any) -> int | None:
+    """``optimal_context`` on the chat JSON body."""
+    if not isinstance(body, dict):
+        return None
+    return _normalize_load_context_value(body.get('optimal_context'))
+
+
+def chat_body_min_context(body: Any) -> int | None:
+    """``min_context`` on the chat JSON body."""
+    if not isinstance(body, dict):
+        return None
+    return _normalize_load_context_value(body.get('min_context'))
 
 
 def chat_body_load_context_size(body: Any) -> int | None:
