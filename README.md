@@ -231,6 +231,11 @@ model; callers should poll `/api/servers/{id}/chat-ready` or retry a 503 marked
 `insufficient_vram`, the free/required VRAM, and an `unload_first` list. Console
 never silently kills unrelated GPU applications. See [docs/API.md](./docs/API.md)
 for request examples and the complete status/error matrix.
+Engine context is sized per request: `X-DFlash-Min-Context` sets a hard floor,
+`X-DFlash-Optimal-Context` a preference, and parallel slots are derived from the
+apps that actually share the model — see
+[docs/DEVELOPMENT-LOG.md](./docs/DEVELOPMENT-LOG.md) for the rules and
+[docs/USER-GUIDE.md](./docs/USER-GUIDE.md) for the operator view.
 
 ---
 
