@@ -3029,9 +3029,21 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
 }
 
 .df-shell .lm-model-card-compact .lm-model-card-name-line .lm-engine-card-logo .lm-tag.dflash-logo-label {
-  width: 78px;
-  height: 15px;
+  width: 118px;
+  height: 26px;
   flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  /* No black plate behind the wordmark: transparent box, and screen blending
+     drops the artwork's own dark backdrop so only the letters remain. */
+  background-color: transparent;
+  background-origin: content-box;
+  background-clip: content-box;
+  background-size: contain;
+  background-position: left center;
+  background-repeat: no-repeat;
+  mix-blend-mode: screen;
+  overflow: visible;
 }
 
 .df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-model-path {
