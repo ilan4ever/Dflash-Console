@@ -1271,6 +1271,9 @@
 
   async function refreshInferenceStats(serverId, { render = true } = {}) {
     if (!serverId) return null;
+    // A remembered id from an older config (e.g. a removed profile) must not
+    // keep polling an endpoint that answers 404.
+    if (!serverById.has(serverId)) return null;
     const data = await api(
       `/api/servers/${encodeURIComponent(serverId)}/inference-stats`,
       { timeoutMs: 2500 },
@@ -1294,6 +1297,7 @@
 
   function startGenerationPolling(serverId) {
     stopGenerationPolling();
+    if (!serverId || !serverById.has(serverId)) return;
     const poll = async () => {
       if (!sending || generationPollInFlight) return;
       generationPollInFlight = true;

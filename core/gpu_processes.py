@@ -3082,6 +3082,16 @@ def _norm_engine_token(value: Any) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
 
 
+def _clean_client_label(value: Any) -> str:
+    """Drop placeholder client labels ("Unknown API client" and friends)."""
+    label = str(value or '').strip()
+    if not label:
+        return ''
+    if re.fullmatch(r'(?i)unknown(?: api)? client', label):
+        return ''
+    return label
+
+
 def _norm_engine_path(value: Any) -> str:
     text = str(value or '').strip().replace('\\', '/').lower()
     return text.strip('/')
@@ -3109,9 +3119,18 @@ def _console_engine_identity(
             'id': str(server.get('id') or ''),
             'tokens': set(),
             'paths': set(),
-            'loaded_by': str(server.get('loaded_by') or '').strip(),
+            'loaded_by': _clean_client_label(server.get('loaded_by')),
             'component_label': str(server.get('component_label') or '').strip(),
+            'caller': '',
         }
+        try:
+            from core.client_identity import resolve_engine_client_label
+
+            profile['caller'] = _clean_client_label(
+                resolve_engine_client_label(profile['id'], profile['loaded_by'])
+            )
+        except Exception:
+            profile['caller'] = profile['loaded_by']
         for value in (server.get('id'), server.get('model_id'), server.get('label'), server.get('model_name')):
             token = _norm_engine_token(value)
             if token:
@@ -3199,7 +3218,9 @@ def _mark_console_owned_engine_cards(
             # label, e.g. "DeepSeek Harness"), not the Console name.
             caller = ''
             if matched:
-                caller = str(matched.get('loaded_by') or '').strip()
+                caller = _clean_client_label(matched.get('caller'))
+                if not caller:
+                    caller = _clean_client_label(matched.get('loaded_by'))
                 if not caller:
                     component = str(matched.get('component_label') or '').strip()
                     if component and 'openai_gateway' not in component:
