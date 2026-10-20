@@ -610,9 +610,9 @@ def _start_background_tasks() -> None:
             pass
         while True:
             try:
-                from core.context_maintenance import auto_shrink_pass
+                from core.context_maintenance import maintenance_pass
 
-                for row in auto_shrink_pass():
+                for row in maintenance_pass():
                     logger.info('context maintenance %s', row)
             except Exception as exc:
                 logger.exception('context maintenance failed: %s', exc)
@@ -3697,7 +3697,9 @@ def _grow_context_for_chat(
         server_id,
         {
             'context_size': int(plan.total),
-            'load_settings': {'parallel_slots': int(plan.slots)},
+            # `parallel_slots` is the cap; the policy asks for a shape through
+            # `requested_parallel_slots` so the cap is never overwritten.
+            'load_settings': {**load, 'requested_parallel_slots': int(plan.slots)},
         },
     )
     updated = _require_server(cfg, server_id)
@@ -3782,7 +3784,7 @@ def _ensure_server_ready_for_chat(
 
     from core.context_maintenance import note_engine_active
 
-    note_engine_active(server_id)
+    note_engine_active(server_id, component_key or client_label)
 
     from core.chat_ready import (
         assess_server_chat_ready,

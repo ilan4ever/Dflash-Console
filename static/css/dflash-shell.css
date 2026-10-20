@@ -4733,6 +4733,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .eje
   color: rgba(241, 245, 249, 0.95);
 }
 
+/* Slot multiplier next to the per-slot context ("CTX 32K x2"). */
+.df-shell .lm-ctx-slots {
+  margin-left: 2px;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(148, 163, 184, 0.95);
+}
+
 .df-shell .lm-engine-head-vram-ctx.is-empty {
   display: none;
 }

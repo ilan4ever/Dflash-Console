@@ -809,7 +809,7 @@ def _build_embedding_server_status(
     gpus: list[dict[str, Any]] | None = None,
     vram_map: dict[int, float] | None = None,
 ) -> dict[str, Any]:
-    from core.config import normalize_server
+    from core.config import effective_parallel_slots, normalize_server
     from core.display_names import build_engine_client_metadata
     from core.embedding_server import embedding_metadata, probe_embedding_health, probe_embedding_models, resolve_embedding_model_path
     from core.gpu_processes import _model_kind_fields, vram_gb_for_port
@@ -1001,6 +1001,9 @@ def _build_embedding_server_status(
                 break
         if entry.get('context_size'):
             card['context_size'] = int(entry.get('context_size'))
+            slots = max(1, int(effective_parallel_slots(entry) or 1))
+            card['parallel_slots'] = slots
+            card['per_slot_context'] = max(1, int(entry.get('context_size')) // slots)
         if card.get('size_gb') is None and model_path is not None:
             try:
                 card['size_gb'] = round(model_path.stat().st_size / (1024 ** 3), 2)
@@ -1036,6 +1039,12 @@ def _build_embedding_server_status(
     return {
         **entry,
         'model_id': configured_model_id,
+        'parallel_slots': max(1, int(effective_parallel_slots(entry) or 1)),
+        'per_slot_context': max(
+            1,
+            int(entry.get('context_size') or 0)
+            // max(1, int(effective_parallel_slots(entry) or 1)),
+        ),
         **client_meta,
         'running': running,
         'status': status,
@@ -1169,7 +1178,7 @@ def build_server_status(
     open_ports: set[int] | None = None,
     live_probe: bool = True,
 ) -> dict[str, Any]:
-    from core.config import is_embedding_server
+    from core.config import effective_parallel_slots, is_embedding_server
 
     if is_embedding_server(server):
         status = _build_embedding_server_status(server, cfg=cfg, gpus=gpus, vram_map=vram_map)
@@ -1403,6 +1412,9 @@ def build_server_status(
                 break
         if server.get('context_size'):
             card['context_size'] = int(server.get('context_size'))
+            slots = max(1, int(effective_parallel_slots(server) or 1))
+            card['parallel_slots'] = slots
+            card['per_slot_context'] = max(1, int(server.get('context_size')) // slots)
         resolved_path = _resolve_card_model_path(card, server)
         if resolved_path:
             card['path'] = resolved_path
@@ -1451,6 +1463,12 @@ def build_server_status(
     result = {
         **server,
         'model_id': configured_model_id,
+        'parallel_slots': max(1, int(effective_parallel_slots(server) or 1)),
+        'per_slot_context': max(
+            1,
+            int(server.get('context_size') or 0)
+            // max(1, int(effective_parallel_slots(server) or 1)),
+        ),
         **client_meta,
         'running': running,
         'status': status,

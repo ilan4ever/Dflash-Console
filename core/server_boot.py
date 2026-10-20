@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import (
+    effective_parallel_slots,
     get_dflash_root,
     is_embedding_server,
     normalize_hardware_settings,
@@ -472,7 +473,7 @@ def _launch_signature(
         'eval_batch_size': int(load.get('eval_batch_size') or 2048),
         'physical_batch_size': int(load.get('physical_batch_size') or 512),
         'flash_attention': bool(load.get('flash_attention', True)),
-        'parallel_slots': int(load.get('parallel_slots') or 4),
+        'parallel_slots': effective_parallel_slots(server),
         'offload_kv_cache_to_gpu': hardware.get('offload_kv_cache_to_gpu') is not False,
         'model_id': str(server.get('model_id') or ''),
         'reasoning_effort': str(infer.get('reasoning_effort') or 'auto'),

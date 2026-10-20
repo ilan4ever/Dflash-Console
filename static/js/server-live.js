@@ -3161,11 +3161,27 @@
     return null;
   }
 
+  // What a single request can use, and how many slots share the total.
+  function cardContextShape(row, server) {
+    const total = cardContextSize(row, server);
+    if (!total) return null;
+    const rawSlots = Number(row?.parallel_slots ?? server?.parallel_slots);
+    const slots = Number.isFinite(rawSlots) && rawSlots >= 1 ? Math.round(rawSlots) : 1;
+    const rawPerSlot = Number(row?.per_slot_context ?? server?.per_slot_context);
+    const perSlot = Number.isFinite(rawPerSlot) && rawPerSlot > 0
+      ? Math.round(rawPerSlot)
+      : Math.max(1, Math.round(total / slots));
+    return { total, slots, perSlot };
+  }
+
   function cardContextMetric(row, server) {
-    const tokens = cardContextSize(row, server);
-    if (!tokens) return '';
-    const title = `Loaded with ${tokens.toLocaleString()} token context window`;
-    return `<span class="lm-model-card-metric lm-model-card-tag-metric lm-ctx-metric" title="${escapeHtml(title)}"><span class="lbl">CTX</span>${escapeHtml(formatContextTokens(tokens))}</span>`;
+    const shape = cardContextShape(row, server);
+    if (!shape) return '';
+    const title = shape.slots > 1
+      ? `Each of ${shape.slots} slots holds ${shape.perSlot.toLocaleString()} tokens (${shape.total.toLocaleString()} total)`
+      : `Loaded with ${shape.total.toLocaleString()} token context window`;
+    const suffix = shape.slots > 1 ? `<span class="lm-ctx-slots">\u00d7${shape.slots}</span>` : '';
+    return `<span class="lm-model-card-metric lm-model-card-tag-metric lm-ctx-metric" title="${escapeHtml(title)}"><span class="lbl">CTX</span>${escapeHtml(formatContextTokens(shape.perSlot))}${suffix}</span>`;
   }
 
   function cardTagMetricsHtml(row, server) {
@@ -3693,10 +3709,13 @@
   }
 
   function engineHeadCtxMetric(row, server) {
-    const tokens = cardContextSize(row, server);
-    if (!tokens) return '';
-    const title = `Loaded with ${tokens.toLocaleString()} token context window`;
-    return `<span class="lm-engine-head-ctx" title="${escapeHtml(title)}"><span class="lbl">CTX</span><span class="val">${escapeHtml(formatContextTokens(tokens))}</span></span>`;
+    const shape = cardContextShape(row, server);
+    if (!shape) return '';
+    const title = shape.slots > 1
+      ? `Each of ${shape.slots} slots holds ${shape.perSlot.toLocaleString()} tokens (${shape.total.toLocaleString()} total)`
+      : `Loaded with ${shape.total.toLocaleString()} token context window`;
+    const suffix = shape.slots > 1 ? `<span class="lm-ctx-slots">\u00d7${shape.slots}</span>` : '';
+    return `<span class="lm-engine-head-ctx" title="${escapeHtml(title)}"><span class="lbl">CTX</span><span class="val">${escapeHtml(formatContextTokens(shape.perSlot))}${suffix}</span></span>`;
   }
 
   function engineHeadDiskHtml(row, server) {

@@ -305,7 +305,7 @@ def normalize_load_settings(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(DEFAULT_LOAD_SETTINGS)
     flash = raw.get('flash_attention')
-    return {
+    result = {
         'gpu_layers': max(0, min(999, int(raw.get('gpu_layers') or DEFAULT_LOAD_SETTINGS['gpu_layers']))),
         'cpu_threads': max(1, min(64, int(raw.get('cpu_threads') or DEFAULT_LOAD_SETTINGS['cpu_threads']))),
         'eval_batch_size': max(32, min(8192, int(raw.get('eval_batch_size') or DEFAULT_LOAD_SETTINGS['eval_batch_size']))),
@@ -313,6 +313,35 @@ def normalize_load_settings(raw: Any) -> dict[str, Any]:
         'flash_attention': flash is not False,
         'parallel_slots': max(1, min(16, int(raw.get('parallel_slots') or DEFAULT_LOAD_SETTINGS['parallel_slots']))),
     }
+    mode = str(raw.get('parallel_slots_mode') or 'auto').strip().lower()
+    result['parallel_slots_mode'] = 'fixed' if mode == 'fixed' else 'auto'
+    requested = raw.get('requested_parallel_slots')
+    if requested not in (None, ''):
+        try:
+            result['requested_parallel_slots'] = max(1, min(16, int(requested)))
+        except (TypeError, ValueError):
+            pass
+    return result
+
+
+def effective_parallel_slots(server: dict[str, Any] | None) -> int:
+    """Slots the engine should actually be launched with.
+
+    ``load_settings.parallel_slots`` is the CAP the user allows.  In ``auto``
+    mode (the default) the engine starts with the smallest shape the policy
+    asked for - one slot unless a request or the client-cohort pass asked for
+    more - so context is never silently divided by four.  ``fixed`` mode keeps
+    the historical behaviour of launching exactly ``parallel_slots``.
+    """
+    load = normalize_load_settings((server or {}).get('load_settings'))
+    cap = max(1, int(load.get('parallel_slots') or 1))
+    if str(load.get('parallel_slots_mode') or 'auto') == 'fixed':
+        return cap
+    try:
+        wanted = int(load.get('requested_parallel_slots') or 0)
+    except (TypeError, ValueError):
+        wanted = 0
+    return max(1, min(cap, wanted or 1))
 
 
 def model_slots_key(path: str | Path) -> str:
