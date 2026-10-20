@@ -3419,22 +3419,10 @@
    * syncEngineCardLiveMetrics so the card markup (and therefore its height)
    * stays put.
    */
-  function externalCardDetailsHtml(row, server) {
+  function externalCardDetailsHtml(row, server, { includeDiskCtx = false } = {}) {
     if (!row?.external && !server?.external) return '';
     const appLabel = externalAppLabel(row);
     const component = String(row?.component_label || '').trim();
-    const gpu = String(row?.gpu_display || row?.vram_gpu_name || '').trim();
-    const gpuIndex = Number(row?.gpu_index);
-    const gpuText = gpu
-      ? (Number.isFinite(gpuIndex) ? `${gpu} · #${gpuIndex}` : gpu)
-      : (Number.isFinite(gpuIndex) ? `GPU ${gpuIndex}` : '');
-    const usedVram = Number(row?.vram_total_gb ?? row?.vram_gb);
-    const totalVram = gpuTotalVramGb(row?.gpu_index);
-    const usedText = formatCardVramGb(usedVram);
-    const totalText = formatCardVramGb(totalVram);
-    const vramText = usedText
-      ? (totalText && totalVram > usedVram ? `${usedText} / ${totalText}` : usedText)
-      : '';
     const vramByGpu = row?.vram_by_gpu && typeof row.vram_by_gpu === 'object'
       ? Object.entries(row.vram_by_gpu)
       : [];
@@ -3447,10 +3435,6 @@
         .filter(Boolean)
         .join(' · ')
       : '';
-    const ctxTokens = cardContextSize(row, server);
-    const ctxText = ctxTokens
-      ? formatContextTokens(ctxTokens)
-      : formatContextTokens(externalFlagValue(row, ['ctx-size', 'c']));
     const deviceText = externalFlagValue(row, ['device']);
     const layersText = externalFlagValue(row, ['n-gpu-layers', 'ngl', 'gpu-layers']);
     const slotsText = externalFlagValue(row, ['parallel', 'np']);
@@ -3458,26 +3442,30 @@
       || (externalFlagPresent(row, ['flash-attn', 'fa']) ? 'on' : '');
     const pids = (Array.isArray(row?.pids) && row.pids.length ? row.pids : [row?.pid])
       .filter((pid) => pid != null && String(pid).trim() !== '');
+    // ADDR and API describe the same endpoint when the app reports api_url.
+    const apiUrlText = String(row?.api_url || '').trim();
+    const addrText = apiUrlText ? '' : externalListenAddress(row);
     // Line 1: compact stable facts.  The app name is a header chip on desktop
     // and stays here only when the card has no header prompt row (narrow
-    // mobile card).
+    // mobile card).  GPU / VRAM / DISK / CTX live in the card header now, so
+    // they are not repeated here.
     const facts = [
       externalAppInHeader() ? '' : externalDetailItem('App', appLabel),
       externalDetailItem('Component', component && component.toLowerCase() !== appLabel.toLowerCase() ? component : ''),
       externalDetailItem('Quant', externalQuantLabel(row)),
       externalDetailItem('Publisher', String(row?.publisher || '').trim()),
-      externalDetailItem('GPU', gpuText, { gpu: true }),
-      externalDetailItem('VRAM', vramText),
       externalDetailItem('VRAM/GPU', vramByGpuText, { wide: true }),
       externalDetailItem('RAM', formatRamMb(row?.ram_mb)),
-      externalDetailItem('Disk', formatCardGb(resolveCardSizeGb(row, server))),
+      externalDetailItem('Disk', includeDiskCtx ? formatCardGb(resolveCardSizeGb(row, server)) : ''),
       externalDetailItem('Device', deviceText),
       externalDetailItem('Layers', layersText),
       externalDetailItem('Slots', slotsText),
       externalDetailItem('Flash', flashText),
-      externalDetailItem('CTX', ctxText),
-      externalDetailItem('ADDR', externalListenAddress(row)),
-      externalDetailItem('API', String(row?.api_url || '').trim(), { wide: true }),
+      externalDetailItem('CTX', includeDiskCtx
+        ? formatContextTokens(cardContextSize(row, server) || externalFlagValue(row, ['ctx-size', 'c']))
+        : ''),
+      externalDetailItem('ADDR', addrText),
+      externalDetailItem('API', apiUrlText, { wide: true }),
       externalDetailItem('PID', pids.length ? pids.join(', ') : ''),
       externalDetailItem('Process', String(row?.process_name || '').trim()),
     ];
@@ -3731,10 +3719,36 @@
     return `<span class="lm-external-token-chip" data-external-token-summary title="Token counters reported by this app's llama-server /slots endpoint when it exposes one"><span class="lbl">Tokens</span><span class="val" data-external-token-val>—</span></span>`;
   }
 
+  // External cards show the same header facts as Console (DFlash) cards: a GPU
+  // label with the GPU this app runs on, plus VRAM / DISK / CTX.  Keeping them
+  // in the header is what lets the detail block below drop its duplicates.
+  function externalHeadGpuHtml(row) {
+    const raw = String(row?.gpu_display || row?.vram_gpu_name || '').trim();
+    const index = Number(row?.gpu_index);
+    const name = raw || (Number.isFinite(index) ? `GPU ${index}` : '');
+    if (!name) return '';
+    const short = shortGpuLabel(name) || name;
+    const title = Number.isFinite(index)
+      ? `Running on ${name} · GPU #${index}`
+      : `Running on ${name}`;
+    return `<span class="lm-engine-head-gpu"><span class="lm-engine-gpu-label" aria-hidden="true">GPU</span><span class="lm-engine-head-gpu-now" title="${escapeHtml(title)}">${escapeHtml(short)}</span></span>`;
+  }
+
+  function externalHeadFactsCell(row, server) {
+    const parts = [
+      externalHeadGpuHtml(row),
+      engineHeadVramHtml(row, server),
+      engineHeadDiskHtml(row, server),
+      engineHeadCtxMetric(row, server),
+    ].filter(Boolean);
+    if (!parts.length) return '<span class="lm-engine-head-vram-ctx is-empty" aria-hidden="true"></span>';
+    return `<span class="lm-engine-head-vram-ctx">${parts.join('')}</span>`;
+  }
+
   function externalCardPromptHtml(row, server) {
     const actions = externalPromptActionsHtml(row);
     const kindCell = externalHeaderKindCell(row);
-    const vramCell = engineHeadVramCtxCell(row, server);
+    const vramCell = externalHeadFactsCell(row, server);
     const appName = escapeHtml(externalAppLabel(row));
     const appBadge = externalAppInHeader()
       ? `<span class="lm-external-app-badge" title="Loaded outside DFlash Console by ${appName}">${appName}</span>`
@@ -4074,7 +4088,8 @@
     const isSelected = actionKey === selectedLoadedKey;
     const head = mobileEngineHeadHtml({ row, server, ready, action });
     const meta = mobileEngineMetaHtml(row, server, { ready });
-    const details = externalCardDetailsHtml(row, server);
+    // No header facts cell on the narrow card: keep Disk/CTX in the body.
+    const details = externalCardDetailsHtml(row, server, { includeDiskCtx: true });
     const metricsShell = engineCardMetricsShellHtml({ ready, loading: false, isGenerating });
     const tokens = metricsShell
       ? `<div class="lm-mobile-engine-tokens"${metricsShell.includes('data-engine-live-metrics') ? '' : ' aria-hidden="true"'}">${metricsShell}</div>`
