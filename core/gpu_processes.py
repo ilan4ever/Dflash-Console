@@ -367,6 +367,20 @@ def _windows_parent_pid_map() -> dict[int, int]:
 def _load_windows_parent_pid_map() -> dict[int, int]:
     if sys.platform != 'win32':
         return {}
+    # Reuse the shared Win32_Process snapshot when it is available: it already
+    # carries every ParentProcessId, so no second WMI/PowerShell call is needed.
+    table = _process_table_powershell()
+    mapping: dict[int, int] = {}
+    if table:
+        for pid, row in table.items():
+            try:
+                mapping[int(pid)] = int(row.get('parent_pid') or 0)
+            except (TypeError, ValueError):
+                continue
+        _PARENT_MAP_CACHE['at'] = time.time()
+        _PARENT_MAP_CACHE['map'] = dict(mapping)
+        return mapping
+
     script = (
         "Get-CimInstance Win32_Process | "
         "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
@@ -381,7 +395,6 @@ def _load_windows_parent_pid_map() -> dict[int, int]:
     except json.JSONDecodeError:
         return {}
     rows = payload if isinstance(payload, list) else [payload]
-    mapping: dict[int, int] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -667,10 +680,17 @@ def _external_card_detail(
 
 
 def _query_compute_apps() -> list[dict[str, Any]]:
-    text = _run_nvidia_smi([
+    args = [
         '--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory',
         '--format=csv,noheader,nounits',
-    ])
+    ]
+    text = _run_nvidia_smi(args)
+    if not text:
+        # A concurrent/cooldown miss must not look like "no GPU processes".
+        from core.bounded_proc import run_bounded
+
+        _code, retry = run_bounded(['nvidia-smi', *args], timeout=8)
+        text = retry or ''
     if not text:
         return []
 
@@ -703,20 +723,14 @@ def _pid_listening_on_port(port: int, host: str = '127.0.0.1') -> int | None:
 
 
 def _managed_listener_pids(servers: list[dict[str, Any]]) -> set[int]:
-    pids: set[int] = set()
-    for server in servers:
-        if not isinstance(server, dict):
-            continue
-        port = int(server.get('port') or 0)
-        if port <= 0:
-            continue
-        host = str(server.get('host') or '127.0.0.1')
-        if not tcp_port_open(host, port):
-            continue
-        pid = _pid_listening_on_port(port, host)
-        if pid:
-            pids.add(pid)
-    return pids
+    """PIDs listening on configured engine ports (one TCP probe pass + netstat)."""
+    from core.net_listeners import _netstat_listen_pids, configured_listening_ports
+
+    open_ports = configured_listening_ports(servers)
+    if not open_ports:
+        return set()
+    port_pids = _netstat_listen_pids()
+    return {int(port_pids[port]) for port in open_ports if port in port_pids}
 
 
 def _listening_ports_map() -> dict[int, list[int]]:
@@ -807,25 +821,60 @@ def _fetch_process_details(pids: list[int]) -> dict[int, dict[str, Any]]:
 
 
 def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, Any]]:
-    if not pids or sys.platform != 'win32':
+    """Process details from one shared Win32_Process table snapshot.
+
+    The runtime bundle does not ship psutil, so this fallback is the normal
+    path on Windows. It used to run ``Get-CimInstance Win32_Process`` once per
+    requested PID set (~2s each, dozens per GPU scan); one snapshot answers
+    every lookup in the same scan.
+    """
+    wanted = {int(pid) for pid in pids if int(pid) > 0}
+    if not wanted:
         return {}
-    pid_list = ','.join(str(int(pid)) for pid in sorted(set(pids)))
+    table = _process_table_powershell()
+    return {pid: dict(table[pid]) for pid in wanted if pid in table}
+
+
+def _process_table_powershell() -> dict[int, dict[str, Any]]:
+    if sys.platform != 'win32':
+        return {}
+    now = time.time()
+    cached = _PROCESS_TABLE_CACHE.get('rows')
+    if (
+        isinstance(cached, dict)
+        and cached
+        and (now - float(_PROCESS_TABLE_CACHE.get('at') or 0.0)) < _PROCESS_TABLE_TTL_SECONDS
+    ):
+        return cached
+    with _PROCESS_TABLE_LOCK:
+        cached = _PROCESS_TABLE_CACHE.get('rows')
+        if (
+            isinstance(cached, dict)
+            and cached
+            and (time.time() - float(_PROCESS_TABLE_CACHE.get('at') or 0.0)) < _PROCESS_TABLE_TTL_SECONDS
+        ):
+            return cached
+        rows = _query_process_table_powershell()
+        if rows:
+            _PROCESS_TABLE_CACHE['rows'] = rows
+            _PROCESS_TABLE_CACHE['at'] = time.time()
+            return rows
+        return cached if isinstance(cached, dict) else {}
+
+
+def _query_process_table_powershell() -> dict[int, dict[str, Any]]:
+    if sys.platform != 'win32':
+        return {}
     script = (
-        f"$ids = @({pid_list});"
-        "$rows = Get-CimInstance Win32_Process | Where-Object { $ids -contains $_.ProcessId } | "
-        "Select-Object ProcessId, Name, CommandLine, ExecutablePath, ParentProcessId;"
-        "$parents = @{};"
-        "foreach ($row in $rows) { if ($row.ParentProcessId) { $parents[$row.ParentProcessId] = $true } };"
-        "$parentRows = Get-CimInstance Win32_Process | Where-Object { $parents.ContainsKey($_.ProcessId) } | "
-        "Select-Object ProcessId, Name;"
-        "$payload = @{ processes = @($rows); parents = @($parentRows) };"
-        "$payload | ConvertTo-Json -Depth 4 -Compress"
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath | "
+        "ConvertTo-Json -Depth 3 -Compress"
     )
     from core.bounded_proc import powershell_argv, run_bounded
 
     code, text = run_bounded(
         powershell_argv(script),
-        timeout=3,
+        timeout=12,
     )
     if code != 0 or not text:
         return {}
@@ -834,20 +883,14 @@ def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, An
         payload = json.loads(text)
     except json.JSONDecodeError:
         return {}
-    if not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
         return {}
 
-    parent_names: dict[int, str] = {}
-    for entry in payload.get('parents') or []:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            parent_names[int(entry.get('ProcessId') or 0)] = str(entry.get('Name') or '')
-        except (TypeError, ValueError):
-            continue
-
-    details: dict[int, dict[str, Any]] = {}
-    for entry in payload.get('processes') or []:
+    entries: list[tuple[int, int, str, str, str]] = []
+    names: dict[int, str] = {}
+    for entry in payload:
         if not isinstance(entry, dict):
             continue
         try:
@@ -860,11 +903,23 @@ def _fetch_process_details_powershell(pids: list[int]) -> dict[int, dict[str, An
             parent_pid = int(entry.get('ParentProcessId') or 0)
         except (TypeError, ValueError):
             parent_pid = 0
+        name = str(entry.get('Name') or '')
+        names[pid] = name
+        entries.append((
+            pid,
+            parent_pid,
+            name,
+            str(entry.get('CommandLine') or ''),
+            str(entry.get('ExecutablePath') or ''),
+        ))
+
+    details: dict[int, dict[str, Any]] = {}
+    for pid, parent_pid, name, command_line, executable_path in entries:
         details[pid] = {
-            'process_name': str(entry.get('Name') or ''),
-            'command_line': str(entry.get('CommandLine') or ''),
-            'executable_path': str(entry.get('ExecutablePath') or ''),
-            'parent_process_name': parent_names.get(parent_pid, ''),
+            'process_name': name,
+            'command_line': command_line,
+            'executable_path': executable_path,
+            'parent_process_name': names.get(parent_pid, ''),
             'parent_pid': parent_pid or None,
         }
     return details
@@ -2195,6 +2250,12 @@ def _cards_from_known_apps(
 _API_KEY_RE = re.compile(r'--api-key[=\s]+(\S+)', re.I)
 _API_KEY_CACHE: dict[int, tuple[float, str]] = {}
 _PROCESS_DETAILS_CACHE: dict[str, Any] = {'at': 0.0, 'map': {}}
+# Full Win32_Process table (one PowerShell call) shared by every per-PID
+# lookup inside a GPU scan. Without psutil the old code launched PowerShell
+# per PID set, which took over a minute per scan.
+_PROCESS_TABLE_CACHE: dict[str, Any] = {'at': 0.0, 'rows': {}}
+_PROCESS_TABLE_LOCK = threading.Lock()
+_PROCESS_TABLE_TTL_SECONDS = 3.0
 _LISTEN_PORTS_CACHE: tuple[float, dict[int, list[int]]] = (0.0, {})
 _PROCESS_DETAILS_TTL_SECONDS = 30.0
 _LISTEN_PORTS_TTL_SECONDS = 3.0
@@ -2203,6 +2264,9 @@ _GPU_LIVE_CACHE: tuple[float, dict[int, dict[str, Any]]] = (0.0, {})
 _GPU_LIVE_TTL_SECONDS = 1.5
 _EXTERNAL_SCAN_CACHE: dict[str, Any] = {'at': 0.0, 'cards': []}
 _EXTERNAL_SCAN_MIN_INTERVAL = 2.5
+# Engines idle: the page must still show what owns the GPU, but the scan is
+# expensive (nvidia-smi + process details), so run it on a slow cadence.
+_EXTERNAL_SCAN_STANDBY_INTERVAL = 15.0
 
 
 def _api_key_from_cmdline(command_line: str) -> str:
@@ -2795,6 +2859,27 @@ def _apply_external_loading_ttl(
     return out
 
 
+def _pipeline_listener_up(cfg: dict[str, Any]) -> bool:
+    """True when an enabled engine profile is actually listening.
+
+    ``engine_on`` can lag behind a listener the boot/adopt path restored, and
+    a stale flag must not hide every external model card.
+    """
+    try:
+        servers = [
+            row for row in (cfg.get('servers') or [])
+            if isinstance(row, dict) and row.get('enabled', True)
+        ]
+    except AttributeError:
+        return False
+    if not servers:
+        return False
+    from core.net_listeners import configured_listening_ports
+
+    open_ports = configured_listening_ports(servers)
+    return any(int(row.get('port') or 0) in open_ports for row in servers)
+
+
 def get_external_gpu_loads(
     *,
     servers: list[dict[str, Any]] | None = None,
@@ -2819,8 +2904,16 @@ def get_external_gpu_loads(
         resolved_cfg = cfg if cfg is not None else _load_config()
     except Exception:
         resolved_cfg = cfg or {}
-    if not console_pipeline_active(resolved_cfg):
-        return []
+    if not console_pipeline_active(resolved_cfg) and not _pipeline_listener_up(resolved_cfg):
+        # Standby: serve (and slowly refresh) the last scan instead of hiding
+        # every external card while an app still sits on the GPU.
+        cached = _EXTERNAL_SCAN_CACHE.get('cards')
+        cached_at = float(_EXTERNAL_SCAN_CACHE.get('at') or 0.0)
+        if (time.time() - cached_at) < _EXTERNAL_SCAN_STANDBY_INTERVAL:
+            return _enrich_external_cards(
+                [dict(row) for row in cached if isinstance(row, dict)],
+                attach_stats=False,
+            )
 
     now = time.time()
     cached_cards = _EXTERNAL_SCAN_CACHE.get('cards')

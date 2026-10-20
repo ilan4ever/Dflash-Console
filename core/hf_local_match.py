@@ -401,6 +401,46 @@ def is_dflash_repo(repo_id: str, tags: list[str] | None = None) -> bool:
     return False
 
 
+_WEIGHT_FILE_SUFFIXES = ('.safetensors', '.bin', '.gguf', '.pth', '.pt', '.ckpt', '.onnx')
+
+
+def _dir_has_repo_weights(path: Path) -> bool:
+    """True when a repo folder holds weight files (not just configs/assets)."""
+    from core.local_models import _weight_shard_status
+
+    try:
+        if any(
+            entry.is_file() and entry.name.lower().endswith(_WEIGHT_FILE_SUFFIXES)
+            for entry in path.iterdir()
+        ):
+            return True
+    except OSError:
+        return False
+    try:
+        return bool(_weight_shard_status(path).get('shard_total'))
+    except OSError:
+        return False
+
+
+def repo_install_incomplete(path: str | Path | None) -> bool:
+    """True when a local install folder is missing declared weight shards.
+
+    A partially downloaded repo still has shard 1 on disk, so matching any
+    single file would wrongly report the repo as installed.
+    """
+    text = str(path or '').strip()
+    if not text:
+        return False
+    from core.local_models import _weight_shard_status
+
+    target = Path(text)
+    folder = target if target.is_dir() else target.parent
+    try:
+        return bool(_weight_shard_status(folder).get('incomplete'))
+    except OSError:
+        return False
+
+
 def find_repo_local_installs(
     repo_id: str,
     *,
@@ -428,7 +468,10 @@ def find_repo_local_installs(
         if not path_text:
             continue
         path = Path(path_text)
-        if not path.is_file():
+        if not path.exists():
+            continue
+        # Diffusers/multi-component repos are catalogued as one folder row.
+        if not path.is_file() and not (path.is_dir() and _dir_has_repo_weights(path)):
             continue
         normalized = path.as_posix().lower()
         norm_flat = normalized.replace('-', '').replace('_', '')
@@ -508,6 +551,13 @@ def annotate_models_local_installs(
             item for item in installs
             if not is_auxiliary_gguf_filename(str(item.get('filename') or ''))
         ]
+        # A repo whose shards are still downloading is not installed.
+        complete_installs = [
+            item for item in weight_installs
+            if not repo_install_incomplete(item.get('path'))
+        ]
+        row['local_incomplete'] = bool(weight_installs) and not complete_installs
+        weight_installs = complete_installs
         loadable = [item for item in weight_installs if item.get('loadable')]
         row['local_ready'] = bool(weight_installs)
         row['local_auxiliary_only'] = bool(installs) and not weight_installs

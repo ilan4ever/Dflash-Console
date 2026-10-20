@@ -59,8 +59,9 @@
   }
 
   let pipelineStandby = true;
-  const ENGINE_STARTUP_GRACE_MS = 30000;
+  const ENGINE_STARTUP_GRACE_MS = 120000;
   let engineStartupSince = 0;
+  let engineStartupSettled = false;
 
   function primaryEl() {
     return document.getElementById('statusFeedPrimary');
@@ -135,17 +136,29 @@
   }
 
   function enginesStarting(servers) {
-    const configured = servers.some((server) => server?.enabled !== false && server?.engine_on === true);
+    const canStart = (server) => (
+      server?.enabled !== false
+      && server?.engine_on === true
+      && Number(server?.port || 0) > 0
+    );
+    const configured = servers.some(canStart);
     const live = servers.some((server) => (
       server?.running
       || server?.status === 'booting'
       || server?.status === 'loaded'
       || server?.warming
     ));
-    if (!configured || live) {
+    if (!configured) {
+      engineStartupSince = 0;
+      engineStartupSettled = false;
+      return false;
+    }
+    if (live) {
+      engineStartupSettled = true;
       engineStartupSince = 0;
       return false;
     }
+    if (engineStartupSettled) return false;
     if (!engineStartupSince) engineStartupSince = Date.now();
     return Date.now() - engineStartupSince < ENGINE_STARTUP_GRACE_MS;
   }
@@ -313,8 +326,10 @@
       } else if (pipelineStandby) {
         externalSnapshot = [];
       }
-      if (data.gpu_other_usage && !pipelineStandby) {
+      if (data.gpu_other_usage && Array.isArray(data.gpu_other_usage.processes) && data.gpu_other_usage.processes.length) {
+        // Shown even in standby: idle engines still have desktop/app GPU users.
         mergeGpuOtherUsage(data.gpu_other_usage);
+        window.DFlashServerLive?.ingestGpuOtherUsage?.(data.gpu_other_usage);
       } else if (pipelineStandby) {
         gpuOtherSnapshot = { processes: [], total_other_vram_gb: 0 };
         gpuOtherMissingPolls = 0;

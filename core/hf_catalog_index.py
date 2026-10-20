@@ -94,6 +94,7 @@ _PAYLOAD_FIELDS = (
     'size_gb',
     'size_label',
     'size_bytes',
+    'size_source',
     'accelerator_only',
     'dflash_generation',
     'dflash_generation_label',
@@ -276,6 +277,12 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # ``size_v`` marks a payload size that was verified against the current
+    # revision.  Legacy rows default to 0 and get re-measured once on demand.
+    try:
+        conn.execute('ALTER TABLE models ADD COLUMN size_v INTEGER NOT NULL DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     conn.execute('CREATE INDEX IF NOT EXISTS models_downloads ON models(downloads DESC)')
     conn.execute('CREATE INDEX IF NOT EXISTS models_likes ON models(likes DESC)')
     conn.execute('CREATE INDEX IF NOT EXISTS models_modified ON models(last_modified DESC)')
@@ -321,7 +328,7 @@ def _compact_payload(summary: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _inflate_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _inflate_payload(payload: dict[str, Any], *, size_stale: bool = False) -> dict[str, Any]:
     from core.huggingface import _format_downloads, _time_ago, estimate_disk_size_from_name
 
     row = dict(payload)
@@ -340,6 +347,10 @@ def _inflate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if est_gb:
             row['size_gb'] = est_gb
             row['size_label'] = est_label
+            row['size_source'] = 'estimate'
+            size_stale = True
+    if size_stale:
+        row['size_stale'] = True
     return row
 
 
@@ -400,6 +411,7 @@ def upsert_models(rows: list[dict[str, Any]]) -> int:
                     _fold(f"{repo_id} {payload.get('title') or ''} {payload.get('label') or ''}"),
                     haystack,
                     json.dumps(payload, ensure_ascii=False),
+                    1 if str(payload.get('size_source') or '') in ('files', 'quant') else 0,
                 )
             )
         if not payload_rows:
@@ -408,8 +420,9 @@ def upsert_models(rows: list[dict[str, Any]]) -> int:
             """
             INSERT INTO models (
                 id, author, downloads, likes, last_modified, pipeline_tag,
-                has_gguf, accelerator_only, dflash_generation, modality, folded, haystack, payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_gguf, accelerator_only, dflash_generation, modality, folded, haystack, payload,
+                size_v
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 author = excluded.author,
                 downloads = excluded.downloads,
@@ -425,7 +438,8 @@ def upsert_models(rows: list[dict[str, Any]]) -> int:
                 modality = CASE WHEN excluded.modality != '' THEN excluded.modality ELSE models.modality END,
                 folded = excluded.folded,
                 haystack = excluded.haystack,
-                payload = excluded.payload
+                payload = excluded.payload,
+                size_v = CASE WHEN excluded.size_v > 0 THEN 1 ELSE models.size_v END
             """,
             payload_rows,
         )
@@ -466,8 +480,10 @@ def update_model_sizes(updates: dict[str, dict[str, Any]]) -> None:
                 payload['size_label'] = str(size['size_label']).strip()
             if isinstance(size.get('size_bytes'), int) and size['size_bytes'] > 0:
                 payload['size_bytes'] = int(size['size_bytes'])
+            if str(size.get('size_source') or '').strip():
+                payload['size_source'] = str(size['size_source']).strip()
             conn.execute(
-                'UPDATE models SET payload = ? WHERE id = ?',
+                'UPDATE models SET payload = ?, size_v = 1 WHERE id = ?',
                 (json.dumps(payload, ensure_ascii=False), repo_id),
             )
         conn.commit()
@@ -492,7 +508,7 @@ def resolve_repo_sizes(repo_ids: list[str]) -> dict[str, dict[str, Any]]:
     with _lock:
         conn = _connect()
         for repo_id in wanted:
-            row = conn.execute('SELECT payload FROM models WHERE id = ?', (repo_id,)).fetchone()
+            row = conn.execute('SELECT payload, size_v FROM models WHERE id = ?', (repo_id,)).fetchone()
             if not row:
                 missing.append(repo_id)
                 continue
@@ -501,11 +517,13 @@ def resolve_repo_sizes(repo_ids: list[str]) -> dict[str, dict[str, Any]]:
             except (TypeError, json.JSONDecodeError):
                 missing.append(repo_id)
                 continue
-            if isinstance(payload, dict) and _payload_has_size(payload):
+            verified = int(row['size_v'] or 0) > 0
+            if isinstance(payload, dict) and verified and _payload_has_size(payload):
                 result[repo_id] = {
                     'size_gb': payload.get('size_gb'),
                     'size_label': payload.get('size_label'),
                     'size_bytes': payload.get('size_bytes'),
+                    'size_source': payload.get('size_source'),
                 }
             else:
                 missing.append(repo_id)
@@ -714,7 +732,7 @@ def search_local(
             where = _category_sql(category)
             order = _order_sql(sort)
             params: list[Any] = []
-            sql = f'SELECT payload, downloads FROM models WHERE {where}'
+            sql = f'SELECT payload, downloads, size_v FROM models WHERE {where}'
             if needle:
                 folded = _fold(needle)
                 like_raw = f'%{_like_safe(needle)}%'
@@ -748,7 +766,7 @@ def search_local(
         except (TypeError, json.JSONDecodeError):
             continue
         if isinstance(payload, dict):
-            models.append(_inflate_payload(payload))
+            models.append(_inflate_payload(payload, size_stale=not int(item['size_v'] or 0)))
     if needle:
         models = _rank_rows(needle, models)
     models = models[: max(1, min(int(limit), 50))]

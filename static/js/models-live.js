@@ -66,6 +66,10 @@
   }
 
   function readGpuPreferences() {
+    // Shared setting: the GPU picked for a model follows the user between the
+    // Electron window and the browser.
+    const shared = window.DFlashUiState?.getPref?.('modelGpuDevices');
+    if (shared && typeof shared === 'object' && !Array.isArray(shared)) return shared;
     try {
       const raw = JSON.parse(localStorage.getItem(GPU_PREFERENCE_KEY) || '{}');
       return raw && typeof raw === 'object' ? raw : {};
@@ -83,13 +87,14 @@
 
   function saveModelGpuDevice(model, value) {
     const next = isGpuChoice(value) ? String(value).trim().toLowerCase() : 'auto';
-    const prefs = readGpuPreferences();
+    const prefs = { ...readGpuPreferences() };
     prefs[gpuPreferenceKey(model)] = next;
     try {
       localStorage.setItem(GPU_PREFERENCE_KEY, JSON.stringify(prefs));
     } catch {
-      /* local preferences are optional */
+      /* local mirror only */
     }
+    if (window.DFlashUiState?.setPref) void window.DFlashUiState.setPref('modelGpuDevices', prefs);
   }
 
   function gpuDevicePicker(model, { compact = false } = {}) {
@@ -223,6 +228,10 @@
   }
 
   function loadPinnedSet() {
+    // Pins are shared by every client of this Console (Electron window and
+    // browser) through /api/ui-state; localStorage is only the paint mirror.
+    const shared = window.DFlashUiState?.getPins?.('models');
+    if (Array.isArray(shared)) return new Set(shared);
     try {
       const list = JSON.parse(localStorage.getItem(PINNED_KEY) || '[]');
       return new Set(Array.isArray(list) ? list : []);
@@ -232,10 +241,18 @@
   }
 
   function savePinnedSet(set) {
-    localStorage.setItem(PINNED_KEY, JSON.stringify([...set]));
+    const list = [...set];
+    try {
+      localStorage.setItem(PINNED_KEY, JSON.stringify(list));
+    } catch {
+      /* storage blocked — the server copy still records the pin */
+    }
+    if (window.DFlashUiState?.setPins) void window.DFlashUiState.setPins('models', list);
   }
 
   function loadBrowsePrefs() {
+    const shared = window.DFlashUiState?.getPref?.('modelPrefs');
+    if (shared && typeof shared === 'object' && !Array.isArray(shared)) return shared;
     try {
       return JSON.parse(localStorage.getItem('dflashConsole.modelPrefs') || '{}');
     } catch {
@@ -647,10 +664,9 @@
     }
     const path = String(model?.path || '').trim();
     if (!path) return repoHint ? `<div class="lm-library-card-paths">${repoHint}</div>` : '';
-    const label = model.draft_path && model.draft_filename
-      ? `Target · ${shortPath(path)}`
-      : shortPath(path);
-    return `<div class="lm-library-card-paths">${repoHint}<div class="lm-model-path-hint" title="${escapeHtml(path)}">${escapeHtml(label)}</div></div>`;
+    const hasDraft = Boolean(model.draft_path && model.draft_filename);
+    const label = hasDraft ? 'Target' : 'Path';
+    return `<div class="lm-library-card-paths">${repoHint}<div class="lm-model-path-hint" title="${escapeHtml(path)}"><span class="lm-library-detail-lbl">${label}</span><span class="lm-library-detail-val">${escapeHtml(shortPath(path))}</span></div></div>`;
   }
 
   function libraryModelFooterHtml(model, visibleCount) {
@@ -666,6 +682,152 @@
     const foot = libraryModelFooterHtml(model, visibleCount);
     if (!paths && !foot) return '';
     return `<div class="lm-library-card-body">${paths}${foot}</div>`;
+  }
+
+  // --- personal model notes ------------------------------------------------
+
+  function modelNoteText(model) {
+    return String(model?.note || '').trim();
+  }
+
+  function noteDisplayText(text, limit = 0) {
+    let value = String(text || '');
+    value = value.replace(/```[\s\S]*?```/g, '');
+    value = value.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+    value = value.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+    value = value.replace(/^\s{0,3}(#{1,6}|>)\s*/gm, '');
+    value = value.replace(/^\s*[-*+]\s+/gm, '• ');
+    value = value.replace(/[*_`~]{1,3}/g, '');
+    value = value.replace(/\n{3,}/g, '\n\n').trim();
+    if (limit > 0 && value.length > limit) value = `${value.slice(0, limit - 1)}…`;
+    return value;
+  }
+
+  function modelNoteTitleAttrs(model) {
+    const note = modelNoteText(model);
+    if (!note) {
+      const name = String(modelTitleLine(model) || '').trim();
+      return name ? ` title="${escapeHtml(name)}"` : '';
+    }
+    const mine = String(model?.note_source || '') === 'user';
+    // No native tooltip here — the floating bubble is the tooltip, and a
+    // second browser tooltip would cover it.
+    return ` data-note-hover="1" data-note-user="${mine ? '1' : '0'}" aria-label="Has a personal note — hover to read"`;
+  }
+
+  let noteBubbleTimer = null;
+  let noteBubbleModel = null;
+
+  function ensureNoteBubble() {
+    let bubble = document.getElementById('modelNoteBubble');
+    if (bubble) return bubble;
+    bubble = document.createElement('div');
+    bubble.id = 'modelNoteBubble';
+    bubble.className = 'lm-model-note-bubble hidden';
+    bubble.addEventListener('mouseenter', () => {
+      if (noteBubbleTimer) {
+        window.clearTimeout(noteBubbleTimer);
+        noteBubbleTimer = null;
+      }
+    });
+    bubble.addEventListener('mouseleave', () => scheduleHideNoteBubble());
+    bubble.addEventListener('click', (event) => {
+      if (!event.target.closest('[data-note-bubble-edit]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const model = noteBubbleModel;
+      if (model) openModelNoteEditor(model);
+    });
+    document.body.appendChild(bubble);
+    return bubble;
+  }
+
+  function hideNoteBubble() {
+    if (noteBubbleTimer) {
+      window.clearTimeout(noteBubbleTimer);
+      noteBubbleTimer = null;
+    }
+    noteBubbleModel = null;
+    document.getElementById('modelNoteBubble')?.classList.add('hidden');
+  }
+
+  function scheduleHideNoteBubble(delay = 160) {
+    if (noteBubbleTimer) window.clearTimeout(noteBubbleTimer);
+    noteBubbleTimer = window.setTimeout(() => {
+      noteBubbleTimer = null;
+      noteBubbleModel = null;
+      document.getElementById('modelNoteBubble')?.classList.add('hidden');
+    }, delay);
+  }
+
+  function showNoteBubble(model, anchor) {
+    const raw = modelNoteText(model);
+    if (!raw || !anchor) return;
+    const existing = document.getElementById('modelNoteBubble');
+    if (noteBubbleModel === model && existing && !existing.classList.contains('hidden')) return;
+    if (noteBubbleTimer) {
+      window.clearTimeout(noteBubbleTimer);
+      noteBubbleTimer = null;
+    }
+    noteBubbleModel = model;
+    const bubble = ensureNoteBubble();
+    const mine = String(model?.note_source || '') === 'user';
+    bubble.innerHTML = `
+      <div class="lm-note-bubble-head">
+        <span class="lm-note-bubble-kicker">${mine ? 'Your note' : 'Starter note'}</span>
+        <button type="button" class="lm-note-bubble-edit" data-note-bubble-edit title="Edit this note">✎ Edit</button>
+      </div>
+      <div class="lm-note-bubble-text">${escapeHtml(noteDisplayText(raw, 2000))}</div>`;
+    bubble.classList.remove('hidden');
+    const rect = anchor.getBoundingClientRect();
+    const bubbleRect = bubble.getBoundingClientRect();
+    const margin = 8;
+    let left = rect.left;
+    if (left + bubbleRect.width + margin > window.innerWidth) {
+      left = Math.max(margin, window.innerWidth - bubbleRect.width - margin);
+    }
+    let top = rect.bottom + 6;
+    if (top + bubbleRect.height + margin > window.innerHeight) {
+      top = Math.max(margin, rect.top - bubbleRect.height - 6);
+    }
+    bubble.style.left = `${Math.round(left)}px`;
+    bubble.style.top = `${Math.round(top)}px`;
+  }
+
+  function bindModelNoteHandlers(root) {
+    if (!root || root.dataset.noteBound === '1') return;
+    root.dataset.noteBound = '1';
+    const noteAnchor = (target) => target?.closest?.('[data-note-hover]');
+    root.addEventListener('mouseover', (event) => {
+      const anchor = noteAnchor(event.target);
+      if (!anchor) return;
+      const row = anchor.closest('[data-model-key]');
+      const model = row ? modelForRow(row) : null;
+      if (model) showNoteBubble(model, anchor);
+    });
+    root.addEventListener('mouseout', (event) => {
+      const anchor = noteAnchor(event.target);
+      if (!anchor) return;
+      if (event.relatedTarget && anchor.contains(event.relatedTarget)) return;
+      scheduleHideNoteBubble();
+    });
+    root.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-model-note]');
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const row = target.closest('[data-model-key]');
+      const model = row ? modelForRow(row) : null;
+      if (model) openModelNoteEditor(model);
+    });
+    root.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target.closest('[data-model-note]');
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      open(target);
+    });
   }
 
   function renderDesktopLibraryCardRows(model, {
@@ -694,7 +856,7 @@
             ${loadedRibbon(model)}
             <div class="lm-library-handle-title">
               ${pinMark}
-              <span class="lm-model-title-text" title="${title}">${title}</span>
+              <span class="lm-model-title-text"${modelNoteTitleAttrs(model)}>${title}</span>
               ${isConsoleModel(model) ? dflashLogoLabel('DFlash') : ''}
               ${handleBadges ? `<span class="lm-library-handle-badges">${handleBadges}</span>` : ''}
             </div>
@@ -732,7 +894,8 @@
   let autoPickedLoadEngine = '';
 
   function getLoadEngine() {
-    const saved = String(localStorage.getItem(LOAD_ENGINE_KEY) || '').toLowerCase();
+    const shared = window.DFlashUiState?.getPref?.('loadEngine');
+    const saved = String((shared ?? localStorage.getItem(LOAD_ENGINE_KEY)) || '').toLowerCase();
     if (['dflash', 'vllm', 'transformers', 'freetoken'].includes(saved)) return saved;
     if (autoPickedLoadEngine) return autoPickedLoadEngine;
     return 'dflash';
@@ -740,7 +903,8 @@
 
   function setLoadEngine(id) {
     const next = ['dflash', 'vllm', 'transformers', 'freetoken'].includes(id) ? id : 'dflash';
-    localStorage.setItem(LOAD_ENGINE_KEY, next);
+    if (window.DFlashUiState?.setPref) void window.DFlashUiState.setPref('loadEngine', next);
+    else localStorage.setItem(LOAD_ENGINE_KEY, next);
     document.querySelectorAll('[data-load-engine-pick]').forEach((el) => {
       el.value = next;
     });
@@ -2441,6 +2605,7 @@
     pendingTableRender = null;
     const signature = modelsRenderSignature(filterText);
     if (!force && signature === lastRenderSignature) return;
+    hideNoteBubble();
     lastRenderSignature = signature;
     const needle = normalizeSearchText(filterText);
     const pinned = loadPinnedSet();
@@ -2459,13 +2624,14 @@
       if (!matchesModelType(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
       return modelMatchesSearch(model, filterText);
     }).sort((a, b) => {
+      // Pinned models always lead the library, even while searching.
+      const aPin = pinned.has(modelKey(a)) ? 0 : 1;
+      const bPin = pinned.has(modelKey(b)) ? 0 : 1;
+      if (aPin !== bPin) return aPin - bPin;
       if (needle) {
         const byScore = modelSearchScore(b, filterText) - modelSearchScore(a, filterText);
         if (byScore !== 0) return byScore;
       }
-      const aPin = pinned.has(modelKey(a)) ? 0 : 1;
-      const bPin = pinned.has(modelKey(b)) ? 0 : 1;
-      if (aPin !== bPin) return aPin - bPin;
       // All local library models first; cloud API provider cards below (never interleaved).
       const aCloud = isCloudApiModel(a) ? 1 : 0;
       const bCloud = isCloudApiModel(b) ? 1 : 0;
@@ -2613,6 +2779,7 @@
   function bindModelRowInteractions(root) {
     if (!root) return;
     bindLibraryCardHover(root);
+    bindModelNoteHandlers(root);
     const rowSel = libraryRowSelector();
     root.querySelectorAll(`${rowSel}:not(.downloading-model)`).forEach((row) => {
       row.addEventListener('click', (event) => {
@@ -3053,11 +3220,12 @@
     const importLabels = importMenuLabels(model);
 
     menu.innerHTML = `
-      <button type="button" data-cmd="pin">${isPinned ? 'Unpin' : 'Pin'}</button>
+      <button type="button" data-cmd="pin" title="Keep this model at the top of the Model library">${isPinned ? 'Unpin from top' : 'Pin to top'}</button>
       <button type="button" data-cmd="copy-id"${apiModelIdentifier(model) ? '' : ' disabled'} title="Name you send as the model in an API request">Copy API name</button>
       <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
       <button type="button" data-cmd="copy-hf-name"${huggingFaceName(model) ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
+      <button type="button" data-cmd="model-note">${modelNoteText(model) ? 'Edit personal note…' : 'Add personal note…'}</button>
       <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="${modelHasVision(model) ? 'This model already has a vision projector wired' : 'Download vision projector from Hugging Face and wire it to this model'}">${modelHasVision(model) ? 'Vision already supported' : 'Add vision support…'}</button>
       ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">${escapeHtml(importLabels.copy)}</button>
@@ -3168,13 +3336,17 @@
 
   async function runContextCommand(cmd, model) {
     const key = modelKey(model);
+    if (cmd === 'model-note') {
+      openModelNoteEditor(model);
+      return;
+    }
     if (cmd === 'pin') {
       const pinned = loadPinnedSet();
       if (pinned.has(key)) pinned.delete(key);
       else pinned.add(key);
       savePinnedSet(pinned);
       renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
-      toast(pinned.has(key) ? 'Model pinned' : 'Model unpinned');
+      toast(pinned.has(key) ? 'Pinned to top of the library' : 'Unpinned from library top');
       return;
     }
     if (cmd === 'copy-id') {
@@ -3418,8 +3590,22 @@
             toast(job.post_action_error || 'Vision projector downloaded, but it could not be wired', false);
             return;
           }
-          toast(`Vision enabled for ${model.label || model.filename || 'model'}`);
-          window.DFlashStatusFeed?.note('Vision projector ready', model.label || model.filename || '');
+          const label = model.label || model.filename || 'model';
+          // Backend wire_vision hot-applies (preset + per-engine reload). Only
+          // fall back to a reload when the model still looks loaded without vision.
+          let reloaded = false;
+          if (model.server_id && (model.loaded || model.status === 'loaded')) {
+            try {
+              const applied = await api(`/api/servers/${encodeURIComponent(model.server_id)}/reload`, { method: 'POST' });
+              reloaded = applied?.success !== false;
+            } catch (err) {
+              console.warn('vision hot-apply reload skipped', err);
+            }
+          }
+          toast(reloaded
+            ? `Vision enabled for ${label} — engine reloaded with projector`
+            : `Vision enabled for ${label}`);
+          window.DFlashStatusFeed?.note('Vision projector ready', label);
           await refresh({ rebindInspector: true, forceCatalogRefresh: true });
           if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh(true);
           return;
@@ -3455,7 +3641,18 @@
         }),
       });
       if (result.ready || result.wired || result.vision_ready) {
-        toast(`Vision enabled for ${label}`);
+        let reloaded = Boolean(result.reloaded);
+        if (!reloaded && model.server_id && (model.loaded || model.status === 'loaded' || model.engine_on)) {
+          try {
+            const applied = await api(`/api/servers/${encodeURIComponent(model.server_id)}/reload`, { method: 'POST' });
+            reloaded = applied?.success !== false;
+          } catch (err) {
+            console.warn('vision hot-apply reload skipped', err);
+          }
+        }
+        toast(reloaded
+          ? `Vision enabled for ${label} — engine reloaded with projector`
+          : `Vision enabled for ${label}`);
         await refresh({ rebindInspector: true, forceCatalogRefresh: true });
         if (window.DFlashServerLive?.refresh) await window.DFlashServerLive.refresh(true);
         return;
@@ -4169,7 +4366,10 @@
     window.DFlashDownloadQueue?.subscribe?.(onDownloadQueueUpdate);
 
     document.addEventListener('click', hideContextMenu);
-    document.addEventListener('scroll', hideContextMenu, true);
+    document.addEventListener('scroll', () => {
+      hideContextMenu();
+      hideNoteBubble();
+    }, true);
     // Native select popups open during the mouse-down sequence. Mark the
     // selector as protected before the browser opens that popup so a runtime
     // poll cannot replace the row between mousedown and focusin.
@@ -4235,6 +4435,14 @@
       if (document.visibilityState === 'visible') onModelsViewEnter();
     });
     window.addEventListener('focus', () => onModelsViewEnter());
+    // A pin or a model setting changed in the OTHER client (Electron window
+    // vs browser tab): re-sort / repaint so both views match.
+    window.addEventListener('dflash:ui-state', (event) => {
+      const scopes = event?.detail?.scopes || [];
+      const prefs = event?.detail?.prefs || [];
+      if (!scopes.includes('models') && !prefs.length) return;
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+    });
     void refresh({ rebindInspector: true })
       .then(() => {
         void refreshCatalogQuiet();
@@ -4684,6 +4892,114 @@
     if (document.body.dataset.activeView !== 'models') return;
     if (modelSelectorFocused || isModelSelectorFocused()) return;
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+  }
+
+  let noteEditorModel = null;
+
+  function ensureModelNoteModal() {
+    let modal = document.getElementById('modelNoteModal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'modelNoteModal';
+    modal.className = 'df-note-modal hidden';
+    modal.innerHTML = `
+      <div class="df-note-dialog" role="dialog" aria-modal="true" aria-labelledby="modelNoteTitle">
+        <div class="df-note-head">
+          <span class="df-note-kicker">Personal note</span>
+          <h3 id="modelNoteTitle">Model</h3>
+        </div>
+        <textarea id="modelNoteText" class="df-note-textarea" rows="8" spellcheck="true"
+          placeholder="What is this model for? How do you load it, which prompt style works, what to avoid… Markdown is fine."></textarea>
+        <p class="df-note-hint">Shown as one line on top of the card — hover for the full text. Stored on this PC.</p>
+        <div class="df-note-actions">
+          <button type="button" class="lm-btn ghost small" data-note-action="cancel">Cancel</button>
+          <button type="button" class="lm-btn ghost small" data-note-action="remove">Remove</button>
+          <button type="button" class="lm-btn hf-primary small" data-note-action="save">Save note</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeModelNoteEditor();
+    });
+    modal.querySelector('[data-note-action="cancel"]')?.addEventListener('click', () => closeModelNoteEditor());
+    modal.querySelector('[data-note-action="save"]')?.addEventListener('click', () => void saveModelNoteEditor());
+    modal.querySelector('[data-note-action="remove"]')?.addEventListener('click', () => void removeModelNoteEditor());
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (!modal.classList.contains('hidden')) closeModelNoteEditor();
+    });
+    return modal;
+  }
+
+  function openModelNoteEditor(model) {
+    if (!model) return;
+    noteEditorModel = model;
+    const modal = ensureModelNoteModal();
+    const title = document.getElementById('modelNoteTitle');
+    if (title) title.textContent = modelTitleLine(model) || model.id || 'Model';
+    const text = document.getElementById('modelNoteText');
+    if (text) {
+      text.value = String(model.note || '');
+      window.setTimeout(() => text.focus(), 30);
+    }
+    const removeBtn = modal.querySelector('[data-note-action="remove"]');
+    if (removeBtn) removeBtn.disabled = !modelNoteText(model);
+    modal.classList.remove('hidden');
+  }
+
+  function closeModelNoteEditor() {
+    noteEditorModel = null;
+    document.getElementById('modelNoteModal')?.classList.add('hidden');
+  }
+
+  function applyModelNoteLocally(model, text, source) {
+    if (!model) return;
+    model.note = text;
+    model.note_source = text ? source : '';
+    model.note_updated_at = text ? Date.now() / 1000 : null;
+  }
+
+  async function saveModelNoteEditor() {
+    const model = noteEditorModel;
+    if (!model) return;
+    const key = String(model.note_key || '').trim();
+    if (!key) {
+      toast('This model has no stable identity yet — refresh the library first', false);
+      return;
+    }
+    const text = String(document.getElementById('modelNoteText')?.value || '');
+    try {
+      await api('/api/model-notes', {
+        method: 'PUT',
+        body: JSON.stringify({ key, text, label: modelTitleLine(model) || model.id || '' }),
+      });
+      applyModelNoteLocally(model, text.trim(), 'user');
+      closeModelNoteEditor();
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+      toast(text.trim() ? 'Note saved' : 'Note cleared');
+    } catch (err) {
+      toast(err.message || 'Could not save the note', false);
+    }
+  }
+
+  async function removeModelNoteEditor() {
+    const model = noteEditorModel;
+    if (!model) return;
+    const key = String(model.note_key || '').trim();
+    if (!key) return;
+    try {
+      // Empty text is an explicit "no note" (it also hides a starter note).
+      await api('/api/model-notes', {
+        method: 'PUT',
+        body: JSON.stringify({ key, text: '', label: modelTitleLine(model) || model.id || '' }),
+      });
+      applyModelNoteLocally(model, '', 'user');
+      closeModelNoteEditor();
+      renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
+      toast('Note removed');
+    } catch (err) {
+      toast(err.message || 'Could not remove the note', false);
+    }
   }
 
   window.DFlashModelsLive = {

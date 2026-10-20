@@ -3,6 +3,7 @@ from __future__ import annotations
 from core.huggingface import (
     _enrich_summaries_sizes,
     _entry_size_bytes,
+    _preferred_download_size,
     _preferred_gguf_size,
     _preferred_size_folders,
     _resolve_repo_tree,
@@ -12,6 +13,7 @@ from core.huggingface import (
     _size_from_hub_storage,
     _summaries_from_models,
     _summary_from_model,
+    fetch_used_storage_size,
 )
 
 
@@ -189,3 +191,59 @@ def test_summary_uses_used_storage_when_files_have_no_sizes():
     })
     assert row['size_gb'] and row['size_gb'] > 2
     assert row['size_label'] not in ('', '—')
+    assert row['size_source'] == 'hub_storage'
+
+
+_WAN22_SIBLINGS = [
+    {'rfilename': 'diffusion_pytorch_model-00001-of-00003.safetensors', 'size': 9_830_000_000},
+    {'rfilename': 'diffusion_pytorch_model-00002-of-00003.safetensors', 'size': 10_000_000_000},
+    {'rfilename': 'diffusion_pytorch_model-00003-of-00003.safetensors', 'size': 180_000_000},
+    {'rfilename': 'models_t5_umt5-xxl-enc-bf16.pth', 'size': 11_360_000_000},
+    {'rfilename': 'Wan2.2_VAE.pth', 'size': 2_820_000_000},
+    {'rfilename': 'config.json', 'size': 1_200},
+]
+
+
+def test_preferred_download_size_counts_every_component_of_a_repo():
+    size_gb, label = _preferred_download_size(_WAN22_SIBLINGS)
+    # Weights + text encoder (.pth) + VAE — not just the first shard group.
+    assert size_gb is not None
+    assert 31 < size_gb < 32
+    assert label.endswith('GB')
+
+
+def test_fetch_size_prefers_current_revision_over_repo_storage(monkeypatch):
+    from core import huggingface as hf
+
+    monkeypatch.setattr(
+        hf,
+        '_request_json',
+        lambda url, timeout=4.0: {
+            'id': 'Wan-AI/Wan2.2-TI2V-5B',
+            'usedStorage': 54_202_656_185,
+            'siblings': _WAN22_SIBLINGS,
+        },
+    )
+    size = fetch_used_storage_size('Wan-AI/Wan2.2-TI2V-5B')
+    assert size is not None
+    assert 31 < float(size['size_gb']) < 32
+    assert size['size_source'] == 'files'
+    assert int(size['size_bytes']) == sum(row['size'] for row in _WAN22_SIBLINGS)
+
+
+def test_fetch_size_falls_back_to_used_storage_without_file_sizes(monkeypatch):
+    from core import huggingface as hf
+
+    monkeypatch.setattr(
+        hf,
+        '_request_json',
+        lambda url, timeout=4.0: {
+            'id': 'acme/opaque-repo',
+            'usedStorage': 8 * 1024 ** 3,
+            'siblings': [{'rfilename': 'model.safetensors'}],
+        },
+    )
+    size = fetch_used_storage_size('acme/opaque-repo')
+    assert size is not None
+    assert float(size['size_gb']) == 8
+    assert size['size_source'] in ('hub_storage', 'estimate')

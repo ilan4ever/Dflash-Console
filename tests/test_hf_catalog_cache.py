@@ -187,27 +187,28 @@ def test_size_enrich_max_fetches_skips_text_all_category():
 
 
 def test_finalize_search_models_scans_local_catalog_once(monkeypatch):
+    import core.hf_local_match  # noqa: F401  (bind import so the patch applies)
     from core.huggingface import _finalize_search_models
 
     calls: list[int] = []
-    monkeypatch.setattr(
-        'core.local_models.list_local_models',
-        lambda **kwargs: calls.append(1) or {'models': []},
-    )
+    counter = lambda **kwargs: calls.append(1) or {'models': []}  # noqa: E731
+    monkeypatch.setattr('core.local_models.list_local_models', counter)
+    monkeypatch.setattr('core.hf_local_match.list_local_models', counter)
     models = [{'id': f'org/model-{index}', 'tags': []} for index in range(5)]
     _finalize_search_models(models, needle='', cat_key='all', response_limit=25)
     assert len(calls) == 1
 
 
-def test_finalize_search_models_skips_local_scan_for_text_search(monkeypatch):
+def test_finalize_search_models_annotates_installs_for_text_search(monkeypatch):
+    import core.hf_local_match  # noqa: F401  (bind import so the patch applies)
     from core.huggingface import _finalize_search_models
 
     calls: list[int] = []
-    monkeypatch.setattr(
-        'core.local_models.list_local_models',
-        lambda **kwargs: calls.append(1) or {'models': []},
-    )
+    counter = lambda **kwargs: calls.append(1) or {'models': []}  # noqa: E731
+    monkeypatch.setattr('core.local_models.list_local_models', counter)
+    monkeypatch.setattr('core.hf_local_match.list_local_models', counter)
     models = [{'id': 'org/model-0', 'tags': []}]
     _finalize_search_models(models, needle='qwen3.8', cat_key='all', response_limit=25)
-    assert calls == []
+    # One disk-catalog scan serves every row, text query or not.
+    assert len(calls) == 1
     assert models[0]['local_ready'] is False

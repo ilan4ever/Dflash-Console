@@ -577,6 +577,82 @@
     };
   }
 
+  function downloadFactHtml(label, value, { wide = false } = {}) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return `<span class="df-downloads-fact${wide ? ' is-wide' : ''}" title="${escapeHtml(text)}"><span class="lbl">${escapeHtml(label)}</span><span class="val">${escapeHtml(text)}</span></span>`;
+  }
+
+  function renderPageDownloadCard({
+    job,
+    meta,
+    title,
+    statusPrimary,
+    statusClass,
+    sizeBase,
+    removeButtonHtml,
+    tagsHtml,
+    avatar,
+    pageActionsHtml,
+    resumeBtn,
+    bar,
+    modelLoading,
+    pageSelectedClass,
+    fileLine,
+    speed,
+    eta,
+    readBytes,
+    totalBytes,
+  }) {
+    const isDownloading = job.status === 'downloading';
+    const finished = job.status === 'done' && job.finished_at
+      ? new Date(Number(job.finished_at) * 1000).toLocaleString()
+      : '';
+    const progressText = isDownloading
+      ? [
+        totalBytes ? `${formatBytes(readBytes)} / ${formatBytes(totalBytes)}` : (readBytes ? formatBytes(readBytes) : ''),
+        speed,
+        eta,
+      ].filter(Boolean).join(' · ')
+      : '';
+    const quantText = String(meta.quant || '').trim();
+    const formatText = String(meta.format || '').trim();
+    const facts = [
+      downloadFactHtml('Publisher', meta.author),
+      downloadFactHtml('Format', formatText),
+      downloadFactHtml('Quant', quantText && quantText.toLowerCase() !== formatText.toLowerCase() ? quantText : ''),
+      downloadFactHtml('Size', sizeBase),
+      downloadFactHtml('Finished', finished),
+      downloadFactHtml('Progress', progressText),
+      downloadFactHtml('File', fileLine, { wide: true }),
+      downloadFactHtml('Path', job.path, { wide: true }),
+    ].filter(Boolean).join('');
+    const tags = tagsHtml
+      ? `<span class="df-downloads-card-head-tags">${tagsHtml}</span>`
+      : '';
+    const footer = (pageActionsHtml || resumeBtn)
+      ? `<div class="df-downloads-card-footer">${resumeBtn}${pageActionsHtml}</div>`
+      : '';
+    return `
+      <div class="df-downloads-page-item df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${modelLoading ? ' is-model-loading' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
+        ${removeButtonHtml}
+        <div class="df-downloads-card-head">
+          ${avatar}
+          <div class="df-downloads-card-head-main">
+            <span class="df-downloads-card-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+            ${tags}
+          </div>
+          <div class="df-downloads-card-aside">
+            <span class="df-downloads-card-stat-primary${statusClass}">${escapeHtml(statusPrimary)}</span>
+            ${sizeBase ? `<span class="df-downloads-card-stat">${escapeHtml(sizeBase)}</span>` : ''}
+          </div>
+        </div>
+        <div class="df-downloads-card-facts">${facts}</div>
+        ${bar}
+        ${footer}
+      </div>`;
+  }
+
   function renderDownloadCardHtml(job, {
     variant = 'panel',
     removeButtonHtml = '',
@@ -672,6 +748,29 @@
     const pageActionsHtml = variant === 'page'
       ? renderDownloadCardActionsHtml(job, model, { variant, loadActionsHtml })
       : loadActionsHtml;
+    if (variant === 'page') {
+      return renderPageDownloadCard({
+        job,
+        meta,
+        title,
+        statusPrimary,
+        statusClass,
+        sizeBase,
+        removeButtonHtml,
+        tagsHtml,
+        avatar,
+        pageActionsHtml,
+        resumeBtn,
+        bar,
+        modelLoading,
+        pageSelectedClass,
+        fileLine,
+        speed,
+        eta,
+        readBytes,
+        totalBytes,
+      });
+    }
     return `
       <div class="${wrapperClass} df-downloads-card${job.status === 'error' || job.status === 'incomplete' ? ' is-error' : ''}${job.status === 'done' ? ' is-done' : ''}${modelLoading ? ' is-model-loading' : ''}${pageSelectedClass}" data-download-job-id="${escapeHtml(job.id)}">
         ${removeButtonHtml}
@@ -941,13 +1040,28 @@
     emit();
   }
 
+  function isRepoLevelJob(job) {
+    const kind = String(job?.kind || '').toLowerCase();
+    return kind === 'repo' || kind === 'repo-complete' || !String(job?.filename || '').trim();
+  }
+
+  function getRepoActiveJob(repoId) {
+    const repo = String(repoId || '').trim();
+    if (!repo) return null;
+    return sortedJobs().find((job) =>
+      job.status === 'downloading' && String(job.repo_id || '') === repo,
+    ) || null;
+  }
+
   function getActiveJob(repoId, filename) {
     const repo = String(repoId || '').trim();
     const file = String(filename || '').trim();
+    // Repository downloads carry no filename; they still belong to every file
+    // the UI may have selected for that repo.
     return sortedJobs().find((job) =>
       job.status === 'downloading'
       && String(job.repo_id || '') === repo
-      && String(job.filename || '') === file,
+      && (String(job.filename || '') === file || isRepoLevelJob(job)),
     ) || null;
   }
 
@@ -1013,6 +1127,8 @@
     refresh,
     subscribe,
     getActiveJob,
+    getRepoActiveJob,
+    isRepoLevelJob,
     getActiveJobs: activeJobs,
     getJobs: sortedJobs,
     collapseHistoryJobs,

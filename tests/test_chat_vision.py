@@ -71,6 +71,52 @@ def test_vision_capability_requires_mmproj_file(tmp_path: Path, monkeypatch: pyt
     assert vision_capability(server)['supports_vision'] is True
 
 
+
+def test_vision_capability_true_for_generic_ar_when_mmproj_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Models-tab vision wiring must work for non-allowlisted profiles like Saluki."""
+    monkeypatch.setattr('core.vision_setup._is_allowed_model_path', lambda path, cfg: True)
+    target = tmp_path / 'Underdog-Saluki-27B-1.0-IQ2-mix.gguf'
+    mmproj = tmp_path / 'mmproj-Underdog-Saluki-27B-1.0-F16.gguf'
+    target.write_bytes(b'model')
+    mmproj.write_bytes(b'mmproj')
+    server = {
+        'id': 'underdog-saluki-27b-1-0-iq2-mix',
+        'profile': 'generic-ar',
+        'target_path': str(target),
+        'mmproj_path': str(mmproj),
+    }
+    cap = vision_capability(server)
+    assert cap['supports_vision'] is True
+    assert cap['mmproj_path'] == str(mmproj.resolve())
+
+
+def test_write_server_preset_keeps_mmproj_for_generic_ar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from core.model_presets import write_server_preset
+
+    target = tmp_path / 'model.gguf'
+    mmproj = tmp_path / 'mmproj-model.gguf'
+    target.write_bytes(b'model')
+    mmproj.write_bytes(b'mmproj')
+    preset_dir = tmp_path / 'presets'
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', preset_dir)
+    monkeypatch.setattr('core.vision_setup._is_allowed_model_path', lambda path, cfg: True)
+    path = write_server_preset({
+        'id': 'saluki-test',
+        'label': 'Saluki',
+        'model_id': 'saluki',
+        'profile': 'generic-ar',
+        'target_path': str(target),
+        'mmproj_path': str(mmproj),
+        'context_size': 8192,
+        'load_settings': {'gpu_layers': 99},
+        'gpu_device': '0',
+        'port': 8103,
+        'host': '127.0.0.1',
+    }, cfg={'servers': []})
+    text = path.read_text(encoding='utf-8')
+    assert f'mmproj = {mmproj}' in text or f'mmproj = {mmproj.resolve()}' in text
+
+
 def test_vision_capability_true_for_gemma_chat_when_mmproj_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr('core.vision_setup._is_allowed_model_path', lambda path, cfg: True)
     target = tmp_path / 'gemma-4-31B_q4_0-it.gguf'

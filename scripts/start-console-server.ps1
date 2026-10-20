@@ -13,6 +13,9 @@ if (-not $env:DFLASH_ROOT) {
     $env:DFLASH_ROOT = $Root
 }
 $env:PYTHONPATH = $Root
+# Plain HTTP downloads: Xet keeps partial data in its own chunk cache, so
+# repo-download progress appeared stuck and could stall on slow networks.
+$env:HF_HUB_DISABLE_XET = '1'
 
 $py = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not (Test-Path $py)) { $py = 'python' }

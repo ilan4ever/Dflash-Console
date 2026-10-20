@@ -348,25 +348,29 @@
     return escapeHtml(raw);
   }
 
+  // Binary units (1024) so catalog sizes match the download progress bar and
+  // the Engine/Models views — one number for one file everywhere.
   function formatHfFileSizeLabel(bytes) {
     const n = Number(bytes);
     if (!Number.isFinite(n) || n <= 0) return '';
-    const gb = n / 1e9;
+    const gb = n / 1024 ** 3;
     if (gb >= 0.01) return `${gb.toFixed(2)} GB`;
-    const mb = n / 1e6;
+    const mb = n / 1024 ** 2;
     if (mb >= 0.1) return `${mb.toFixed(2)} MB`;
-    const kb = n / 1e3;
+    const kb = n / 1024;
     return `${Math.max(1, Math.round(kb))} KB`;
   }
 
   function formatCatalogFileSize(file) {
     if (!file) return '';
-    const explicit = String(file?.size_label || '').trim();
-    if (explicit && explicit !== '—') return explicit;
+    // Derive from bytes so every size uses the same (binary) unit convention
+    // as the download progress bar, instead of the Hub's decimal labels.
     const bytes = Number(file.size_bytes);
     if (Number.isFinite(bytes) && bytes > 0) return formatHfFileSizeLabel(bytes);
     const gb = Number(file?.size_gb);
     if (Number.isFinite(gb) && gb > 0) return formatHfFileSizeLabel(gb * (1024 ** 3));
+    const explicit = String(file?.size_label || '').trim();
+    if (explicit && explicit !== '—') return explicit;
     return '';
   }
 
@@ -495,6 +499,26 @@
         || String(a.label).localeCompare(String(b.label))
         || String(a.filename).localeCompare(String(b.filename));
     });
+    // Diffusers / multi-component repos (sharded transformer + text encoder +
+    // VAE + ...) are always fetched as a whole repository, so show one option
+    // with the true total instead of a shard group that understates it.
+    const hasGguf = options.some((row) => row.kind === 'quant');
+    if (!hasGguf && options.length > 1) {
+      const totalBytes = list.reduce((sum, file) => sum + catalogFileSizeBytes(file), 0);
+      const sharded = options.find((row) => row.kind === 'sharded');
+      return [{
+        filename: sharded?.filename || String(list[0]?.filename || ''),
+        label: `Full model (${list.length} files)`,
+        files: list.map((file) => String(file.filename || '')),
+        kind: 'sharded',
+        shard_count: sharded?.shard_count || 1,
+        file_count: list.length,
+        size_bytes: totalBytes > 0 ? totalBytes : null,
+        size_gb: totalBytes > 0 ? Math.round((totalBytes / (1024 ** 3)) * 100) / 100 : null,
+        incomplete: false,
+        whole_repo: true,
+      }];
+    }
     return options;
   }
 
@@ -528,6 +552,12 @@
 
   function catalogDownloadHint(model, options) {
     const rows = Array.isArray(options) ? options : catalogDownloadOptions(model);
+    if (rows.length === 1 && rows[0].whole_repo) {
+      const size = formatCatalogFileSize(rows[0]);
+      return size
+        ? `One download — Console fetches all ${rows[0].file_count} files (${size} total).`
+        : `One download — Console fetches all ${rows[0].file_count} files.`;
+    }
     const sharded = rows.find((opt) => opt.kind === 'sharded' && (opt.shard_count || 0) > 1);
     if (sharded) {
       const size = formatCatalogFileSize(sharded);
@@ -892,6 +922,19 @@
     return options.find((opt) => formatCatalogFileSize(opt)) || options[0];
   }
 
+  const sizeLookupTried = new Set();
+
+  function listNeedsSizeLookup(model) {
+    if (!model?.id) return false;
+    if (sizeLookupTried.has(model.id)) return false;
+    if (model.size_stale === true) return true;
+    const label = String(model?.size_label || '').trim();
+    if (!label || /^(?:—|-)$/i.test(label) || /^0(?:\.0+)?\s*gb$/i.test(label)) return true;
+    if (label.startsWith('~')) return true;
+    const source = String(model?.size_source || '');
+    return source === 'hub_storage' || source === 'estimate';
+  }
+
   function listSizeLabel(model) {
     const preferred = preferredCatalogOption(model);
     const fromQuant = formatCatalogFileSize(preferred);
@@ -988,8 +1031,31 @@
   }
 
   function catalogInstalled(model) {
+    // A half-downloaded repo keeps shard 1 on disk; it is not installed.
+    if (model?.local_incomplete) return false;
     if (model?.local_ready) return true;
     return catalogHasWeightInstalls(model);
+  }
+
+  function catalogDownloadPercent(job) {
+    const width = window.DFlashDownloadQueue?.progressWidth?.(job);
+    if (width != null) return `${Math.max(1, Math.min(100, Math.round(width)))}%`;
+    return 'downloading';
+  }
+
+  function catalogDownloadBadge(model) {
+    const job = window.DFlashDownloadQueue?.getRepoActiveJob?.(model?.id);
+    if (!job) return '';
+    const pct = catalogDownloadPercent(job);
+    return `<span class="lm-tag blue df-catalog-progress-tag" data-download-repo="${escapeHtml(model.id)}" title="Downloading from Hugging Face — see Downloads">↓ ${escapeHtml(pct)}</span>`;
+  }
+
+  function catalogIncompleteBadge(model) {
+    if (!model?.local_incomplete && model?.download?.state !== 'incomplete') return '';
+    const present = Number(model?.download?.shard_present || 0);
+    const total = Number(model?.download?.shard_total || 0);
+    const detail = present && total ? ` (${present}/${total} shards)` : '';
+    return catalogBadge('INCOMPLETE', 'yellow', `Download did not finish${detail} — resume it from Downloads`);
   }
 
   function catalogAuxiliaryOnly(model) {
@@ -1137,7 +1203,20 @@
     const compatible = catalogDflashCompatible(model) && !kindBadge
       ? catalogDflashCompatibleBadge()
       : '';
-    return `${shared}${catalogFitsMachineBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${catalogAuxiliaryOnly(model) ? catalogBadge('calibration only', 'yellow', 'Only an imatrix/calibration file is present — download the model weights') : ''}${catalogListDraftBadge(model)}${kindBadge}${compatible}`;
+    return `${shared}${catalogFitsMachineBadge(model)}${catalogDownloadBadge(model)}${catalogIncompleteBadge(model)}${catalogInstalled(model) ? catalogInstalledBadge() : ''}${catalogAuxiliaryOnly(model) ? catalogBadge('calibration only', 'yellow', 'Only an imatrix/calibration file is present — download the model weights') : ''}${catalogListDraftBadge(model)}${kindBadge}${compatible}`;
+  }
+
+  function syncListDownloadBadges() {
+    if (!document.getElementById('hfSearchList')) return;
+    document.querySelectorAll('[data-download-repo]').forEach((el) => {
+      const job = window.DFlashDownloadQueue?.getRepoActiveJob?.(el.dataset.downloadRepo);
+      if (!job) {
+        el.classList.add('hidden');
+        return;
+      }
+      el.classList.remove('hidden');
+      el.textContent = `↓ ${catalogDownloadPercent(job)}`;
+    });
   }
 
   function catalogListShowsNotRunnableNote(model) {
@@ -1710,6 +1789,7 @@
       'size_gb',
       'size_label',
       'size_bytes',
+      'size_source',
       'accelerator_only',
       'catalog_draft_primary',
       'has_gguf',
@@ -1752,6 +1832,10 @@
         changed = true;
       }
     }
+    if (row.size_stale) {
+      row.size_stale = false;
+      changed = true;
+    }
     return changed;
   }
 
@@ -1776,10 +1860,11 @@
 
   async function warmListSizes(rows) {
     const candidates = (rows || [])
-      .filter((model) => model?.id && listSizeLabel(model) === '—')
+      .filter((model) => model?.id && listNeedsSizeLookup(model))
       .filter((model, index, list) => list.findIndex((row) => row.id === model.id) === index)
       .slice(0, LIST_DETAIL_WARM_LIMIT);
     if (!candidates.length) return;
+    candidates.forEach((model) => sizeLookupTried.add(model.id));
     try {
       const data = await api(
         `/api/hf/repo-sizes?ids=${encodeURIComponent(candidates.map((model) => model.id).join(','))}`,
@@ -2052,7 +2137,8 @@
     const repoInstall = weightInstall
       || (!filename && model.local_ready ? await resolveAnyLocalInstall(model) : null);
     const auxiliaryOnly = selectedIsAuxiliary && Boolean(install);
-    const installed = Boolean(repoInstall) && !auxiliaryOnly;
+    const incomplete = model?.local_incomplete === true && !selectedIsAuxiliary;
+    const installed = Boolean(repoInstall) && !auxiliaryOnly && !incomplete;
     const stackReady = catalogReadyToLoad(model);
     const btn = document.getElementById('hfDownloadBtn');
     const saveNote = document.getElementById('hfSaveNote');
@@ -2073,6 +2159,24 @@
           <code class="df-catalog-installed-path">${escapeHtml(repoInstall?.path || 'Installed locally; path unavailable')}</code>`;
       }
       card?.classList.toggle('ready-to-load', stackReady);
+    } else if (incomplete) {
+      if (btn) {
+        btn.disabled = false;
+        btn.dataset.action = 'resume';
+        btn.textContent = 'Resume download';
+      }
+      saveNote?.classList.add('hidden');
+      if (installedNote) {
+        const present = Number(model?.download?.shard_present || 0);
+        const total = Number(model?.download?.shard_total || 0);
+        const shards = present && total ? ` · ${present}/${total} shards on disk` : '';
+        installedNote.classList.remove('hidden');
+        installedNote.innerHTML = `
+          <span class="df-catalog-installed-label">Download incomplete</span>
+          <code class="df-catalog-installed-path">${escapeHtml(repoInstall?.path || model?.download?.job_id || '')}</code>
+          <span class="df-catalog-installed-hint">This model is not fully on disk yet${escapeHtml(shards)}. Resume it to finish the download.</span>`;
+      }
+      card?.classList.remove('ready-to-load');
     } else if (auxiliaryOnly) {
       if (btn) {
         btn.disabled = false;
@@ -2111,6 +2215,12 @@
     }
     const statusEl = document.getElementById('hfDownloadStatus');
     statusEl?.classList.add('hidden');
+    if (incomplete && model?.download?.state === 'incomplete') {
+      if (statusEl) {
+        statusEl.textContent = 'Interrupted download — press Resume download to continue where it stopped.';
+        statusEl.classList.remove('hidden');
+      }
+    }
     window.DFlashSelectTheme?.enhanceAll?.(document.getElementById('hfSearchDetail'));
   }
 
@@ -2196,8 +2306,10 @@
   function handleDownloadQueueUpdate(jobs) {
     if (!selectedDetail) return;
     const filename = getSelectedFilename();
-    const job = (jobs || []).find((row) =>
-      row.repo_id === selectedDetail.id && row.filename === filename,
+    const active = window.DFlashDownloadQueue?.getActiveJob?.(selectedDetail.id, filename);
+    const job = active || (jobs || []).find((row) =>
+      row.repo_id === selectedDetail.id
+      && (row.filename === filename || !String(row.filename || '').trim()),
     );
     if (!job) {
       if (!window.DFlashDownloadQueue?.getActiveJob?.(selectedDetail.id, filename)) {
@@ -2209,16 +2321,34 @@
       updateCardDownloadUI(selectedDetail, job);
       return;
     }
-    if ((job.status === 'done' || job.status === 'error') && !notifiedJobs.has(job.id)) {
+    if ((job.status === 'done' || job.status === 'error' || job.status === 'incomplete') && !notifiedJobs.has(job.id)) {
       notifiedJobs.add(job.id);
       if (job.status === 'done') {
         toast('Download complete');
         window.DFlashStatusFeed?.note(`Downloaded ${job.filename || 'model'}`, selectedDetail.id);
+      } else if (job.status === 'incomplete') {
+        toast('Download interrupted — resume it to finish the missing files', false);
       } else {
         toast(job.error || 'Download failed', false);
       }
       updateCardDownloadUI(selectedDetail, job);
     }
+  }
+
+  let activeDownloadReposKey = '';
+
+  function handleCatalogQueueUpdate(jobs) {
+    handleDownloadQueueUpdate(jobs);
+    const repos = Array.from(new Set(
+      (window.DFlashDownloadQueue?.getActiveJobs?.() || []).map((job) => String(job.repo_id || '')),
+    )).filter(Boolean).sort();
+    const key = repos.join('|');
+    if (key !== activeDownloadReposKey) {
+      activeDownloadReposKey = key;
+      renderList();
+      return;
+    }
+    syncListDownloadBadges();
   }
 
   function openInstalledModel(install) {
@@ -2398,6 +2528,13 @@
         openInstalledModel(install);
         return;
       }
+      if (btn?.dataset.action === 'resume') {
+        const jobId = String(model?.download?.job_id || '').trim();
+        if (jobId && window.DFlashDownloadQueue?.resumeDownloadJob) {
+          void window.DFlashDownloadQueue.resumeDownloadJob(jobId);
+          return;
+        }
+      }
       const libraryId = document.getElementById('hfLibraryPick')?.value || downloadLibraryId;
       void startDownload(model.id, filename, libraryId, model);
     });
@@ -2414,6 +2551,7 @@
 
   async function runSearch({ background = false } = {}) {
     const rawQuery = searchInput()?.value?.trim() || '';
+    if (!background) sizeLookupTried.clear();
     const query = normalizeHfSearchQuery(rawQuery);
     const sort = currentSort();
     const category = currentCategory();
@@ -2608,7 +2746,8 @@
 
   async function startDownload(repoId, filename, libraryId, model) {
     const install = model ? await resolveLocalInstall(model, filename) : null;
-    if (install && !isAuxiliaryCatalogFilename(filename)) {
+    const repoIncomplete = model?.local_incomplete === true;
+    if (install && !repoIncomplete && !isAuxiliaryCatalogFilename(filename)) {
       toast('Already installed on this PC — use Load model', false);
       void refreshInstallUI(model);
       return;
@@ -2622,6 +2761,20 @@
     try {
       const body = { repo_id: repoId, filename };
       if (libraryId) body.library_id = libraryId;
+      // The catalog groups shard files into one row. Send the whole group so
+      // the backend never stops after the first shard.
+      const option = selectedDownloadOption(model);
+      const groupFiles = Array.isArray(option?.files)
+        ? option.files.map((name) => String(name || '').trim()).filter(Boolean)
+        : [];
+      const shardedWeights = /-\d{5}-of-\d{5}\.(?:safetensors|bin)$/i.test(filename);
+      if (option?.whole_repo || shardedWeights) {
+        // Diffusers / SafeTensors: the repo also carries config, index, VAE
+        // and text encoder files, so download the repository.
+        body.whole_repo = true;
+      } else if (groupFiles.length > 1) {
+        body.files = groupFiles;
+      }
       const resp = await fetch('/api/hf/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2798,7 +2951,7 @@
     const ready = window.DFlashUiLayout?.whenReady?.() ?? Promise.resolve();
     ready.then(() => setupSearchResize());
     if (queueUnsubscribe) queueUnsubscribe();
-    queueUnsubscribe = window.DFlashDownloadQueue?.subscribe?.(handleDownloadQueueUpdate) || null;
+    queueUnsubscribe = window.DFlashDownloadQueue?.subscribe?.(handleCatalogQueueUpdate) || null;
   }
 
   document.addEventListener('DOMContentLoaded', () => {

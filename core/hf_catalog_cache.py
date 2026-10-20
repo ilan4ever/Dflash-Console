@@ -13,7 +13,8 @@ from core.config import ROOT
 
 logger = logging.getLogger(__name__)
 
-_CACHE_VERSION = 9
+# v10: repo sizes are measured from the current revision (not Hub usedStorage).
+_CACHE_VERSION = 10
 _MIN_CACHED_MODELS = {
     'supported': 8,
     'dflash': 8,

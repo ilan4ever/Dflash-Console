@@ -96,25 +96,31 @@ def run_bounded(argv: list[str], *, timeout: float = 3.0) -> tuple[int | None, s
 def run_nvidia_smi(args: list[str], *, timeout: float = 3.0) -> str:
     """One shared NVIDIA query for every screen that shows the GPU.
 
-    A stuck query starts a short cooldown. Later callers get the last good
-    answer instead of starting another check that would freeze too.
+    Concurrent callers wait for the in-flight query instead of returning an
+    empty answer (an empty GPU process list renders the Engines page blank).
+    A failed query falls back to the last good answer.
     """
     global _NVIDIA_COOLDOWN_UNTIL
     key = tuple(args)
     now = time.time()
     if now < _NVIDIA_COOLDOWN_UNTIL:
-        return _NVIDIA_LAST_OK.get(key, '')
-    if not _NVIDIA_LOCK.acquire(blocking=False):
+        cached = _NVIDIA_LAST_OK.get(key, '')
+        if cached:
+            return cached
+    acquired = _NVIDIA_LOCK.acquire(timeout=2.0)
+    if not acquired:
         return _NVIDIA_LAST_OK.get(key, '')
     try:
         if time.time() < _NVIDIA_COOLDOWN_UNTIL:
-            return _NVIDIA_LAST_OK.get(key, '')
+            cached = _NVIDIA_LAST_OK.get(key, '')
+            if cached:
+                return cached
         code, text = run_bounded(['nvidia-smi', *args], timeout=timeout)
         if code is None:
             _NVIDIA_COOLDOWN_UNTIL = time.time() + 20.0
             return _NVIDIA_LAST_OK.get(key, '')
         if code != 0 or not text:
-            return ''
+            return _NVIDIA_LAST_OK.get(key, '')
         _NVIDIA_LAST_OK[key] = text
         return text
     finally:

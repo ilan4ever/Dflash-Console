@@ -774,6 +774,10 @@ class HfDownloadRequest(BaseModel):
     repo_id: str = Field(..., min_length=3)
     filename: str = Field(..., min_length=4)
     library_id: str | None = None
+    # Multi-file catalog groups (sharded GGUF) start one job per shard.
+    files: list[str] | None = None
+    # Diffusers / sharded SafeTensors models need the whole repository.
+    whole_repo: bool = False
 
 
 class HfInstallRequest(BaseModel):
@@ -817,6 +821,36 @@ class LibraryImportRequest(BaseModel):
     preset: str = Field(default='custom')
     mode: str = Field(default='link', pattern='^(link|copy|move)$')
     overwrite: bool = Field(default=False)
+
+
+class ModelNoteRequest(BaseModel):
+    """Personal note (text/Markdown) for one catalog model."""
+
+    key: str = Field(..., min_length=1, max_length=400)
+    text: str = Field(default='')
+    label: str = Field(default='', max_length=200)
+
+
+class UiPinsRequest(BaseModel):
+    """Shared pin list for one scope (models library / engines page)."""
+
+    scope: str = Field(..., min_length=1, max_length=20)
+    keys: list[str] = Field(default_factory=list)
+    client: str = Field(default='', max_length=80)
+
+
+class UiPinToggleRequest(BaseModel):
+    scope: str = Field(..., min_length=1, max_length=20)
+    key: str = Field(..., min_length=1, max_length=400)
+    client: str = Field(default='', max_length=80)
+
+
+class UiPrefRequest(BaseModel):
+    """One shared setting (JSON value); ``value: null`` removes it."""
+
+    name: str = Field(..., min_length=1, max_length=60)
+    value: Any = Field(default=None)
+    client: str = Field(default='', max_length=80)
 
 
 class PresetsImportBody(BaseModel):
@@ -1856,14 +1890,9 @@ def hf_model_detail(
     repo_id: str,
     category: str = Query('all-gguf'),
 ) -> dict[str, Any]:
-    from core.hf_catalog_cache import get_or_fetch_detail
-    from core.huggingface import get_model_detail
+    from core.huggingface import _cached_model_detail
 
-    result = get_or_fetch_detail(
-        repo_id=repo_id,
-        category=category,
-        fetcher=lambda: get_model_detail(repo_id, category=category),
-    )
+    result = _cached_model_detail(repo_id, category=category)
     if not result.get('success'):
         raise HTTPException(status_code=404, detail=result.get('error') or 'not found')
     return result
@@ -1905,9 +1934,56 @@ def hf_local_installs(repo_id: str = Query(..., min_length=3)) -> dict[str, Any]
 
 @app.post('/api/hf/download')
 def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
-    from core.huggingface import start_download
+    from core.huggingface import start_download, start_repo_download
 
-    result = start_download(body.repo_id, body.filename, library_id=body.library_id, cfg=load_config())
+    repo = str(body.repo_id or '').strip()
+    filename = str(body.filename or '').strip()
+    requested = [str(name or '').strip() for name in (body.files or []) if str(name or '').strip()]
+    if filename and filename not in requested:
+        requested.insert(0, filename)
+    config = load_config()
+
+    # Diffusers / sharded SafeTensors checkpoints only work together with the
+    # rest of the repository (index, config, VAE, text encoder). The catalog
+    # row points at one shard, so fetch the whole repo instead of that file.
+    sharded_weights = bool(
+        re.search(r'-\d{5}-of-\d{5}\.(?:safetensors|bin)$', filename, re.IGNORECASE)
+    )
+    if body.whole_repo or sharded_weights:
+        result = start_repo_download(repo, library_id=body.library_id, cfg=config)
+        if not result.get('success'):
+            if result.get('already_installed'):
+                raise HTTPException(status_code=409, detail=result)
+            raise HTTPException(status_code=400, detail=result.get('error') or 'download failed')
+        return result
+
+    # Sharded GGUF groups: the catalog shows them as one "N files" download.
+    # Start one job per shard so the model is complete on disk.
+    if len(requested) > 1 and all(name.lower().endswith('.gguf') for name in requested):
+        jobs: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for name in requested:
+            row = start_download(repo, name, library_id=body.library_id, cfg=config)
+            if row.get('success'):
+                jobs.append({'filename': name, 'job_id': row.get('job_id'), 'path': row.get('path')})
+            elif row.get('already_installed'):
+                jobs.append({'filename': name, 'already_installed': True, 'path': row.get('path')})
+            else:
+                errors.append({'filename': name, 'error': row.get('error') or 'download failed'})
+        if not jobs:
+            detail = errors[0]['error'] if errors else 'download failed'
+            raise HTTPException(status_code=400, detail=detail)
+        primary = next((row for row in jobs if row.get('job_id')), jobs[0])
+        return {
+            'success': True,
+            'job_id': primary.get('job_id', ''),
+            'path': primary.get('path', ''),
+            'jobs': jobs,
+            'errors': errors,
+            'library_id': body.library_id or '',
+        }
+
+    result = start_download(repo, filename, library_id=body.library_id, cfg=config)
     if not result.get('success'):
         if result.get('already_installed'):
             raise HTTPException(status_code=409, detail=result)
@@ -2100,7 +2176,74 @@ def models_catalog(
                 models.append(row)
     payload['models'] = models
     payload['total_count'] = len(models)
+    from core.model_notes import attach_notes
+
+    attach_notes(models)
     return payload
+
+
+@app.get('/api/model-notes')
+def model_notes_list() -> dict[str, Any]:
+    """Every personal model note, keyed by stable model identity."""
+    from core.model_notes import load_notes
+
+    notes = load_notes()
+    return {'success': True, 'notes': notes, 'count': len(notes)}
+
+
+@app.put('/api/model-notes')
+def model_note_save(body: ModelNoteRequest) -> dict[str, Any]:
+    from core.model_notes import set_note
+
+    result = set_note(body.key, body.text, label=body.label)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'could not save note')
+    return result
+
+
+@app.delete('/api/model-notes')
+def model_note_delete(key: str = Query(..., min_length=1, max_length=400)) -> dict[str, Any]:
+    from core.model_notes import delete_note
+
+    return delete_note(key)
+
+
+@app.get('/api/ui-state')
+def ui_state_get() -> dict[str, Any]:
+    """Shared UI state (pins) so the Electron window and a browser agree."""
+    from core.ui_state import get_state
+
+    return {'success': True, **get_state()}
+
+
+@app.put('/api/ui-state/pins')
+def ui_state_set_pins(body: UiPinsRequest) -> dict[str, Any]:
+    from core.ui_state import set_pins
+
+    result = set_pins(body.scope, body.keys, client=body.client)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'could not save pins')
+    return result
+
+
+@app.post('/api/ui-state/pins/toggle')
+def ui_state_toggle_pin(body: UiPinToggleRequest) -> dict[str, Any]:
+    from core.ui_state import toggle_pin
+
+    result = toggle_pin(body.scope, body.key, client=body.client)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'could not toggle pin')
+    return result
+
+
+@app.put('/api/ui-state/prefs')
+def ui_state_set_pref(body: UiPrefRequest) -> dict[str, Any]:
+    from core.ui_state import set_pref
+
+    result = set_pref(body.name, body.value, client=body.client)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'could not save setting')
+    return result
 
 
 @app.post('/api/models/load')
@@ -2526,13 +2669,34 @@ def _attach_external_scan() -> None:
 
     started = time.time()
     if not console_pipeline_active(cfg):
-        payload['external_gpu_loads'] = []
-        payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}
-        payload['gpu_models_scan'] = 'skipped'
-        payload['gpu_other_scan'] = 'skipped'
-        payload['external_scan_skipped'] = True
+        # Standby still shows GPU truth: external model cards plus app
+        # processes, both throttled inside their scanners.
+        try:
+            payload['external_gpu_loads'] = get_external_gpu_loads(
+                servers=enabled,
+                gpus=gpus,
+                cfg=cfg,
+                fast=True,
+            )
+        except Exception as exc:
+            payload['external_scan_error'] = str(exc)[:240]
+            payload['external_gpu_loads'] = payload.get('external_gpu_loads') or []
+        payload['gpu_models_scan'] = 'done'
+        payload['gpu_other_scan'] = 'done'
+        payload['external_scan_skipped'] = False
         payload['quick'] = False
         payload['updated_at'] = time.time()
+        try:
+            _attach_gpu_other_usage(payload, servers=enabled, gpus=gpus)
+        except Exception:
+            payload['gpu_other_usage'] = payload.get('gpu_other_usage') or {
+                'processes': [],
+                'total_other_vram_gb': 0.0,
+            }
+        payload['status_build_ms'] = max(
+            int(payload.get('status_build_ms') or 0),
+            int((time.time() - started) * 1000),
+        )
         payload = _merge_adapter_engine_rows(payload)
         payload['boot_id'] = _BOOT_ID
         _store_status_payload(payload, include_external=True)

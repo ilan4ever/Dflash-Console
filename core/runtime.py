@@ -1480,7 +1480,11 @@ def _cached_gpu_other_usage() -> dict[str, Any]:
     return {'processes': [], 'by_gpu': [], 'vram_per_process_limited': False}
 
 
+_STATUS_GPU_OTHER_AT = 0.0
+
+
 def _store_gpu_other_cache(block: dict[str, Any] | None) -> None:
+    global _STATUS_GPU_OTHER_AT
     if not isinstance(block, dict):
         return
     processes = block.get('processes')
@@ -1489,6 +1493,7 @@ def _store_gpu_other_cache(block: dict[str, Any] | None) -> None:
     with _STATUS_PAYLOAD_LOCK:
         global _STATUS_GPU_OTHER_CACHE
         _STATUS_GPU_OTHER_CACHE = dict(block)
+    _STATUS_GPU_OTHER_AT = time.time()
 
 
 def _attributed_model_vram_by_gpu(
@@ -1789,7 +1794,16 @@ def get_status_payload(
     }
     from core.engine_state import console_pipeline_active
 
-    pipeline_active = console_pipeline_active(cfg)
+    # An engine that is actually listening counts as active: the persisted
+    # engine_on flag can lag behind a server that boot restored, and the UI
+    # then says "Running (idle)" while the payload claims standby (which used
+    # to hide every external model card).
+    any_listening = any(
+        int(entry.get('port') or 0) in open_ports
+        for entry in servers
+        if entry.get('enabled', True)
+    )
+    pipeline_active = console_pipeline_active(cfg) or any_listening
     payload['pipeline_standby'] = not pipeline_active
     # Publish a core (non-external) snapshot before the slow GPU scan so
     # concurrent include_external=0 callers can take mid-build cache while
@@ -1807,15 +1821,36 @@ def get_status_payload(
         early['gpu_other_scan'] = 'pending'
         _store_status_payload(early, include_external=False)
     if include_external and not pipeline_active:
-        payload['external_gpu_loads'] = []
-        payload['gpu_other_usage'] = {'processes': [], 'total_other_vram_gb': 0.0}
-        payload['gpu_models_scan'] = 'skipped'
         payload['gpu_other_scan'] = 'skipped'
+        # Engines are off, but the page must still list what owns the GPU:
+        # external model cards plus desktop/app processes. Both scans are
+        # throttled in standby so idle polling stays cheap.
+        try:
+            payload['external_gpu_loads'] = get_external_gpu_loads(
+                servers=servers,
+                gpus=resolved_gpus,
+                cfg=cfg,
+                fast=True,
+            )
+            payload['gpu_models_scan'] = 'done'
+        except Exception as exc:
+            payload['external_gpu_loads'] = _cached_external_gpu_loads()
+            payload['external_scan_error'] = str(exc)[:240]
+            payload['gpu_models_scan'] = 'skipped'
+        cached_other = _cached_gpu_other_usage()
+        stale = (time.time() - _STATUS_GPU_OTHER_AT) > 10.0
+        if stale or not (cached_other.get('processes') or []):
+            _attach_gpu_other_usage(payload, servers=servers, gpus=resolved_gpus)
+        else:
+            payload['gpu_other_usage'] = cached_other
         _append_status_trace(
             status_trace,
             step='external_scan',
             started_at=time.time(),
-            detail='skipped (engine standby)',
+            detail=(
+                f'{len(payload["external_gpu_loads"])} external GPU card(s) '
+                '(engine standby)'
+            ),
         )
     elif include_external:
         external_started = time.time()

@@ -953,8 +953,88 @@ body.lm-resizing-sidenav {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+/* Downloads page cards: engine-style header, labeled facts, actions footer. */
+.df-shell .df-downloads-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.df-shell .df-downloads-card-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.df-shell .df-downloads-card-head-tags {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.df-shell .df-downloads-card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 18px;
+  margin-top: 8px;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.df-shell .df-downloads-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.df-shell .df-downloads-fact.is-wide {
+  flex: 1 1 100%;
+}
+
+.df-shell .df-downloads-fact > .lbl {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  color: var(--text-dim, #5c5c68);
+}
+
+.df-shell .df-downloads-fact > .val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(226, 232, 240, 0.9);
+  font-variant-numeric: tabular-nums;
+}
+
+.df-shell .df-downloads-card-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.df-shell .df-downloads-card-footer .df-downloads-card-actions {
+  margin-top: 0;
+}
+
 .df-shell .df-downloads-page-item .df-downloads-card-title {
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .df-shell .df-downloads-page-item .df-downloads-remove {
@@ -1135,15 +1215,15 @@ html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-
 }
 
 html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop td {
-  padding-top: 5px;
-  padding-bottom: 5px;
+  padding-top: 7px;
+  padding-bottom: 7px;
   vertical-align: top;
 }
 
 html:not(.df-narrow) .df-shell .lm-models-table tr.lm-model-row.lm-library-card-desktop td.lm-library-handle-meta {
-  font-size: 11px;
-  line-height: 1.25;
-  padding-top: 7px;
+  font-size: 12px;
+  line-height: 1.3;
+  padding-top: 9px;
   color: rgba(203, 213, 225, 0.88);
 }
 
@@ -1188,8 +1268,8 @@ html:not(.df-narrow) .df-shell .lm-library-handle-title .lm-model-title-text {
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
-  font-size: 12px;
-  line-height: 1.25;
+  font-size: 14px;
+  line-height: 1.3;
 }
 
 html:not(.df-narrow) .df-shell .lm-library-handle-badges {
@@ -2039,6 +2119,22 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
 
 .df-shell .lm-view[data-view="models"] .lm-model-row.selected .lm-model-path-hint {
   color: var(--text-dim);
+}
+
+/* Model rows read like engine cards: a small uppercase label before the
+   path/target value. */
+.df-shell .lm-library-detail-lbl {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  color: var(--text-dim, #5c5c68);
+}
+
+.df-shell .lm-library-detail-val {
+  color: rgba(226, 232, 240, 0.9);
 }
 
 /* Downloaded Hugging Face repo, shown when the row title is a synthesized stack name. */
@@ -2940,20 +3036,31 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
   text-overflow: ellipsis;
 }
 
-/* External engine cards: labeled facts from the GPU scan (GPU, VRAM, RAM,
-   disk, context, address, PIDs, process, model, command).  Static values only;
-   live token counters are patched into [data-external-token-val]. */
+/* External engine cards: labeled facts from the GPU scan, always in a fixed
+   three-line body (facts | command | model path) so every external card has
+   the same height.  The app name and the live token counters live in the
+   header instead of taking body lines.  Static values only; live counters are
+   patched into [data-external-token-val]. */
 .df-shell .lm-external-details {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 1px 0;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.df-shell .lm-external-detail-line {
+  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 2px 16px;
   width: 100%;
   min-width: 0;
-  margin: 0;
-  padding: 1px 0 0;
-  font-size: 10px;
-  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .df-shell .lm-external-detail {
@@ -2992,9 +3099,74 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
   font-weight: 600;
 }
 
-.df-shell .lm-external-detail.lm-external-tokens > .val {
+/* External header: owning app + live token counters sit on the header line,
+   right-aligned like the client badge on Console cards. */
+.df-shell .lm-external-head-right {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.df-shell .lm-external-app-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  background: rgba(30, 41, 59, 0.62);
+  color: #e2e8f0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.df-shell .lm-external-token-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.7);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.df-shell .lm-external-token-chip > .lbl {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  color: var(--text-dim, #5c5c68);
+}
+
+.df-shell .lm-external-token-chip > .val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ok-soft, #6b8f7a);
   font-variant-numeric: tabular-nums;
+}
+
+/* Desktop external cards: exactly three body lines, always the same height. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop .lm-external-detail-line {
+  flex-wrap: nowrap;
+  gap: 0 14px;
+  height: 14px;
+  min-height: 14px;
+  max-height: 14px;
+  overflow: hidden;
 }
 
 .df-shell .lm-model-card-compact.external-gpu .lm-external-stats {
@@ -3961,7 +4133,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.external-gpu .lm-desktop-
 
 /* Desktop engine cards: one aligned row. A second row is only the paths
    and live stats, and only when that extra text is actually present. */
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3971,35 +4143,35 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready {
   box-shadow: inset 0 34px 0 rgba(20, 83, 45, 0.28);
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready::after {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting)::after {
   content: "";
   order: 9;
   flex: 0 0 100%;
   height: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.external-gpu {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting).external-gpu {
   box-shadow: inset 0 34px 0 rgba(15, 23, 42, 0.45);
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.selected {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting).selected {
   box-shadow: inset 0 0 0 1px rgba(42, 107, 92, 0.35);
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-loaded-by-prompt,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-external-prompt,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-top,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready > .lm-model-card-top > .lm-model-card-center,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-title-row {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) > .lm-model-card-loaded-by-prompt,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) > .lm-model-card-external-prompt,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) > .lm-model-card-top,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) > .lm-model-card-top > .lm-model-card-center,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-title-row {
   display: contents;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-tags {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-tags {
   display: none;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-origin {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-stack-chip,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-origin {
   order: 2;
   flex: 0 0 auto;
   width: auto;
@@ -4007,7 +4179,18 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-origin
   padding: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip .lm-tag.dflash-logo-label {
+/* Plain checkpoints get an empty stack-chip cell so the header row is the
+   same 32px tall on every card (stack logo vs no logo). */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop .lm-engine-head-stack-chip.is-empty {
+  display: inline-block;
+  width: 0 !important;
+  min-width: 0 !important;
+  height: 32px;
+  padding: 0;
+  background: none;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-stack-chip .lm-tag.dflash-logo-label {
   width: 148px;
   height: 32px;
   padding: 0;
@@ -4018,21 +4201,21 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-sta
   mix-blend-mode: screen;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-identity {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-identity {
   order: 1;
   flex: 0 0 auto;
   min-width: max-content;
   max-width: none;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-name-line,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-path {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-name-line,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-path {
   flex: 0 0 auto;
   min-width: max-content;
   max-width: none;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-path {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-path {
   font-size: 16px;
   font-weight: 700;
   line-height: 1.2;
@@ -4043,8 +4226,8 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-path {
   overflow-wrap: normal;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-labels,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-kind {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-labels,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-kind {
   order: 3;
   flex: 0 0 auto;
   width: max-content;
@@ -4055,7 +4238,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-kind {
   flex-wrap: nowrap;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-vram-ctx {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-vram-ctx {
   order: 5;
   flex: 0 0 auto;
   width: max-content;
@@ -4072,7 +4255,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-vra
   display: contents;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-left {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-left {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4080,7 +4263,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-lef
   flex: 1 1 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-right {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-right {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -4089,7 +4272,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-rig
   flex: 1 1 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-loaded-by-prompt > .lm-loaded-by-badges {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-loaded-by-prompt > .lm-loaded-by-badges {
   order: 0;
   flex: 0 0 auto;
   flex-wrap: nowrap;
@@ -4097,7 +4280,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-load
   margin: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-cluster {
   order: 10;
   display: flex;
   flex: 1 1 100%;
@@ -4108,8 +4291,35 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-clu
   margin-left: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-identity,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-app-name {
+/* DFlash cards: the PID/client line, the Target/Accelerator line and the GPU
+   controls share one body row, and the sizes + LAST metrics keep the row
+   below.  Every card therefore has one header row and two body rows. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster {
+  display: contents;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-loaded-by-identity {
+  order: 10;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-engine-head-controls {
+  order: 11;
+  /* Pin GPU/slots/Unload to the right edge even when the client/PID line is
+     short (e.g. a plain GGUF loaded through the OpenAI gateway). */
+  margin-left: auto;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-model-stats {
+  order: 12;
+  flex: 1 0 100%;
+  width: 100%;
+  margin: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-identity,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-app-name {
   order: 1;
   flex: 1 1 auto;
   display: flex;
@@ -4123,20 +4333,20 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-app-na
   overflow: visible;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-badges {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-badges {
   flex: 0 0 auto;
   flex-wrap: nowrap;
   justify-content: flex-start;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-app-badge {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-app-badge {
   flex-shrink: 0;
   max-width: none;
   overflow: visible;
   text-overflow: clip;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-detail {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-detail {
   flex: 0 0 auto;
   max-width: none;
   overflow: visible;
@@ -4144,22 +4354,22 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-detai
   text-align: left;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-controls,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-prompt-actions,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-actions {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-controls,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-prompt-actions,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-actions {
   order: 2;
   flex: 0 0 auto;
   width: max-content;
   margin: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-engine-head-controls,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-external-prompt-actions {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-engine-head-controls,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-external-prompt-actions {
   margin-left: auto;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-details,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-details,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-subline {
   order: 10;
   flex: 1 1 240px;
   display: flex;
@@ -4169,8 +4379,8 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-sublin
   margin: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-detail-line,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-detail-line,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-subline {
   flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
@@ -4178,7 +4388,7 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-sublin
   text-overflow: ellipsis;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-details {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-details {
   order: 10;
   flex: 1 1 420px;
   min-width: 0;
@@ -4186,8 +4396,23 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-detail
   margin: 0;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready.lm-model-card-compact .lm-model-stats,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-stats {
+/* External cards: owning app + live token counters close the header line
+   (right-aligned); the three-line body always starts on the next line. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-head-right {
+  order: 6;
+  flex: 0 1 auto;
+  margin-left: auto;
+  max-width: 60%;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-head-right .lm-external-app-badge,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-head-right .lm-external-token-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting).lm-model-card-compact .lm-model-stats,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-stats {
   order: 11;
   flex: 0 1 auto;
   margin-left: auto;
@@ -4205,15 +4430,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-
   margin: 0 0 0 auto;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-sizes {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-sizes {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-foot,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-foot-metrics,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-live-metrics-host {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-foot,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-foot-metrics,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-live-metrics-host {
   flex: 1 1 auto;
   min-width: 0 !important;
   width: auto !important;
@@ -4224,9 +4449,9 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-live-met
 /* Height stability: the right-rail metrics region is one fixed line tall in
    every state.  The live row used to appear, grow, wrap or vanish while the
    card pulsed green, which resized the card and shifted every card below it. */
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-engine-live-metrics-host {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-engine-live-metrics-host {
   flex: 0 0 auto;
   flex-wrap: nowrap;
   width: auto !important;
@@ -4238,15 +4463,15 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-
   overflow: hidden;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-engine-live-metrics-host {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-engine-live-metrics-host {
   min-width: max-content !important;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-model-card-center-row.lm-model-card-token-row,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-model-card-token-generating,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-token-metric-io,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-token-metric-speed {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-model-card-center-row.lm-model-card-token-row,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-model-card-token-generating,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-token-metric-io,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):not(:has(.lm-token-metrics-slots)) .lm-desktop-engine-foot-metrics .lm-token-metrics-live .lm-token-metric-speed {
   flex-wrap: nowrap !important;
   row-gap: 0;
   height: 15px !important;
@@ -4258,11 +4483,11 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:not(:has(.lm-token-
 /* Parallel-slot cards keep their multi-column metrics block, but each slot
    column must stay one fixed line tall.  Live values changing width used to
    re-wrap the DECODE/PEAK group and resize the whole card. */
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-slot-row {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-slot-row {
   overflow: hidden;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-model-card-token-generating {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-model-card-token-generating {
   flex-wrap: nowrap !important;
   height: 14px;
   min-height: 14px;
@@ -4270,69 +4495,69 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metri
   overflow: hidden;
 }
 
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-token-metric-io,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-token-metric-speed {
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-token-metric-io,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-token-metrics-slots .lm-token-metric-speed {
   flex-wrap: nowrap !important;
   white-space: nowrap;
 }
 
 @media (max-width: 1180px) {
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) {
     grid-template-columns: minmax(0, 1fr) auto auto;
     box-shadow: none;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-left,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-right {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-left,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-right {
     display: contents;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-identity {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-identity {
     grid-column: 1;
     grid-row: 1;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-stack-chip,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-origin {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-stack-chip,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-origin {
     grid-column: 2;
     grid-row: 1;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-controls,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-actions,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-prompt-actions {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-controls,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-actions,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-prompt-actions {
     grid-column: 3;
     grid-row: 1;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-labels,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-kind {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-labels,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-kind {
     grid-column: 2;
     grid-row: 2;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-vram-ctx,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-loaded-by-identity,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-app-name {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-vram-ctx,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-identity,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-app-name {
     grid-column: 3;
     grid-row: 2;
     justify-content: flex-end;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-loaded-by-identity,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-engine-head-cluster .lm-external-app-name {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-loaded-by-identity,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-external-app-name {
     justify-content: flex-start;
     text-align: left;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-card-details,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-external-subline {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-card-details,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-subline {
     grid-column: 1 / -1;
     grid-row: 3;
   }
 
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-model-stats,
-  html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready .lm-desktop-engine-stats {
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-model-stats,
+  html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-desktop-engine-stats {
     grid-column: 1 / -1;
     grid-row: 4;
   }
@@ -4922,6 +5147,16 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metri
   text-overflow: ellipsis;
   max-width: 100%;
   min-width: 0;
+}
+
+/* App + live token chips on the header (external cards). */
+.df-shell .lm-model-card-external-prompt .lm-external-head-right {
+  grid-column: 4 / -1;
+  justify-self: end;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .df-shell .lm-model-card-external-prompt .lm-external-prompt-actions {
@@ -5787,6 +6022,24 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metri
   opacity: 0.7;
 }
 
+/* Page-header "Refresh" button: same bevel as Runtime panel, only the glyph
+   spins while the interface data is re-fetched. */
+.df-shell .df-refresh-glyph {
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.df-shell #dfUiRefreshBtn.is-spinning .df-refresh-glyph {
+  animation: lm-engine-cards-refresh-spin 0.8s linear infinite;
+}
+
+.df-shell #dfUiRefreshBtn[disabled] {
+  opacity: 0.7;
+  cursor: progress;
+}
+
 @keyframes lm-engine-cards-refresh-spin {
   to { transform: rotate(360deg); }
 }
@@ -6540,6 +6793,25 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metri
   font-weight: 600;
   color: #9fd4c6;
   margin-bottom: 4px;
+}
+
+.df-shell .df-catalog-installed-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Live download progress tag on model catalog list rows. */
+.df-shell .lm-tag.df-catalog-progress-tag {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+  font-variant-numeric: tabular-nums;
+}
+
+.df-shell .lm-tag.df-catalog-progress-tag.hidden {
+  display: none;
 }
 
 .df-shell .df-catalog-installed-library {
@@ -10282,6 +10554,16 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
     gap: 2px 12px;
   }
 
+  /* Narrow cards keep the three detail groups but let each one wrap. */
+  html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card .lm-external-detail-line,
+  .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card .lm-external-detail-line {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    white-space: normal;
+  }
+
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card > .lm-model-card-load-shell,
   html.df-narrow .df-shell .lm-view[data-view="server"] .lm-server-cards .lm-mobile-engine-card > .lm-model-card-eject-shell {
     flex: 0 0 auto;
@@ -11080,37 +11362,47 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-model-row.lm-lib
 .df-shell .lm-token-metrics-slots .lm-token-metric-io,
 .df-shell .lm-token-metrics-slots .lm-token-metric-speed { justify-content: flex-start; text-align: left; margin: 0; }
 
-/* Multi-slot engines: slot block gets the full card width on its own row, two equal columns side by side. */
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-model-stats,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-desktop-engine-stats,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-desktop-engine-foot,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-desktop-engine-foot-metrics,
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.ready:has(.lm-token-metrics-slots) .lm-engine-live-metrics-host {
+/* Multi-slot engines: the slot block owns one full-width row and every slot
+   sits on a single line (label + counters).  When the card is too narrow the
+   slots shrink and the trailing counters end with an ellipsis instead of
+   adding extra body lines. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-model-stats,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-desktop-engine-stats,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-desktop-engine-foot,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-desktop-engine-foot-metrics,
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-engine-live-metrics-host {
   display: block !important; flex: 1 1 100% !important; width: 100% !important; min-width: 0 !important; max-width: 100% !important;
-  margin: 0 !important; overflow: visible !important;
+  margin: 0 !important; overflow: hidden !important;
+}
+/* The slot block is the last body row; align it with the right rail (same edge
+   as LAST/OUT/DECODE on single-slot cards) instead of starting at the left. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting):has(.lm-token-metrics-slots) .lm-token-metrics-slots {
+  justify-content: flex-end !important;
 }
 html:not(.df-narrow) .df-shell .lm-token-metrics-slots {
-  display: grid !important; grid-template-columns: repeat(var(--slot-count, 2), minmax(0, 1fr)); gap: 0; width: 100%; overflow: visible !important; margin-top: 2px;
+  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: baseline !important;
+  gap: 0; width: 100%; height: 15px; min-height: 15px; max-height: 15px; overflow: hidden !important; margin-top: 0;
 }
 .df-shell .lm-token-metrics-slots .lm-slot-row {
-  display: flex !important; flex-direction: column !important; align-items: flex-start !important; justify-content: flex-start !important;
-  min-width: 0; width: auto !important; overflow: visible !important; box-sizing: border-box; padding: 0 12px !important; gap: 2px;
+  display: flex !important; flex-direction: row !important; align-items: baseline !important; justify-content: flex-start !important;
+  flex: 0 1 auto; min-width: 0; width: auto !important; box-sizing: border-box; padding: 0 12px !important; gap: 8px !important;
+  overflow: hidden !important; white-space: nowrap !important;
 }
 .df-shell .lm-token-metrics-slots .lm-slot-row:first-child { padding-left: 0 !important; }
-.df-shell .lm-token-metrics-slots .lm-slot-head { font-size: 11px !important; line-height: 14px; }
-.df-shell .lm-token-metrics-slots .lm-slot-badge { font-size: 10px !important; line-height: 14px; }
+.df-shell .lm-token-metrics-slots .lm-slot-head { flex: 0 0 auto; font-size: 10px !important; line-height: 14px; }
+.df-shell .lm-token-metrics-slots .lm-slot-badge { font-size: 9px !important; line-height: 14px; }
 .df-shell .lm-token-metrics-slots .lm-model-card-token-generating {
-  display: flex !important; flex-direction: row !important; flex-wrap: wrap !important; align-items: baseline !important; justify-content: flex-start !important;
-  gap: 2px 10px !important; font-size: 11px !important; line-height: 14px; max-width: 100% !important; width: 100%;
+  display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: baseline !important; justify-content: flex-start !important;
+  gap: 2px 8px !important; font-size: 10px !important; line-height: 14px; min-width: 0; max-width: 100% !important; overflow: hidden !important;
 }
 .df-shell .lm-token-metrics-slots .lm-token-metric-io,
 .df-shell .lm-token-metrics-slots .lm-token-metric-speed {
-  display: inline-flex !important; flex-wrap: nowrap; gap: 4px !important; overflow: visible !important; text-overflow: clip !important; white-space: nowrap !important;
-  max-width: none !important; justify-content: flex-start !important; font-size: 11px !important; line-height: 14px;
+  display: inline-flex !important; flex-wrap: nowrap; gap: 4px !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important;
+  min-width: 0; max-width: 100% !important; justify-content: flex-start !important; font-size: 10px !important; line-height: 14px;
 }
-.df-shell .lm-token-metrics-slots .lm-token-part { display: inline-flex; gap: 3px; font-size: 11px !important; }
-.df-shell .lm-token-metrics-slots .val { overflow: visible !important; text-overflow: clip !important; font-size: 11px !important; }
-.df-shell .lm-token-metrics-slots .lbl { font-size: 11px !important; }
+.df-shell .lm-token-metrics-slots .lm-token-part { display: inline-flex; gap: 3px; min-width: 0; font-size: 10px !important; }
+.df-shell .lm-token-metrics-slots .val { overflow: hidden !important; text-overflow: ellipsis !important; font-size: 10px !important; }
+.df-shell .lm-token-metrics-slots .lbl { font-size: 9px !important; }
 
 /* Engines page: lighter outer line so neighbouring cards read as separate
    instead of blending into one connected stack. State outlines (selected,
@@ -11130,4 +11422,173 @@ html:not(.df-narrow) .df-shell .lm-token-metrics-slots {
 
 .df-shell .lm-view[data-view="server"] .lm-server-cards > .lm-model-card.external-gpu:not(.selected):not(.generating):not(.loading):not(.ejecting):hover {
   border-color: rgba(148, 163, 184, 0.5);
+}
+/* Loading / warming / prefill / ejecting cards use the exact same desktop
+   layout as loaded cards; the progress strip is just a full-width last row. */
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.loading, .ejecting) > .lm-model-card-load-shell {
+  order: 40;
+  flex: 0 0 100%;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0 0;
+  padding: 3px 0 0;
+  background: transparent;
+  border-bottom: 0;
+  border-top: 1px solid rgba(45, 212, 191, 0.25);
+}
+html:not(.df-narrow) .df-shell .lm-engine-card-desktop.loading {
+  min-height: 0;
+}
+
+/* ============================================================
+   Personal model notes (Models library)
+   No extra card row: hovering the model name opens a floating bubble.
+   ============================================================ */
+.df-shell .lm-model-title-text[data-note-hover] {
+  cursor: help;
+  border-bottom: 1px dotted rgba(148, 163, 184, 0.45);
+}
+
+.lm-model-note-bubble {
+  position: fixed;
+  z-index: 9998;
+  width: max-content;
+  max-width: min(430px, 92vw);
+  max-height: 46vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(9, 20, 17, 0.98);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.55);
+  color: #dbe5ee;
+  font-size: 12.5px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.lm-model-note-bubble.hidden {
+  display: none;
+}
+
+.lm-note-bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.lm-note-bubble-kicker {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.lm-note-bubble-edit {
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 10.5px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.lm-note-bubble-edit:hover {
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+.lm-note-bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Engines page: pinned-to-top marker */
+.df-shell .lm-engine-pin {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-right: 4px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+/* Note editor dialog */
+.df-note-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(2, 6, 10, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.df-note-modal.hidden {
+  display: none;
+}
+
+.df-note-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(680px, 94vw);
+  padding: 16px 16px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: #0f1a17;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+
+.df-note-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.df-note-head h3 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  color: #e2e8f0;
+}
+
+.df-note-textarea {
+  width: 100%;
+  min-height: 170px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: #0b1512;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.df-note-textarea:focus {
+  outline: none;
+  border-color: var(--hf-accent);
+}
+
+.df-note-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.df-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

@@ -15,6 +15,10 @@ htmlcov/
 config.json
 config.json.lock
 
+# Per-install user data (notes, shared UI state such as pins)
+model-notes.json
+ui-state.json
+
 # Local model weights (developer checkout keeps them under ./models)
 models/*
 !models/.gitkeep

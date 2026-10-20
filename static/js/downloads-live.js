@@ -3,7 +3,7 @@
   const { api, toast } = window.ConsoleApi;
 
   const RANGE_KEY = 'dflashConsole.downloadsRange';
-  let pane = 'active';
+  let pane = 'history';
   let bound = false;
   let range = localStorage.getItem(RANGE_KEY) || 'all';
   let selectedJobId = '';
@@ -399,8 +399,9 @@
   async function onViewEnter() {
     bind();
     clearDownloadsInspector();
-    const nextPane = activeJobs().length ? 'active' : 'history';
-    pane = nextPane;
+    // Last downloads is the default view. Only fall back to the live queue
+    // when this PC has no download history at all.
+    pane = 'history';
     document.querySelectorAll('[data-downloads-pane]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.downloadsPane === pane);
     });
@@ -409,8 +410,8 @@
     } catch {
       /* keep rendering with cached jobs */
     }
-    if (pane === 'active' && !activeJobs().length) {
-      setPane('history');
+    if (!historyJobs().length && activeJobs().length) {
+      setPane('active');
     } else {
       await render();
     }

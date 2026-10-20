@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DFlash Console</title>
   <link rel="stylesheet" href="/static/css/dflash-console.css">
-  <link rel="stylesheet" href="/static/css/dflash-shell.css?v=0.3.278-slots-full">
+  <link rel="stylesheet" href="/static/css/dflash-shell.css?v=0.3.292-pins">
 </head>
 <body class="df-shell">
   <div class="lm-app df-app">
@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.276</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.277</span>
           </div>
         </div>
       </div>
@@ -109,6 +109,7 @@
       <header class="df-pagehead">
         <h1 class="df-page-title" id="dfPageTitle">Engines</h1>
         <div class="df-page-actions">
+          <button class="lm-btn ghost small df-runtime-panel-btn df-ui-refresh-btn" id="dfUiRefreshBtn" type="button" title="Refresh the interface and re-fetch engine data" aria-label="Refresh the interface"><span class="df-refresh-glyph" aria-hidden="true">↻</span>Refresh</button>
           <button class="lm-btn ghost small df-runtime-panel-btn" data-action="toggle-inspector" title="Show/hide runtime panel">Runtime panel</button>
         </div>
       </header>
@@ -469,8 +470,8 @@ try {
           <div class="df-downloads-page">
             <div class="df-downloads-page-toolbar">
               <div class="lm-models-filter" role="group" aria-label="Download list">
-                <button type="button" class="lm-filter-chip active" data-downloads-pane="active" data-tooltip="Models downloading right now.">Downloading now</button>
-                <button type="button" class="lm-filter-chip" data-downloads-pane="history" data-tooltip="Models you already downloaded on this PC.">Last downloads</button>
+                <button type="button" class="lm-filter-chip" data-downloads-pane="active" data-tooltip="Models downloading right now.">Downloading now</button>
+                <button type="button" class="lm-filter-chip active" data-downloads-pane="history" data-tooltip="Models you already downloaded on this PC.">Last downloads</button>
               </div>
               <label class="df-downloads-range-label hidden" id="dfDownloadsRangeWrap">
                 <span>Show</span>
@@ -546,7 +547,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.276</strong>
+                <strong id="dfAboutVersion">v0.3.277</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -2072,14 +2073,15 @@ try {
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
   <script src="/static/js/ui-layout-prefs.js"></script>
-  <script src="/static/js/download-queue.js"></script>
-  <script src="/static/js/downloads-live.js"></script>
+  <script src="/static/js/ui-state-sync.js?v=0.3.296-sharedsettings"></script>
+  <script src="/static/js/download-queue.js?v=0.3.287-truth"></script>
+  <script src="/static/js/downloads-live.js?v=0.3.285-cards"></script>
   <script src="/static/js/component-install-live.js"></script>
   <script src="/static/js/server-reload-watch.js"></script>
   <script src="/static/js/library-type-options.js"></script>
   <script src="/static/js/library-scan-live.js"></script>
   <script src="/static/js/library-browse-live.js"></script>
-  <script src="/static/js/model-search-live.js"></script>
+  <script src="/static/js/model-search-live.js?v=0.3.288-truth"></script>
   <script src="/static/js/sysbar-live.js"></script>
   <script src="/static/js/settings-live.js"></script>
   <script src="/static/js/setup-wizard-live.js"></script>
@@ -2088,11 +2090,11 @@ try {
   <script src="/static/js/runtime-recommendations.js"></script>
   <script src="/static/js/log-format.js"></script>
   <script src="/static/js/model-catalog-groups.js"></script>
-  <script src="/static/js/model-card.js"></script>
-  <script src="/static/js/server-live.js?v=0.3.278-slots-full"></script>
-  <script src="/static/js/status-feed.js"></script>
+  <script src="/static/js/model-card.js?v=0.3.291-notehover"></script>
+  <script src="/static/js/server-live.js?v=0.3.296-sharedsettings"></script>
+  <script src="/static/js/status-feed.js?v=0.3.294-gpufix"></script>
   <script src="/static/js/table-column-resize.js"></script>
-  <script src="/static/js/models-live.js"></script>
+  <script src="/static/js/models-live.js?v=0.3.296-sharedsettings"></script>
   <script src="/static/js/stack-wizard.js"></script>
   <script src="/static/js/docs-live.js"></script>
   <script src="/static/js/desktop-shell.js"></script>

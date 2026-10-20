@@ -8,6 +8,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# huggingface_hub 2.x defaults to the Xet backend. Xet writes into its own
+# chunk cache, which makes repo-download progress look stuck and can stall
+# behind restrictive networks. Plain HTTP keeps resumable files visible.
+$env:HF_HUB_DISABLE_XET = '1'
 # PowerShell 7 turns pip's progress notes into a fatal error. A failed note
 # must not stop the server from starting.
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {

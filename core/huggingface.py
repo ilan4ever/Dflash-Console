@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -21,6 +22,7 @@ from core.model_paths import allowed_model_roots, get_download_dir, get_library_
 
 HF_API = 'https://huggingface.co/api'
 HF_BASE = 'https://huggingface.co'
+logger = logging.getLogger(__name__)
 _readme_memory: dict[str, str] = {}
 _readme_memory_lock = threading.Lock()
 _readme_fetch_locks: dict[str, threading.Lock] = {}
@@ -112,7 +114,11 @@ _SUPPORTED_MODALITIES = frozenset({
     'text-to-speech',
 })
 
-_DOWNLOAD_EXTENSIONS = ('.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.ggml', '.mlmodel')
+# Pipeline components such as Wan2.2's ``models_t5_*.pth`` / ``*_VAE.pth``
+# are part of the repo download, so they must count toward the on-disk total.
+_DOWNLOAD_EXTENSIONS = (
+    '.gguf', '.safetensors', '.onnx', '.bin', '.pt', '.pth', '.ckpt', '.ggml', '.mlmodel',
+)
 
 
 def _use_gguf_only(category: str | None) -> bool:
@@ -432,32 +438,72 @@ def estimate_disk_size_from_name(repo_id: str, *, has_gguf: bool = False) -> tup
     return size_gb, f'~{size_gb:g} GB'
 
 
+def _download_size_from_repo_info(
+    raw: dict[str, Any] | None,
+) -> tuple[float | None, str, int | None, str]:
+    """Card size for the current revision, with provenance ('files' / 'quant')."""
+    if not isinstance(raw, dict):
+        return None, '—', None, ''
+    from core.hf_model_fit import bytes_to_size_gb
+
+    siblings = raw.get('siblings')
+    files = _model_files(siblings, gguf_only=False)
+    if not files:
+        return None, '—', None, ''
+    has_gguf = any(str(row.get('filename') or '').lower().endswith('.gguf') for row in files)
+    if has_gguf:
+        total_bytes = _preferred_quant_bytes(files)
+        source = 'quant'
+    else:
+        total_bytes = _repo_snapshot_bytes(siblings)
+        source = 'files'
+    size_gb = bytes_to_size_gb(total_bytes)
+    if not size_gb:
+        return None, '—', None, ''
+    return float(size_gb), f'{float(size_gb):g} GB', int(total_bytes or 0), source
+
+
 def fetch_used_storage_size(repo_id: str, *, timeout: float = 4.0) -> dict[str, Any] | None:
-    """Lightweight Hub size for catalog list cards (usedStorage only)."""
+    """Hub size for catalog list cards — current revision, not repo history."""
     repo = str(repo_id or '').strip().strip('/')
     if not repo or '/' not in repo:
         return None
-    url = f'{HF_API}/models/{urllib.parse.quote(repo, safe="/")}'
+    encoded = urllib.parse.quote(repo, safe='/')
+    url = f'{HF_API}/models/{encoded}?blobs=true'
     try:
         raw = _request_json(url, timeout=timeout)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
         return None
     if not isinstance(raw, dict):
         return None
-    size_gb, size_label = _size_from_hub_storage(raw)
+    size_gb, size_label, size_bytes, source = _download_size_from_repo_info(raw)
+    if not size_gb:
+        stored_gb, stored_label = _size_from_hub_storage(raw)
+        if stored_gb and stored_gb > 0:
+            size_gb = stored_gb
+            size_label = stored_label
+            used = raw.get('usedStorage')
+            if not isinstance(used, (int, float)):
+                used = raw.get('used_storage')
+            size_bytes = int(used) if isinstance(used, (int, float)) and used > 0 else None
+            source = 'hub_storage'
     if not size_gb:
         summary = _summary_from_model(raw)
         size_gb = summary.get('size_gb')
         size_label = str(summary.get('size_label') or '').strip()
+        source = str(summary.get('size_source') or '').strip() or 'estimate'
     if not isinstance(size_gb, (int, float)) or float(size_gb) <= 0:
         return None
     if not size_label or size_label in ('—', '0 GB', '0.0 GB'):
         size_label = f'{float(size_gb):g} GB'
+    if not size_bytes or int(size_bytes) <= 0:
+        size_bytes = int(float(size_gb) * (1024 ** 3))
     return {
         'id': repo,
         'size_gb': float(size_gb),
         'size_label': size_label,
-        'size_bytes': int(float(size_gb) * (1024 ** 3)),
+        'size_bytes': int(size_bytes),
+        'size_source': source or 'estimate',
     }
 
 
@@ -797,9 +843,24 @@ def _siblings_for_download_list(
     merged = _siblings_with_sizes(rows, [])
     if _siblings_have_file_sizes(merged):
         return merged
-    # Non-GGUF repositories already have a usable file list in ``siblings``.
-    # Do not walk the Hub tree merely to fill optional size metadata.
+    # Non-GGUF repositories only need one blob listing: it yields the real size
+    # of every current-revision file (weights, .pth components, configs) so the
+    # catalog card matches the download total.
     if not any(_entry_name(row).lower().endswith('.gguf') for row in rows):
+        budget = 6.0
+        if deadline is not None:
+            budget = max(0.5, min(budget, deadline - time.monotonic()))
+        try:
+            blobs = _run_with_timeout(
+                lambda: _fetch_repo_siblings_with_blobs(repo),
+                timeout=budget,
+            ) or []
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            blobs = []
+        if blobs:
+            enriched = _siblings_with_sizes(rows, _blob_tree_from_siblings(blobs))
+            if _siblings_have_file_sizes(enriched):
+                return enriched
         return merged
     tree = _resolve_repo_tree(repo, rows, deadline=deadline)
     enriched = _siblings_with_sizes(rows, tree)
@@ -882,23 +943,33 @@ def _size_from_preferred_file(preferred: dict[str, Any] | None) -> tuple[float |
     return float(size_gb), f'{float(size_gb):g} GB'
 
 
-def _size_from_preferred_quant(files: list[dict[str, Any]]) -> tuple[float | None, str]:
-    """Card disk size for the preferred quant, summing GGUF shards."""
-    preferred = _preferred_gguf_file(files)
+def _preferred_quant_bytes(files: list[dict[str, Any]] | None) -> int | None:
+    """Total bytes of the preferred GGUF quant, summing its shards."""
+    preferred = _preferred_gguf_file(files or [])
     if not preferred:
-        return None, '—'
-    from core.hf_model_fit import _shard_group_key, bytes_to_size_gb
+        return None
+    from core.hf_model_fit import _shard_group_key
 
     key = _shard_group_key(str(preferred.get('filename') or ''))
     total = 0
-    for row in files:
+    for row in files or []:
         if _shard_group_key(str(row.get('filename') or '')) != key:
             continue
         try:
             total += int(row.get('size_bytes') or 0)
         except (TypeError, ValueError):
             continue
-    size_gb = bytes_to_size_gb(total)
+    return total or None
+
+
+def _size_from_preferred_quant(files: list[dict[str, Any]]) -> tuple[float | None, str]:
+    """Card disk size for the preferred quant, summing GGUF shards."""
+    from core.hf_model_fit import bytes_to_size_gb
+
+    preferred = _preferred_gguf_file(files)
+    if not preferred:
+        return None, '—'
+    size_gb = bytes_to_size_gb(_preferred_quant_bytes(files))
     if size_gb:
         return float(size_gb), f'{float(size_gb):g} GB'
     return _size_from_preferred_file(preferred)
@@ -1046,6 +1117,32 @@ def _preferred_gguf_size(siblings: list[Any] | None) -> tuple[float | None, str]
     return _size_from_preferred_quant(_gguf_files(siblings))
 
 
+def _repo_snapshot_bytes(siblings: list[Any] | None) -> int | None:
+    """Total bytes of the current revision — what a repo download actually fetches.
+
+    Hub ``usedStorage`` counts every stored revision (superseded LFS blobs
+    included), so it overstates a fresh download.  ``None`` means the sibling
+    list lacks sizes and the caller must fall back.
+    """
+    total = 0
+    files = 0
+    for entry in siblings or []:
+        if not isinstance(entry, dict):
+            continue
+        name = _entry_name(entry)
+        if not name:
+            continue
+        raw_size = entry.get('size')
+        if isinstance(raw_size, int) and raw_size <= 0:
+            continue
+        size = _entry_size_bytes(entry)
+        if not isinstance(size, int) or size <= 0:
+            return None
+        total += size
+        files += 1
+    return total if files else None
+
+
 def _preferred_download_size(siblings: list[Any] | None) -> tuple[float | None, str]:
     files = _model_files(siblings, gguf_only=False)
     if not files:
@@ -1053,6 +1150,15 @@ def _preferred_download_size(siblings: list[Any] | None) -> tuple[float | None, 
     has_gguf = any(str(row.get('filename') or '').lower().endswith('.gguf') for row in files)
     if has_gguf:
         return _size_from_preferred_quant(files)
+    from core.hf_model_fit import bytes_to_size_gb
+
+    # Diffusers / multi-component repos download the whole snapshot (weights +
+    # text encoder + VAE + configs), not just the first shard group.
+    snapshot_bytes = _repo_snapshot_bytes(siblings)
+    if snapshot_bytes:
+        size_gb = bytes_to_size_gb(snapshot_bytes)
+        if size_gb:
+            return float(size_gb), f'{float(size_gb):g} GB'
     options = build_download_options(files)
     if options:
         size_gb = options[0].get('size_gb')
@@ -1521,8 +1627,10 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     downloadable = _model_files(siblings, gguf_only=False)
     last_modified = str(raw.get('lastModified') or raw.get('createdAt') or '')
     size_gb, size_label = _preferred_gguf_size(siblings)
+    size_source = 'quant' if size_gb else ''
     if size_gb is None:
         size_gb, size_label = _preferred_download_size(siblings)
+        size_source = 'files' if size_gb else ''
     updated_days = _days_since(last_modified)
     repo_label = repo_id.split('/')[-1] if '/' in repo_id else repo_id
     lab = infer_model_lab(repo_id=repo_id, author=author, tags=tags, title=repo_label)
@@ -1537,18 +1645,21 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         if disk_gb and disk_gb > 0:
             size_gb = disk_gb
             size_label = f'{disk_gb:g} GB'
+            size_source = 'files'
     if not size_gb or float(size_gb) <= 0:
-        # ``usedStorage`` is authoritative when the Hub omits per-file sizes.
-        # Prefer it over a parameter-count estimate for complete repositories.
+        # ``usedStorage`` covers every stored revision, so it is only a fallback
+        # for repos whose per-file sizes the Hub does not expose.
         stored_gb, stored_label = _size_from_hub_storage(raw)
         if stored_gb and stored_gb > 0:
             size_gb = stored_gb
             size_label = stored_label
+            size_source = 'hub_storage'
     if (not size_gb or float(size_gb) <= 0) or str(size_label or '').strip() in ('', '—', '0 GB', '0.0 GB'):
         est_gb, est_label = estimate_disk_size_from_name(repo_id, has_gguf=has_gguf)
         if est_gb:
             size_gb = est_gb
             size_label = est_label
+            size_source = 'estimate'
     elif has_gguf and len(gguf_files) > 1:
         # usedStorage is the sum of every quant in the repo — not the file you download.
         stored_gb, _stored_label = _size_from_hub_storage(raw)
@@ -1557,6 +1668,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
             if est_gb:
                 size_gb = est_gb
                 size_label = est_label
+                size_source = 'estimate'
     if has_gguf and isinstance(size_gb, (int, float)):
         param = _PARAM_B_RE.search(repo_label.replace('_', '-'))
         if param and float(param.group(1)) >= 7 and float(size_gb) < 6:
@@ -1564,9 +1676,11 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
             if est_gb:
                 size_gb = est_gb
                 size_label = est_label
+                size_source = 'estimate'
     if isinstance(size_gb, (int, float)) and float(size_gb) <= 0:
         size_gb = None
         size_label = '—'
+        size_source = ''
     accelerator_only = _is_accelerator_only_repo(siblings, repo_id=repo_id, size_gb=size_gb)
     accel_gen = repo_dflash_generation(repo_id, repo_label) if accelerator_only else None
     modality_fields = _hf_modality_fields(
@@ -1591,6 +1705,7 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
         'updated_days': updated_days,
         'size_gb': size_gb,
         'size_label': size_label,
+        'size_source': size_source,
         'accelerator_only': accelerator_only,
         'dflash_generation': accel_gen,
         'dflash_generation_label': dflash_generation_label(accel_gen) if accel_gen else None,
@@ -1788,11 +1903,89 @@ def _fetch_repo_summary_light(repo_id: str, *, category: str = 'dflash') -> dict
 def _cached_model_detail(repo_id: str, *, category: str) -> dict[str, Any]:
     from core.hf_catalog_cache import get_or_fetch_detail
 
-    return get_or_fetch_detail(
+    payload = get_or_fetch_detail(
         repo_id=repo_id,
         category=category,
         fetcher=lambda rid=repo_id, cat=category: get_model_detail(rid, category=cat),
     )
+    model = payload.get('model') if isinstance(payload.get('model'), dict) else None
+    if model is not None:
+        _apply_live_local_state(model, repo_id)
+    return payload
+
+
+def _apply_live_local_state(model: dict[str, Any], repo_id: str) -> None:
+    """Refresh download/incomplete flags that the detail cache cannot know."""
+    from core.hf_local_match import repo_install_incomplete
+
+    state = _repo_download_state(str(model.get('id') or repo_id))
+    if state:
+        model['download'] = state
+    else:
+        model.pop('download', None)
+    folder = str(state.get('path') or '').strip()
+    if not folder:
+        installs = model.get('local_installs') if isinstance(model.get('local_installs'), dict) else {}
+        for rows in installs.values():
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                folder = str(rows[0].get('path') or '').strip()
+                if folder:
+                    break
+    if not folder:
+        folder = _repo_folder_on_disk(str(model.get('id') or repo_id))
+    if not folder:
+        return
+    incomplete = repo_install_incomplete(folder)
+    model['local_incomplete'] = incomplete
+    if incomplete:
+        model['local_ready'] = False
+        model['catalog_ready_to_load'] = False
+
+
+def _repo_folder_on_disk(repo_id: str) -> str:
+    """``<model root>/<org>/<name>`` when that folder exists."""
+    parts = str(repo_id or '').strip().strip('/').split('/')
+    if len(parts) != 2:
+        return ''
+    try:
+        for root in allowed_model_roots(load_config()):
+            candidate = Path(root).expanduser() / parts[0] / parts[1]
+            if candidate.is_dir():
+                return str(candidate)
+    except (OSError, TypeError, ValueError):
+        return ''
+    return ''
+
+
+def _repo_download_state(repo_id: str) -> dict[str, Any]:
+    """Active or resumable download for a repo, for catalog badges."""
+    repo = str(repo_id or '').strip().lower()
+    if not repo:
+        return {}
+    _ensure_download_history_loaded()
+    with _jobs_lock:
+        rows = [dict(job) for job in _download_jobs.values()]
+    best: dict[str, Any] = {}
+    for job in rows:
+        if str(job.get('repo_id') or '').strip().lower() != repo:
+            continue
+        status = str(job.get('status') or '')
+        if status not in {'downloading', 'incomplete'}:
+            continue
+        state = {
+            'state': status,
+            'job_id': str(job.get('id') or ''),
+            'progress': job.get('progress'),
+            'bytes_read': job.get('bytes_read'),
+            'bytes_total': job.get('bytes_total'),
+            'shard_present': job.get('shard_present'),
+            'shard_total': job.get('shard_total'),
+            'path': str(job.get('path') or ''),
+        }
+        if status == 'downloading':
+            return state
+        best = best or state
+    return best
 
 
 def _lookup_hf_repo_models(needle: str, *, category: str = 'all') -> list[dict[str, Any]]:
@@ -2601,7 +2794,17 @@ def get_model_detail(
     enriched_raw['siblings'] = siblings
     summary = _summary_from_model(enriched_raw)
     default_option = download_options[0] if download_options else None
-    if default_option and isinstance(default_option.get('size_gb'), (int, float)) and float(default_option['size_gb']) > 0:
+    snapshot_gb = None
+    if not use_gguf_only and not gguf_files:
+        from core.hf_model_fit import bytes_to_size_gb
+
+        snapshot_gb = bytes_to_size_gb(_repo_snapshot_bytes(siblings))
+    if snapshot_gb:
+        # A diffusers/multi-component repo downloads every file, not one group.
+        summary['size_gb'] = float(snapshot_gb)
+        summary['size_label'] = f'{float(snapshot_gb):g} GB'
+        summary['size_source'] = 'files'
+    elif default_option and isinstance(default_option.get('size_gb'), (int, float)) and float(default_option['size_gb']) > 0:
         summary['size_gb'] = float(default_option['size_gb'])
         summary['size_label'] = f"{float(default_option['size_gb']):g} GB"
     elif not use_gguf_only and not gguf_files:
@@ -2623,6 +2826,7 @@ def get_model_detail(
         find_repo_local_installs,
         is_catalog_ready_to_load,
         local_installs_for_files,
+        repo_install_incomplete,
     )
 
     config = load_config()
@@ -2630,6 +2834,13 @@ def get_model_detail(
     local_installs = local_installs_for_files(repo, filenames, cfg=config)
     all_repo_installs = find_repo_local_installs(repo, cfg=config, weights_only=False)
     weight_repo_installs = find_repo_local_installs(repo, cfg=config, weights_only=True)
+    # Missing weight shards mean the download never finished — not "installed".
+    complete_installs = [
+        row for row in weight_repo_installs
+        if not repo_install_incomplete(row.get('path'))
+    ]
+    local_incomplete = bool(weight_repo_installs) and not complete_installs
+    download_state = _repo_download_state(repo)
 
     from core.hf_model_fit import assess_hf_model_fit
 
@@ -2648,9 +2859,11 @@ def get_model_detail(
             size_gb=float(preferred['size_gb']) if preferred and isinstance(preferred.get('size_gb'), (int, float)) else summary.get('size_gb'),
         ),
         'local_installs': local_installs,
-        'local_ready': bool(weight_repo_installs),
+        'local_ready': bool(complete_installs),
+        'local_incomplete': local_incomplete,
+        'download': download_state,
         'local_auxiliary_only': bool(all_repo_installs) and not weight_repo_installs,
-        'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config),
+        'catalog_ready_to_load': is_catalog_ready_to_load(repo, title=title, tags=tags, cfg=config) and bool(complete_installs),
         'readme': readme,
         'readme_pending': bool(readme_pending) and not bool(str(readme or '').strip()),
         'url': f'{HF_BASE}/{repo}',
@@ -3426,8 +3639,9 @@ def _directory_download_bytes(path: Path) -> int:
     """Sum downloaded payload bytes for a repo folder.
 
     Counts finished weight/config files in the repo root and in-progress
-    Hugging Face ``*.incomplete`` blobs under ``.cache``. Skips metadata and
-    non-model assets so progress stays aligned with ``bytes_total``.
+    Hugging Face ``*.incomplete`` blobs under ``.cache``. Every interrupted
+    attempt leaves its own partial blob for the same file, so only the largest
+    partial per file is counted — otherwise progress can exceed 100%.
     """
     total = 0
     try:
@@ -3437,6 +3651,7 @@ def _directory_download_bytes(path: Path) -> int:
             '.safetensors', '.bin', '.pt', '.pth', '.gguf', '.onnx',
             '.msgpack', '.h5', '.ot', '.pkl',
         }
+        partials: dict[str, int] = {}
         for file_path in path.rglob('*'):
             if not file_path.is_file():
                 continue
@@ -3453,7 +3668,8 @@ def _directory_download_bytes(path: Path) -> int:
             # In-progress HF hub blobs.
             if name.endswith('.incomplete') or '/.cache/huggingface/download/' in f'/{rel}':
                 if name.endswith('.incomplete'):
-                    total += size
+                    key = name.rsplit('.', 2)[0] if name.count('.') >= 2 else name
+                    partials[key] = max(partials.get(key, 0), size)
                 continue
             # Finished model/config files only (ignore README/images/etc.).
             suffix = file_path.suffix.lower()
@@ -3464,6 +3680,7 @@ def _directory_download_bytes(path: Path) -> int:
                 'model.safetensors.index.json', 'pytorch_model.bin.index.json',
             }:
                 total += size
+        total += sum(partials.values())
     except OSError:
         return total
     return total
@@ -3474,6 +3691,21 @@ def _repo_expected_bytes(repo_id: str, *, fallback: int | None = None) -> int | 
     repo = str(repo_id or '').strip()
     if not repo:
         return int(fallback) if fallback else None
+    # Prefer the actual Hub file sizes. Cached catalog estimates can be far
+    # off for repos that also ship .pth/.bin weights (Wan2.2 reports "50 GB"
+    # while the real snapshot is ~34 GB), and a wrong denominator leaves the
+    # progress bar stuck below 100%.
+    try:
+        blobs = _fetch_repo_siblings_with_blobs(repo)
+        total = 0
+        for row in blobs or []:
+            size = _entry_size_bytes(row)
+            if isinstance(size, int) and size > 0:
+                total += size
+        if total > 0:
+            return total
+    except Exception:
+        pass
     try:
         from core.local_models import _lookup_hf_repo_size_gb
 
@@ -4073,11 +4305,15 @@ def _save_pending_downloads() -> None:
             for job in _download_jobs.values()
             if str(job.get('status') or '') == 'downloading'
         ]
-    _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PENDING_PATH.write_text(
-        json.dumps({'version': 1, 'jobs': pending}, indent=2),
-        encoding='utf-8',
-    )
+    _write_json_atomic(_PENDING_PATH, {'version': 1, 'jobs': pending})
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Write JSON via a temp file so a crash never truncates the resume list."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    os.replace(tmp, path)
 
 
 def _clear_pending_downloads() -> None:
@@ -4109,8 +4345,7 @@ def _remove_pending_job(job_id: str) -> None:
     if not rows:
         _clear_pending_downloads()
         return
-    _PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _PENDING_PATH.write_text(json.dumps({'version': 1, 'jobs': rows}, indent=2), encoding='utf-8')
+    _write_json_atomic(_PENDING_PATH, {'version': 1, 'jobs': rows})
 
 
 def _mark_job_finished(job_id: str, status: str, **fields: Any) -> None:
@@ -4757,6 +4992,10 @@ def start_download(
 
 
 def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
+    # Repository downloads go through plain HTTP so partial files stay
+    # visible/resumable; the Xet backend keeps chunks in a separate cache
+    # where progress cannot be measured and may stall on some networks.
+    os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
@@ -4841,12 +5080,19 @@ def _repo_download_worker(job_id: str, repo_id: str, dest: Path) -> None:
                 )
                 local_dir = str(dest)
             else:
-                local_dir = snapshot_download(
-                    repo_id=repo_id,
-                    local_dir=str(dest),
-                    local_dir_use_symlinks=False,
-                    token=token.strip() if token else None,
-                )
+                download_kwargs = {
+                    'repo_id': repo_id,
+                    'local_dir': str(dest),
+                    'token': token.strip() if token else None,
+                }
+                try:
+                    local_dir = snapshot_download(
+                        **download_kwargs,
+                        local_dir_use_symlinks=False,
+                    )
+                except TypeError:
+                    # huggingface_hub 2.x removed this flag.
+                    local_dir = snapshot_download(**download_kwargs)
                 target = Path(str(local_dir))
                 # snapshot_download can return while shard files are still missing.
                 _download_missing_repo_shards(repo_id, target, job_id=job_id)
@@ -5195,6 +5441,8 @@ def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str,
     if not pending:
         _clear_pending_downloads()
     repair = repair_stale_download_jobs(cfg=config)
+    orphans = _resume_orphaned_repo_downloads(cfg=config)
+    resumed.extend(orphans)
     return {
         'success': True,
         'resumed': resumed,
@@ -5203,6 +5451,64 @@ def resume_interrupted_downloads(cfg: dict[str, Any] | None = None) -> dict[str,
         'repaired': repair.get('repaired') or [],
         'repaired_count': repair.get('count') or 0,
     }
+
+
+def _repo_cache_has_partials(dest: Path) -> bool:
+    """True when an interrupted HF snapshot left ``.incomplete`` blobs behind."""
+    cache = dest / '.cache' / 'huggingface'
+    if not cache.is_dir():
+        return False
+    try:
+        return any(path.is_file() for path in cache.rglob('*.incomplete'))
+    except OSError:
+        return False
+
+
+def _resume_orphaned_repo_downloads(cfg: dict[str, Any] | None = None) -> list[str]:
+    """Continue repo downloads that a restart interrupted (no pending entry).
+
+    A folder is only resumed when it still holds Hugging Face ``.incomplete``
+    blobs, i.e. a download was genuinely cut off mid-flight.  Folders the user
+    abandoned are listed as resumable instead of being fetched automatically.
+    """
+    config = cfg or load_config()
+    resumed: list[str] = []
+    try:
+        discovered = _discover_incomplete_repo_jobs(config)
+    except Exception as exc:  # never block startup on a discovery failure
+        logger.warning('incomplete repo discovery failed: %s', exc)
+        return resumed
+    for row in discovered:
+        path_text = str(row.get('path') or '').strip()
+        repo = str(row.get('repo_id') or '').strip()
+        if not path_text or not repo:
+            continue
+        try:
+            dest = Path(path_text).expanduser().resolve()
+        except OSError:
+            continue
+        if not _is_under_allowed_model_root(dest, config):
+            continue
+        if not _repo_cache_has_partials(dest):
+            continue
+        with _jobs_lock:
+            already = any(
+                str(job.get('status') or '') == 'downloading'
+                and _same_download_path(job.get('path'), dest)
+                for job in _download_jobs.values()
+            )
+        if already:
+            continue
+        result = start_repo_download(
+            repo,
+            dest_path=str(dest),
+            cfg=config,
+            allow_incomplete_resume=True,
+        )
+        if result.get('success'):
+            resumed.append(str(result.get('job_id') or ''))
+            logger.info('auto-resumed interrupted repo download %s -> %s', repo, dest)
+    return resumed
 
 
 def get_download_job(job_id: str) -> dict[str, Any]:
@@ -5264,6 +5570,15 @@ def _drop_nested_component_jobs() -> None:
         pass
 
 
+def _discovery_roots(config: dict[str, Any]) -> list[tuple[Path, str, Any, str]]:
+    """Model roots used to find shard folders (tests pin this to a temp dir)."""
+    if _discover_roots_override is not None:
+        return [(Path(root), 'override', None, 'override') for root in _discover_roots_override]
+    from core.model_paths import disk_scan_roots
+
+    return disk_scan_roots(config)
+
+
 def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Find local HF folders with missing weight shards and expose them as resumable jobs."""
     config = cfg or load_config()
@@ -5273,15 +5588,20 @@ def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[di
         _path_model_display_name,
         _weight_shard_status,
     )
-    from core.model_paths import disk_scan_roots
 
     found: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for root, _source, _preset, _label in disk_scan_roots(config):
+    for root, _source, _preset, _label in _discovery_roots(config):
         try:
             if not root.is_dir():
                 continue
-            shard_files = list(root.rglob('model-*-of-*.safetensors'))
+            # Any shard prefix counts: model-…, pytorch_model-…,
+            # diffusion_pytorch_model-… (diffusers pipelines).
+            shard_files = [
+                path
+                for pattern in ('*-of-*.safetensors', '*-of-*.bin')
+                for path in root.rglob(pattern)
+            ]
         except OSError:
             continue
         parents = {path.parent for path in shard_files if path.is_file()}
@@ -5305,7 +5625,11 @@ def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[di
             total = int(status.get('shard_total') or 0)
             disk_bytes = 0
             try:
-                disk_bytes = sum(int(path.stat().st_size) for path in parent.glob('model-*-of-*.safetensors') if path.is_file())
+                disk_bytes = sum(
+                    int(Path(item).stat().st_size)
+                    for item in status.get('shard_files') or []
+                    if Path(item).is_file()
+                )
             except OSError:
                 disk_bytes = 0
             expected_bytes = _repo_expected_bytes(repo_id)
@@ -5497,6 +5821,42 @@ def resume_download_job(job_id: str, *, cfg: dict[str, Any] | None = None) -> di
     )
 
 
+def _path_inside(path: str, folder: str) -> bool:
+    left = str(path or '').replace('\\', '/').rstrip('/').lower()
+    right = str(folder or '').replace('\\', '/').rstrip('/').lower()
+    if not left or not right:
+        return False
+    return left == right or left.startswith(right + '/')
+
+
+def _drop_superseded_file_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide single-file rows covered by an active whole-repository download.
+
+    The old per-shard job finishes one file and shows "Complete" while the
+    repository is still missing files — misleading in Last downloads.
+    """
+    folders = [
+        str(job.get('path') or '')
+        for job in jobs
+        if str(job.get('kind') or '').strip().lower() in {'repo', 'repo-complete'}
+        and str(job.get('status') or '') in {'downloading', 'incomplete'}
+        and str(job.get('path') or '').strip()
+    ]
+    if not folders:
+        return jobs
+    kept: list[dict[str, Any]] = []
+    for job in jobs:
+        kind = str(job.get('kind') or '').strip().lower()
+        if (
+            str(job.get('status') or '') == 'done'
+            and kind not in {'repo', 'repo-complete', 'disk'}
+            and any(_path_inside(str(job.get('path') or ''), folder) for folder in folders)
+        ):
+            continue
+        kept.append(job)
+    return kept
+
+
 def list_download_jobs(
     *,
     active_only: bool = False,
@@ -5515,6 +5875,7 @@ def list_download_jobs(
     jobs = [_enrich_download_job(job) for job in raw_jobs]
     if console_only:
         jobs = [job for job in jobs if _is_console_download_job(job)]
+    jobs = _drop_superseded_file_rows(jobs)
     if active_only:
         jobs = [
             job for job in jobs

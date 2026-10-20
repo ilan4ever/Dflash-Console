@@ -390,16 +390,20 @@ def write_server_preset(
         elif preset_profile == 'bonsai-spec':
             lines.extend(['spec-type = draft-dspark', 'spec-draft-n-max = 4', 'ngld = all'])
 
-    from core.vision_setup import resolve_mmproj_path, server_supports_vision_chat
+    from core.vision_setup import resolve_mmproj_path
 
-    mmproj_path = str(server.get('mmproj_path') or '').strip()
-    if not mmproj_path:
-        if server_supports_vision_chat(server, cfg=cfg):
-            mmproj_path = resolve_mmproj_path(server, cfg=cfg)
-    elif not server_supports_vision_chat(server, cfg=cfg):
-        mmproj_path = ''
-    if mmproj_path and Path(mmproj_path).is_file():
-        lines.append(f"mmproj = {mmproj_path}")
+    # Honor an explicit projector, or resolve a sibling when vision is not opted out.
+    # Do not strip a real mmproj_path just because the profile is outside the
+    # historical vision allowlist (Models tab can wire vision onto any engine).
+    mmproj_path = ''
+    if server.get('vision') is not False:
+        mmproj_path = str(server.get('mmproj_path') or '').strip()
+        if not mmproj_path:
+            mmproj_path = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
+        if mmproj_path and not Path(mmproj_path).expanduser().is_file():
+            mmproj_path = ''
+    if mmproj_path:
+        lines.append(f"mmproj = {Path(mmproj_path).expanduser()}")
 
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
     path = preset_path_for(server_id)

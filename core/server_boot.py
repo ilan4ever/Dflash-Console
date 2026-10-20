@@ -165,6 +165,18 @@ def _windows_process_details(pid: int) -> tuple[str, str] | None:
         return name, command
     except Exception:
         pass
+    # No psutil in the runtime bundle: reuse the shared Win32_Process snapshot.
+    # The old per-PID PowerShell query costs seconds per process, and the boot
+    # orphan sweep asks about every listener, which delayed engine restore by
+    # well over a minute.
+    try:
+        from core.gpu_processes import _query_process_details
+
+        row = _query_process_details([int(pid)]).get(int(pid)) or {}
+        if row:
+            return str(row.get('process_name') or ''), str(row.get('command_line') or '')
+    except Exception:
+        pass
     query = (
         f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\" "
         "| Select-Object Name,CommandLine | ConvertTo-Json -Compress)"

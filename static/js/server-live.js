@@ -38,9 +38,62 @@
   let pollTimer = null;
   const serverActions = new Map();
   const pendingLoads = new Map();
-  const ENGINE_STARTUP_GRACE_MS = 30000;
+  const ENGINE_STARTUP_GRACE_MS = 120000;
   let engineStartupGraceUntil = 0;
+  let engineStartupSeenLiveId = '';
+  let engineStartupActiveId = '';
   const PREFS_KEY = 'dflashConsole.modelPrefs';
+  // Engines page pins are separate from Model-library pins: a pinned engine
+  // card always sorts to the top while it is present on the page.
+  const ENGINE_PINS_KEY = 'dflashConsole.pinnedEngines';
+
+  function loadEnginePinnedSet() {
+    // Shared across clients (Electron window + browser) via /api/ui-state;
+    // localStorage is only the instant-paint mirror.
+    const shared = window.DFlashUiState?.getPins?.('engines');
+    if (Array.isArray(shared)) return new Set(shared);
+    try {
+      const list = JSON.parse(localStorage.getItem(ENGINE_PINS_KEY) || '[]');
+      return new Set(Array.isArray(list) ? list.filter(Boolean).map(String) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function saveEnginePinnedSet(set) {
+    const list = [...set];
+    try {
+      localStorage.setItem(ENGINE_PINS_KEY, JSON.stringify(list));
+    } catch {
+      /* storage full/blocked — pinning is best effort */
+    }
+    if (window.DFlashUiState?.setPins) void window.DFlashUiState.setPins('engines', list);
+  }
+
+  function enginePinKey(server, row) {
+    const path = String(row?.model_path || row?.path || '').trim();
+    if (path) return `path:${path.replace(/\\/g, '/').toLowerCase()}`;
+    const serverId = String(server?.id || '').trim();
+    if (serverId) return `server:${serverId.toLowerCase()}`;
+    const modelId = String(row?.model_id || row?.model_name || server?.model_id || '').trim();
+    return modelId ? `model:${modelId.toLowerCase()}` : '';
+  }
+
+  function isEnginePinned(server, row) {
+    const key = enginePinKey(server, row);
+    return Boolean(key) && loadEnginePinnedSet().has(key);
+  }
+
+  function toggleEnginePin(server, row) {
+    const key = enginePinKey(server, row);
+    if (!key) return false;
+    const pinned = loadEnginePinnedSet();
+    const next = !pinned.has(key);
+    if (next) pinned.add(key);
+    else pinned.delete(key);
+    saveEnginePinnedSet(pinned);
+    return next;
+  }
   let catalogModels = [];
   let suppressRunningToggle = false;
   let selectedLoadedKey = localStorage.getItem('dflashConsole.selectedLoadedKey') || '';
@@ -73,6 +126,15 @@
 
   function consolePipelineActive() {
     return !pipelineStandby;
+  }
+
+  function ingestGpuOtherUsage(block) {
+    if (!block || !Array.isArray(block.processes) || !block.processes.length) return;
+    mergeGpuOtherUsage(block);
+    if (enginesViewActive()) {
+      renderCards();
+      updateEnginePageNotice();
+    }
   }
 
   function ingestExternalGpuLoads(rows, data = null) {
@@ -133,6 +195,15 @@
     }
     if (!consolePipelineActive()) {
       clearStandbyGpuSnapshots();
+      // Idle engines still report desktop/app GPU processes (throttled) so the
+      // page is never blank; only the external MODEL scan is skipped.
+      if (Array.isArray(data?.gpu_other_usage?.processes) && data.gpu_other_usage.processes.length) {
+        mergeGpuOtherUsage(data.gpu_other_usage);
+        if (enginesViewActive()) {
+          renderCards();
+          updateEnginePageNotice();
+        }
+      }
       return;
     }
     mergeExternalGpuLoads(externalRows);
@@ -745,13 +816,35 @@
   }
 
   function engineStartupPending() {
-    const configured = (allServers.length ? allServers : servers)
-      .some((server) => server?.enabled !== false && server?.engine_on === true);
-    const live = [...servers, ...allServers].some((server) => serverIsLive(server));
-    if (!configured || live) {
+    const active = activeServer();
+    const activeKey = String(active?.id || '');
+    if (activeKey !== engineStartupActiveId) {
+      engineStartupActiveId = activeKey;
+      engineStartupGraceUntil = 0;
+    }
+    const list = allServers.length ? allServers : servers;
+    const canStart = (server) => (
+      server?.enabled !== false
+      && server?.engine_on === true
+      && Number(server?.port || 0) > 0
+    );
+    const configured = active ? canStart(active) : list.some(canStart);
+    const live = active
+      ? serverIsLive(active)
+      : [...servers, ...allServers].some((server) => serverIsLive(server));
+    if (!configured) {
+      engineStartupGraceUntil = 0;
+      engineStartupSeenLiveId = '';
+      return false;
+    }
+    if (live) {
+      // Once this engine has been up, "starting" is over for this boot. A
+      // later stopped/stale snapshot must not put the page back into Starting.
+      engineStartupSeenLiveId = activeKey;
       engineStartupGraceUntil = 0;
       return false;
     }
+    if (engineStartupSeenLiveId && engineStartupSeenLiveId === activeKey) return false;
     if (!engineStartupGraceUntil) {
       engineStartupGraceUntil = Date.now() + ENGINE_STARTUP_GRACE_MS;
     }
@@ -1183,6 +1276,10 @@
   }
 
   function loadBrowsePrefs() {
+    // Per-model load settings for models without a server profile: shared so
+    // the Electron window and the browser see the same numbers.
+    const shared = window.DFlashUiState?.getPref?.('modelPrefs');
+    if (shared && typeof shared === 'object' && !Array.isArray(shared)) return shared;
     try {
       return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     } catch {
@@ -1191,7 +1288,12 @@
   }
 
   function saveBrowsePrefs(prefs) {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      /* local mirror only */
+    }
+    if (window.DFlashUiState?.setPref) void window.DFlashUiState.setPref('modelPrefs', prefs);
   }
 
   function syncServerFromPatch(serverId, patch) {
@@ -1795,6 +1897,7 @@
     menu.innerHTML = `
       ${draftMenu}
       <button type="button" data-cmd="details">Show details</button>
+      <button type="button" data-cmd="pin-top" title="Keep this model's card at the top of the Engines page while it is loaded">${isEnginePinned(server, row) ? 'Unpin from top' : 'Pin to top'}</button>
       <button type="button" data-cmd="runtime">Show runtime settings</button>
       <button type="button" data-cmd="copy-url"${url ? '' : ' disabled'}>Copy API URL</button>
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
@@ -1837,6 +1940,12 @@
   }
 
   async function runCardContextCommand(cmd, server, row) {
+    if (cmd === 'pin-top') {
+      const pinned = toggleEnginePin(server, row);
+      toast(pinned ? 'Pinned to top of Engines' : 'Unpinned from Engines top');
+      renderCards();
+      return;
+    }
     if (cmd === 'get-matching-draft') {
       await getMatchingDraftForCard(server, row);
       return;
@@ -2269,6 +2378,28 @@
     }
   }
 
+  /** Manual "Refresh" in the page header: re-fetch everything the UI shows. */
+  async function manualRefreshInterface(btn) {
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('is-spinning');
+    const started = performance.now();
+    try {
+      externalPollEarliestMs = 0;
+      await refresh(true, { includeExternal: true, fresh: true });
+      await refreshInferenceStats(true);
+      reschedulePoll();
+      renderCards();
+      const ms = Math.round(performance.now() - started);
+      toast(`Interface refreshed · ${ms} ms`);
+    } catch (err) {
+      toast(err?.message || 'Refresh failed', false);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('is-spinning');
+    }
+  }
+
   function serverStatusLabel(server) {
     if (!server) return 'Stopped';
     if (server.status === 'error') return server.boot_error || 'Error';
@@ -2671,10 +2802,8 @@
     if (row?.external) return '';
     const gpuNow = loadedGpuNowHtml(row, server);
     const controls = engineHeadControlsHtml(gpuPick, gpuNow, action, slotsPick);
-    const agents = ready ? cardAgentLabels(row, server) : [];
-    const clients = ready
-      ? activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label))
-      : [];
+    const agents = cardAgentLabels(row, server);
+    const clients = activeClientLabels(row).filter((label) => !/^unknown api client$/i.test(label));
     const titles = clients.length ? clients : agents;
     if (!titles.length && !controls) return '';
     const multi = titles.length > 1;
@@ -2689,8 +2818,11 @@
       ? `<span class="lm-loaded-by-detail">${escapeHtml(detail)}</span>`
       : '';
     const soloConsole = !multi && titles.length && /^dflash console$/i.test(titles[0]);
-    const stackChip = titles.length ? engineHeadStackChip(row) : '';
-    const vramCell = titles.length ? engineHeadVramCtxCell(row, server, { includeDisk: true }) : '';    const desktop = desktopEngineCardLayout();
+    const desktop = desktopEngineCardLayout();
+    // Desktop: always emit the same chips (stack logo, VRAM/DISK/CTX) while
+    // loading as when loaded, so the card layout never changes.
+    const stackChip = (titles.length || desktop) ? engineHeadStackChip(row) : '';
+    const vramCell = (titles.length || desktop) ? engineHeadVramCtxCell(row, server, { includeDisk: true }) : '';
     const badgesHtml = titles.length
       ? `<span class="lm-loaded-by-badges">${badges}</span>`
       : '';
@@ -2706,7 +2838,7 @@
     const cluster = (identity || controls)
       ? `<span class="lm-engine-head-cluster">${identity}${controls}</span>`
       : '';
-    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}${controls ? ' has-head-controls' : ''}${titles.length ? '' : ' is-controls-only'}" title="${escapeHtml(hint)}">
+    return `<div class="lm-model-card-loaded-by-prompt${multi ? ' has-multi-clients' : ''}${soloConsole ? ' is-console' : ''}${stackChip ? ' has-stack-chip' : ''}${controls ? ' has-head-controls' : ''}${titles.length || desktop ? '' : ' is-controls-only'}" title="${escapeHtml(hint)}">
             ${desktop ? '' : stackChip}
             ${vramCell}
             <span class="lm-engine-head-right">${desktop ? badgesHtml : ''}</span>
@@ -3262,15 +3394,34 @@
     return names.some((name) => new RegExp(`(?:^|\\s)--?${name}(?:\\s|$)`, 'i').test(cmd));
   }
 
+  /** The app that owns this external process (e.g. OneVoice, LM Studio). */
+  function externalAppLabel(row) {
+    const app = String(row?.app_label || '').trim();
+    return app || cardAppLabel(row);
+  }
+
+  /** True when the app name is shown as a chip on the desktop card header. */
+  function externalAppInHeader() {
+    return desktopEngineCardLayout() && !document.documentElement.classList.contains('df-narrow');
+  }
+
+  function externalDetailLineHtml(kind, items) {
+    const body = items.filter(Boolean).join('');
+    return `<div class="lm-external-detail-line is-${kind}${body ? '' : ' is-empty'}"${body ? '' : ' aria-hidden="true"'}>${body}</div>`;
+  }
+
   /**
-   * Everything the GPU scan knows about an external app, as labeled facts.
-   * Only stable values go in here; continuously changing counters are patched
-   * into [data-external-token-val] by syncEngineCardLiveMetrics so the card
-   * markup (and therefore its height) stays put.
+   * Everything the GPU scan knows about an external app, in a fixed
+   * three-line body: facts | command | model path.  The app name lives in the
+   * card header and the live token counters are a header chip, so neither
+   * takes a body line.  Only stable values go in here; continuously changing
+   * counters are patched into [data-external-token-val] by
+   * syncEngineCardLiveMetrics so the card markup (and therefore its height)
+   * stays put.
    */
   function externalCardDetailsHtml(row, server) {
     if (!row?.external && !server?.external) return '';
-    const appLabel = String(row?.app_label || '').trim() || cardAppLabel(row);
+    const appLabel = externalAppLabel(row);
     const component = String(row?.component_label || '').trim();
     const gpu = String(row?.gpu_display || row?.vram_gpu_name || '').trim();
     const gpuIndex = Number(row?.gpu_index);
@@ -3307,11 +3458,14 @@
       || (externalFlagPresent(row, ['flash-attn', 'fa']) ? 'on' : '');
     const pids = (Array.isArray(row?.pids) && row.pids.length ? row.pids : [row?.pid])
       .filter((pid) => pid != null && String(pid).trim() !== '');
-    const items = [
-      externalDetailItem('App', appLabel),
+    // Line 1: compact stable facts.  The app name is a header chip on desktop
+    // and stays here only when the card has no header prompt row (narrow
+    // mobile card).
+    const facts = [
+      externalAppInHeader() ? '' : externalDetailItem('App', appLabel),
       externalDetailItem('Component', component && component.toLowerCase() !== appLabel.toLowerCase() ? component : ''),
-      externalDetailItem('Publisher', String(row?.publisher || '').trim()),
       externalDetailItem('Quant', externalQuantLabel(row)),
+      externalDetailItem('Publisher', String(row?.publisher || '').trim()),
       externalDetailItem('GPU', gpuText, { gpu: true }),
       externalDetailItem('VRAM', vramText),
       externalDetailItem('VRAM/GPU', vramByGpuText, { wide: true }),
@@ -3326,13 +3480,16 @@
       externalDetailItem('API', String(row?.api_url || '').trim(), { wide: true }),
       externalDetailItem('PID', pids.length ? pids.join(', ') : ''),
       externalDetailItem('Process', String(row?.process_name || '').trim()),
+    ];
+    // Line 2: launch command line (credentials already redacted).
+    const command = [externalDetailItem('Command', externalCommandText(row), { wide: true })];
+    // Line 3: model path / identifiers.
+    const model = [
       externalDetailItem('Model', String(row?.model_path || '').trim(), { wide: true }),
       externalDetailItem('Model ID', String(row?.model_id || '').trim(), { wide: true }),
       externalDetailItem('Draft', String(row?.draft_filename || '').trim(), { wide: true }),
-      externalDetailItem('Command', externalCommandText(row), { wide: true }),
-      `<span class="lm-external-detail lm-external-tokens" data-external-token-summary title="Token counters reported by this app's llama-server /slots endpoint when it exposes one"><span class="lbl">Tokens</span><span class="val" data-external-token-val>—</span></span>`,
     ];
-    return `<div class="lm-external-details" aria-label="External engine details">${items.join('')}</div>`;
+    return `<div class="lm-external-details" aria-label="External engine details">${externalDetailLineHtml('facts', facts)}${externalDetailLineHtml('command', command)}${externalDetailLineHtml('path', model)}</div>`;
   }
 
   function externalTokenSummary(stats) {
@@ -3570,18 +3727,27 @@
     return `<span class="lm-engine-head-vram-ctx">${vramPart}${diskPart}${ctxPart}</span>`;
   }
 
+  function externalTokenChipHtml() {
+    return `<span class="lm-external-token-chip" data-external-token-summary title="Token counters reported by this app's llama-server /slots endpoint when it exposes one"><span class="lbl">Tokens</span><span class="val" data-external-token-val>—</span></span>`;
+  }
+
   function externalCardPromptHtml(row, server) {
     const actions = externalPromptActionsHtml(row);
     const kindCell = externalHeaderKindCell(row);
     const vramCell = engineHeadVramCtxCell(row, server);
-    const appName = escapeHtml(cardAppLabel(row));
+    const appName = escapeHtml(externalAppLabel(row));
+    const appBadge = externalAppInHeader()
+      ? `<span class="lm-external-app-badge" title="Loaded outside DFlash Console by ${appName}">${appName}</span>`
+      : '';
     return `<div class="lm-model-card-external-prompt">
             <span class="lm-external-origin">External</span>
+            ${appBadge ? '<span class="lm-engine-head-stack-chip is-empty" aria-hidden="true"></span>' : ''}
             ${kindCell}
             ${vramCell}
-            <span class="lm-engine-head-cluster">
-              <span class="lm-external-app-name" title="Loaded outside DFlash Console by ${appName}">${appName}</span>
-              <span class="lm-external-prompt-actions">${actions}</span>
+            <span class="lm-external-head-right">
+              ${externalTokenChipHtml()}
+              ${appBadge}
+              ${actions ? `<span class="lm-external-prompt-actions">${actions}</span>` : ''}
             </span>
           </div>`;
   }
@@ -3939,13 +4105,9 @@
   }
 
   function engineCardMetricsShellHtml({ ready, loading, isGenerating }) {
-    if (loading && !ready && !isGenerating) {
-      return cardLoadingPlaceholderRow(true);
-    }
-    if (ready || isGenerating) {
-      return engineLiveMetricsHostHtml();
-    }
-    return '';
+    // Same live-metrics host in every state (loading / warming / prefill /
+    // ready) so the card never switches templates mid-load.
+    return engineLiveMetricsHostHtml();
   }
 
   function findEngineCardElement(wrap, server, row) {
@@ -4100,11 +4262,6 @@
     const isExternal = !!(row?.external || server?.external);
     const stats = row?.inference_stats || server?.inference_stats || {};
     if (inferenceIsGenerating(stats)) return '';
-    if (
-      !isExternal
-      && row?.card_state !== 'ready'
-      && server?.status !== 'loaded'
-    ) return '';
     const slots = slotInferenceStats(stats);
     if (!slots.length && isExternal) return '';
     const visibleSlots = slots.length
@@ -4204,13 +4361,21 @@
       }) || '');
     const kindBadge = modelKindBadge(row);
     const statusInCard = desktopLayout ? '' : statusBadge;
-    const stackChip = desktopLayout && !isExternal ? engineHeadStackChip(row) : '';
+    const pinMark = isEnginePinned(server, row)
+      ? '<span class="lm-engine-pin" title="Pinned to top of the Engines page">📌</span>'
+      : '';
+    // Desktop: reserve the DFlash stack-chip cell even for plain checkpoints so
+    // every engine card header is the same height (stack logo vs no logo).
+    const stackChip = desktopLayout && !isExternal
+      ? (engineHeadStackChip(row) || '<span class="lm-engine-head-stack-chip is-empty" aria-hidden="true"></span>')
+      : '';
     if (isExternal) {
       return `
       <div class="lm-model-card-center lm-external-center${hasTokenRow ? ' has-token-row' : ''}">
         <div class="lm-model-card-center-row lm-model-card-title-row lm-external-title-row">
           <span class="lm-model-card-identity">
             <span class="lm-model-card-name-line">
+              ${pinMark}
               <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
               ${statusInCard ? `<span class="lm-external-status-badges">${statusInCard}</span>` : ''}
             </span>
@@ -4227,6 +4392,7 @@
             ${stackChip}
             <span class="lm-model-card-identity">
               <span class="lm-model-card-name-line">
+                ${pinMark}
                 <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
                 ${isExternal ? kindBadge : ''}
               </span>
@@ -4338,15 +4504,26 @@
     empty.classList.add('hidden');
 
     // DFlash models always first (loading ones at the very top), then external
-    // GPU models below, so Console models stay at the top of the list.
+    // GPU models below, so Console models stay at the top of the list.  Inside
+    // each group the heaviest models come first and lighter ones below; the
+    // two groups are sorted independently.
+    const entrySizeGb = ({ server, row }) => {
+      const size = Number(resolveCardSizeGb(row, server));
+      return Number.isFinite(size) && size > 0 ? size : -1;
+    };
+    const pinnedEngines = loadEnginePinnedSet();
     const orderedEntries = entries.slice().sort((a, b) => {
+      // Pinned models lead the page; they disappear from it when unloaded.
+      const aPin = pinnedEngines.has(enginePinKey(a.server, a.row)) ? 0 : 1;
+      const bPin = pinnedEngines.has(enginePinKey(b.server, b.row)) ? 0 : 1;
+      if (aPin !== bPin) return aPin - bPin;
       const aExt = isExternalEntry(a) ? 1 : 0;
       const bExt = isExternalEntry(b) ? 1 : 0;
       if (aExt !== bExt) return aExt - bExt;
       const aLoad = a.row?.card_state === 'loading' ? 0 : 1;
       const bLoad = b.row?.card_state === 'loading' ? 0 : 1;
       if (aLoad !== bLoad) return aLoad - bLoad;
-      return 0;
+      return entrySizeGb(b) - entrySizeGb(a);
     });
 
     const cardsMarkup = orderedEntries.map(({ server, row }, index) => {
@@ -4640,6 +4817,22 @@
     }
   }
 
+  // Select options only change when the catalog or source filter changes.
+  // Rebuilding them on every 1s status poll made the Engines toolbar visibly
+  // re-render ("page refresh") even though nothing changed.
+  const selectOptionsCache = new WeakMap();
+
+  function setSelectOptions(el, html) {
+    if (!el) return;
+    // The loading placeholder is written by setSelectLoading() outside this
+    // cache, so compare the live DOM when the cached string matches.
+    if (selectOptionsCache.get(el) === html && el.innerHTML === html) return;
+    const previous = el.value;
+    el.innerHTML = html;
+    selectOptionsCache.set(el, html);
+    if (previous) el.value = previous;
+  }
+
   function renderEngineModelPicker() {
     const pick = document.getElementById('serverModelPick');
     const sourcePick = document.getElementById('serverSourcePick');
@@ -4673,9 +4866,9 @@
         loadEngine,
         hfFilter,
       ) || catalogModels;
-      sourcePick.innerHTML = ['<option value="">All sources</option>',
+      setSelectOptions(sourcePick, ['<option value="">All sources</option>',
         ...window.DFlashModelGroups.sourceOptions(loadableCatalogModels).map(([id, label]) =>
-          `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`)].join('');
+          `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`)].join(''));
       sourcePick.value = source;
       sourcePick.disabled = false;
       sourcePick.classList.remove('is-loading');
@@ -4683,13 +4876,13 @@
     const placeholder = ENGINE_MODEL_PLACEHOLDER;
     if (!modelPickerRefreshPaused()) {
       if (window.DFlashModelGroups?.renderGroupedSelectOptions) {
-        pick.innerHTML = window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
+        setSelectOptions(pick, window.DFlashModelGroups.renderGroupedSelectOptions(visibleModels, {
           catalogKey: modelCatalogKey,
           optionLabel: modelOptionLabel,
           placeholder,
           selectedKey: selectedModelKey,
           consoleFirst: true,
-        });
+        }));
       } else {
         const buckets = groupedCatalogModels(visibleModels);
         const parts = [`<option value="">${escapeHtml(placeholder)}</option>`];
@@ -4704,7 +4897,7 @@
           }
           parts.push('</optgroup>');
         }
-        pick.innerHTML = parts.join('');
+        setSelectOptions(pick, parts.join(''));
       }
     }
     pick.disabled = false;
@@ -6424,6 +6617,13 @@
         void refreshCatalog({ force: false, shouldRender: true });
       }
     });
+    // A pin changed in the OTHER client (Electron window vs browser tab):
+    // re-sort the cards so the shared order shows immediately.
+    window.addEventListener('dflash:ui-state', (event) => {
+      const scopes = event?.detail?.scopes || [];
+      if (scopes.length && !scopes.includes('engines')) return;
+      if (enginesViewActive()) renderCards();
+    });
     document.getElementById('serverSourcePick')?.addEventListener('change', () => {
       clearLoadedCardSelection();
       renderInspectorEmptyState();
@@ -6450,6 +6650,9 @@
     });
     document.getElementById('engineCardsRefreshBtn')?.addEventListener('click', () => {
       void manualRefreshEngineCards();
+    });
+    document.getElementById('dfUiRefreshBtn')?.addEventListener('click', (event) => {
+      void manualRefreshInterface(event.currentTarget);
     });
 
     document.getElementById('serverSettingsPick')?.addEventListener('change', (e) => {
@@ -6615,6 +6818,7 @@
     ensureInspectorVisible,
     refreshCatalog,
     ingestExternalGpuLoads,
+    ingestGpuOtherUsage,
     syncPipelineStandbyFromFeed,
     beginRuntimeLoadCard: beginPendingLoadCard,
     clearRuntimeLoadCard: clearPendingLoadCard,

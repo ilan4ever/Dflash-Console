@@ -157,31 +157,41 @@ def test_other_gpu_label_uses_structured_onevoice_component():
     assert app_label == 'OneVoice App/API'
 
 
-def test_fetch_process_details_powershell_uses_valid_process_filter(monkeypatch):
+def test_fetch_process_details_powershell_uses_one_process_table(monkeypatch):
     captured: list[str] = []
 
-    class Result:
-        returncode = 0
-        stdout = json.dumps({
-            'processes': [{
-                'ProcessId': 42288,
-                'Name': 'python.exe',
-                'CommandLine': r'python.exe -u C:\dev\OneVoice\tools\speech_hermes_ws.py',
-                'ExecutablePath': r'C:\python.exe',
-                'ParentProcessId': 1,
-            }],
-            'parents': [],
-        })
+    stdout = json.dumps([
+        {
+            'ProcessId': 42288,
+            'Name': 'python.exe',
+            'CommandLine': r'python.exe -u C:\dev\OneVoice\tools\speech_hermes_ws.py',
+            'ExecutablePath': r'C:\python.exe',
+            'ParentProcessId': 1,
+        },
+        {
+            'ProcessId': 1,
+            'Name': 'explorer.exe',
+            'CommandLine': '',
+            'ExecutablePath': r'C:\Windows\explorer.exe',
+            'ParentProcessId': 0,
+        },
+    ])
 
     def fake_run(argv, **_kwargs):
         captured.append(str(argv[-1]))
-        return 0, Result.stdout
+        return 0, stdout
 
     monkeypatch.setattr('core.bounded_proc.run_bounded', fake_run)
+    monkeypatch.setattr(gpu_processes, '_PROCESS_TABLE_CACHE', {'at': 0.0, 'rows': {}})
     details = _fetch_process_details_powershell([42288])
     assert details[42288]['command_line'].endswith('speech_hermes_ws.py')
-    assert '{ $ids -contains $_.ProcessId }' in captured[0]
-    assert '{{' not in captured[0]
+    assert details[42288]['parent_process_name'] == 'explorer.exe'
+    assert 'Get-CimInstance Win32_Process' in captured[0]
+    # Every later lookup inside the same scan reuses the snapshot instead of
+    # spawning another PowerShell process for each PID set.
+    again = _fetch_process_details_powershell([1])
+    assert again[1]['process_name'] == 'explorer.exe'
+    assert len(captured) == 1
 
 
 def test_model_hint_hf_hub():
@@ -500,17 +510,75 @@ def test_build_external_card_speak_stt_loading_with_named_log(tmp_path, monkeypa
 
 
 def test_get_external_gpu_loads_skips_when_pipeline_standby(monkeypatch):
-    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = 0.0
+    """Standby throttles the scan instead of blanking the cards."""
+    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = time.time()
     gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
     monkeypatch.setattr(
         'core.engine_state.console_pipeline_active',
         lambda cfg=None: False,
+    )
+    monkeypatch.setattr(gpu_processes, '_pipeline_listener_up', lambda cfg: False)
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: (_ for _ in ()).throw(AssertionError('standby must not rescan')),
     )
     cards = get_external_gpu_loads(
         servers=[{'id': 'demo', 'port': 8091, 'engine_on': False}],
         gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
         cfg={'servers': [{'id': 'demo', 'engine_on': False}]},
     )
+    assert cards == []
+
+
+def test_get_external_gpu_loads_standby_reuses_recent_scan(monkeypatch):
+    """Engine off must not blank the cards: reuse the last scan, no rescan."""
+    monkeypatch.setattr('core.engine_state.console_pipeline_active', lambda cfg=None: False)
+    monkeypatch.setattr(gpu_processes, '_pipeline_listener_up', lambda cfg: False)
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_compute_apps',
+        lambda: (_ for _ in ()).throw(AssertionError('cached scan expected')),
+    )
+    monkeypatch.setattr(
+        gpu_processes,
+        '_enrich_external_cards',
+        lambda cards, attach_stats=True: [dict(card) for card in cards],
+    )
+    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = time.time()
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = [
+        {'id': 'ext:1', 'title': 'OneVoice F5-TTS', 'pid': 4242},
+    ]
+    cards = get_external_gpu_loads(
+        servers=[{'id': 'demo', 'port': 8091, 'engine_on': False}],
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        cfg={'servers': [{'id': 'demo', 'engine_on': False}]},
+    )
+    assert [card['id'] for card in cards] == ['ext:1']
+
+
+def test_get_external_gpu_loads_standby_rescans_when_stale(monkeypatch):
+    monkeypatch.setattr('core.engine_state.console_pipeline_active', lambda cfg=None: False)
+    monkeypatch.setattr(gpu_processes, '_pipeline_listener_up', lambda cfg: False)
+    calls = {'n': 0}
+
+    def _compute():
+        calls['n'] += 1
+        return []
+
+    monkeypatch.setattr(gpu_processes, '_query_compute_apps', _compute)
+    monkeypatch.setattr(gpu_processes, '_discover_speak_stt_listener_cards', lambda **_kw: [])
+    monkeypatch.setattr(gpu_processes, '_discover_onevoice_worker_cards', lambda **_kw: [])
+    monkeypatch.setattr(gpu_processes, '_cards_from_known_apps', lambda **_kw: [])
+    monkeypatch.setattr(gpu_processes, '_enrich_external_cards', lambda cards, **_: list(cards))
+    gpu_processes._EXTERNAL_SCAN_CACHE['at'] = time.time() - 60.0
+    gpu_processes._EXTERNAL_SCAN_CACHE['cards'] = []
+    cards = get_external_gpu_loads(
+        servers=[{'id': 'demo', 'port': 8091, 'engine_on': False}],
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        cfg={'servers': [{'id': 'demo', 'engine_on': False}]},
+    )
+    assert calls['n'] == 1
     assert cards == []
 
 

@@ -25,11 +25,13 @@ VISION_CHAT_PROFILES = frozenset({
 
 
 def server_supports_vision_chat(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> bool:
-    """True only for profiles that intentionally run chat vision (mmproj in preset)."""
+    """True when a vision projector file is available for this engine.
+
+    Models tab / vision setup can wire an mmproj onto any engine profile
+    (including generic-ar). An explicit ``mmproj_path`` or a sibling projector
+    next to the GGUF is enough. Opt out with ``vision: false``.
+    """
     if server.get('vision') is False:
-        return False
-    profile = str(server.get('profile') or '').strip().lower()
-    if profile not in VISION_CHAT_PROFILES:
         return False
     mmproj = str(resolve_mmproj_path(server, cfg=cfg) or '').strip()
     return bool(mmproj and Path(mmproj).expanduser().is_file())
@@ -333,6 +335,86 @@ def vision_plan(*, model_path: str, server_id: str | None = None, cfg: dict[str,
     }
 
 
+
+def hot_apply_mmproj_to_engine(
+    server_id: str,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rewrite the engine preset and reload only that engine when mmproj changed.
+
+    Does not restart the Console API. No-op when the listener is down or the
+    live worker already has the projector.
+    """
+    from core.chat_vision import live_loaded_has_mmproj
+    from core.config import get_server, load_config, normalize_server
+    from core.model_presets import write_server_preset
+    from core.runtime import tcp_port_open
+
+    config = cfg or load_config()
+    sid = str(server_id or "").strip()
+    if not sid:
+        return {"success": False, "error": "server_id required", "reloaded": False}
+    raw = get_server(config, sid)
+    if not raw:
+        return {"success": False, "error": f"unknown server: {sid}", "reloaded": False}
+    entry = normalize_server(raw)
+    if entry.get("vision") is False:
+        return {"success": True, "reloaded": False, "skipped": "vision_disabled"}
+
+    mmproj = str(resolve_mmproj_path(entry, cfg=config) or "").strip()
+    if not mmproj or not Path(mmproj).expanduser().is_file():
+        return {"success": False, "error": "no mmproj file to apply", "reloaded": False}
+
+    # Ensure config + preset carry the projector before any reload.
+    if str(entry.get("mmproj_path") or "").strip() != mmproj:
+        servers = list(config.get("servers") or [])
+        for idx, row in enumerate(servers):
+            if isinstance(row, dict) and str(row.get("id") or "") == sid:
+                servers[idx] = {**row, "mmproj_path": mmproj}
+                config["servers"] = servers
+                save_config(config)
+                entry = normalize_server(servers[idx])
+                break
+    write_server_preset(entry, cfg=config)
+
+    host = str(entry.get("host") or "127.0.0.1")
+    port = int(entry.get("port") or 0)
+    api_url = str(entry.get("api_url") or "")
+    if port <= 0 or not tcp_port_open(host, port):
+        return {"success": True, "reloaded": False, "preset_updated": True}
+
+    live_mmproj = live_loaded_has_mmproj(entry)
+    if live_mmproj is True:
+        return {"success": True, "reloaded": False, "already_live": True, "preset_updated": True}
+
+    from core.runtime import stop_server
+    from core.server_boot import listener_is_managed_engine, load_server_checkpoint
+
+    if not listener_is_managed_engine(host, port):
+        return {
+            "success": False,
+            "error": "engine listener is not Console-managed; cannot hot-apply mmproj",
+            "reloaded": False,
+            "preset_updated": True,
+        }
+
+    stop_server(port=port, host=host, api_url=api_url or None)
+    reload = load_server_checkpoint(entry, cfg=config)
+    if not reload.get("success"):
+        return {
+            "success": False,
+            "error": str(reload.get("error") or "could not reload engine with vision projector"),
+            "reloaded": False,
+            "preset_updated": True,
+        }
+    return {
+        "success": True,
+        "reloaded": True,
+        "preset_updated": True,
+    }
+
+
 def wire_vision(
     *,
     model_path: str,
@@ -385,13 +467,22 @@ def wire_vision(
             return {'success': False, 'error': f'unknown server: {server_id}'}
 
     invalidate_model_catalog_cache()
-    return {
+    result = {
         'success': True,
         'model_path': str(target.resolve()),
         'mmproj_path': str(projector.resolve()),
         'server_id': server_id or '',
         'vision_ready': True,
+        'reloaded': False,
     }
+    if server_id:
+        applied = hot_apply_mmproj_to_engine(server_id, cfg=load_config())
+        result['engine_apply'] = applied
+        result['reloaded'] = bool(applied.get('reloaded'))
+        if applied.get('success') is False and applied.get('error'):
+            # Config/preset are wired; surface apply failure without undoing the wire.
+            result['engine_apply_error'] = str(applied.get('error'))
+    return result
 
 
 def wire_vision_after_download(post_action: dict[str, Any]) -> None:
@@ -402,6 +493,8 @@ def wire_vision_after_download(post_action: dict[str, Any]) -> None:
     )
     if not result.get('success'):
         raise RuntimeError(result.get('error') or 'failed to wire vision projector')
+    if result.get('engine_apply_error'):
+        raise RuntimeError(result.get('engine_apply_error'))
 
 
 def ensure_server_vision(

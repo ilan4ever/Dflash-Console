@@ -229,6 +229,15 @@ def test_resolve_repo_sizes_uses_index_then_hub(catalog_index, monkeypatch):
             'tags': ['transformers'],
         },
     ])
+    # A verified size must not be re-fetched from the Hub.
+    catalog_index.update_model_sizes({
+        'google/gemma-3-270m': {
+            'size_gb': 0.55,
+            'size_label': '0.55 GB',
+            'size_bytes': int(0.55 * 1024 ** 3),
+            'size_source': 'files',
+        },
+    })
 
     def fake_fetch(repo_id, timeout=8.0):
         assert repo_id == 'google/gemma-3-1b-it'
