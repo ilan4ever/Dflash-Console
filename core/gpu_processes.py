@@ -3091,8 +3091,8 @@ def _console_engine_identity(
     servers: list[dict[str, Any]] | None,
     *,
     cfg: dict[str, Any] | None = None,
-) -> tuple[set[str], set[str]]:
-    """Model tokens + file paths the Console already owns.
+) -> tuple[set[str], set[str], list[dict[str, Any]]]:
+    """Model tokens + file paths the Console already owns, plus the profiles.
 
     A leftover Console engine (or a Console-started helper like the embedding
     listener) can listen on a port no profile knows about.  When its command
@@ -3101,22 +3101,34 @@ def _console_engine_identity(
     """
     tokens: set[str] = set()
     paths: set[str] = set()
+    profiles: list[dict[str, Any]] = []
     for server in servers or []:
         if not isinstance(server, dict):
             continue
+        profile = {
+            'id': str(server.get('id') or ''),
+            'tokens': set(),
+            'paths': set(),
+            'loaded_by': str(server.get('loaded_by') or '').strip(),
+            'component_label': str(server.get('component_label') or '').strip(),
+        }
         for value in (server.get('id'), server.get('model_id'), server.get('label'), server.get('model_name')):
             token = _norm_engine_token(value)
             if token:
                 tokens.add(token)
+                profile['tokens'].add(token)
         for value in (server.get('model_path'), server.get('path'), server.get('draft_path')):
             path = _norm_engine_path(value)
             if not path:
                 continue
             paths.add(path)
+            profile['paths'].add(path)
             stem = path.rsplit('/', 1)[-1]
             if stem:
                 tokens.add(_norm_engine_token(stem))
                 tokens.add(_norm_engine_token(stem.rsplit('.', 1)[0]))
+                profile['tokens'].add(_norm_engine_token(stem))
+                profile['tokens'].add(_norm_engine_token(stem.rsplit('.', 1)[0]))
         try:
             from core.server_boot import resolve_load_target_path
 
@@ -3125,11 +3137,15 @@ def _console_engine_identity(
             target = ''
         if target:
             paths.add(target)
+            profile['paths'].add(target)
             stem = target.rsplit('/', 1)[-1]
             if stem:
                 tokens.add(_norm_engine_token(stem))
                 tokens.add(_norm_engine_token(stem.rsplit('.', 1)[0]))
-    return tokens, paths
+                profile['tokens'].add(_norm_engine_token(stem))
+                profile['tokens'].add(_norm_engine_token(stem.rsplit('.', 1)[0]))
+        profiles.append(profile)
+    return tokens, paths, profiles
 
 
 def _mark_console_owned_engine_cards(
@@ -3147,7 +3163,7 @@ def _mark_console_owned_engine_cards(
     app: the card is flagged ``console_engine`` and the UI labels it
     "Console engine" with the DFlash Console app badge.
     """
-    tokens, paths = _console_engine_identity(servers, cfg=cfg)
+    tokens, paths, profiles = _console_engine_identity(servers, cfg=cfg)
     root = _norm_engine_path(dflash_root)
     for card in cards:
         if str(card.get('app_source') or '').lower() != 'llama-server':
@@ -3165,18 +3181,30 @@ def _mark_console_owned_engine_cards(
             card_path = id_as_path
             card_id = _norm_engine_token(id_as_path.rsplit('/', 1)[-1])
             card_id_stem = _norm_engine_token(card_path.rsplit('/', 1)[-1].rsplit('.', 1)[0])
-        owned = False
-        if card_path and card_path in paths:
-            owned = True
-        elif card_id and card_id in tokens:
-            owned = True
-        elif card_id_stem and card_id_stem in tokens:
-            owned = True
-        elif card_path and root and card_path.startswith(root + '/'):
-            owned = True
+        matched = None
+        for profile in profiles:
+            if card_path and card_path in profile['paths']:
+                matched = profile
+                break
+            if card_id and card_id in profile['tokens']:
+                matched = profile
+                break
+            if card_id_stem and card_id_stem in profile['tokens']:
+                matched = profile
+                break
+        owned = matched is not None or bool(card_path and root and card_path.startswith(root + '/'))
         if owned:
             card['console_engine'] = True
-            card['app_label'] = 'DFlash Console'
+            # Keep the app that actually loaded the model (the Console client
+            # label, e.g. "DeepSeek Harness"), not the Console name.
+            caller = ''
+            if matched:
+                caller = str(matched.get('loaded_by') or '').strip()
+                if not caller:
+                    component = str(matched.get('component_label') or '').strip()
+                    if component and 'openai_gateway' not in component:
+                        caller = component
+            card['app_label'] = caller or 'DFlash Console'
     return cards
 
 

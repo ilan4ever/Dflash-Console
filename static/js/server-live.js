@@ -3757,9 +3757,11 @@
     // A leftover Console engine keeps its card (it holds real VRAM) but must
     // not claim to be an external app.
     const consoleEngine = row?.console_engine === true;
-    const appName = escapeHtml(consoleEngine ? 'DFlash Console' : externalAppLabel(row));
-    // Console cards are identified by their colour and app badge - they carry
-    // no origin tag.  Only real external apps get the small "External" label.
+    // The badge names the app that loaded the model (client label from the
+    // engine state), falling back to the Console name when none is recorded.
+    const appName = escapeHtml(externalAppLabel(row));
+    // Console cards are identified by their colour - they carry no origin tag.
+    // Only real external apps get the small "External" label.
     const originTag = consoleEngine
       ? ''
       : '<span class="lm-external-origin">External</span>';

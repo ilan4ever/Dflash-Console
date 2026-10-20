@@ -1778,3 +1778,18 @@ def test_mark_console_owned_engine_cards_leaves_foreign_llama_server():
     )
     assert [card['id'] for card in out] == ['x']
     assert 'console_engine' not in out[0]
+
+
+def test_mark_console_owned_engine_cards_uses_the_client_that_loaded_it():
+    out = gpu_processes._mark_console_owned_engine_cards(
+        [{'id': 'a', 'app_source': 'llama-server', 'model_id': 'gemma-31b-it-quant', 'model_path': ''}],
+        servers=[{
+            'id': 'gemma-31b-it-quant-dflash',
+            'model_id': 'gemma-31b-it-quant',
+            'loaded_by': 'DeepSeek Harness',
+        }],
+        cfg=None,
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert out[0]['console_engine'] is True
+    assert out[0]['app_label'] == 'DeepSeek Harness'
