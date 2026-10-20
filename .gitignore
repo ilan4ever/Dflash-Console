@@ -95,3 +95,6 @@ scripts/deployment/config.production-deploy.json
 /scripts/check-wp-mail.php
 /scripts/test-wp-mail-send.php
 /scripts/resend-latest-dflash-report-mail.php
+
+# Local runtime backup snapshots (config copies, undo scripts, logs)
+/backups/
