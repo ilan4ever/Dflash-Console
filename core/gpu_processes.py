@@ -3722,6 +3722,53 @@ def _related_external_compute_pids(
     return sorted(live)
 
 
+def _parent_router_unload(pid: int, *, model_id: str = '') -> dict[str, Any]:
+    """Ask the parent llama-server router to unload a model it spawned.
+
+    Router-mode engines start each loaded model as a child llama-server.  The
+    router owns that child, so ``POST /models/unload`` frees the GPU even when
+    Windows refuses to let us kill the child (it was started by an elevated
+    session).  This is the non-admin path for leftover Console engines.
+    """
+    target = int(pid or 0)
+    if target <= 0:
+        return {'success': False, 'error': 'invalid pid'}
+    parent_pid = int(_query_process_details([target]).get(target, {}).get('parent_pid') or 0)
+    if parent_pid <= 0:
+        return {'success': False, 'error': 'no parent process'}
+    parent = _query_process_details([parent_pid]).get(parent_pid, {})
+    parent_name = str(parent.get('process_name') or '')
+    if not re.search(r'llama-server', parent_name, re.I):
+        return {'success': False, 'error': 'parent is not a llama-server router'}
+    ports = _listening_ports_for_pid(parent_pid)
+    if not ports:
+        return {'success': False, 'error': 'parent router is not listening'}
+    from core.runtime import router_unload_available, unload_model
+
+    for port in ports:
+        api_url = f'http://127.0.0.1:{int(port)}/v1'
+        if not router_unload_available(api_url):
+            continue
+        candidates = [str(model_id or '').strip()]
+        if not candidates[0]:
+            try:
+                entries = _probe_models_fast('127.0.0.1', port)
+                candidates = list(entries[0] or []) if entries else []
+            except Exception:
+                candidates = []
+        for model in [item for item in candidates if item]:
+            result = unload_model(api_url=api_url, model_id=model)
+            if result.get('success'):
+                return {
+                    'success': True,
+                    'method': 'parent-router-unload',
+                    'router_port': int(port),
+                    'model': model,
+                    'response': result.get('response'),
+                }
+    return {'success': False, 'error': 'parent router did not unload the model'}
+
+
 def _kill_external_pid(pid: int) -> dict[str, Any]:
     try:
         if sys.platform == 'win32':
@@ -3860,6 +3907,17 @@ def unload_external_gpu_process(
             killed.append(kill_pid)
         else:
             last_error = str(result.get('error') or 'taskkill failed')
+            if result.get('error_code') == 'access_denied':
+                # Elevation is not the only way out: the parent router owns the
+                # child and can drop it over HTTP (frees the VRAM).
+                router_result = _parent_router_unload(
+                    kill_pid,
+                    model_id=str((matching or {}).get('model_id') or model or ''),
+                )
+                if router_result.get('success'):
+                    killed.append(kill_pid)
+                    last_error = ''
+                    break
 
     _forget_external_scan()
     if not killed:

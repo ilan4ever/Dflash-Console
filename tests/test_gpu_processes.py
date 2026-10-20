@@ -1793,3 +1793,30 @@ def test_mark_console_owned_engine_cards_uses_the_client_that_loaded_it():
     )
     assert out[0]['console_engine'] is True
     assert out[0]['app_label'] == 'DeepSeek Harness'
+
+
+def test_parent_router_unload_uses_the_parent_router_api(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(
+        gpu_processes,
+        "_query_process_details",
+        lambda pids: {
+            4242: {"parent_pid": 900, "process_name": "llama-server.exe"},
+            900: {"parent_pid": 1, "process_name": "llama-server.exe"},
+        },
+    )
+    monkeypatch.setattr(gpu_processes, "_listening_ports_for_pid", lambda pid: [8907] if int(pid) == 900 else [])
+    monkeypatch.setattr("core.runtime.router_unload_available", lambda api_url: True)
+
+    def _unload(*, api_url, model_id):
+        calls["api_url"] = api_url
+        calls["model_id"] = model_id
+        return {"success": True, "unloaded": True}
+
+    monkeypatch.setattr("core.runtime.unload_model", _unload)
+    result = gpu_processes._parent_router_unload(4242, model_id="underdog-saluki-27b-1.0-iq2-mix")
+    assert result["success"] is True
+    assert result["method"] == "parent-router-unload"
+    assert result["router_port"] == 8907
+    assert calls["model_id"] == "underdog-saluki-27b-1.0-iq2-mix"
