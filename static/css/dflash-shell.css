@@ -4291,32 +4291,11 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .eje
   margin-left: 0;
 }
 
-/* DFlash cards: the PID/client line, the Target/Accelerator line and the GPU
-   controls share one body row, and the sizes + LAST metrics keep the row
-   below.  Every card therefore has one header row and two body rows. */
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster {
-  display: contents;
-}
-
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-loaded-by-identity {
-  order: 10;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-engine-head-cluster .lm-engine-head-controls {
-  order: 11;
-  /* Pin GPU/slots/Unload to the right edge even when the client/PID line is
-     short (e.g. a plain GGUF loaded through the OpenAI gateway). */
-  margin-left: auto;
-}
-
-html:not(.df-narrow) .df-shell .lm-engine-card-desktop.dflash-model:is(.ready, .loading, .ejecting) .lm-model-stats {
-  order: 12;
-  flex: 1 0 100%;
-  width: 100%;
-  margin: 0;
-}
+/* DFlash cards keep the generic body layout: the cluster (PID/client line +
+   GPU/slots/Unload at the right edge) owns its own row and the sizes + LAST
+   metrics rail keeps the row below.  Do NOT flatten the cluster with
+   `display: contents` and do NOT give the metrics an auto margin of their own -
+   that split the free space and left Unload floating mid-row. */
 
 html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-loaded-by-identity,
 html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .ejecting) .lm-external-app-name {
