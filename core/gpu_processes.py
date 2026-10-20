@@ -3769,6 +3769,73 @@ def _parent_router_unload(pid: int, *, model_id: str = '') -> dict[str, Any]:
     return {'success': False, 'error': 'parent router did not unload the model'}
 
 
+def _pid_running(pid: int) -> bool:
+    """Cheap dependency-free liveness check (works across integrity levels)."""
+    try:
+        target = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if target <= 0:
+        return False
+    if sys.platform != 'win32':
+        try:
+            os.kill(target, 0)
+        except OSError:
+            return False
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        handle = kernel32.OpenProcess(0x1000, False, target)  # QUERY_LIMITED_INFORMATION
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        # ERROR_ACCESS_DENIED means the process exists but is protected.
+        return int(ctypes.get_last_error() or 0) == 5
+    except Exception:
+        return True
+
+
+def _wmi_terminate_pid(pid: int) -> bool:
+    """End a process through the WMI provider, which runs as SYSTEM.
+
+    A leftover engine started by an elevated Console refuses a plain
+    ``taskkill`` from a normally-launched Console ("Access is denied"), but the
+    WMI provider still ends it for the same user - no UAC prompt needed.
+    """
+    if sys.platform != 'win32':
+        return False
+    target = int(pid)
+    if not _pid_running(target):
+        return False
+    script = (
+        f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId={target}' "
+        "-ErrorAction SilentlyContinue; "
+        'if ($p) { $p | Invoke-CimMethod -MethodName Terminate | Out-Null }'
+    )
+    try:
+        subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            **_subprocess_no_window_kwargs(),
+        )
+    except Exception:
+        return False
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        if not _pid_running(target):
+            return True
+        time.sleep(0.15)
+    return not _pid_running(target)
+
+
 def _kill_external_pid(pid: int) -> dict[str, Any]:
     try:
         if sys.platform == 'win32':
@@ -3783,6 +3850,8 @@ def _kill_external_pid(pid: int) -> dict[str, Any]:
             if proc.returncode != 0:
                 detail = (proc.stderr or proc.stdout or '').strip() or 'taskkill failed'
                 if 'access is denied' in detail.lower():
+                    if _wmi_terminate_pid(int(pid)):
+                        return {'success': True, 'pid': int(pid), 'method': 'wmi-terminate'}
                     # Started by another Windows session (usually an elevated
                     # Console or an app running as administrator): an
                     # unelevated Console cannot end it, so say that instead of

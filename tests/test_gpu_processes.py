@@ -1820,3 +1820,23 @@ def test_parent_router_unload_uses_the_parent_router_api(monkeypatch):
     assert result["method"] == "parent-router-unload"
     assert result["router_port"] == 8907
     assert calls["model_id"] == "underdog-saluki-27b-1.0-iq2-mix"
+
+
+def test_kill_external_pid_falls_back_to_wmi_terminate(monkeypatch):
+    class _Proc:
+        returncode = 1
+        stderr = 'ERROR: The process with PID 21552 could not be terminated. Reason: Access is denied.'
+        stdout = ''
+
+    calls = {'wmi': 0}
+
+    def _wmi(pid):
+        calls['wmi'] += 1
+        return True
+
+    monkeypatch.setattr(gpu_processes.subprocess, 'run', lambda *_a, **_k: _Proc())
+    monkeypatch.setattr(gpu_processes, '_wmi_terminate_pid', _wmi)
+    result = gpu_processes._kill_external_pid(21552)
+    assert calls['wmi'] == 1
+    assert result['success'] is True
+    assert result['method'] == 'wmi-terminate'
