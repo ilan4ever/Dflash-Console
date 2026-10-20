@@ -1672,3 +1672,102 @@ def test_get_gpu_other_processes_excludes_llama_server_models(monkeypatch):
     pids = {row['pid'] for row in payload['processes']}
     assert 34244 not in pids
     assert 500 in pids
+
+
+def test_console_ancestor_pid_finds_the_console_api(monkeypatch):
+    import os
+
+    api_pid = os.getpid()
+    chain = {
+        501: {'parent_pid': 502, 'process_name': 'llama-server.exe'},
+        502: {'parent_pid': api_pid, 'process_name': 'pwsh.exe'},
+    }
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {int(p): chain[int(p)] for p in pids if int(p) in chain},
+    )
+    assert gpu_processes._console_ancestor_pid(501) == api_pid
+
+
+def test_console_ancestor_pid_ignores_foreign_processes(monkeypatch):
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {int(p): {'parent_pid': 0, 'process_name': 'other.exe'} for p in pids},
+    )
+    assert gpu_processes._console_ancestor_pid(601) == 0
+
+
+def test_build_external_card_skips_console_owned_engine(monkeypatch):
+    """A Console-spawned llama-server on an unconfigured port is not external."""
+    import os
+
+    api_pid = os.getpid()
+    monkeypatch.setattr(gpu_processes, '_listening_ports_for_pid', lambda _pid: [49287])
+    monkeypatch.setattr(gpu_processes, '_probe_loaded_model', lambda *_a, **_k: {'api_url': 'http://127.0.0.1:49287/v1'})
+    monkeypatch.setattr(
+        gpu_processes,
+        '_query_process_details',
+        lambda pids: {
+            int(p): {'parent_pid': api_pid, 'process_name': 'llama-server.exe', 'command_line': ''}
+            for p in pids
+        },
+    )
+    card = _build_external_card(
+        {'pid': 7001, 'gpu_index': 0, 'vram_mb': 4096.0, 'vram_gb': 4.0, 'process_name': 'llama-server.exe'},
+        details={
+            'process_name': 'llama-server.exe',
+            'command_line': '',
+            'parent_process_name': 'python.exe',
+            'parent_pid': api_pid,
+        },
+        gpus=[{'index': 0, 'display_name': 'GPU 0', 'name': 'RTX'}],
+        managed_pids=set(),
+        configured_ports=set(),
+        dflash_root='',
+    )
+    assert card is None
+
+
+def test_kill_external_pid_reports_permission_problem(monkeypatch):
+    class _Proc:
+        returncode = 1
+        stderr = 'ERROR: The process with PID 21552 could not be terminated. Reason: Access is denied.'
+        stdout = ''
+
+    monkeypatch.setattr(gpu_processes.subprocess, 'run', lambda *_a, **_k: _Proc())
+    result = gpu_processes._kill_external_pid(21552)
+    assert result['success'] is False
+    assert result['error_code'] == 'access_denied'
+    assert 'another session' in result['error']
+
+
+def test_drop_console_owned_engine_cards_hides_own_models():
+    servers = [
+        {'id': 'gemma-31b-it-quant-dflash', 'model_id': 'gemma-31b-it-quant', 'model_path': r'C:\models\gemma-31b-it-quant.gguf'},
+        {'id': 'nomic-embed-text-v1-5-q8-0', 'model_id': 'nomic-embed', 'model_path': r'C:\dev\Dflash-Console\models\embeddings\nomic-embed-text-v1.5.Q8_0.gguf'},
+    ]
+    cards = [
+        {'id': 'a', 'app_source': 'llama-server', 'model_id': 'gemma-31b-it-quant', 'model_path': ''},
+        {'id': 'b', 'app_source': 'llama-server', 'model_id': '', 'model_path': r'C:\dev\Dflash-Console\models\embeddings\nomic-embed-text-v1.5.Q8_0.gguf'},
+        {'id': 'c', 'app_source': 'llama-server', 'model_id': 'someone-elses-model', 'model_path': r'D:\other\model.gguf'},
+        {'id': 'd', 'app_source': 'onevoice', 'model_id': 'gemma-31b-it-quant', 'model_path': ''},
+    ]
+    kept = gpu_processes._drop_console_owned_engine_cards(
+        cards,
+        servers=servers,
+        cfg=None,
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert [card['id'] for card in kept] == ['c', 'd']
+
+
+def test_drop_console_owned_engine_cards_keeps_foreign_llama_server():
+    kept = gpu_processes._drop_console_owned_engine_cards(
+        [{'id': 'x', 'app_source': 'llama-server', 'model_id': 'lmstudio-model', 'model_path': r'D:\lm\a.gguf'}],
+        servers=[{'id': 'demo', 'model_id': 'demo-model', 'model_path': r'C:\models\demo.gguf'}],
+        cfg=None,
+        dflash_root=r'C:\dev\Dflash-Console',
+    )
+    assert [card['id'] for card in kept] == ['x']

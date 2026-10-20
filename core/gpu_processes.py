@@ -733,6 +733,42 @@ def _managed_listener_pids(servers: list[dict[str, Any]]) -> set[int]:
     return {int(port_pids[port]) for port in open_ports if port in port_pids}
 
 
+_CONSOLE_ANCESTOR_MAX_HOPS = 4
+
+
+def _console_ancestor_pid(pid: int, *, details_map: dict[int, dict[str, Any]] | None = None) -> int:
+    """Console process this pid descends from, or 0 when it is not ours.
+
+    A Console-owned engine can end up on a port nobody configured: router-mode
+    children, a leftover engine from an earlier Console run, or a rendering /
+    embedding listener the Console started itself.  Walking the parent chain
+    (bounded) is what tells "our llama-server" apart from a real external app,
+    even when the command line is unreadable (another security context).
+    """
+    api_pid = os.getpid()
+    seen: set[int] = set()
+    current = int(pid or 0)
+    if current <= 0:
+        return 0
+    for _ in range(_CONSOLE_ANCESTOR_MAX_HOPS + 1):
+        row = (details_map or {}).get(current)
+        if row is None:
+            row = _query_process_details([current]).get(current) or {}
+        parent = int(row.get('parent_pid') or 0)
+        if parent <= 0 or parent in seen:
+            return 0
+        if parent == api_pid or parent in _console_runtime_pids():
+            return parent
+        seen.add(parent)
+        current = parent
+    return 0
+
+
+def _console_runtime_pids() -> set[int]:
+    """Parent PIDs owned by the Console itself (the API process)."""
+    return {os.getpid()}
+
+
 def _listening_ports_map() -> dict[int, list[int]]:
     return listening_ports_map()
 
@@ -1835,6 +1871,12 @@ def _build_external_card_base(
             and re.search(r'(?:DFlash Console|Dflash-Console)[\\/].*logs[\\/]presets[\\/].+\.ini', parent_cmd, re.I)
         ):
             return None
+    # Anything the Console itself spawned is ours, even when it listens on a
+    # port no profile knows about (router-mode children, a leftover engine from
+    # an earlier run, embedding/rendering listeners).  Reporting those as
+    # "external llama-server" made Console models look like foreign apps.
+    if _console_ancestor_pid(pid):
+        return None
 
     process_name = str(details.get('process_name') or entry.get('process_name') or '')
     if process_name.startswith('['):
@@ -3005,6 +3047,15 @@ def get_external_gpu_loads(
         cards.append(card)
 
     cards = _dedupe_external_cards(cards)
+    # A leftover Console engine (or a Console-started helper on an unconfigured
+    # port) is not an external app: hide it instead of labelling our own model
+    # as "llama-server external".
+    cards = _drop_console_owned_engine_cards(
+        cards,
+        servers=servers,
+        cfg=cfg,
+        dflash_root=dflash_root,
+    )
     # Never show a card for a model file that no longer exists on disk (e.g.
     # after the file was moved or deleted) — a card for a missing file is
     # misleading. Applies to every external card.
@@ -3025,6 +3076,109 @@ def get_external_gpu_loads(
 def _forget_external_scan() -> None:
     _EXTERNAL_SCAN_CACHE['at'] = 0.0
     _EXTERNAL_SCAN_CACHE['cards'] = []
+
+
+def _norm_engine_token(value: Any) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+
+def _norm_engine_path(value: Any) -> str:
+    text = str(value or '').strip().replace('\\', '/').lower()
+    return text.strip('/')
+
+
+def _console_engine_identity(
+    servers: list[dict[str, Any]] | None,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Model tokens + file paths the Console already owns.
+
+    A leftover Console engine (or a Console-started helper like the embedding
+    listener) can listen on a port no profile knows about.  When its command
+    line is unreadable the model it serves is still ours, so the served model
+    is what identifies it.
+    """
+    tokens: set[str] = set()
+    paths: set[str] = set()
+    for server in servers or []:
+        if not isinstance(server, dict):
+            continue
+        for value in (server.get('id'), server.get('model_id'), server.get('label'), server.get('model_name')):
+            token = _norm_engine_token(value)
+            if token:
+                tokens.add(token)
+        for value in (server.get('model_path'), server.get('path'), server.get('draft_path')):
+            path = _norm_engine_path(value)
+            if not path:
+                continue
+            paths.add(path)
+            stem = path.rsplit('/', 1)[-1]
+            if stem:
+                tokens.add(_norm_engine_token(stem))
+                tokens.add(_norm_engine_token(stem.rsplit('.', 1)[0]))
+        try:
+            from core.server_boot import resolve_load_target_path
+
+            target = _norm_engine_path(resolve_load_target_path(server, cfg=cfg))
+        except Exception:
+            target = ''
+        if target:
+            paths.add(target)
+            stem = target.rsplit('/', 1)[-1]
+            if stem:
+                tokens.add(_norm_engine_token(stem))
+                tokens.add(_norm_engine_token(stem.rsplit('.', 1)[0]))
+    return tokens, paths
+
+
+def _drop_console_owned_engine_cards(
+    cards: list[dict[str, Any]],
+    *,
+    servers: list[dict[str, Any]] | None,
+    cfg: dict[str, Any] | None = None,
+    dflash_root: str = '',
+) -> list[dict[str, Any]]:
+    """Hide bare ``llama-server`` cards that actually serve a Console model.
+
+    Those processes are leftovers of the Console's own engines (earlier run,
+    router child, embedding/rendering listener).  They are not external apps,
+    and listing them made Console models look like foreign "LLAMA-SERVER"
+    cards.  App-owned processes (OneVoice, ComfyUI, LM Studio, Ollama, ...) are
+    never affected because the rule only looks at unidentified llama-server
+    processes.
+    """
+    tokens, paths = _console_engine_identity(servers, cfg=cfg)
+    root = _norm_engine_path(dflash_root)
+    kept: list[dict[str, Any]] = []
+    for card in cards:
+        if str(card.get('app_source') or '').lower() != 'llama-server':
+            kept.append(card)
+            continue
+        card_id = _norm_engine_token(card.get('model_id'))
+        card_path = _norm_engine_path(card.get('model_path'))
+        # llama-server can report the model as the requested id, and our own
+        # listeners (embeddings/rendering) are asked with the full file path.
+        id_as_path = ''
+        raw_id = str(card.get('model_id') or '')
+        if re.search(r'[\\/]', raw_id):
+            id_as_path = _norm_engine_path(raw_id)
+        if id_as_path and not card_path:
+            card_path = id_as_path
+            card_id = _norm_engine_token(id_as_path.rsplit('/', 1)[-1])
+            card_id_stem = _norm_engine_token(card_path.rsplit('/', 1)[-1].rsplit('.', 1)[0])
+        else:
+            card_id_stem = card_id
+        if card_path and card_path in paths:
+            continue
+        if card_id and card_id in tokens:
+            continue
+        if card_id_stem and card_id_stem in tokens:
+            continue
+        if card_path and root and card_path.startswith(root + '/'):
+            continue
+        kept.append(card)
+    return kept
 
 
 def _model_card_pids(
@@ -3533,6 +3687,22 @@ def _kill_external_pid(pid: int) -> dict[str, Any]:
             )
             if proc.returncode != 0:
                 detail = (proc.stderr or proc.stdout or '').strip() or 'taskkill failed'
+                if 'access is denied' in detail.lower():
+                    # Started by another Windows session (usually an elevated
+                    # Console or an app running as administrator): an
+                    # unelevated Console cannot end it, so say that instead of
+                    # echoing raw taskkill text.
+                    return {
+                        'success': False,
+                        'error': (
+                            'Windows denied access to this process. It was started by '
+                            'another session (for example an elevated DFlash Console or an '
+                            'app running as administrator). Stop it from that app, close it '
+                            'in Task Manager, or run DFlash Console as administrator.'
+                        ),
+                        'error_code': 'access_denied',
+                        'pid': int(pid),
+                    }
                 return {'success': False, 'error': detail, 'pid': int(pid)}
         else:
             os.kill(int(pid), 9)
