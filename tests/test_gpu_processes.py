@@ -1743,7 +1743,7 @@ def test_kill_external_pid_reports_permission_problem(monkeypatch):
     assert 'another session' in result['error']
 
 
-def test_drop_console_owned_engine_cards_hides_own_models():
+def test_mark_console_owned_engine_cards_keeps_them_visible():
     servers = [
         {'id': 'gemma-31b-it-quant-dflash', 'model_id': 'gemma-31b-it-quant', 'model_path': r'C:\models\gemma-31b-it-quant.gguf'},
         {'id': 'nomic-embed-text-v1-5-q8-0', 'model_id': 'nomic-embed', 'model_path': r'C:\dev\Dflash-Console\models\embeddings\nomic-embed-text-v1.5.Q8_0.gguf'},
@@ -1754,20 +1754,27 @@ def test_drop_console_owned_engine_cards_hides_own_models():
         {'id': 'c', 'app_source': 'llama-server', 'model_id': 'someone-elses-model', 'model_path': r'D:\other\model.gguf'},
         {'id': 'd', 'app_source': 'onevoice', 'model_id': 'gemma-31b-it-quant', 'model_path': ''},
     ]
-    kept = gpu_processes._drop_console_owned_engine_cards(
+    out = gpu_processes._mark_console_owned_engine_cards(
         cards,
         servers=servers,
         cfg=None,
         dflash_root=r'C:\dev\Dflash-Console',
     )
-    assert [card['id'] for card in kept] == ['c', 'd']
+    # Every card stays (they hold real VRAM); ours are flagged, foreign ones not.
+    assert [card['id'] for card in out] == ['a', 'b', 'c', 'd']
+    assert out[0]['console_engine'] is True
+    assert out[0]['app_label'] == 'DFlash Console'
+    assert out[1]['console_engine'] is True
+    assert 'console_engine' not in out[2]
+    assert 'console_engine' not in out[3]
 
 
-def test_drop_console_owned_engine_cards_keeps_foreign_llama_server():
-    kept = gpu_processes._drop_console_owned_engine_cards(
+def test_mark_console_owned_engine_cards_leaves_foreign_llama_server():
+    out = gpu_processes._mark_console_owned_engine_cards(
         [{'id': 'x', 'app_source': 'llama-server', 'model_id': 'lmstudio-model', 'model_path': r'D:\lm\a.gguf'}],
         servers=[{'id': 'demo', 'model_id': 'demo-model', 'model_path': r'C:\models\demo.gguf'}],
         cfg=None,
         dflash_root=r'C:\dev\Dflash-Console',
     )
-    assert [card['id'] for card in kept] == ['x']
+    assert [card['id'] for card in out] == ['x']
+    assert 'console_engine' not in out[0]

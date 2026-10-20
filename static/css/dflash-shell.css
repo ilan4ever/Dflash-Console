@@ -5082,6 +5082,12 @@ html:not(.df-narrow) .df-shell .lm-engine-card-desktop:is(.ready, .loading, .eje
   white-space: nowrap;
 }
 
+/* Console-owned leftover engine: same card, Console colour instead of the
+   external grey tag. */
+.df-shell .lm-model-card-external-prompt .lm-external-origin.is-console-engine {
+  color: rgba(251, 146, 60, 0.95);
+}
+
 .df-shell .lm-model-card-external-prompt .lm-external-kind {
   grid-column: 2;
   display: inline-flex;

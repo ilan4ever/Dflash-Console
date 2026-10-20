@@ -3048,9 +3048,9 @@ def get_external_gpu_loads(
 
     cards = _dedupe_external_cards(cards)
     # A leftover Console engine (or a Console-started helper on an unconfigured
-    # port) is not an external app: hide it instead of labelling our own model
-    # as "llama-server external".
-    cards = _drop_console_owned_engine_cards(
+    # port) keeps its card - it holds real VRAM - but it is labelled as a
+    # Console engine instead of an external "llama-server" app.
+    cards = _mark_console_owned_engine_cards(
         cards,
         servers=servers,
         cfg=cfg,
@@ -3132,28 +3132,25 @@ def _console_engine_identity(
     return tokens, paths
 
 
-def _drop_console_owned_engine_cards(
+def _mark_console_owned_engine_cards(
     cards: list[dict[str, Any]],
     *,
     servers: list[dict[str, Any]] | None,
     cfg: dict[str, Any] | None = None,
     dflash_root: str = '',
 ) -> list[dict[str, Any]]:
-    """Hide bare ``llama-server`` cards that actually serve a Console model.
+    """Label bare ``llama-server`` cards that actually serve a Console model.
 
-    Those processes are leftovers of the Console's own engines (earlier run,
-    router child, embedding/rendering listener).  They are not external apps,
-    and listing them made Console models look like foreign "LLAMA-SERVER"
-    cards.  App-owned processes (OneVoice, ComfyUI, LM Studio, Ollama, ...) are
-    never affected because the rule only looks at unidentified llama-server
-    processes.
+    Those processes are the Console's own engines (router child, a leftover
+    from an earlier run, an embedding/rendering listener).  They must stay
+    visible - they hold real VRAM - but they must not claim to be an external
+    app: the card is flagged ``console_engine`` and the UI labels it
+    "Console engine" with the DFlash Console app badge.
     """
     tokens, paths = _console_engine_identity(servers, cfg=cfg)
     root = _norm_engine_path(dflash_root)
-    kept: list[dict[str, Any]] = []
     for card in cards:
         if str(card.get('app_source') or '').lower() != 'llama-server':
-            kept.append(card)
             continue
         card_id = _norm_engine_token(card.get('model_id'))
         card_path = _norm_engine_path(card.get('model_path'))
@@ -3163,22 +3160,24 @@ def _drop_console_owned_engine_cards(
         raw_id = str(card.get('model_id') or '')
         if re.search(r'[\\/]', raw_id):
             id_as_path = _norm_engine_path(raw_id)
+        card_id_stem = card_id
         if id_as_path and not card_path:
             card_path = id_as_path
             card_id = _norm_engine_token(id_as_path.rsplit('/', 1)[-1])
             card_id_stem = _norm_engine_token(card_path.rsplit('/', 1)[-1].rsplit('.', 1)[0])
-        else:
-            card_id_stem = card_id
+        owned = False
         if card_path and card_path in paths:
-            continue
-        if card_id and card_id in tokens:
-            continue
-        if card_id_stem and card_id_stem in tokens:
-            continue
-        if card_path and root and card_path.startswith(root + '/'):
-            continue
-        kept.append(card)
-    return kept
+            owned = True
+        elif card_id and card_id in tokens:
+            owned = True
+        elif card_id_stem and card_id_stem in tokens:
+            owned = True
+        elif card_path and root and card_path.startswith(root + '/'):
+            owned = True
+        if owned:
+            card['console_engine'] = True
+            card['app_label'] = 'DFlash Console'
+    return cards
 
 
 def _model_card_pids(

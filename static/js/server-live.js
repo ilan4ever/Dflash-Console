@@ -3749,12 +3749,18 @@
     const actions = externalPromptActionsHtml(row);
     const kindCell = externalHeaderKindCell(row);
     const vramCell = externalHeadFactsCell(row, server);
-    const appName = escapeHtml(externalAppLabel(row));
+    // A leftover Console engine keeps its card (it holds real VRAM) but must
+    // not claim to be an external app.
+    const consoleEngine = row?.console_engine === true;
+    const appName = escapeHtml(consoleEngine ? 'DFlash Console' : externalAppLabel(row));
+    const originTag = consoleEngine
+      ? '<span class="lm-external-origin is-console-engine">Console engine</span>'
+      : '<span class="lm-external-origin">External</span>';
     const appBadge = externalAppInHeader()
       ? `<span class="lm-external-app-badge" title="Loaded outside DFlash Console by ${appName}">${appName}</span>`
       : '';
-    return `<div class="lm-model-card-external-prompt">
-            <span class="lm-external-origin">External</span>
+    return `<div class="lm-model-card-external-prompt${consoleEngine ? ' is-console-engine' : ''}">
+            ${originTag}
             ${appBadge ? '<span class="lm-engine-head-stack-chip is-empty" aria-hidden="true"></span>' : ''}
             ${kindCell}
             ${vramCell}
