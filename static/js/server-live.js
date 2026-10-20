@@ -2246,6 +2246,8 @@
   }
 
   function isExternalEntry({ server, row }) {
+    // A Console-owned leftover engine is a Console card, not an external app.
+    if (row?.console_engine === true) return false;
     return !!(row?.external || server?.external);
   }
 
@@ -3421,6 +3423,7 @@
    */
   function externalCardDetailsHtml(row, server, { includeDiskCtx = false } = {}) {
     if (!row?.external && !server?.external) return '';
+    const consoleEngine = row?.console_engine === true;
     const appLabel = externalAppLabel(row);
     const component = String(row?.component_label || '').trim();
     const vramByGpu = row?.vram_by_gpu && typeof row.vram_by_gpu === 'object'
@@ -3451,7 +3454,9 @@
     // they are not repeated here.
     const facts = [
       externalAppInHeader() ? '' : externalDetailItem('App', appLabel),
-      externalDetailItem('Component', component && component.toLowerCase() !== appLabel.toLowerCase() ? component : ''),
+      externalDetailItem('Component', consoleEngine
+        ? ''
+        : (component && component.toLowerCase() !== appLabel.toLowerCase() ? component : '')),
       externalDetailItem('Quant', externalQuantLabel(row)),
       externalDetailItem('Publisher', String(row?.publisher || '').trim()),
       externalDetailItem('VRAM/GPU', vramByGpuText, { wide: true }),
@@ -3753,8 +3758,10 @@
     // not claim to be an external app.
     const consoleEngine = row?.console_engine === true;
     const appName = escapeHtml(consoleEngine ? 'DFlash Console' : externalAppLabel(row));
+    // Console cards are identified by their colour and app badge - they carry
+    // no origin tag.  Only real external apps get the small "External" label.
     const originTag = consoleEngine
-      ? '<span class="lm-external-origin is-console-engine">Console engine</span>'
+      ? ''
       : '<span class="lm-external-origin">External</span>';
     const appBadge = externalAppInHeader()
       ? `<span class="lm-external-app-badge" title="Loaded outside DFlash Console by ${appName}">${appName}</span>`
@@ -4580,7 +4587,7 @@
       const isSelected = actionKey === selectedLoadedKey;
       const inferenceStats = row?.inference_stats || server?.inference_stats || {};
       const isGenerating = cardIsGenerating(row, server);
-      const cardClass = `lm-model-card lm-model-card-compact ${ejecting ? 'ejecting' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external ? ' external-gpu' : ' dflash-model'}`;
+      const cardClass = `lm-model-card lm-model-card-compact ${ejecting ? 'ejecting' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external && row?.console_engine !== true ? ' external-gpu' : ' dflash-model'}`;
       const cardStyle = loading && progressKnown && progressPct != null
         ? ` style="--card-progress:${progressPct}%"`
         : '';
