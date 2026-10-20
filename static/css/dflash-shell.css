@@ -3019,6 +3019,28 @@ html:not(.df-narrow) .df-shell .lm-view[data-view="models"] .lm-models-table td.
   gap: 8px;
 }
 
+/* DFlash Console cards: the wordmark logo sits right of the model name and
+   never squeezes it - the name keeps its natural width (no ellipsis). */
+.df-shell .lm-model-card-compact .lm-model-card-name-line .lm-engine-card-logo {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.df-shell .lm-model-card-compact .lm-model-card-name-line .lm-engine-card-logo .lm-tag.dflash-logo-label {
+  width: 78px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.df-shell .lm-model-card-compact.external-gpu .lm-model-card-name-line .lm-model-path {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .df-shell .lm-model-card-compact.external-gpu .lm-external-labels {
   flex: 0 0 auto;
   margin-left: 0;

@@ -4400,6 +4400,12 @@
       ? (engineHeadStackChip(row) || '<span class="lm-engine-head-stack-chip is-empty" aria-hidden="true"></span>')
       : '';
     if (isExternal) {
+      // Console-owned leftovers are DFlash Console models: keep the DFlash
+      // wordmark logo right after the name (the external branch used to drop
+      // it). The name itself is never trimmed by it.
+      const consoleLogo = row?.console_engine === true
+        ? `<span class="lm-engine-card-logo">${dflashLogoLabel('DFlash Console')}</span>`
+        : '';
       return `
       <div class="lm-model-card-center lm-external-center${hasTokenRow ? ' has-token-row' : ''}">
         <div class="lm-model-card-center-row lm-model-card-title-row lm-external-title-row">
@@ -4407,6 +4413,7 @@
             <span class="lm-model-card-name-line">
               ${pinMark}
               <span class="lm-model-path">${escapeHtml(cardDisplayName(row, server))}</span>
+              ${consoleLogo}
               ${statusInCard ? `<span class="lm-external-status-badges">${statusInCard}</span>` : ''}
             </span>
           </span>
