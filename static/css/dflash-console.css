@@ -847,13 +847,47 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
 .lm-model-card.ejecting {
   background: rgba(51, 65, 85, 0.42);
   border-color: rgba(148, 163, 184, 0.28);
-  filter: grayscale(1);
-  opacity: 0.55;
   pointer-events: none;
+}
+
+/* Grey out the card CONTENTS but keep the Unloading overlay readable.  The old
+   rule applied grayscale to the whole card, so the overlay was greyed too. */
+.lm-model-card.ejecting > :not(.lm-model-card-eject-shell) {
+  filter: grayscale(1);
+  opacity: 0.5;
 }
 
 .lm-model-card-eject-shell {
   display: none;
+}
+
+/* Visible while a card is unloading: big centred "Unloading…" banner so it is
+   obvious the model is about to disappear (works for Console and external
+   cards; external ones unload from the same overlay). */
+.lm-model-card.ejecting > .lm-model-card-eject-shell {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.55) 0%, rgba(15, 23, 42, 0.18) 55%, rgba(15, 23, 42, 0.55) 100%);
+}
+
+.lm-model-card.ejecting > .lm-model-card-eject-shell .lm-model-card-eject-label {
+  top: 10px;
+  padding: 7px 16px;
+  border-color: rgba(251, 191, 36, 0.6);
+  background: rgba(15, 23, 42, 0.92);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #fcd34d;
+  transform: translateX(-50%);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+}
+
+.lm-model-card.ejecting > .lm-model-card-eject-shell .lm-loading-dots span {
+  font-size: 15px;
 }
 
 .lm-model-card-eject-label {
@@ -911,7 +945,6 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
 .lm-loading-dots span {
   animation: lm-loading-dot 1.2s ease-in-out infinite;
 }
-
 .lm-loading-dots span:nth-child(2) {
   animation-delay: 0.15s;
 }
