@@ -39,6 +39,7 @@ COMPONENT_LABELS: dict[str, str] = {
     'onevoice.speak_stt': 'OneVoice Speak STT',
     'onevoice.f5_tts': 'OneVoice F5-TTS',
     'onevoice.tts': 'OneVoice Text-to-speech',
+    'onevoice.embedding': 'OneVoice AI',
     # Keep the old keys readable for persisted status snapshots and older
     # clients, while new requests use the structured OneVoice keys above.
     'hermes.stt': 'OneVoice Hermes STT',

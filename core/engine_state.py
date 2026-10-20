@@ -360,14 +360,25 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
             continue
 
         if is_embedding_server(server):
-            # Embedding engines load weights on first /v1/embeddings request (JIT),
-            # not during Console boot — same policy as LLM checkpoints.
-            note_engine_idle(server_id)
-            results.append({
-                'server_id': server_id,
-                'action': 'deferred_embedding',
-                'message': 'Embedding loads on first API request, not at startup.',
-            })
+            # Embedding engines load their weights with the process, so an
+            # armed engine has to be listening again after a restart: clients
+            # (OneVoice/MuninnDB) call the engine port directly.
+            from core.embedding_server import start_embedding_server
+
+            started = start_embedding_server(server, cfg=config)
+            if started.get('success'):
+                note_engine_idle(server_id)
+                results.append({
+                    'server_id': server_id,
+                    'action': 'started_embedding',
+                    **started,
+                })
+            else:
+                results.append({
+                    'server_id': server_id,
+                    'action': 'embedding_start_failed',
+                    **started,
+                })
             continue
 
         started = start_router_listener(server, cfg=config)

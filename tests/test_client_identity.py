@@ -139,3 +139,17 @@ def test_parallel_active_clients_are_listed():
     end_active_client('gemma-test', 'MyApp')
     assert resolve_active_clients('gemma-test', 'LoaderApp') == ['LoaderApp']
     clear_active_clients('gemma-test')
+
+
+def test_request_component_identity_labels_the_onevoice_embedding_client():
+    from core.client_identity import request_component_identity
+
+    identity = request_component_identity(_Request({
+        'X-DFlash-Client': 'OneVoice AI',
+        'X-DFlash-Component': 'onevoice.embedding',
+        'X-DFlash-Role': 'embedding',
+    }))
+
+    assert identity['component_key'] == 'onevoice.embedding'
+    assert identity['component_label'] == 'OneVoice AI'
+    assert identity['component_role'] == 'embedding'

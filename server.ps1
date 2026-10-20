@@ -12,6 +12,11 @@ $ErrorActionPreference = 'Stop'
 # chunk cache, which makes repo-download progress look stuck and can stall
 # behind restrictive networks. Plain HTTP keeps resumable files visible.
 $env:HF_HUB_DISABLE_XET = '1'
+# An API-only restart must not free VRAM: the engines (including the embedding
+# engine other apps talk to) have to keep running across the restart.
+if ($ApiRestart) {
+    $env:DFLASH_CONSOLE_PRESERVE_ENGINES = '1'
+}
 # PowerShell 7 turns pip's progress notes into a fatal error. A failed note
 # must not stop the server from starting.
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {

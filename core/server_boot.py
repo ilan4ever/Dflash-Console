@@ -1722,74 +1722,6 @@ def _wait_for_checkpoint_load(
     return {'status': 'timeout', 'error': f'timed out waiting for {load_id} on {host}:{port}'}
 
 
-def _console_owned_props(host: str, port: int) -> dict[str, Any] | None:
-    """Return ``/props`` when a listener serves a model file inside our roots.
-
-    Leftover Console engines started by an elevated session refuse to report
-    their command line, so the process identity check cannot see them.  The
-    model path the engine reports is enough to know the Console started it.
-    """
-    import json
-    import urllib.error
-    import urllib.request
-
-    try:
-        url = f'http://{host}:{int(port)}/props'
-        with urllib.request.urlopen(url, timeout=2.5) as response:
-            payload = json.loads(response.read().decode('utf-8', errors='replace') or '{}')
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-        return None
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    try:
-        from core.config import get_dflash_root
-        from core.model_paths import get_models_root
-
-        roots = [get_dflash_root(), get_models_root()]
-    except Exception:
-        roots = []
-    normalized_roots = []
-    for root in roots:
-        try:
-            normalized_roots.append(str(root).replace('\\', '/').rstrip('/').lower())
-        except Exception:
-            continue
-    normalized_roots = [root for root in normalized_roots if root]
-    if not normalized_roots:
-        return None
-    for key in ('model_path', 'model_alias'):
-        raw = str(payload.get(key) or '').strip()
-        if not raw or not re.search(r'[\\/]', raw):
-            continue
-        candidate = raw.replace('\\', '/').rstrip('/').lower()
-        if any(candidate.startswith(root + '/') for root in normalized_roots):
-            return payload
-    return None
-
-
-def _release_listener_models(host: str, port: int) -> dict[str, Any]:
-    """Unload every checkpoint a leftover router still holds (frees VRAM)."""
-    from core.runtime import router_unload_available, unload_model, _fetch_models_payload
-
-    api_url = f'http://{host}:{int(port)}/v1'
-    if not router_unload_available(api_url):
-        return {'success': False, 'reason': 'router API unavailable'}
-    unloaded: list[str] = []
-    errors: list[str] = []
-    for entry in _fetch_models_payload(api_url):
-        model_id = str(entry.get('id') or entry.get('model') or '').strip()
-        if not model_id or model_id == 'default':
-            continue
-        result = unload_model(api_url=api_url, model_id=model_id)
-        if result.get('success'):
-            unloaded.append(model_id)
-        elif result.get('error'):
-            errors.append(str(result['error']))
-    return {'success': bool(unloaded), 'unloaded': unloaded, 'errors': errors or None}
-
-
 def sweep_orphan_managed_listeners(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Stop Console-managed llama listeners on loopback ports we no longer own."""
     from core.config import list_servers, load_config, reserved_ports
@@ -1799,8 +1731,9 @@ def sweep_orphan_managed_listeners(*, cfg: dict[str, Any] | None = None) -> list
     config = cfg or load_config()
     allowed: set[int] = {int(port) for port in reserved_ports(config)}
     for server in list_servers(config):
-        if not server.get('enabled', True) or server.get('engine_on') is not True:
-            continue
+        # Every configured port belongs to the Console: an engine that is only
+        # armed (engine_on false, embedding JIT) gets its listener on this port
+        # later and must never be swept as an orphan.
         port = int(server.get('port') or 0)
         if port:
             allowed.add(port)
@@ -1813,27 +1746,21 @@ def sweep_orphan_managed_listeners(*, cfg: dict[str, Any] | None = None) -> list
 
     results: list[dict[str, Any]] = []
     for pid, ports in listening_ports_map(force=True).items():
-        managed = managed_process_identity(pid)
+        if not managed_process_identity(pid):
+            continue
         for port in ports:
             if port in allowed:
                 continue
-            props = None if managed else _console_owned_props('127.0.0.1', port)
-            if not managed and props is None:
-                continue
+            # Stop the stale listener only. Never unload models over HTTP here:
+            # an unconfigured port can still be an endpoint some app is using
+            # (that is exactly how the OneVoice embedding engine got dropped).
             stop_row = stop_server(port=port, host='127.0.0.1')
-            row = {
+            results.append({
                 'port': port,
                 'pid': pid,
                 'action': 'stopped_orphan',
                 'success': bool(stop_row.get('success')),
-            }
-            if not stop_row.get('success'):
-                # An elevated leftover cannot be killed from here, but the
-                # router still owns its child and frees the VRAM on request.
-                row['action'] = 'released_orphan_models'
-                row['release'] = _release_listener_models('127.0.0.1', port)
-                row['success'] = bool(row['release'].get('success'))
-            results.append(row)
+            })
     return results
 
 

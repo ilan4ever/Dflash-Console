@@ -612,6 +612,11 @@ def _release_gpu_on_shutdown() -> None:
             'Console API exiting — preserving llama-server engines (keep_models_loaded_on_exit=true)'
         )
         return
+    if os.environ.get('DFLASH_CONSOLE_PRESERVE_ENGINES', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+        shutdown_logger.info(
+            'Console API exiting — preserving llama-server engines (API restart)'
+        )
+        return
     if os.environ.get('DFLASH_CONSOLE_RELEASE_ON_SHUTDOWN', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
         shutdown_logger.info('Console API exiting — stopping managed llama-server engines')
 
