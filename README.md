@@ -15,7 +15,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.277
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.278
 
 ## Download (Windows)
 
@@ -110,7 +110,7 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.277)
+### Recent improvements (v0.3.278)
 
 - **Engines and library** — live token counts follow the name the engine actually loaded, prompt reading is labeled separately from generation speed, a full model name stays on that model, and the phone and desktop sidebars remember their own menu state
 - **Startup** — the desktop app keeps its own Python environment, so an upgrade no longer stops when the computer’s Python is missing the server
