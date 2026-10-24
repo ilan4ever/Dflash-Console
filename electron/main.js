@@ -41,6 +41,8 @@ let updatePromptDeferred = false;
 let updatePopupShownFor = '';
 let postInstallWelcomeActive = false;
 let postInstallSetupActive = false;
+let startedHiddenInTray = false;
+let pendingUpdateManifest = null;
 
 const POST_INSTALL_SETUP_ARG = '--dflash-post-install';
 const STARTUP_LAUNCH_ARG = '--dflash-startup';
@@ -74,13 +76,23 @@ function isStartupLaunch() {
   return process.argv.includes(STARTUP_LAUNCH_ARG);
 }
 
-function shouldShowMainWindowOnReady() {
-  if (postInstallWelcomeActive || postInstallSetupActive) return true;
+function shouldStartHiddenInTray() {
+  if (postInstallWelcomeActive || postInstallSetupActive) return false;
   // "Start minimized to tray" applies only when Windows launches the app at
   // sign-in (--dflash-startup). Opening from a desktop shortcut or tray always
   // shows the window, even when minimize-to-tray is enabled.
-  if (isStartupLaunch() && loadAppSettings().startMinimized) return false;
-  return true;
+  if (!isStartupLaunch()) return false;
+  const settings = loadAppSettings();
+  // Without minimize-to-tray there is no tray icon to reopen the window from.
+  return Boolean(settings.startMinimized && settings.minimizeToTray);
+}
+
+function shouldShowMainWindowOnReady() {
+  if (postInstallWelcomeActive || postInstallSetupActive) return true;
+  if (!shouldStartHiddenInTray()) return true;
+  // Never start fully invisible: if no tray icon exists, fall back to showing
+  // the normal window so the app can still be used.
+  return !tray;
 }
 
 const {
@@ -389,6 +401,25 @@ function closeUpdatePopup() {
   updatePopupWindow = null;
 }
 
+// Called the moment the installer handshake succeeds. The old app is about to
+// shut its engines down, which can take several seconds; keeping its window on
+// screen made it look like the app relaunched and then closed by itself before
+// the setup window appeared. Hide everything so the only thing the user sees
+// next is the installer progress window.
+function prepareWindowForInstall() {
+  closeUpdatePopup();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+  }
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    closeSplashWindow();
+  }
+}
+
 function showUpdatePopup(manifest) {
   if (!manifest) return;
   if (updatePromptDeferred) return;
@@ -399,6 +430,12 @@ function showUpdatePopup(manifest) {
   })) return;
   const version = String(manifest.version || '').trim();
   if (!version || version === updatePopupShownFor) return;
+  // A sign-in launch with "Start minimized to tray" must stay silent: keep the
+  // prompt in memory and show it once the user opens the window from the tray.
+  if (startedHiddenInTray && !(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())) {
+    pendingUpdateManifest = manifest;
+    return;
+  }
   updatePopupShownFor = version;
   const notes = String(manifest.releaseNotes || '').trim();
 
@@ -457,6 +494,7 @@ function registerUpdatePopupIpc() {
       relaunchPath: process.execPath,
       relaunchArguments: [],
       onReady: async () => {
+        prepareWindowForInstall();
         setTimeout(() => app.quit(), 100);
       },
     });
@@ -497,6 +535,8 @@ function trayIcon() {
 
 function showMainWindow({ bringToFront = false } = {}) {
   if (!mainWindow) return;
+  // Once the window is opened the session is no longer a silent tray start.
+  startedHiddenInTray = false;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -508,6 +548,11 @@ function showMainWindow({ bringToFront = false } = {}) {
         mainWindow.setAlwaysOnTop(false);
       }
     }, 300);
+  }
+  if (pendingUpdateManifest) {
+    const manifest = pendingUpdateManifest;
+    pendingUpdateManifest = null;
+    showUpdatePopup(manifest);
   }
 }
 
@@ -629,6 +674,7 @@ function registerAppSettingsIpc() {
       relaunchPath: process.execPath,
       relaunchArguments: [],
       onReady: async () => {
+        prepareWindowForInstall();
         setTimeout(() => app.quit(), 100);
       },
     });
@@ -665,6 +711,8 @@ function ensureTray() {
 
 function createSplashWindow() {
   if (!loadAppSettings().showSplashOnStartup) return;
+  // Starting hidden in the tray must not flash a splash on the desktop.
+  if (shouldStartHiddenInTray()) return;
   if (splashWindow) return;
   const icon = iconPath();
   splashWindow = new BrowserWindow({
@@ -1343,6 +1391,7 @@ async function boot() {
     // Two separate apps (developer checkout and installed app): starting one
     // closes the other so only one desktop app runs at a time.
     await closeOtherApp();
+    startedHiddenInTray = shouldStartHiddenInTray();
     if (loadAppSettings().showSplashOnStartup) {
       createSplashWindow();
     }
@@ -1410,7 +1459,11 @@ if (!gotLock) {
     app.setAppUserModelId('com.dflash.console');
   }
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    // Only a Windows sign-in launch (--dflash-startup) is silent. A login
+    // relaunch must not pull an already running tray app to the front; every
+    // other launch (shortcut, Start menu, tray) opens the window.
+    if (Array.isArray(argv) && argv.includes(STARTUP_LAUNCH_ARG)) return;
     void focusOrBoot();
   });
 

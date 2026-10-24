@@ -51,6 +51,7 @@ namespace DFlashConsoleSetup
         private readonly string[] _args;
         private readonly string _uiRoot;
         private string _payloadRoot;
+        private string _packageExtractRoot;
         private string _destRoot;
         private readonly string _version;
         private readonly string _doneFlag;
@@ -380,7 +381,9 @@ namespace DFlashConsoleSetup
             }
             catch
             {
-                if (_silent && !HasArg(_args, "/Elevated")) return false;
+                // Per-machine installs need administrator rights. Falling
+                // through here requests them; returning early used to leave a
+                // silent in-app update sitting on its progress window forever.
             }
 
             try
@@ -648,6 +651,7 @@ namespace DFlashConsoleSetup
                         throw new Exception("Update package not found:\n" + _packagePath);
                     }
                     _payloadRoot = _uiRoot + "_payload";
+                    _packageExtractRoot = _payloadRoot;
                     SetStatus("Preparing installation…\nExtracting update package…");
                     SetProgress(2, true);
                     await Task.Run(() => ExtractPackage(_packagePath, _payloadRoot));
@@ -665,7 +669,7 @@ namespace DFlashConsoleSetup
 
                 SetStatus("Closing previous DFlash Console…");
                 SetProgress(5, true);
-                await Task.Run(() => KillOtherConsoleProcesses());
+                await Task.Run(() => KillOtherConsoleProcesses(8000));
                 await Task.Delay(800);
 
                 if (!Directory.Exists(_destRoot))
@@ -692,6 +696,21 @@ namespace DFlashConsoleSetup
                 if (!File.Exists(destExe))
                 {
                     throw new Exception("Installation finished but DFlash Console.exe was not found.");
+                }
+
+                // The update package was only unpacked so its files could be
+                // copied; drop it so every in-app update does not leave a few
+                // hundred MB behind in %TEMP%.
+                if (!string.IsNullOrEmpty(_packageExtractRoot))
+                {
+                    try
+                    {
+                        if (Directory.Exists(_packageExtractRoot))
+                        {
+                            Directory.Delete(_packageExtractRoot, true);
+                        }
+                    }
+                    catch { }
                 }
 
                 SetStatus("Preparing Console data folder…\nCopying runtime files for first run.");
@@ -1124,8 +1143,21 @@ namespace DFlashConsoleSetup
             catch { }
         }
 
-        private static void KillOtherConsoleProcesses()
+        private static void KillOtherConsoleProcesses(int graceMilliseconds = 0)
         {
+            // An in-app update starts this window before the old app finished
+            // releasing its engines. Give it a few seconds to exit on its own
+            // instead of killing it mid-shutdown.
+            if (graceMilliseconds > 0)
+            {
+                DateTime graceDeadline = DateTime.UtcNow.AddMilliseconds(graceMilliseconds);
+                while (DateTime.UtcNow < graceDeadline
+                       && Process.GetProcessesByName("DFlash Console").Length > 0)
+                {
+                    System.Threading.Thread.Sleep(200);
+                }
+            }
+
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo

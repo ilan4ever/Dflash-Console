@@ -69,6 +69,35 @@ test('uses the branded setup UI instead of the Windows NSIS wizard', () => {
   assert.match(builder, /7zS2\.sfx/);
 });
 
+test('update helper extracts the setup.exe the SFX really contains', () => {
+  const helper = fs.readFileSync(path.join(__dirname, '..', 'electron', 'update-helper.ps1'), 'utf8');
+  // The 7zS2 SFX stores the branded UI at its root as setup.exe. Extracting
+  // only dflash-setup-ui.exe failed on every in-app update, which dropped
+  // /AutoInstall and showed the manual install-scope dialog instead.
+  assert.match(helper, /\$bootstrapNames = @\('setup\.exe', 'dflash-setup-ui\.exe'\)/);
+  assert.match(helper, /\+ \$bootstrapNames/);
+  assert.match(helper, /\/AutoInstall/);
+  assert.match(helper, /\$setupArgs = @\("\/Package=`"\$Path`""\)/);
+  assert.match(helper, /\/InstallRoot=`"\$InstallRoot`""/);
+});
+
+test('update helper opens the installer window before the app finishes quitting', () => {
+  const helper = fs.readFileSync(path.join(__dirname, '..', 'electron', 'update-helper.ps1'), 'utf8');
+  const clearAt = helper.indexOf('Clear-InstallDoneFlag');
+  const launchAt = helper.indexOf('$installer = Start-UpdateInstaller');
+  const waitAt = helper.indexOf('Wait-Process -Id $ParentProcessId');
+  assert.ok(clearAt > 0, 'install done flag is cleared before the install starts');
+  assert.ok(launchAt > clearAt, 'installer starts after the stale done flag is cleared');
+  assert.ok(waitAt > launchAt, 'installer must start before waiting for the old app to exit');
+});
+
+test('hides the running app while the installer takes over', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  assert.match(main, /function prepareWindowForInstall\(\)/);
+  assert.match(main, /mainWindow\.hide\(\)/);
+  assert.equal((main.match(/prepareWindowForInstall\(\);\s*\n\s*setTimeout\(\(\) => app\.quit\(\), 100\);/g) || []).length, 2);
+});
+
 test('supports public and authenticated HTTPS update configurations', () => {
   const publicConfig = normalizeUpdateConfig({
     manifestUrl: 'https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json',
@@ -166,4 +195,18 @@ test('wires the post-install guard into both automatic check and popup paths', (
   assert.equal((main.match(/shouldSuppressAutomaticUpdateCheck\(\{/g) || []).length, 2);
   assert.match(main, /postInstallWelcomeActive/);
   assert.match(main, /postInstallSetupActive/);
+});
+
+test('Windows sign-in launch honors "Start minimized to tray"', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  // The setting only applies to the --dflash-startup launch and needs a tray
+  // icon to reopen the window from.
+  assert.match(main, /function shouldStartHiddenInTray\(\)/);
+  assert.match(main, /isStartupLaunch\(\)/);
+  assert.match(main, /settings\.startMinimized && settings\.minimizeToTray/);
+  // No splash window and no visible main window on a silent tray start.
+  assert.match(main, /if \(shouldStartHiddenInTray\(\)\) return;/);
+  assert.match(main, /startedHiddenInTray = shouldStartHiddenInTray\(\);/);
+  // Update prompts wait for the user to open the window from the tray.
+  assert.match(main, /pendingUpdateManifest/);
 });

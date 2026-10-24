@@ -51,13 +51,16 @@ function Test-InstallComplete {
     }
 }
 
+function Clear-InstallDoneFlag {
+    $doneFlag = Join-Path $env:TEMP 'dflash-install-done.flag'
+    try { if (Test-Path $doneFlag) { Remove-Item $doneFlag -Force -ErrorAction SilentlyContinue } } catch {}
+}
+
 function Wait-ForInstallComplete {
     param(
         [string]$TargetVersion = '',
         [int]$TimeoutSeconds = 900
     )
-    $doneFlag = Join-Path $env:TEMP 'dflash-install-done.flag'
-    try { if (Test-Path $doneFlag) { Remove-Item $doneFlag -Force -ErrorAction SilentlyContinue } } catch {}
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-InstallComplete -TargetVersion $TargetVersion) {
@@ -86,11 +89,14 @@ function Start-UpdateInstaller {
         [string]$TargetVersion = '',
         [string]$InstallRoot = ''
     )
-    $setupArgs = @("/Package=$Path")
+    # Quote every value that can contain spaces (e.g. "...\Programs\DFlash
+    # Console"): Start-Process joins the array with spaces and does not add
+    # quotes, which used to split /InstallRoot into two arguments.
+    $setupArgs = @("/Package=`"$Path`"")
     $existingExe = $null
     if ($InstallRoot) {
         $existingExe = Join-Path $InstallRoot 'DFlash Console.exe'
-        $setupArgs += "/InstallRoot=$InstallRoot"
+        $setupArgs += "/InstallRoot=`"$InstallRoot`""
         if (Test-Path -LiteralPath $existingExe) {
             $setupArgs += '/AutoInstall'
             Write-HelperLog "Existing install at $InstallRoot — silent in-place update"
@@ -98,6 +104,12 @@ function Start-UpdateInstaller {
             Write-HelperLog "No install at $InstallRoot — setup UI will ask for scope"
         }
     }
+    # The SFX keeps the branded setup UI at its root as setup.exe (7zS2.sfx
+    # launches the first match of start/run/install/setup/*.exe). Older
+    # packages used dflash-setup-ui.exe, so accept both names; extracting only
+    # the old name failed on every update and silently fell back to running the
+    # whole SFX, which lost /AutoInstall and showed the manual scope dialog.
+    $bootstrapNames = @('setup.exe', 'dflash-setup-ui.exe')
     $sevenZip = Resolve-SevenZipExe
     if ($sevenZip) {
         $extractRoot = Join-Path $env:TEMP ("DFlash_Update_" + ($(if ($TargetVersion) { $TargetVersion } else { 'pkg' }) -replace '[^\w\.-]', '_'))
@@ -105,13 +117,17 @@ function Start-UpdateInstaller {
             if (Test-Path $extractRoot) { Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue }
             New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
             Write-HelperLog "Extracting setup UI bootstrap with 7-Zip to $extractRoot"
-            $bootstrap = Start-Process -FilePath $sevenZip -ArgumentList @('e', $Path, "-o$extractRoot", '-y', 'dflash-setup-ui.exe', 'install-version.txt') -Wait -PassThru -WindowStyle Hidden
-            $uiPath = Join-Path $extractRoot 'dflash-setup-ui.exe'
-            if ($bootstrap.ExitCode -le 2 -and (Test-Path $uiPath)) {
-                Write-HelperLog 'Launching dflash-setup-ui.exe /Package=... (interactive install scope)'
+            $bootstrap = Start-Process -FilePath $sevenZip -ArgumentList (@('e', $Path, "-o$extractRoot", '-y', 'install-version.txt') + $bootstrapNames) -Wait -PassThru -WindowStyle Hidden
+            $uiPath = $null
+            foreach ($name in $bootstrapNames) {
+                $candidate = Join-Path $extractRoot $name
+                if (Test-Path -LiteralPath $candidate) { $uiPath = $candidate; break }
+            }
+            if ($bootstrap.ExitCode -le 2 -and $uiPath) {
+                Write-HelperLog "Launching $([IO.Path]::GetFileName($uiPath)) /Package=... (silent in-place install)"
                 return Start-Process -FilePath $uiPath -ArgumentList $setupArgs -WorkingDirectory $extractRoot -PassThru
             }
-            Write-HelperLog 'Bootstrap extract failed; launching SFX installer directly'
+            Write-HelperLog "Bootstrap extract failed (exit $($bootstrap.ExitCode)); launching SFX installer directly"
         } catch {
             Write-HelperLog "Bootstrap path failed: $($_.Exception.Message)"
         }
@@ -122,6 +138,12 @@ function Start-UpdateInstaller {
 
 try {
     Write-HelperLog "Helper started. TargetVersion=$TargetVersion InstallerPath=$InstallerPath ParentPid=$ParentProcessId"
+
+    # Check the artifact BEFORE the ready handshake: once the app quits there is
+    # nothing left on screen to report a failure.
+    if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
+        throw 'Staged DFlash update artifact is missing.'
+    }
 
     if ($ReadyFile) {
         Set-Content -LiteralPath $ReadyFile -Value '{"ready":true}' -Encoding UTF8
@@ -136,6 +158,16 @@ try {
         }
         Write-HelperLog 'Quit handshake received.'
     }
+
+    # Show the installer window FIRST. The setup UI paints its progress window
+    # immediately and force-closes any leftover Console process before it
+    # touches files, so it no longer has to wait for the old app's graceful
+    # engine shutdown. Waiting here left the old app on screen for ~10 s
+    # between the update popup closing and the setup window appearing.
+    Clear-InstallDoneFlag
+    $installer = Start-UpdateInstaller -Path $InstallerPath -TargetVersion $TargetVersion -InstallRoot $InstallRoot
+    if (-not $installer) { throw 'Installer did not start.' }
+    Write-HelperLog "Installer launched PID=$($installer.Id)"
 
     if ($ParentProcessId -gt 0) {
         try { Wait-Process -Id $ParentProcessId -Timeout 120 } catch {
@@ -154,14 +186,6 @@ try {
         & taskkill.exe /F /IM 'DFlash Console.exe' /T | Out-Null
         Start-Sleep -Milliseconds 800
     }
-
-    if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
-        throw 'Staged DFlash update artifact is missing.'
-    }
-
-    $installer = Start-UpdateInstaller -Path $InstallerPath -TargetVersion $TargetVersion -InstallRoot $InstallRoot
-    if (-not $installer) { throw 'Installer did not start.' }
-    Write-HelperLog "Installer launched PID=$($installer.Id)"
 
     if (-not (Wait-ForInstallComplete -TargetVersion $TargetVersion)) {
         throw 'DFlash installer did not complete before timeout.'
