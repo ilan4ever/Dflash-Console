@@ -1498,6 +1498,31 @@
       .replace(/[\n\t]+/g, ' ')
       .trim();
     text = text.replace(/(?:[\s|]+-?\s*|\s+)[^\s/]+\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$/i, '').trim();
+    text = text.replace(/\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$/i, '').trim();
+    const stripped = text
+      .replace(/(?:^|(?<=[\s/_-]))(?:ud[-_])?(?:iq\d+(?:[_-][a-z0-9]+)*|q\d+(?:[_-][a-z0-9]+)*)(?=$|[\s/_-])/ig, ' ')
+      .replace(/(?:^|(?<=[\s/_-]))(?:bf16|fp16|fp32|f16|f32)(?=$|[\s/_-])/ig, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[-_\s]+|[-_\s]+$/g, '')
+      .trim();
+    if (stripped) text = stripped;
+    const creators = [
+      ['lm studio', 'lmstudio-community'],
+      ['the bloke', 'TheBloke'],
+      ['unsloth', 'unsloth'],
+      ['bartowski', 'bartowski'],
+      ['lmstudio', 'lmstudio-community'],
+      ['thebloke', 'TheBloke'],
+      ['mradermacher', 'mradermacher'],
+      ['google', 'google'],
+    ];
+    const lower = text.toLowerCase();
+    for (const [prefix, org] of creators) {
+      if (!(lower.startsWith(`${prefix} `) || lower.startsWith(`${prefix}/`))) continue;
+      const rest = text.slice(prefix.length).replace(/^[\s/]+/, '');
+      text = rest ? (text.slice(prefix.length).startsWith('/') ? `${org}/${rest}` : `${org} ${rest}`) : org;
+      break;
+    }
     text = text.replace(/^[\s|-]+|[\s|-]+$/g, '').replace(/\s+/g, ' ').trim();
     const first = (text.split(' ')[0] || '').replace(/[.,;:!?)]+$/g, '');
     if (/^[\w][\w.-]*\/[\w][\w.-]*$/.test(first)) return first;

@@ -37,7 +37,7 @@ fi
 echo "DFLASH_PROGRESS 55 Upgrading pip in WSL"
 "$VENV/bin/python" -m pip install --upgrade pip wheel setuptools
 echo "DFLASH_PROGRESS 60 Downloading vLLM in WSL"
-"$VENV/bin/python" -m pip install vllm
+"$VENV/bin/python" -m pip install --upgrade vllm
 echo "DFLASH_PROGRESS 90 Checking vLLM import"
 "$VENV/bin/python" -c "import vllm"
 printf '%s\n' "$VENV/bin/python"

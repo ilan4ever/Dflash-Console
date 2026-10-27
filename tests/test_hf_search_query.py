@@ -21,3 +21,15 @@ def test_strips_trailing_period_from_repo_id():
 def test_plain_text_query_unchanged():
     assert normalize_hf_search_query('Qwen3.8-27B-Uncensored') == 'Qwen3.8-27B-Uncensored'
     assert _is_repo_id_query('Qwen3.8-27B-Uncensored') is False
+
+
+def test_creator_plus_quant_filename_keeps_the_repo():
+    raw = 'Unsloth gemma-4-31B-it-Q6_K'
+    assert normalize_hf_search_query(raw) == 'unsloth gemma-4-31B-it'
+    assert _is_repo_id_query(raw) is False
+
+
+def test_creator_slash_quant_filename_drops_the_quant():
+    raw = 'unsloth/gemma-4-31B-it-Q6_K.gguf'
+    assert normalize_hf_search_query(raw) == 'unsloth/gemma-4-31B-it'
+    assert _is_repo_id_query(raw) is True

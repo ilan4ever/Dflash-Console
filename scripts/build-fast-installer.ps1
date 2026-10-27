@@ -8,15 +8,11 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
 $SevenZip = 'C:\Program Files\7-Zip\7z.exe'
-$SfxStub = Join-Path $Root 'tools\7zS2.sfx'
 $DistDir = Join-Path $Root 'dist-electron'
 $Unpacked = Join-Path $DistDir 'win-unpacked'
 
 if (-not (Test-Path $SevenZip)) {
     throw '7-Zip is required at C:\Program Files\7-Zip\7z.exe'
-}
-if (-not (Test-Path $SfxStub)) {
-    throw "Missing SFX stub: $SfxStub"
 }
 
 $pkg = Get-Content (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json
@@ -52,30 +48,48 @@ $setupUiExe = Join-Path $Root 'tools\dflash-setup-ui\bin\dflash-setup-ui.exe'
 if (-not (Test-Path $setupUiExe)) {
     throw 'dflash-setup-ui.exe was not built'
 }
-# 7zS2.sfx ignores ;!@Install@! config. It extracts to %TEMP%\7z* and then
-# launches the first match of: start / run / install / setup / *.exe.
-# If DFlash Console.exe sits at archive root, Windows "installs" from Temp.
-$SfxStage = Join-Path $env:TEMP "dflash-sfx-stage-$Version"
-if (Test-Path $SfxStage) { Remove-Item -LiteralPath $SfxStage -Recurse -Force }
-$AppStage = Join-Path $SfxStage 'app'
+# The branded setup UI is the installer executable itself. Shipping a bare 7z
+# SFX wrapper forced the whole package to unpack silently before any window
+# could appear, which left the screen empty for many seconds. Instead the UI
+# carries the compressed package appended after its own bytes (see
+# SetupForm.TryReadPayloadTrailer): the window is visible from the first
+# moment and performs the extraction with its own progress screen.
+$SetupStage = Join-Path $env:TEMP "dflash-setup-stage-$Version"
+if (Test-Path $SetupStage) { Remove-Item -LiteralPath $SetupStage -Recurse -Force }
+$AppStage = Join-Path $SetupStage 'app'
 New-Item -ItemType Directory -Path $AppStage -Force | Out-Null
 Copy-Item -Path (Join-Path $Unpacked '*') -Destination $AppStage -Recurse -Force
-Copy-Item $setupUiExe (Join-Path $SfxStage 'setup.exe') -Force
-Set-Content -Path (Join-Path $SfxStage 'install-version.txt') -Value $Version -Encoding ASCII -NoNewline
+# Kept inside the package so older update helpers can still find and run it.
+Copy-Item $setupUiExe (Join-Path $SetupStage 'setup.exe') -Force
+Set-Content -Path (Join-Path $SetupStage 'install-version.txt') -Value $Version -Encoding ASCII -NoNewline
 
 Write-Host '[3/4] Creating 7z archive...' -ForegroundColor Yellow
 $TempArchive = Join-Path $env:TEMP "dflash-console-$Version.7z"
 if (Test-Path $TempArchive) { Remove-Item $TempArchive -Force }
-& $SevenZip a -t7z -mx5 -m0=BCJ -m1=LZMA2 -mmt=on -ssc -y $TempArchive "$SfxStage\*" | Out-Null
+& $SevenZip a -t7z -mx5 -m0=BCJ -m1=LZMA2 -mmt=on -ssc -y $TempArchive "$SetupStage\*" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw '7z archive creation failed' }
-Remove-Item -LiteralPath $SfxStage -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $SetupStage -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host '[4/4] Building SFX installer...' -ForegroundColor Yellow
-# Do not prepend a config block. 7zS2 expects stub + 7z archive only.
+Write-Host '[4/4] Assembling self-contained installer...' -ForegroundColor Yellow
 if (Test-Path $OutputExe) { Remove-Item $OutputExe -Force }
-cmd /c copy /b "$SfxStub" + "$TempArchive" "$OutputExe" | Out-Null
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutputExe)) {
-    throw 'SFX assembly failed'
+Copy-Item -LiteralPath $setupUiExe -Destination $OutputExe -Force
+$payloadOffset = (Get-Item -LiteralPath $OutputExe).Length
+$payloadLength = (Get-Item -LiteralPath $TempArchive).Length
+$outputStream = [IO.File]::Open($OutputExe, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    $payloadStream = [IO.File]::OpenRead($TempArchive)
+    try { $payloadStream.CopyTo($outputStream) } finally { $payloadStream.Dispose() }
+    $trailer = [Text.Encoding]::ASCII.GetBytes('DFLASHPL') +
+        [BitConverter]::GetBytes([int64]$payloadOffset) +
+        [BitConverter]::GetBytes([int64]$payloadLength)
+    $outputStream.Write($trailer, 0, $trailer.Length)
+} finally {
+    $outputStream.Dispose()
+}
+Remove-Item -LiteralPath $TempArchive -Force -ErrorAction SilentlyContinue
+$finalLength = (Get-Item -LiteralPath $OutputExe).Length
+if (-not (Test-Path $OutputExe) -or $finalLength -ne ($payloadOffset + $payloadLength + 24)) {
+    throw "Installer assembly failed (size $finalLength)"
 }
 
 Write-Host "Built $OutputExe" -ForegroundColor Green

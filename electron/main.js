@@ -556,6 +556,42 @@ function showMainWindow({ bringToFront = false } = {}) {
   }
 }
 
+function clampUiZoomFactor(value) {
+  const factor = Number(value);
+  if (!Number.isFinite(factor)) return 1;
+  return Math.min(2.5, Math.max(0.5, factor));
+}
+
+function applyStoredUiZoom() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const factor = clampUiZoomFactor(loadAppSettings().uiZoomFactor);
+    const current = mainWindow.webContents.getZoomFactor();
+    if (Math.abs(current - factor) > 0.001) mainWindow.webContents.setZoomFactor(factor);
+  } catch (_err) {
+    // Zoom persistence is best-effort; it must never stop the window loading.
+  }
+}
+
+let uiZoomSaveTimer = null;
+let uiZoomReady = false;
+function rememberUiZoom() {
+  if (!uiZoomReady) return;
+  if (uiZoomSaveTimer) clearTimeout(uiZoomSaveTimer);
+  uiZoomSaveTimer = setTimeout(() => {
+    uiZoomSaveTimer = null;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const factor = clampUiZoomFactor(mainWindow.webContents.getZoomFactor());
+      if (Math.abs(Number(loadAppSettings().uiZoomFactor || 1) - factor) > 0.001) {
+        saveAppSettings({ uiZoomFactor: factor });
+      }
+    } catch (_err) {
+      // Ignore a transient destroyed-webContents error during shutdown.
+    }
+  }, 120);
+}
+
 function quitApp() {
   isQuitting = true;
   if (tray) {
@@ -1308,6 +1344,19 @@ async function createWindow() {
       showMainWindow({ bringToFront: !isStartupLaunch() });
     }
     flushPendingUpdatePrompt();
+  });
+
+  mainWindow.webContents.on('did-start-loading', () => {
+    uiZoomReady = false;
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyStoredUiZoom();
+    setTimeout(() => {
+      uiZoomReady = true;
+    }, 400);
+  });
+  mainWindow.webContents.on('zoom-changed', () => {
+    rememberUiZoom();
   });
 
   mainWindow.on('close', (event) => {

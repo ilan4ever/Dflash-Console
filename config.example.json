@@ -16,6 +16,7 @@
   "download_settings": {
     "parallel_connections": 4
   },
+  "auto_update_components": false,
   "remote_nodes": [],
   "servers": [
     {

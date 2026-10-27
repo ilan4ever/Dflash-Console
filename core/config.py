@@ -271,7 +271,10 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     elif not isinstance(remote_nodes, list):
         raise ValueError('remote_nodes must be a list')
     else:
-        cfg['remote_nodes'] = normalize_remote_nodes(remote_nodes)
+        cfg['remote_nodes'] = normalize_remote_nodes(
+            remote_nodes,
+            reserved_ports=set(seen_ports),
+        )
 
     try:
         from core.api_providers import normalize_api_providers
@@ -293,6 +296,7 @@ DEFAULT_ENGINE_PORTS = (
 # Non-llama runtime ports (Piper, STT, ...). Kept in a distinct band so the UI
 # can tell llama engines from other runtimes at a glance.
 DEFAULT_RUNTIME_PORTS = (8910, 8911, 8912, 8913, 8914, 8915, 8916, 8917)
+DEFAULT_REMOTE_TUNNEL_PORT = 8990
 
 # Console OpenAI gateway port — a single friendly OpenAI-compatible endpoint
 # that proxies to the active/default engine (LM Studio uses 1234; the Console
@@ -470,7 +474,12 @@ def _slug_node_id(value: str) -> str:
     return slug[:64] or 'node'
 
 
-def normalize_remote_node(raw: Any, *, existing_ids: set[str] | None = None) -> dict[str, Any]:
+def normalize_remote_node(
+    raw: Any,
+    *,
+    existing_ids: set[str] | None = None,
+    reserved_ports: set[int] | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError('remote node must be an object')
     label = str(raw.get('label') or '').strip() or 'Remote node'
@@ -498,9 +507,18 @@ def normalize_remote_node(raw: Any, *, existing_ids: set[str] | None = None) -> 
     except (TypeError, ValueError):
         ssh_remote_port = 0
     if ssh_host and ssh_local_port <= 0:
-        ssh_local_port = 8901
+        ssh_local_port = (
+            int(parsed.port or 0)
+            if parsed.hostname in {'127.0.0.1', 'localhost'} and parsed.port
+            else DEFAULT_REMOTE_TUNNEL_PORT
+        )
     if ssh_host and ssh_remote_port <= 0:
         ssh_remote_port = 8900
+    if ssh_host and reserved_ports and ssh_local_port in reserved_ports:
+        previous_port = ssh_local_port
+        ssh_local_port = suggest_remote_tunnel_port(reserved_ports=reserved_ports)
+        if parsed.hostname in {'127.0.0.1', 'localhost'} and parsed.port == previous_port:
+            base_url = parsed._replace(netloc=f'{parsed.hostname}:{ssh_local_port}').geturl().rstrip('/')
     return {
         'id': node_id,
         'label': label,
@@ -514,19 +532,30 @@ def normalize_remote_node(raw: Any, *, existing_ids: set[str] | None = None) -> 
     }
 
 
-def normalize_remote_nodes(raw: Any) -> list[dict[str, Any]]:
+def normalize_remote_nodes(
+    raw: Any,
+    *,
+    reserved_ports: set[int] | None = None,
+) -> list[dict[str, Any]]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise ValueError('remote_nodes must be a list')
     seen: set[str] = set()
+    used_ports = set(reserved_ports or set())
     out: list[dict[str, Any]] = []
     for index, row in enumerate(raw):
         try:
-            normalized = normalize_remote_node(row, existing_ids=seen)
+            normalized = normalize_remote_node(
+                row,
+                existing_ids=seen,
+                reserved_ports=used_ports,
+            )
         except ValueError as exc:
             raise ValueError(f'remote_nodes[{index}]: {exc}') from exc
         seen.add(normalized['id'])
+        if normalized.get('ssh_host'):
+            used_ports.add(int(normalized.get('ssh_local_port') or 0))
         out.append(normalized)
     return out
 
@@ -729,6 +758,23 @@ def _loopback_port_is_live(port: int, *, timeout: float = 0.4) -> bool:
         return False
 
 
+def suggest_remote_tunnel_port(
+    *,
+    reserved_ports: set[int] | None = None,
+) -> int:
+    """Choose a local SSH-forward port outside the Console engine ranges."""
+    used = {int(port) for port in (reserved_ports or set()) if int(port or 0) > 0}
+    for offset in range(64):
+        port = DEFAULT_REMOTE_TUNNEL_PORT + offset
+        if port in used or _loopback_port_is_live(port):
+            continue
+        return port
+    candidate = DEFAULT_REMOTE_TUNNEL_PORT + 64
+    while candidate < 65535 and (candidate in used or _loopback_port_is_live(candidate)):
+        candidate += 1
+    return candidate
+
+
 def suggest_server_port(*, cfg: dict[str, Any] | None = None) -> int:
     """Suggest a free llama engine port.
 
@@ -885,6 +931,7 @@ def update_server_runtime(
     component_key: str | None = None,
     component_label: str | None = None,
     component_role: str | None = None,
+    clear_identity: bool = False,
 ) -> dict[str, Any]:
     cfg = load_config()
     entry = get_server(cfg, server_id)
@@ -900,6 +947,12 @@ def update_server_runtime(
         if label and entry.get('loaded_by') != label:
             entry['loaded_by'] = label
             changed = True
+    if clear_identity:
+        # A fresh start replaces the previous run's caller attribution; those
+        # component fields belong to the old run and must not be shown again.
+        for key in ('component_key', 'component_label', 'component_role'):
+            if entry.pop(key, None) is not None:
+                changed = True
     for key, value in (
         ('component_key', component_key),
         ('component_label', component_label),

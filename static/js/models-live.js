@@ -416,6 +416,35 @@
       : '';
   }
 
+  function quantizationLabel(model) {
+    const fromName = window.DFlashModelGroups?.extractQuantTokenFromModel?.(model) || '';
+    if (fromName) return String(fromName).trim().toUpperCase();
+    const field = String(model?.quant || model?.quantization || model?.quantization_full || '').trim();
+    if (!field || field === '—' || field === '-') return '';
+    // Speech and folder scans default to f16 when the file never says so.
+    if (/^(?:F16|F32|BF16|FP16|FP32)$/i.test(field)) return '';
+    return field.toUpperCase();
+  }
+
+  function quantizationBadge(model) {
+    const label = quantizationLabel(model);
+    if (!label) return '';
+    const hay = [model?.filename, model?.label, model?.path, model?.id, model?.hf_repo]
+      .filter(Boolean)
+      .join(' ');
+    const qat = /\bqat\b/i.test(hay);
+    const title = qat
+      ? `${label}. Quantization-aware training: this file is still ${label}, trained to hold quality at that size.`
+      : `Quantization: ${label}`;
+    return `<span class="lm-badge orange lm-quant-badge" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+  }
+
+  function acceleratorFooterTag(model) {
+    if (!window.DFlashModelCard?.isAccelerator?.(model)) return '';
+    const generation = window.DFlashModelCard?.generationLabel?.(model) || 'DFlash 1';
+    return `<span class="lm-badge orange" title="${escapeHtml(`${generation} draft accelerator; not a target model`)}">Accelerator</span>`;
+  }
+
   function normalizeModelPath(path) {
     return String(path || '').replace(/\\/g, '/').trim().toLowerCase();
   }
@@ -467,6 +496,7 @@
     }
 
     for (const row of serversData?.external_gpu_loads || []) {
+      if (String(row?.card_state || '').toLowerCase() === 'stopped') continue;
       addPath(row?.model_path || row?.path);
       addId(row?.model_id || row?.model_name);
     }
@@ -498,6 +528,7 @@
     ].filter(Boolean));
 
     for (const row of externalGpuLoads) {
+      if (String(row?.card_state || '').toLowerCase() === 'stopped') continue;
       if (String(row?.card_state || '').toLowerCase() === 'loading') continue;
       const rowPath = normalizeModelPath(row?.model_path || row?.path);
       if (pathKey && rowPath && pathKey === rowPath) return row;
@@ -612,9 +643,10 @@
   }
 
   function capTags(model, visibleCount, { handleOnly = false, bodyOnly = false } = {}) {
+    // Title-row badges used to be only "LLM" and forced a full extra line.
+    if (handleOnly) return '';
     const classification = window.DFlashModelCard?.classificationTags?.(model)
       || modalityBadge(model);
-    if (handleOnly) return libraryHandleClassification(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const role = modelCatalogRoleTag(model);
     const location = (model.duplicate_group || model.library_file) ? modelLocationTag(model) : '';
@@ -670,11 +702,11 @@
   }
 
   function libraryModelFooterHtml(model, visibleCount) {
-    const modalityTags = libraryFooterModalityTags(model);
-    const bodyTags = capTags(model, visibleCount, { bodyOnly: true });
-    const merged = `${modalityTags}${bodyTags}`;
-    if (!merged) return '';
-    return `<div class="lm-library-card-foot lm-library-body-tags lm-model-tags-line">${merged}</div>`;
+    const modalityTags = modalityBadge(model);
+    const main = `${quantizationBadge(model)}${acceleratorFooterTag(model)}${capTags(model, visibleCount, { bodyOnly: true })}`;
+    if (!main && !modalityTags) return '';
+    const end = modalityTags ? `<span class="lm-library-foot-end">${modalityTags}</span>` : '';
+    return `<div class="lm-library-card-foot lm-library-body-tags lm-model-tags-line"><span class="lm-library-foot-main">${main}</span>${end}</div>`;
   }
 
   function libraryModelBodyHtml(model, visibleCount) {
@@ -1486,28 +1518,6 @@
   function libraryCatalogDeferSortTier(model) {
     if (isDflashAccelerator(model) || isAudioTokenizerModel(model)) return 1;
     return 0;
-  }
-
-  function libraryDeferredModality(model) {
-    const modality = window.DFlashModelCard?.modality?.(model)
-      || String(model?.modality || '').trim().toLowerCase();
-    return ['speech-to-text', 'text-to-speech', 'ocr'].includes(modality);
-  }
-
-  function libraryHandleClassification(model) {
-    const deferModality = libraryDeferredModality(model);
-    const shared = window.DFlashModelCard?.classificationTags?.(model, {
-      includeReasoning: false,
-      includeModality: !deferModality,
-    });
-    if (shared) return shared;
-    if (!deferModality) return modalityBadge(model);
-    return '';
-  }
-
-  function libraryFooterModalityTags(model) {
-    if (!libraryDeferredModality(model)) return '';
-    return modalityBadge(model);
   }
 
   function isExternalModel(model) {
@@ -2469,10 +2479,12 @@
   }
 
   function libraryMobileCardLabels(model) {
-    const tags = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false }) || '';
+    const quant = quantizationBadge(model);
+    const tags = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false, includeModality: false }) || '';
+    const modality = modalityBadge(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const apiProv = apiProviderTag(model);
-    return `${tags}${apiProv}${status}`;
+    return `${quant}${tags}${apiProv}${status}${modality}`;
   }
 
   function libraryMobileActionHtml(model) {

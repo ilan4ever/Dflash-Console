@@ -80,6 +80,13 @@ def is_active_model_load(lines: list[str]) -> bool:
     start = _last_model_load_start(lines)
     if start < 0:
         return False
+    # A router restart or an idle/unload marker closes the previous load
+    # cycle.  Without this, a stale "loading model" line from before a reload
+    # kept the card on LOADING forever even though the new router was idle.
+    if _last_boot_index(lines) > start:
+        return False
+    if _last_cycle_end_index(lines) > start:
+        return False
     for line in reversed(lines[start:]):
         lower = line.lower()
         state_match = _ROUTER_STATE_RE.search(line)

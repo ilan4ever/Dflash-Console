@@ -8,6 +8,230 @@ Newest entries go on top. Each entry references the commit so you can
 
 ---
 
+## 2026-10-25 — engine modules show versions and can update themselves
+
+**Tests:** `tests/test_component_versions.py`, `tests/test_components_hub.py`
+and the full suite
+
+### What changed
+
+- **Downloads & engines** now shows the installed and latest version for vLLM,
+  Transformers and FreeToken. A newer version is bold. Bundled engines show
+  the Console bundle version.
+- **Check for updates now** probes PyPI and the installed packages. Version
+  checks are cached so polling the settings panel does not launch WSL imports.
+- A new **Automatically update engine modules** toggle starts one installer at a
+  time when a newer version is available. It skips an engine that is currently
+  running, then retries on the next check.
+- Each installing card shows a progress bar and the current installer step.
+  A failed update stays visible as **Install failed** instead of falling back to
+  **Update available**.
+- Updating an already installed engine uses the installer's forced/update path;
+  previously **Update / repair** saw the engine as installed and did nothing.
+  The running adapter is stopped first, so Windows releases `python.exe`.
+- The Transformers updater reuses a compatible 3.11/3.12/3.13 environment,
+  keeps its CUDA PyTorch wheel, and uses a timeout on dependency resolution.
+  The system Python 3.14 cannot install the cu124 torch wheel.
+- Active-download polling no longer scans every model folder. The expensive
+  incomplete-shard discovery runs only for an explicit discover request.
+- The Electron shell remembers its page zoom across UI reloads, so a UI refresh
+  no longer snaps a zoomed-out window back to 100%.
+
+---
+
+## 2026-10-25 — a reload cannot kill a load that is already running
+
+**Tests:** `tests/test_server_boot.py` (reload guard), full suite
+
+### The problem
+
+OneVoice switched to compressed Gemma while its chat request was already
+bringing the engine up. Its settings/reload calls arrived during that load; each
+reload stopped the router and started it again. The card sat on **Loading into
+GPU** for minutes, then the engine disappeared. The last reload waited 250 s
+and returned 400 "timed out waiting for the model server to finish starting".
+
+### What changed
+
+- `reload_server` checks for an active model load and for a held per-port boot
+  lock before stopping anything. If either is present it returns
+  `{success: true, starting: true}` and leaves the working load alone.
+- The reload endpoint no longer records a "loaded" attribution for a reload
+  that was skipped because a load is in progress.
+- Unloading Strata no longer leaves a synthetic **STOPPED** card on Engines; a
+  temporary loading card exists only while a launcher process is actually
+  starting.
+
+---
+
+## 2026-10-25 — Other GPU chips show the full process details
+
+**Tests:** `tests/test_gpu_processes.py` and the full suite
+
+### What changed
+
+Hovering or focusing an **Other GPU** chip now opens a details panel with the
+application name, process name, PID, executable path, command line, GPU, VRAM,
+VRAM source, component and parent process. The process payload now includes
+`executable_path`, `parent_process_name`, `parent_pid` and a longer command
+line. The panel is fixed-positioned so it is not clipped by the Engines card,
+and it is keyboard accessible.
+
+Protected Windows processes can report an empty executable path; the panel
+says so instead of inventing one.
+
+---
+
+## 2026-10-25 — a bad local HTTP banner cannot hide every engine card
+
+**Tests:** `tests/test_gpu_processes.py` (92 passed, 1 skipped); full suite
+982 passed, 2 skipped
+
+### The problem
+
+One unrelated local app answered its port with a plain sentence instead of an
+HTTP status line (`Android Console: Authentication required`). The external
+model scan probed every listening port; `http.client.BadStatusLine` escaped the
+probe, aborted the whole scan, and left `external_gpu_loads` empty.  Strata then
+appeared only in **Other GPU** and its Console card disappeared.
+
+### What changed
+
+- `_probe_models_fast` treats a malformed HTTP banner as "not an engine" and
+  moves on to the next port.
+- `get_external_gpu_loads` isolates each process card build: one broken external
+  app can no longer remove every other model card.
+- A regression test feeds the Android banner through the probe.
+
+Verified live: the scan is clean and Strata is back under **This app** instead
+of **Other GPU**.
+
+---
+
+## 2026-10-25 — Strata is a Console engine card
+
+**Tests:** `tests/test_gpu_processes.py`, `tests/test_external_models.py`,
+`tests/test_external_launchers.py`, `tests/test_load_progress.py`,
+`tests/test_ui_layout.py` (123 passed, 1 skipped); full suite 981 passed,
+2 skipped
+
+### The problem
+
+Strata's engine is started through the Console's external launcher, but the
+GPU scan treated the process as an external workload.  The model was only
+visible as an "Other GPU" chip (or an external card if another app started
+it), never as a Console model card.
+
+### What the Console does now
+
+| behaviour | detail |
+|---|---|
+| Card | a running Strata engine is a regular Console card under **This app** |
+| Ownership | `console_engine: true`, `external: false`, `launcher_id: "strata"` |
+| Title | the model from the launcher config, for example `qwen3.8-flash-next-unsloth-ud-iq4_xs` |
+| Other GPU | the engine and its vision reader are removed from the chip list |
+| Unload | the card's **Unload** calls the launcher stop endpoint, not the GPU-process kill path |
+| Discovery | any registered launcher process is recognized, including one started by another app |
+| Attribution | a `STRATA` engine badge sits beside the app that asked for the load (for example `OneVoice`), not the Console name |
+| Context | the context length comes from Strata's live health and config (`max_context`, for example `131072`); it is shown on the card and in Runtime settings |
+| Path | the model file path is shown on the card (and in full under Details) |
+| Slots | the card and Runtime settings offer 1, 2, 3, 4, 6 or 8 parallel requests; changing the value restarts Strata through the launcher |
+| Restart progress | a slot change starts the launcher without blocking the request thread, then polls its status. The card shows **Restarting Strata**, then **Loading Strata** with the target slot count and elapsed time instead of a long **UNLOADING** overlay |
+| Runtime hint | the Strata context hint is fixed text, not refreshed by hardware recommendations; its recommendation bar is hidden for launcher engines so the line cannot flicker and shift the fields below |
+| Stopped | unloading Strata removes its Engines card, like any other unloaded engine. A temporary loading card is shown only while the process is actually starting |
+| Gateway | `/v1/models` lists the launcher model; a chat request starts a stopped launcher |
+
+The gateway still advertises the launcher model through `_launcher_entries`; the
+external scan skips the Console-owned card so it is not duplicated. The model
+stays in the gateway model list while the launcher is stopped, so the first
+request can start it the same way a normal JIT load does.
+
+### Files
+
+| file | role |
+|---|---|
+| `core/external_launchers.py` | process-to-launcher matching, model/context/path lookup, caller attribution |
+| `core/gpu_processes.py` | launcher-managed Strata card is marked Console-owned; a temporary card exists only while the launcher is starting |
+| `core/external_models.py` | external scan skips Console-owned launcher cards |
+| `api/app.py` | records the caller on launcher load/status |
+| `api/gateway.py` | starts a stopped launcher for a gateway request |
+| `static/js/server-live.js` | regular card, engine badge, caller badge, context/slots and launcher-aware Unload |
+| `static/js/models-live.js` | a starting launcher row does not mark a catalog model as loaded |
+| `static/css/dflash-console.css`, `static/css/dflash-shell.css` | launcher loading card, header and progress overlay |
+
+---
+
+## 2026-10-25 — A router reload no longer leaves a card LOADING
+
+**Tests:** `tests/test_load_progress.py` and the focused engine suite
+(319 passed, 1 skipped)
+
+### The problem
+
+After a router reload, the engine log still contained an older
+`load_model: loading model` line from the previous child.  `is_active_model_load`
+scanned across the new `=== boot` / `=== router idle ready` boundary, so the
+router stayed `booting` forever even though `/v1/models` reported `unloaded`.
+
+### What changed
+
+- `core/load_progress.py` closes a load at a newer boot or idle/unload marker.
+- `static/js/server-live.js` clears an optimistic loading card when the server
+  reports `stopped`/`error`, or after 8 s without a loading or ready card.
+
+---
+
+## 2026-10-25 — Embedding engine loads on demand
+
+**Tests:** focused embedding and engine suites (67 + 239 passed)
+
+### The problem
+
+The embedding model was started with `-m --embedding` during Console boot, so
+it held GPU memory even when no app was using it.  External apps call the
+engine port directly, so simply deferring the start would have broken them.
+
+### What the Console does now
+
+| behaviour | detail |
+|---|---|
+| Listener | the embedding port runs a router, not a loaded model |
+| First use | the router starts the embedding child on the first `/v1/embeddings` request |
+| Idle | the child sleeps after `idle_unload_minutes` (`--sleep-idle-seconds`) |
+| Wake | the next embedding request reloads it automatically |
+| Unload | frees the model but keeps the router ready |
+| Names | aliases cover the checkpoint filename, the configured id, the engine id, and common `nomic-embed` spellings |
+
+Direct clients must send a known model name.  The Console's own embedding
+routes fill in the configured name automatically.
+
+### Status polls must not wake the model
+
+The router autoloads its child when anything asks `/slots`.  The engine status
+builder and the `inference-stats` endpoint were polling `/slots` for the
+embedding card, so **Unload** freed the GPU and the next status tick loaded it
+again.  Both now skip token stats for embedding engines:
+
+- `core/runtime.py` — the embedding status card reports empty inference stats.
+- `api/app.py` — `/api/servers/{id}/inference-stats` returns `status: embedding`
+  without touching the engine.
+
+Verified live: after Unload the router reports `unloaded`, no child process
+stays behind, and a direct `/v1/embeddings` request loads it again (768 dims).
+
+### Files
+
+| file | role |
+|---|---|
+| `core/model_presets.py` | embedding preset keys (`embeddings`, `pooling`, `jinja = false`) and model aliases |
+| `core/embedding_server.py` | router start, status detection, router unload |
+| `core/server_boot.py` | embedding profiles use the normal router load path |
+| `scripts/start_llama_server.ps1` | `-ModelsAutoload` for embedding routers |
+| `core/engine_state.py` | legacy direct listener migration and router-aware release |
+| `core/runtime.py` | embedding status avoids `/slots` so polls cannot autoload |
+
+---
+
 ## 2026-10-20 — Context & parallel slots (the "32K request fails" problem)
 
 **Commits:** `8d17f84` → `2256c98`

@@ -256,3 +256,60 @@ def test_restore_starts_embedding_even_when_port_is_closed(config_file: Path, mo
     results = engine_state.restore_engines()
     assert results[0]['action'] == 'started_embedding'
     assert embedding_calls == ['embedding']
+
+
+def _update_first_server(config_file: Path, **updates) -> None:
+    saved = json.loads(config_file.read_text(encoding='utf-8'))
+    saved['servers'][0].update(updates)
+    config_file.write_text(json.dumps(saved), encoding='utf-8')
+
+
+def test_restore_embedding_resets_stale_caller_to_console(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+    # Yesterday's embedding client must not own the card after a Console boot.
+    _update_first_server(
+        config_file,
+        profile='nomic-embed',
+        engine_mode='embedding',
+        model_id='nomic-embed-text',
+        loaded_by='OneVoice AI',
+        component_key='onevoice.embedding',
+        component_label='OneVoice AI',
+        component_role='embedding',
+    )
+    monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: False)
+    monkeypatch.setattr(
+        'core.embedding_server.start_embedding_server',
+        lambda *args, **kwargs: {'success': True},
+    )
+
+    results = engine_state.restore_engines()
+
+    assert results[0]['action'] == 'started_embedding'
+    row = json.loads(config_file.read_text(encoding='utf-8'))['servers'][0]
+    assert row['loaded_by'] == 'DFlash Console'
+    assert 'component_key' not in row
+    assert 'component_label' not in row
+    assert 'component_role' not in row
+
+
+def test_restore_adopted_engine_resets_stale_caller_to_console(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+    _update_first_server(
+        config_file,
+        loaded_by='OneVoice AI',
+        component_key='onevoice.ocr',
+        component_label='OneVoice OCR',
+        component_role='image_ocr',
+    )
+    monkeypatch.setattr(engine_state, 'tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(engine_state, 'probe_models', lambda api_url: [])
+    monkeypatch.setattr(
+        'core.server_boot.adopt_running_engine',
+        lambda *args, **kwargs: {'success': True, 'adopted': True},
+    )
+
+    results = engine_state.restore_engines()
+
+    assert results[0]['action'] == 'adopted_idle'
+    row = json.loads(config_file.read_text(encoding='utf-8'))['servers'][0]
+    assert row['loaded_by'] == 'DFlash Console'
+    assert 'component_key' not in row

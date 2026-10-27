@@ -4,7 +4,7 @@ The Windows desktop shell checks the signed GitHub Release manifest at:
 
 `https://github.com/ilan4ever/Dflash-Console/releases/latest/download/latest.json`
 
-The manifest is publicly downloadable after the repository is made public. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest. The setup artifact is a branded DFlash 7-Zip SFX wrapper that launches the native dark setup UI; it is not an NSIS or Windows wizard.
+The manifest is publicly downloadable after the repository is made public. The installer is accepted only when the manifest has a valid DFlash app ID, RSA-SHA256 signature, filename, size, and SHA-512 digest. The setup artifact is the branded DFlash setup UI itself with the compressed app package appended, so the window appears immediately and shows its own extraction progress; it is not an NSIS or Windows wizard and not a silent wrapper.
 
 ## Release prerequisites
 

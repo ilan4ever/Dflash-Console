@@ -293,6 +293,19 @@ def _guess_quant(name: str) -> str:
     return match.group(1).upper() if match else '—'
 
 
+def _quant_for_file(name: str, path: Path | None = None) -> str:
+    """Name-based quant, or the level stored in the GGUF when the filename omits it."""
+    guessed = _guess_quant(name)
+    if guessed and guessed != '—':
+        return guessed
+    target = path if isinstance(path, Path) else None
+    if target is None or not target.is_file() or target.suffix.lower() != '.gguf':
+        return guessed or '—'
+    from core.gguf_meta import read_gguf_quant_label
+
+    return read_gguf_quant_label(target) or guessed or '—'
+
+
 def _publisher(path: Path) -> str:
     parts = path.parts
     try:
@@ -1073,7 +1086,7 @@ def _scan_gguf(
                 'arch': _guess_arch(name),
                 'params': _guess_params(name),
                 'publisher': _publisher(path),
-                'quant': _guess_quant(name),
+                'quant': _quant_for_file(name, path),
                 'size_gb': _size_gb(path),
                 'modified': _modified_label(path),
                 'source': source,
@@ -1499,7 +1512,7 @@ def _server_catalog_row(
         'arch': _guess_arch(str(server.get('label') or path.name if path else '')),
         'params': _guess_params(str(server.get('label') or path.name if path else '')),
         'publisher': _publisher(path) if path else 'dflash',
-        'quant': _guess_quant(path.name if path else str(server.get('label') or '')),
+        'quant': _quant_for_file(path.name if path else str(server.get('label') or ''), path if path else None),
         'size_gb': target.get('size_gb') if target else _size_gb(path) if path else None,
         'modified': _modified_label(path) if path and path.is_file() else '—',
         'source': 'dflash-profile',
@@ -1570,7 +1583,7 @@ def _capable_stack_row(target: dict[str, Any]) -> dict[str, Any]:
         'arch': target.get('arch') or _guess_arch(path.name),
         'params': target.get('params') or _guess_params(path.name),
         'publisher': target.get('publisher') or _publisher(path),
-        'quant': target.get('quant') or _guess_quant(path.name),
+        'quant': (target.get('quant') if str(target.get('quant') or '').strip() not in {'', '—'} else '') or _quant_for_file(path.name, path),
         'size_gb': target.get('size_gb'),
         'modified': target.get('modified') or (_modified_label(path) if path.is_file() else '—'),
         'source': source,

@@ -21,10 +21,28 @@ Copy-Item -LiteralPath (Join-Path $bundleSrc 'server.py') -Destination (Join-Pat
 Copy-Item -LiteralPath (Join-Path $bundleSrc 'requirements.txt') -Destination (Join-Path $bundleDest 'requirements.txt') -Force
 
 $python = $null
+$pythonCandidates = New-Object System.Collections.Generic.List[string]
+$uv = Get-Command uv -ErrorAction SilentlyContinue
+if ($uv) {
+    foreach ($uvVersion in @('3.11', '3.12', '3.10')) {
+        try {
+            $uvPath = (& uv python find $uvVersion 2>$null | Select-Object -First 1)
+            if ($uvPath -and (Test-Path -LiteralPath ([string]$uvPath).Trim())) {
+                $pythonCandidates.Add(([string]$uvPath).Trim())
+                break
+            }
+        } catch {
+            continue
+        }
+    }
+}
 foreach ($candidate in @('py -3.11', 'py -3.12', 'py -3.10', 'python')) {
+    $pythonCandidates.Add($candidate)
+}
+foreach ($candidate in $pythonCandidates) {
     try {
         $version = Invoke-Expression "$candidate -c `"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')`"" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $version) {
+        if ($LASTEXITCODE -eq 0 -and $version -match '^3\.(1[0-3])$') {
             $python = $candidate
             break
         }
@@ -32,17 +50,32 @@ foreach ($candidate in @('py -3.11', 'py -3.12', 'py -3.10', 'python')) {
         continue
     }
 }
-if (-not $python) {
-    throw 'Python 3.10+ is required to install the Transformers runtime.'
+$reuseVenv = $false
+if (Test-Path -LiteralPath $venvPy) {
+    try {
+        $existingVersion = & $venvPy -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $existingVersion -match '^3\.(1[0-3])$') {
+            $reuseVenv = $true
+        }
+    } catch {
+        $reuseVenv = $false
+    }
+}
+if (-not $reuseVenv -and -not $python) {
+    throw 'Python 3.10-3.13 is required for the PyTorch/Transformers runtime. Install Python 3.11 or 3.12.'
 }
 
-Write-Host 'DFLASH_PROGRESS 10 Creating Python environment'
-if (Test-Path -LiteralPath $venv) {
-    Remove-Item -LiteralPath $venv -Recurse -Force
-}
-Invoke-Expression "$python -m venv `"$venv`""
-if (-not (Test-Path -LiteralPath $venvPy)) {
-    throw "Failed to create venv at $venv"
+if ($reuseVenv) {
+    Write-Host 'DFLASH_PROGRESS 10 Reusing compatible Python environment'
+} else {
+    Write-Host 'DFLASH_PROGRESS 10 Creating Python environment'
+    if (Test-Path -LiteralPath $venv) {
+        Remove-Item -LiteralPath $venv -Recurse -Force
+    }
+    Invoke-Expression "$python -m venv `"$venv`""
+    if (-not (Test-Path -LiteralPath $venvPy)) {
+        throw "Failed to create venv at $venv"
+    }
 }
 
 Write-Host 'DFLASH_PROGRESS 18 Upgrading pip'
@@ -62,17 +95,46 @@ if ($TorchVariant -eq 'cuda') {
   }
 }
 
-if ($useCuda) {
-    Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CUDA) + Transformers stack...'
-    & $venvPip install torch --index-url https://download.pytorch.org/whl/cu124 | Write-Host
-} else {
-    Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CPU) + Transformers stack...'
-    & $venvPip install torch --index-url https://download.pytorch.org/whl/cpu | Write-Host
+$torchReady = $false
+if ($reuseVenv) {
+    & $venvPy -c "import torch" 2>$null
+    $torchReady = ($LASTEXITCODE -eq 0)
+}
+$torchCudaReady = $false
+if ($torchReady) {
+    $cudaCheck = & $venvPy -c "import torch; print(torch.cuda.is_available())" 2>$null
+    $torchCudaReady = ([string]$cudaCheck).Trim() -eq 'True'
+}
+if (-not $torchReady) {
+    if ($useCuda) {
+        Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CUDA) + Transformers stack...'
+        & $venvPip install torch --index-url https://download.pytorch.org/whl/cu124 | Write-Host
+    } else {
+        Write-Host 'DFLASH_PROGRESS 30 Installing PyTorch (CPU) + Transformers stack...'
+        & $venvPip install torch --index-url https://download.pytorch.org/whl/cpu | Write-Host
+    }
+} elseif ($useCuda -and -not $torchCudaReady) {
+    Write-Host 'DFLASH_PROGRESS 30 Restoring the CUDA PyTorch build'
+    & $venvPip install --force-reinstall --no-deps torch --index-url https://download.pytorch.org/whl/cu124 | Write-Host
 }
 
 Write-Host 'DFLASH_PROGRESS 70 Installing Transformers libraries'
-& $venvPip install -r (Join-Path $bundleDest 'requirements.txt') | Write-Host
+$requirementsPath = Join-Path $bundleDest 'requirements.txt'
+$requirementsNoTorch = Join-Path $bundleDest 'requirements-no-torch.txt'
+Get-Content -LiteralPath $requirementsPath |
+    Where-Object { $_ -notmatch '^\s*torch(\s|$|\[)' } |
+    Set-Content -LiteralPath $requirementsNoTorch -Encoding utf8
+& $venvPip install --upgrade --no-input --timeout 120 --retries 1 -r $requirementsNoTorch | Write-Host
 
+if ($useCuda) {
+    $cudaAfter = & $venvPy -c "import torch; print(torch.cuda.is_available())" 2>$null
+    if (([string]$cudaAfter).Trim() -ne 'True') {
+        Write-Host 'DFLASH_PROGRESS 82 Restoring the CUDA PyTorch build'
+        & $venvPip install --force-reinstall --no-deps torch --index-url https://download.pytorch.org/whl/cu124 | Write-Host
+    }
+}
+
+$packageVersion = (& $venvPy -c "import transformers; print(transformers.__version__)" 2>$null | Select-Object -Last 1)
 $manifest = @{
     version = 1
     bundle_revision = 1
@@ -80,6 +142,7 @@ $manifest = @{
     worker = (Join-Path $bundleDest 'server.py')
     python = $venvPy
     torch_variant = $(if ($useCuda) { 'cuda' } else { 'cpu' })
+    package_version = ([string]$packageVersion).Trim()
     execution_mode = 'server'
     generated_by = 'scripts/install-transformers-runtime.ps1'
 } | ConvertTo-Json -Depth 4

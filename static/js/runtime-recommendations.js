@@ -5,6 +5,7 @@
   let lastPayload = null;
   let refreshTimer = null;
   let applying = false;
+  let requestId = 0;
 
   const HINT_IDS = {
     context_size: 'inspectorContextHint',
@@ -60,6 +61,20 @@
     }
   }
 
+  function clear() {
+    lastPayload = null;
+    requestId += 1;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+    const summary = document.getElementById('inspectorRecSummary');
+    if (summary) {
+      summary.textContent = '';
+      summary.classList.add('hidden');
+    }
+  }
+
   function buildQuery(model) {
     const params = new URLSearchParams();
     if (model?.server_id) params.set('server_id', model.server_id);
@@ -83,17 +98,21 @@
   async function fetchRecommendations(model) {
     if (!model) {
       lastPayload = null;
+      requestId += 1;
       renderHints(null, {});
       return null;
     }
     const query = buildQuery(model);
     if (!query) return null;
+    const request = ++requestId;
     try {
       const payload = await api(`/api/runtime-recommendations?${query}`);
+      if (request !== requestId) return null;
       lastPayload = payload;
       renderHints(payload, fallbackHints(model));
       return payload;
     } catch (err) {
+      if (request !== requestId) return null;
       renderHints(null, fallbackHints(model));
       return null;
     }
@@ -155,6 +174,7 @@
     refresh: fetchRecommendations,
     scheduleRefresh,
     applyRecommended,
+    clear,
     getLastPayload: () => lastPayload,
   };
 })();

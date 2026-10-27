@@ -31,6 +31,35 @@ def test_sanitize_preset_model_id_strips_library_file_alias():
     ) == 'gemma-4-31b-q4-0-it'
 
 
+def test_write_server_preset_for_embedding_router(tmp_path, monkeypatch):
+    gguf = tmp_path / 'nomic-embed-text-v1.5.Q8_0.gguf'
+    gguf.write_bytes(b'fake')
+
+    preset_dir = tmp_path / 'presets'
+    monkeypatch.setattr('core.model_presets.PRESET_DIR', preset_dir)
+
+    server = {
+        'id': 'nomic-embed-text-v1-5-q8-0',
+        'model_id': 'nomic-embed-text-v1.5.q8-0',
+        'profile': 'nomic-embed',
+        'engine_mode': 'embedding',
+        'pooling': 'mean',
+        'context_size': 2048,
+        'target_path': str(gguf),
+        'load_settings': {'gpu_layers': 99},
+        'gpu_device': 'auto',
+    }
+    path = write_server_preset(server)
+    text = path.read_text(encoding='utf-8')
+
+    assert 'embeddings = true' in text
+    assert 'pooling = mean' in text
+    assert 'jinja = false' in text
+    assert 'alias = ' in text
+    assert gguf.name in text
+    assert server['model_id'] in text
+
+
 def test_write_server_preset_with_target_path(tmp_path, monkeypatch):
     gguf = tmp_path / 'custom-checkpoint.gguf'
     gguf.write_bytes(b'fake')

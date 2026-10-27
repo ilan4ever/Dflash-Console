@@ -99,6 +99,18 @@ Pick the engine in the toolbar **before** you load. The same picker is on
 highlighted. Loading one model does not automatically unload the others unless
 you turn that on in Settings.
 
+### Engine updates
+
+Open **Settings → Downloads & engines**. Each engine shows its installed version
+and, when PyPI has a newer release, the newer version in bold. Use
+**Check for updates now** for a manual check, or turn on **Automatically update
+engine modules** to let the Console download and install newer versions in the
+background. Automatic updates wait while that engine is running.
+
+The bundled GGUF, Piper, Whisper, faster-whisper and VibeVoice modules update
+with a new Console release. vLLM, Transformers and FreeToken are separate
+packages and show their own versions.
+
 ### Start an engine
 
 - Use the **power toggle** in the top bar to start or stop a llama-server profile.
@@ -160,9 +172,11 @@ Each loaded card shows:
 | **Eject / Unload** | Removes the model; router keeps listening on the port |
 | **Stop engine** | Shuts down the llama-server process entirely |
 
-Embedding engines are different: their listener requires the embedding model
-to remain loaded, so use **Stop** when you need to release their
-GPU memory.
+Embedding engines work like other models: the router keeps the port ready, the
+model loads on the first embedding request, and **Unload** frees the GPU memory
+while the router stays ready for the next request. The model also sleeps after
+the configured idle time. If another app is still sending embedding requests,
+the next one loads the model again — Unload lasts until that request.
 
 ### Developer logs
 
@@ -189,6 +203,23 @@ Console can stop or release that process safely.
 External cards flip to **READY** once the app reports a loaded model. They no
 longer stay on **Loading** indefinitely when the model is already serving.
 
+Strata is different when it is started through the Console's launcher: it is a
+regular Console card under **This app**, not an external card. Its engine and
+vision reader do not repeat in the **Other GPU** chip list, and **Unload** stops
+the launcher instead of killing a foreign process. The card carries a **STRATA**
+badge and the name of the app that asked for the load (for example **OneVoice**).
+
+The card shows Strata's model file path, context length (for example
+**131072**) and lets you pick 1, 2, 3, 4, 6 or 8 parallel request slots. The
+context is reported by Strata and is read-only in the Console; changing the
+slots restarts Strata with the new value. During that restart the card shows
+**Restarting Strata**, then **Loading Strata** with the target slot count and
+elapsed time, instead of staying on **UNLOADING**. Unloading Strata removes its
+card from **Engines**, like any other unloaded engine; a temporary loading card
+is shown only while it is actually starting. If an app asks the Console gateway
+for the Strata model while it is stopped, the Console starts the launcher and
+then serves the request.
+
 Use **Import model to DFlash Console** on GGUF or STT paths when you want the
 same weights in your Console library.
 
@@ -197,7 +228,10 @@ same weights in your Console library.
 At the bottom of the card list, **Other GPU · N apps** lists desktop and
 background processes using VRAM (Task Manager–style per-process numbers when
 Windows exposes them). This is separate from model cards so you can see what
-else is on the card.
+else is on the card. Hover or focus a process chip to see its full application
+name, process name, PID, executable path, command line, GPU, VRAM, component
+and parent process. Windows may withhold the path for protected system
+processes; the panel says when that happens.
 
 Filter the card list with **All models** / **Console only** / **External only**
 in the toolbar. Your choice is remembered in `ui_layout.engines_card_filter`.

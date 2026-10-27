@@ -99,6 +99,7 @@ def test_build_connect_wizard_includes_methods():
     with patch('core.node_connect.detect_tailscale', return_value={'installed': False, 'running': False, 'self_ip': '', 'peers': [], 'error': ''}):
         row = build_connect_wizard(cfg={'ui_port': 8900})
     assert row['ui_port'] == 8900
+    assert row['ssh']['default_local_bind_port'] == 8990
     assert row['ssh']['reach_remote']['command']
     assert row['ssh']['share_local']['command']
 

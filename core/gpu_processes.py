@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import threading
 import os
@@ -56,7 +57,7 @@ _ELECTRON_UI = re.compile(r'electron\.exe$', re.I)
 
 _ML_PROCESS = re.compile(
     r'llama-server|ollama|whisper|piper|kobold|comfyui|text-generation-webui|'
-    r'faster-whisper|whisper\.cpp',
+    r'faster-whisper|whisper\.cpp|strata(?:-vision)?',
     re.I,
 )
 
@@ -119,6 +120,8 @@ def _infer_model_kind(
         return 'app', 'App server'
     if role in {'draft-dflash', 'draft-dspark'}:
         return 'llm', 'LLM draft'
+    if 'strata.exe' in hay or 'strata-vision' in hay:
+        return 'llm', 'LLM'
     if '.gguf' in hay or 'llama-server' in hay or role in {'alias', 'target'}:
         return 'llm', 'LLM'
     if str(process_name or '').lower().endswith(('python.exe', 'pythonw.exe')):
@@ -282,6 +285,17 @@ def _is_gpu_model_load(
     hay = f'{process_name} {command_line} {model_name} {model_path}'.lower()
     if _is_ui_only_process(process_name=process_name, command_line=command_line):
         return False
+    # Strata: the picture reader belongs to the engine's card (see
+    # _related_external_compute_pids), the engine itself is a real model load
+    # whenever it holds graphics memory - its command line names no .gguf.
+    clean_name = str(process_name or '').strip()
+    if re.search(r'strata-vision\.exe$', clean_name, re.I):
+        return False
+    if re.search(r'strata\.exe$', clean_name, re.I):
+        # Strata's engine only appears in the compute-apps scan while it runs
+        # on the card.  Its VRAM is measured later (Windows per-process), so it
+        # cannot be required here.
+        return True
     if model_id and api_url:
         return True
     if 'llama-server' in hay or 'llama_server' in hay:
@@ -963,7 +977,16 @@ def _query_process_table_powershell() -> dict[int, dict[str, Any]]:
 
 _RUNTIME_APP_RULES: list[tuple[str, str, str]] = [
     ('ai-tools', r'\\ai-tools\\|/ai-tools/|ai-tools\.exe', 'AI Tools'),
+    # OneVoice Speak installs its own F5-TTS and STT helpers under
+    # Programs/OneVoiceSpeak and starts them from OneVoiceSpeak.exe. That is a
+    # separate app from the main OneVoice server, so its badge says so.
+    ('onevoice', r'onevoicespeak|onevoice[-_ ]?speak|speak[-_ ]?onevoice', 'OneVoice Speak'),
     ('onevoice', r'onevoice|speak_stt|\\dev\\onevoice', 'OneVoice'),
+    # Strata (github.com/Niko1221/Strata): strata.exe drives the graphics card
+    # and starts the model Strata's own server hands it, strata-vision.exe is
+    # its picture reader.  The classification is kept here so a registered
+    # launcher can promote the engine to a Console-owned card.
+    ('strata', r'\\strata\\|strata(?:-vision)?\.exe', 'Strata'),
     ('dflash', r'dflash|start_llama_server', 'DFlash Console'),
     ('lmstudio', r'lm studio|lmstudio\.exe|lm-studio', 'LM Studio'),
     ('ollama', r'\bollama\b', 'Ollama'),
@@ -1008,6 +1031,13 @@ def _classify_app(*, process_name: str, command_line: str, parent_name: str) -> 
     hay = f'{process_name} {command_line} {parent}'.lower()
     proc_lower = str(process_name or '').lower()
     if proc_lower.endswith(('python.exe', 'pythonw.exe')) and parent:
+        # A named worker script still wins over the interpreter's parent name:
+        # OneVoice Speak's helpers are launched by OneVoiceSpeak.exe through
+        # intermediate venv pythons whose names say nothing about the app.
+        command_hay = f'{command_line} {parent}'.lower()
+        for source, pattern, label in _RUNTIME_APP_RULES:
+            if re.search(pattern, command_hay, re.I):
+                return source, label
         parent_clean = parent
         if parent_clean.lower().endswith('.exe'):
             parent_clean = parent_clean[:-4]
@@ -1730,6 +1760,12 @@ def _resolve_external_model_name(
 
     model_name = hinted_name
 
+    if app_source == 'strata':
+        # Strata's server starts the engine with its arguments, so strata.exe's
+        # own command line names no model.  Show the model it serves instead of
+        # a bare "strata" card.
+        return 'Strata \u00b7 Qwen3.8-Flash-Next', model_path
+
     if app_source == 'ai-tools':
         ai_name = _resolve_ai_tools_model_name(command_line)
         if ai_name and not model_path:
@@ -1791,7 +1827,17 @@ def _probe_models_fast(api_url: str) -> tuple[list[dict[str, Any]], bool]:
             payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
     except TimeoutError:
         return [], True
-    except (urllib.error.URLError, json.JSONDecodeError, ValueError, ConnectionResetError, OSError):
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        json.JSONDecodeError,
+        ValueError,
+        ConnectionResetError,
+        OSError,
+    ):
+        # Some unrelated local apps answer HTTP ports with a non-HTTP banner
+        # (for example "Android Console: Authentication required").  That is
+        # not an engine: skip this port instead of failing the whole scan.
         return [], False
     models = payload.get('data') if isinstance(payload, dict) else None
     if not isinstance(models, list):
@@ -1871,15 +1917,11 @@ def _build_external_card_base(
             and re.search(r'(?:DFlash Console|Dflash-Console)[\\/].*logs[\\/]presets[\\/].+\.ini', parent_cmd, re.I)
         ):
             return None
-    # Anything the Console itself spawned is ours, even when it listens on a
-    # port no profile knows about (router-mode children, a leftover engine from
-    # an earlier run, embedding/rendering listeners).  Reporting those as
-    # "external llama-server" made Console models look like foreign apps.
-    if _console_ancestor_pid(pid):
-        return None
-
     process_name = str(details.get('process_name') or entry.get('process_name') or '')
     if process_name.startswith('['):
+        return None
+    if re.search(r'strata-vision\.exe$', process_name, re.I):
+        # Strata's picture reader is part of the engine card, never its own.
         return None
     command_line = str(details.get('command_line') or '')
     parent_name = str(details.get('parent_process_name') or '')
@@ -1893,6 +1935,21 @@ def _build_external_card_base(
             process_name = str(live_details.get('process_name') or process_name)
             command_line = str(live_details.get('command_line') or '')
             parent_name = str(live_details.get('parent_process_name') or parent_name)
+    launcher: dict[str, Any] | None = None
+    try:
+        from core.external_launchers import launcher_for_process
+
+        launcher = launcher_for_process(process_name=process_name, command_line=command_line)
+    except Exception:
+        launcher = None
+    # Anything the Console itself spawned is ours, even when it listens on a
+    # port no profile knows about (router-mode children, a leftover engine from
+    # an earlier run, embedding/rendering listeners).  Reporting those as
+    # "external llama-server" made Console models look like foreign apps.
+    # A registered launcher (Strata) is the exception: it is Console-managed,
+    # so it keeps a regular Console card rather than disappearing.
+    if _console_ancestor_pid(pid) and launcher is None:
+        return None
     hay = f'{process_name} {command_line} {parent_name}'.lower()
 
     app_source, app_label = _classify_app(
@@ -1977,6 +2034,23 @@ def _build_external_card_base(
             listen_port = port
             break
 
+    if app_source == 'strata' and not api_url:
+        # Strata's OpenAI-compatible API is served by its own Python server, the
+        # engine's parent process - not by strata.exe.  Probe the parent's
+        # ports so the Console can offer the model to other apps.
+        parent_pid = int(details.get('parent_pid') or 0)
+        for port in (_listening_ports_for_pid(parent_pid) if parent_pid else []):
+            if port in configured_ports or port in ports_to_check:
+                continue
+            probe = _probe_loaded_model('127.0.0.1', port)
+            if probe.get('api_url'):
+                api_url = str(probe.get('api_url') or '')
+                model_id = str(probe.get('model_id') or '')
+                # Unloading means stopping Strata's server (the kill path).
+                unload_via_api = False
+                listen_port = port
+                break
+
     model_name, model_path = _resolve_external_model_name(
         app_source=app_source,
         app_label=app_label,
@@ -1985,6 +2059,41 @@ def _build_external_card_base(
         parent_name=parent_name,
         api_model_id=model_id,
     )
+    launcher_id = str((launcher or {}).get('id') or '').strip()
+    launcher_loaded_by = str((launcher or {}).get('loaded_by') or '').strip() or 'DFlash Console'
+    launcher_model = ''
+    launcher_parallel = 1
+    launcher_max_context = 0
+    if launcher_id:
+        try:
+            from core.external_launchers import _http_json as _launcher_http_json
+            from core.external_launchers import launcher_context_size, launcher_model_id, launcher_model_path
+
+            launcher_model = launcher_model_id(launcher)
+            launcher_parallel = max(1, int((launcher or {}).get('parallel') or 1))
+            health = _launcher_http_json(str((launcher or {}).get('health_url') or ''), timeout=1.5)
+            if isinstance(health, dict):
+                launcher_max_context = int(health.get('max_context') or 0)
+            if not launcher_max_context:
+                launcher_max_context = launcher_context_size(launcher)
+            if not model_path:
+                model_path = launcher_model_path(launcher)
+                if model_path:
+                    size_gb = _size_gb_from_path(model_path)
+        except Exception:
+            launcher_model = launcher_model or ''
+        if not model_id:
+            model_id = launcher_model
+        if launcher_model:
+            model_name = launcher_model
+    launcher_fields: dict[str, Any] = {}
+    if launcher_id:
+        launcher_fields['parallel_slots'] = launcher_parallel
+        launcher_fields['load_settings'] = {'parallel_slots': launcher_parallel}
+        if launcher_max_context > 0:
+            launcher_fields['context_size'] = launcher_max_context * launcher_parallel
+            launcher_fields['per_slot_context'] = launcher_max_context
+            launcher_fields['model_context_max'] = launcher_max_context
     if 'speak_stt.py' in command_line.lower() and not stt_ws_loaded:
         boot = _read_speak_stt_boot_state(command_line=command_line)
         if boot.get('loading'):
@@ -2116,15 +2225,17 @@ def _build_external_card_base(
 
     return {
         'id': f'external-gpu-{pid}',
-        'external': True,
+        'external': not launcher_id,
+        'console_engine': bool(launcher_id),
+        'launcher_id': launcher_id,
         'role': 'external-gpu',
         'pid': pid,
         'process_name': process_name,
         'app_source': app_source,
-        'app_label': app_label,
-        'component_key': component_key,
-        'component_label': component_label,
-        'component_role': component_role,
+        'app_label': launcher_loaded_by if launcher_id else app_label,
+        'component_key': 'dflash.strata' if launcher_id else component_key,
+        'component_label': 'Strata engine' if launcher_id else component_label,
+        'component_role': 'llm' if launcher_id else component_role,
         'pids': [pid],
         'gpu_index': gpu_index,
         'gpu_display': gpu_display,
@@ -2139,13 +2250,17 @@ def _build_external_card_base(
         'command_line': command_line[:240] if command_line else '',
         'api_url': api_url,
         'model_id': model_id,
+        'loaded_by': launcher_loaded_by if launcher_id else '',
         'listen_port': listen_port,
-        'unload_method': 'api' if unload_via_api and model_id else ('api_stop' if unload_via_api else 'kill'),
+        'unload_method': 'launcher' if launcher_id else (
+            'api' if unload_via_api and model_id else ('api_stop' if unload_via_api else 'kill')
+        ),
         'card_state': 'loading' if loading else 'ready',
         'ejectable': not loading,
         'title': model_name,
         'subtitle': card_detail,
         'card_detail': card_detail,
+        **launcher_fields,
         **kind_fields,
         **acceleration,
     }
@@ -2227,6 +2342,107 @@ def _make_api_external_card(
         'card_detail': card_detail,
         **kind_fields,
     }
+
+
+def _stopped_launcher_cards(
+    cards: list[dict[str, Any]],
+    *,
+    gpus: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """A temporary Console card for a registered launcher that is starting.
+
+    An explicitly unloaded launcher has no card. While its process is actually
+    starting (for example from the gateway or another app), show one loading
+    card with its model, context and slot count so the load is visible.
+    """
+    try:
+        from core.external_launchers import (
+            _http_json as _launcher_http_json,
+            launcher_context_size,
+            launcher_model_id,
+            launcher_model_path,
+            launchers,
+            status as launcher_status,
+        )
+    except Exception:
+        return []
+    existing_ids = {str(card.get('launcher_id') or '') for card in cards if isinstance(card, dict)}
+    existing_ports = {int(card.get('listen_port') or 0) for card in cards if isinstance(card, dict)}
+    starting_cards: list[dict[str, Any]] = []
+    for entry in launchers():
+        if not isinstance(entry, dict):
+            continue
+        launcher_id = str(entry.get('id') or '').strip()
+        port = int(entry.get('port') or 0)
+        if not launcher_id or launcher_id in existing_ids or (port and port in existing_ports):
+            continue
+        if _launcher_http_json(str(entry.get('health_url') or ''), timeout=0.8) is not None:
+            # The server answers; the regular GPU card (or a starting state)
+            # owns this launcher now.
+            continue
+        launcher_state = launcher_status(entry, probe=False)
+        if not (launcher_state.get('starting') or launcher_state.get('pids')):
+            # An explicitly unloaded launcher should disappear from Engines,
+            # just like an unloaded configured engine. Keep a temporary card
+            # only while its process is starting or its load is in flight.
+            continue
+        model_id = launcher_model_id(entry)
+        if not model_id:
+            continue
+        parallel = max(1, int(entry.get('parallel') or 1))
+        context_size = launcher_context_size(entry)
+        model_path = launcher_model_path(entry)
+        gpu_index = int(entry.get('gpu') or 0)
+        gpu = next((g for g in gpus if int(g.get('index', -1)) == gpu_index), None)
+        gpu_display = str((gpu or {}).get('display_name') or '')
+        if not gpu_display:
+            gpu_display = format_gpu_display_name(str((gpu or {}).get('name') or ''), gpu_index)
+        app_label = str(entry.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
+        starting_cards.append({
+            'id': f'launcher-{launcher_id}',
+            'external': False,
+            'console_engine': True,
+            'launcher_id': launcher_id,
+            'loadable': False,
+            'role': 'external-gpu',
+            'pid': None,
+            'pids': [],
+            'process_name': '',
+            'app_source': str(entry.get('kind') or 'launcher'),
+            'app_label': app_label,
+            'component_key': 'dflash.strata',
+            'component_label': 'Strata engine',
+            'component_role': 'llm',
+            'gpu_index': gpu_index,
+            'gpu_display': gpu_display,
+            'vram_gb': None,
+            'vram_total_gb': None,
+            'vram_source': 'unavailable',
+            'size_gb': _size_gb_from_path(model_path),
+            'model_name': model_id,
+            'model_path': model_path,
+            'api_url': f'http://127.0.0.1:{port}/v1' if port else '',
+            'model_id': model_id,
+            'loaded_by': app_label,
+            'listen_port': port,
+            'unload_method': 'launcher',
+            'card_state': 'loading',
+            'ejectable': True,
+            'title': model_id,
+            'display_name': model_id,
+            'display_name_full': model_id,
+            'subtitle': 'LLM · starting',
+            'card_detail': 'LLM · starting',
+            'model_kind': 'llm',
+            'model_kind_label': 'LLM',
+            'context_size': context_size * parallel if context_size else None,
+            'per_slot_context': context_size or None,
+            'parallel_slots': parallel,
+            'model_context_max': context_size or None,
+            'load_settings': {'parallel_slots': parallel},
+            'inference_stats': {},
+        })
+    return starting_cards
 
 
 def _cards_from_known_apps(
@@ -2467,7 +2683,7 @@ def _enrich_external_cards(cards: list[dict[str, Any]], *, attach_stats: bool = 
         size_gb = _resolve_external_card_disk_gb(row)
         if size_gb:
             row['size_gb'] = size_gb
-        if attach_stats:
+        if attach_stats and str(row.get('card_state') or '').lower() != 'stopped':
             row = _attach_external_inference_stats(row)
         row = _place_external_card_on_measured_gpu(row, gpus=measured_gpus)
         row = _attach_external_process_usage(row)
@@ -2656,6 +2872,14 @@ def _build_external_card(
             card = _apply_owner_labels(card, details or {})
         except Exception:
             pass
+        if card.get('launcher_id'):
+            # A launcher-managed engine is started and stopped by the Console;
+            # it belongs on the Console side of the Engines page, not under the
+            # external apps.  Keep the app that asked for the load.
+            card['external'] = False
+            card['console_engine'] = True
+            card['app_label'] = str(card.get('loaded_by') or 'DFlash Console')
+            card['loaded_by'] = card['app_label']
     return card
 
 def _external_cards_refer_same_model(api_card: dict[str, Any], process_card: dict[str, Any]) -> bool:
@@ -3004,14 +3228,19 @@ def get_external_gpu_loads(
         if pid in seen_pids:
             continue
         seen_pids.add(pid)
-        card = _build_external_card(
-            row,
-            details=details_map.get(pid, {}),
-            gpus=gpus,
-            managed_pids=managed_pids,
-            configured_ports=configured_ports,
-            dflash_root=dflash_root,
-        )
+        try:
+            card = _build_external_card(
+                row,
+                details=details_map.get(pid, {}),
+                gpus=gpus,
+                managed_pids=managed_pids,
+                configured_ports=configured_ports,
+                dflash_root=dflash_root,
+            )
+        except Exception:
+            # An external app with a broken probe must not remove every other
+            # model card from the Engines page.
+            card = None
         if card:
             card_id = str(card.get('id') or '')
             if card_id in seen_ids:
@@ -3047,6 +3276,7 @@ def get_external_gpu_loads(
         cards.append(card)
 
     cards = _dedupe_external_cards(cards)
+    cards.extend(_stopped_launcher_cards(cards, gpus=gpus))
     # A leftover Console engine (or a Console-started helper on an unconfigured
     # port) keeps its card - it holds real VRAM - but it is labelled as a
     # Console engine instead of an external "llama-server" app.
@@ -3536,9 +3766,13 @@ def get_gpu_other_processes(
             'component_label': component_label,
             'component_role': component_role,
             'process_name': process_name,
-            'command_line': command_line[:240] if command_line else '',
+            'executable_path': str(details.get('executable_path') or '')[:1024],
+            'parent_process_name': str(details.get('parent_process_name') or ''),
+            'parent_pid': int(details.get('parent_pid') or 0) or None,
+            'command_line': command_line[:512] if command_line else '',
             'vram_mb': vram_mb,
             'vram_gb': vram_gb_f,
+            'vram_source': row.get('vram_source') or '',
         })
 
     processes.sort(
@@ -3715,6 +3949,11 @@ def _related_external_compute_pids(
             live.add(pid)
             continue
         if want_stt and ('speak_stt' in hay or 'faster-whisper' in hay or 'faster_whisper' in hay):
+            live.add(pid)
+            continue
+        if app_source == 'strata' and source == 'strata':
+            # The engine and its picture reader are one workload: unloading
+            # either should free the whole card.
             live.add(pid)
             continue
         if app_source and source == app_source and model and model in hay:
@@ -3995,6 +4234,22 @@ def unload_external_gpu_process(
             'error': last_error or 'process is not an approved model process',
             'pid': target_pid,
         }
+    # Strata: the engine is started by Strata's own Python server, which would
+    # otherwise keep the port and load the model again.  Stop that server too.
+    strata_parents: list[int] = []
+    for kill_pid in list(kill_targets):
+        parent_details = _query_process_details([kill_pid]).get(kill_pid, {})
+        if not re.search(r'strata(?:-vision)?\.exe$', str(parent_details.get('process_name') or ''), re.I):
+            continue
+        parent = int(parent_details.get('parent_pid') or 0)
+        if parent > 0 and parent not in kill_targets and parent not in strata_parents:
+            strata_parents.append(parent)
+    for parent in strata_parents:
+        parent_details = _query_process_details([parent]).get(parent, {})
+        parent_command = str(parent_details.get('command_line') or '').lower()
+        if 'strata' in parent_command and 'server.py' in parent_command:
+            if _kill_external_pid(parent).get('success'):
+                killed.append(parent)
     return {
         'success': True,
         'pid': target_pid,

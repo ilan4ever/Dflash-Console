@@ -182,6 +182,27 @@ def sse_stream_error_chunk(message: str) -> bytes:
     return f'data: {body}\n\n'.encode('utf-8') + b'data: [DONE]\n\n'
 
 
+def _disable_thinking_fields(body: dict[str, Any]) -> bool:
+    """Force a chat body off the thinking path used by Qwen/llama templates."""
+    changed = False
+    if body.get('reasoning_effort') != 'none':
+        body['reasoning_effort'] = 'none'
+        changed = True
+    for key in ('thinking', 'enable_thinking'):
+        if key in body:
+            body.pop(key, None)
+            changed = True
+    kwargs = body.get('chat_template_kwargs')
+    if not isinstance(kwargs, dict):
+        kwargs = {}
+        body['chat_template_kwargs'] = kwargs
+        changed = True
+    if kwargs.get('enable_thinking') is not False:
+        kwargs['enable_thinking'] = False
+        changed = True
+    return changed
+
+
 def apply_reasoning_policy(
     raw: bytes,
     *,
@@ -192,13 +213,15 @@ def apply_reasoning_policy(
 
     Non-reasoning models normally drop ``reasoning_effort`` (and any thinking
     toggles). An explicit disable request still forwards ``reasoning_effort:
-    none`` because llama templates can enter a thinking phase even when the
-    catalog marks the model as non-reasoning.
+    none`` and ``chat_template_kwargs.enable_thinking: false`` because llama
+    templates can enter a thinking phase even when the catalog marks the model
+    as non-reasoning.
 
     Reasoning models keep the client's ``reasoning_effort`` unless the caller
     disables reasoning via ``X-Disable-Reasoning: 1`` or ``reasoning_effort:
-    none`` — in that case we forward ``reasoning_effort: none`` upstream so the
-    engine skips the thinking phase instead of burning the token budget.
+    none`` — in that case we forward ``reasoning_effort: none`` and disable
+    thinking kwargs so the engine skips the thinking phase instead of burning
+    the token budget.
     """
     if not raw:
         return raw
@@ -212,13 +235,8 @@ def apply_reasoning_policy(
     if reasoning:
         effort = str(body.get('reasoning_effort') or '').strip().lower()
         if disable_reasoning or effort == 'none':
-            if body.get('reasoning_effort') != 'none':
-                body['reasoning_effort'] = 'none'
+            if _disable_thinking_fields(body):
                 changed = True
-            for key in ('thinking', 'enable_thinking'):
-                if key in body:
-                    body.pop(key, None)
-                    changed = True
             max_tokens = effective_output_token_budget(body)
             if 0 < max_tokens < 64:
                 body['max_tokens'] = 64
@@ -236,13 +254,13 @@ def apply_reasoning_policy(
         except (TypeError, ValueError):
             return raw
     if disable_reasoning:
-        if body.get('reasoning_effort') != 'none':
-            body['reasoning_effort'] = 'none'
+        if _disable_thinking_fields(body):
             changed = True
-    for key in ('thinking', 'enable_thinking'):
-        if key in body:
-            body.pop(key, None)
-            changed = True
+    else:
+        for key in ('thinking', 'enable_thinking'):
+            if key in body:
+                body.pop(key, None)
+                changed = True
     if not disable_reasoning and 'reasoning_effort' in body:
         body.pop('reasoning_effort', None)
         changed = True

@@ -72,6 +72,34 @@ def test_on_demand_router_load_progress_survives_idle_marker():
     assert parse_load_progress(lines) is None
 
 
+def test_model_load_before_a_router_restart_is_not_active():
+    lines = [
+        '=== boot 2026-10-25 10:58:00 profile=gemma-chat router=1 idle=1 ===',
+        'load: spawning server instance with name=gemma-31b-it-quant',
+        'load_model: loading model gemma-31b-it-quant',
+        '=== boot 2026-10-25 10:58:28 profile=gemma-chat router=1 idle=1 ===',
+        'llama_server: starting server in router mode',
+        'llama_server: listening on http://127.0.0.1:8093',
+        '=== router idle ready 2026-10-25 10:58:30 ===',
+    ]
+
+    assert is_active_model_load(lines) is False
+
+
+def test_model_load_after_the_latest_boot_is_active():
+    lines = [
+        '=== boot 2026-10-25 10:58:28 profile=gemma-chat router=1 idle=1 ===',
+        '=== router idle ready 2026-10-25 10:58:30 ===',
+        'load: spawning server instance with name=gemma-31b-it-quant',
+        'load_model: loading model gemma-31b-it-quant',
+    ]
+
+    assert is_active_model_load(lines) is True
+
+    lines.append('cmd_child_to_router:state:{"state":"ready","payload":{"id":"gemma-31b-it-quant"}}')
+    assert is_active_model_load(lines) is False
+
+
 def test_model_load_failure_reports_cuda_oom():
     lines = [
         '=== boot 2026-01-01 12:00:00 profile=x router=1 ===',

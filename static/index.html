@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.279</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.287</span>
           </div>
         </div>
       </div>
@@ -431,7 +431,7 @@ try {
             <table class="lm-models-table" data-resizable-columns data-resize-key="models-library">
               <thead>
                 <tr>
-                  <th class="lm-col-model" data-col-id="model" data-col-min="220" data-col-default="480">Model</th>
+                  <th class="lm-col-model" data-col-id="model" data-col-min="380" data-col-default="420">Model</th>
                   <th class="lm-col-meta" data-col-id="family" data-col-min="48">Family</th>
                   <th class="lm-col-meta" data-col-id="scale" data-col-min="40">Scale</th>
                   <th class="lm-col-meta" data-col-id="lab" data-col-min="72">Lab</th>
@@ -547,7 +547,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.279</strong>
+                <strong id="dfAboutVersion">v0.3.287</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -763,6 +763,24 @@ try {
             <div class="lm-settings-panel" data-settings-panel="dl-components">
               <div class="lm-settings-header"><h2>Downloads &amp; engines</h2></div>
               <p class="lm-setting-desc" data-settings-search="vllm transformers freetoken piper whisper downloads install engine modules">Everything you download after setup: LLM engines (vLLM, Transformers, FreeToken), speech runtimes, and Hugging Face model downloads. Install an engine here, then pick it on the Engines, Playground, or Models tab and load a model.</p>
+
+              <section class="lm-settings-section lm-component-update-settings" data-settings-search="automatic engine updates versions pypi free token vllm transformers">
+                <div class="lm-setting-row">
+                  <div>
+                    <strong>Automatically update engine modules</strong>
+                    <p class="lm-setting-desc">Checks the installed versions of vLLM, Transformers, and FreeToken. When a newer version appears, the Console downloads and installs it in the background. Updates wait while that engine is running.</p>
+                    <p class="lm-setting-desc lm-component-version-meta" id="componentsVersionMeta">Version check not run yet.</p>
+                  </div>
+                  <label class="lm-toggle small" title="Automatically download and install newer engine versions">
+                    <input type="checkbox" id="componentsAutoUpdate">
+                    <span class="lm-toggle-track"></span>
+                  </label>
+                </div>
+                <div class="lm-settings-inline-actions">
+                  <button class="lm-btn ghost small" type="button" id="componentsCheckUpdatesBtn">Check for updates now</button>
+                  <span class="lm-setting-desc" id="componentsVersionError"></span>
+                </div>
+              </section>
 
               <div id="componentsAttentionBanner" class="lm-components-banner hidden" role="status"></div>
 

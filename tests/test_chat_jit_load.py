@@ -181,6 +181,10 @@ def test_ensure_ready_reuses_checkpoint_loaded_on_other_engine(monkeypatch):
         'core.runtime.build_server_status',
         lambda srv, cfg=None, **kwargs: loaded if str(srv.get('id') or '') == other['id'] else idle,
     )
+    monkeypatch.setattr(
+        'core.runtime.probe_runtime_state',
+        lambda api_url: ([], False, False, None, True),
+    )
     monkeypatch.setattr('core.chat_ready.get_engine_state', lambda sid, cfg=None: {'engine_on': True})
     monkeypatch.setattr('core.chat_ready.tcp_port_open', lambda host, port: True)
     monkeypatch.setattr('core.chat_ready.listener_is_managed_engine', lambda host, port: True)

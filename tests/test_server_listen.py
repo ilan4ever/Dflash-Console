@@ -39,6 +39,32 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return path
 
 
+def test_listen_starts_the_embedding_router(
+    client: TestClient,
+    config_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    saved = json.loads(config_file.read_text(encoding='utf-8'))
+    saved['servers'][0].update({
+        'profile': 'nomic-embed',
+        'engine_mode': 'embedding',
+        'model_id': 'nomic-embed-text',
+    })
+    config_file.write_text(json.dumps(saved), encoding='utf-8')
+
+    monkeypatch.setattr(
+        'core.server_boot.start_router_listener',
+        lambda server, cfg=None: {'success': True, 'port': 8090, 'router_idle': True},
+    )
+
+    response = client.post('/api/servers/gemma-31b-dflash/listen')
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get('success') is True
+    assert body.get('router_idle') is True
+    assert body.get('loaded') is False
+
+
 def test_listen_arms_already_running_listener(
     client: TestClient,
     config_file: Path,

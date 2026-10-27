@@ -217,6 +217,205 @@ def infer_context_length_from_metadata(meta: dict[str, object]) -> int | None:
     return None
 
 
+# llama.cpp llama_ftype. Full-precision values are not trusted on their own:
+# some mixed quants still write MOSTLY_BF16 in the header.
+_GGUF_FILE_TYPE_LABELS = {
+    0: 'F32',
+    1: 'F16',
+    2: 'Q4_0',
+    3: 'Q4_1',
+    7: 'Q8_0',
+    8: 'Q5_0',
+    9: 'Q5_1',
+    10: 'Q2_K',
+    11: 'Q3_K_S',
+    12: 'Q3_K_M',
+    13: 'Q3_K_L',
+    14: 'Q4_K_S',
+    15: 'Q4_K_M',
+    16: 'Q5_K_S',
+    17: 'Q5_K_M',
+    18: 'Q6_K',
+    19: 'IQ2_XXS',
+    20: 'IQ2_XS',
+    21: 'Q2_K_S',
+    22: 'IQ3_XS',
+    23: 'IQ3_XXS',
+    24: 'IQ1_S',
+    25: 'IQ4_NL',
+    26: 'IQ3_S',
+    27: 'IQ3_M',
+    28: 'IQ2_S',
+    29: 'IQ2_M',
+    30: 'IQ4_XS',
+    31: 'IQ1_M',
+    32: 'BF16',
+}
+_GGUF_FULL_PRECISION_TYPES = {0, 1, 32}
+_GGML_TYPE_LABELS = {
+    0: 'F32',
+    1: 'F16',
+    2: 'Q4_0',
+    3: 'Q4_1',
+    6: 'Q5_0',
+    7: 'Q5_1',
+    8: 'Q8_0',
+    10: 'Q2_K',
+    11: 'Q3_K',
+    12: 'Q4_K',
+    13: 'Q5_K',
+    14: 'Q6_K',
+    30: 'BF16',
+}
+_GGML_STORAGE_TYPES = {'F32', 'F16', 'BF16'}
+_QUANT_LABEL_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _skip_gguf_value(handle, value_type: int) -> bool:
+    if value_type == 8:
+        raw = handle.read(8)
+        if len(raw) < 8:
+            return False
+        handle.seek(struct.unpack('<Q', raw)[0], 1)
+        return True
+    size = _GGUF_VALUE_SIZES.get(value_type)
+    if size:
+        return len(handle.read(size)) == size
+    if value_type != 9:
+        return False
+    element_raw = handle.read(4)
+    length_raw = handle.read(8)
+    if len(element_raw) < 4 or len(length_raw) < 8:
+        return False
+    element_type = struct.unpack('<I', element_raw)[0]
+    length = struct.unpack('<Q', length_raw)[0]
+    if element_type == 8:
+        for _ in range(int(length)):
+            item_raw = handle.read(8)
+            if len(item_raw) < 8:
+                return False
+            handle.seek(struct.unpack('<Q', item_raw)[0], 1)
+        return True
+    item_size = _GGUF_VALUE_SIZES.get(element_type)
+    if not item_size or length > (1 << 31):
+        return False
+    handle.seek(int(length * item_size), 1)
+    return True
+
+
+def _tensor_quant_label(handle, tensor_count: int) -> str:
+    counts: dict[str, int] = {}
+    for _ in range(int(tensor_count)):
+        name_len_raw = handle.read(8)
+        if len(name_len_raw) < 8:
+            break
+        name_len = struct.unpack('<Q', name_len_raw)[0]
+        if name_len > 1024 or len(handle.read(int(name_len))) < name_len:
+            break
+        dims_raw = handle.read(4)
+        if len(dims_raw) < 4:
+            break
+        n_dims = struct.unpack('<I', dims_raw)[0]
+        if n_dims > 8 or len(handle.read(8 * int(n_dims))) < 8 * int(n_dims):
+            break
+        type_raw = handle.read(4)
+        offset_raw = handle.read(8)
+        if len(type_raw) < 4 or len(offset_raw) < 8:
+            break
+        ggml_type = struct.unpack('<I', type_raw)[0]
+        label = _GGML_TYPE_LABELS.get(ggml_type, '')
+        if label:
+            counts[label] = counts.get(label, 0) + 1
+    quantized = {
+        label: count
+        for label, count in counts.items()
+        if label not in _GGML_STORAGE_TYPES and count > 0
+    }
+    if not quantized:
+        return ''
+    total = sum(quantized.values())
+    kept = [
+        (count, label)
+        for label, count in quantized.items()
+        if count >= max(5, int(total * 0.05))
+    ]
+    if not kept:
+        kept = [(count, label) for label, count in quantized.items()]
+    kept.sort(reverse=True)
+    return '+'.join(label for _count, label in kept[:3])
+
+
+def read_gguf_quant_label(path: str | Path) -> str:
+    """Quantization label from the GGUF header, including mixed files whose name omits it."""
+    target = Path(path).expanduser()
+    try:
+        stat = target.stat()
+    except OSError:
+        return ''
+    cache_key = (str(target), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _QUANT_LABEL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    label = ''
+    try:
+        with target.open('rb') as handle:
+            if handle.read(4) != b'GGUF':
+                _QUANT_LABEL_CACHE[cache_key] = ''
+                return ''
+            if len(handle.read(4)) < 4:
+                _QUANT_LABEL_CACHE[cache_key] = ''
+                return ''
+            tensor_raw = handle.read(8)
+            kv_raw = handle.read(8)
+            if len(tensor_raw) < 8 or len(kv_raw) < 8:
+                _QUANT_LABEL_CACHE[cache_key] = ''
+                return ''
+            tensor_count = struct.unpack('<Q', tensor_raw)[0]
+            kv_count = struct.unpack('<Q', kv_raw)[0]
+            file_type = None
+            kv_done = True
+            for _ in range(int(kv_count)):
+                key_len_raw = handle.read(8)
+                if len(key_len_raw) < 8:
+                    kv_done = False
+                    break
+                key_len = struct.unpack('<Q', key_len_raw)[0]
+                if key_len > 1024:
+                    kv_done = False
+                    break
+                key = handle.read(int(key_len)).decode('utf-8', errors='replace')
+                type_raw = handle.read(4)
+                if len(type_raw) < 4:
+                    kv_done = False
+                    break
+                value_type = struct.unpack('<I', type_raw)[0]
+                if key == 'general.file_type' and value_type == 4:
+                    raw = handle.read(4)
+                    if len(raw) < 4:
+                        kv_done = False
+                        break
+                    file_type = struct.unpack('<I', raw)[0]
+                    header_label = _GGUF_FILE_TYPE_LABELS.get(int(file_type), '')
+                    if int(file_type) not in _GGUF_FULL_PRECISION_TYPES and header_label:
+                        label = header_label
+                        kv_done = False
+                        break
+                    continue
+                if not _skip_gguf_value(handle, value_type):
+                    kv_done = False
+                    break
+            if not label:
+                header_label = _GGUF_FILE_TYPE_LABELS.get(int(file_type), '') if file_type is not None else ''
+                if kv_done:
+                    label = _tensor_quant_label(handle, tensor_count) or header_label
+                else:
+                    label = header_label
+    except (OSError, OverflowError, struct.error):
+        label = ''
+    _QUANT_LABEL_CACHE[cache_key] = label
+    return label
+
+
 def read_gguf_context_length(path: str | Path) -> int | None:
     """Read the model's reported maximum context length from a GGUF file."""
     target = Path(path).expanduser()

@@ -89,6 +89,10 @@ scripts/deployment/config.production-deploy.json
 *.bak*
 /.current-dflash-diff.txt
 *.exe
+# Standalone 7-Zip extractor embedded in the Windows setup UI (setup must
+# unpack its own package on machines without 7-Zip installed).
+!tools/7za-x64.exe
+!tools/7za-x86.exe
 /.tmp-*
 *-bak
 /scripts/test-report-upload.sh

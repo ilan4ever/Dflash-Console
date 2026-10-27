@@ -1,0 +1,28 @@
+{
+ "launchers": [
+  {
+   "id": "strata",
+   "label": "Strata \u00b7 qwen3.8-flash-next-unsloth-ud-iq4_xs",
+   "kind": "strata",
+   "command": "C:\\dev\\Strata\\.venv\\Scripts\\python.exe",
+   "args": [
+    "C:\\dev\\Strata\\serve\\server.py",
+    "--engine",
+    "strata",
+    "--config",
+    "C:\\dev\\Strata\\strata-unsloth-ud-iq4_xs.json",
+    "--port",
+    "8080"
+   ],
+   "cwd": "C:\\dev\\Strata",
+   "config": "C:\\dev\\Strata\\strata-unsloth-ud-iq4_xs.json",
+   "port": 8080,
+   "model_id": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+   "health_url": "http://127.0.0.1:8080/health",
+   "models_url": "http://127.0.0.1:8080/v1/models",
+   "parallel": 1,
+   "parallel_flag": "--parallel",
+   "loaded_by": "OneVoice"
+  }
+ ]
+}

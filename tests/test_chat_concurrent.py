@@ -87,7 +87,16 @@ def test_ensure_ready_retries_busy_probe_before_jit(monkeypatch):
         calls['n'] += 1
         return empty if calls['n'] < 3 else loaded
 
+    probes = {'n': 0}
+
+    def _probe(api_url):
+        probes['n'] += 1
+        if probes['n'] < 3:
+            return [], [], True, None, True
+        return ['gemma-4-12b-it-qat'], [], True, None, True
+
     monkeypatch.setattr('core.runtime.build_server_status', _status)
+    monkeypatch.setattr('core.runtime.probe_runtime_state', _probe)
     monkeypatch.setattr('core.inference_stats.is_proxy_generating', lambda sid: False)
     monkeypatch.setattr(
         'api.app.load_server_checkpoint',

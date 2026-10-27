@@ -113,6 +113,38 @@ def note_engine_idle(server_id: str) -> dict[str, Any]:
     return note_engine_on(server_id)
 
 
+def note_engine_started(
+    server_id: str,
+    *,
+    loaded_by: str,
+    clear_identity: bool = True,
+) -> dict[str, Any]:
+    """Record the client that just started or armed an engine.
+
+    A new start replaces the previous owner: the saved label and component
+    identity belong to the old run, so they must not carry over. Without this,
+    an engine the Console starts itself keeps showing yesterday's caller (for
+    example ``OneVoice AI``) even when that app is not running.
+    """
+    from core.client_identity import LABEL_CONSOLE_UI, clear_active_clients
+
+    clear_active_clients(server_id)
+    label = str(loaded_by or '').strip() or LABEL_CONSOLE_UI
+    return update_server_runtime(
+        server_id,
+        engine_on=True,
+        loaded_by=label,
+        clear_identity=clear_identity,
+    )
+
+
+def note_engine_owned_by_console(server_id: str) -> dict[str, Any]:
+    """Attribute an engine started or adopted by the Console to the Console."""
+    from core.client_identity import LABEL_CONSOLE_UI
+
+    return note_engine_started(server_id, loaded_by=LABEL_CONSOLE_UI)
+
+
 def note_engine_loaded(
     server_id: str,
     *,
@@ -209,12 +241,11 @@ def release_gpu_checkpoints(server: dict[str, Any]) -> dict[str, Any]:
     if port <= 0 or not tcp_port_open(host, port) or not api_url:
         return {'success': True, 'unloaded': False}
     if is_embedding_server(entry):
-        return {
-            'success': True,
-            'unloaded': False,
-            'requires_stop': True,
-            'reason': 'embedding engines cannot eject their active model while listening',
-        }
+        from core.embedding_server import unload_embedding_models
+
+        result = unload_embedding_models(entry)
+        result['requires_stop'] = bool(result.get('requires_stop'))
+        return result
 
     unloaded: list[str] = []
     errors: list[str] = []
@@ -279,7 +310,7 @@ def release_and_stop_all_managed_engines(*, cfg: dict[str, Any] | None = None) -
 
 def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """On Console boot: restore saved engines and their configured checkpoints."""
-    from core.server_boot import adopt_running_engine, start_router_listener
+    from core.server_boot import adopt_running_engine, listener_is_ssh_tunnel, start_router_listener
     from core.embedding_server import probe_embedding_models
 
     config = cfg or load_config()
@@ -313,6 +344,18 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
         runtime = get_engine_state(server_id, cfg=config)
         port_open = tcp_port_open(host, port)
 
+        if port_open and listener_is_ssh_tunnel(host, port):
+            results.append({
+                'server_id': server_id,
+                'action': 'blocked_ssh_tunnel',
+                'port': port,
+                'message': (
+                    f'Port {port} is occupied by an SSH tunnel; '
+                    'the local engine was not adopted or changed.'
+                ),
+            })
+            continue
+
         if server_id in duplicate_skip:
             if port_open:
                 from core.runtime import stop_server
@@ -335,6 +378,17 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
                 results.append({'server_id': server_id, 'action': 'skipped_engine_off'})
             continue
 
+        if port_open and is_embedding_server(server):
+            # Legacy Console builds started the embedding model directly with
+            # -m.  Replace that listener with the router so the model can load
+            # on demand and sleep after idle time.
+            from core.embedding_server import embedding_router_status
+            from core.runtime import stop_server
+
+            if embedding_router_status(api_url) is None:
+                stop_server(port=port, host=host, api_url=api_url or None)
+                port_open = False
+
         if port_open:
             adopt = adopt_running_engine(server, cfg=config)
             # Startup must leave GPU memory clear. The user can load a model
@@ -348,7 +402,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
                 release = release_gpu_checkpoints(server)
             else:
                 release = {'success': True, 'unloaded': False, 'models': []}
-            note_engine_idle(server_id)
+            note_engine_owned_by_console(server_id)
             action = 'adopted_idle'
             results.append({
                 'server_id': server_id,
@@ -367,7 +421,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
 
             started = start_embedding_server(server, cfg=config)
             if started.get('success'):
-                note_engine_idle(server_id)
+                note_engine_owned_by_console(server_id)
                 results.append({
                     'server_id': server_id,
                     'action': 'started_embedding',
@@ -385,7 +439,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
         if started.get('success'):
             # Start the router only; never repopulate GPU memory during a
             # Console restart.
-            note_engine_idle(server_id)
+            note_engine_owned_by_console(server_id)
             results.append({'server_id': server_id, 'action': 'restarted_listener', **started})
             time.sleep(1.5)
         else:

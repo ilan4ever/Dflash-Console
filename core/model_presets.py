@@ -7,6 +7,7 @@ from typing import Any
 
 from core.config import (
     get_dflash_root,
+    is_embedding_server,
     normalize_hardware_settings,
     normalize_load_settings,
 )
@@ -237,6 +238,10 @@ def write_server_preset(
         target_path or server.get('target_path') or server.get('adhoc_model_path'),
     )
     preset_profile = str(profile or effective_server_profile(server, cfg=cfg) or 'gemma-chat').strip()
+    is_embed = is_embedding_server(server)
+    # Embedding presets never need the chat template, and their router child
+    # gets --embeddings/--pooling from these keys.
+    use_jinja = profile_uses_jinja(preset_profile) and not is_embed
     if dflash_draft_disabled(server):
         preset_profile = ar_fallback_profile(preset_profile)
     if not server_id or not preset_model_id:
@@ -351,7 +356,7 @@ def write_server_preset(
         # Quantized V cache cannot boot with flash attention off
         # ("quantized V cache requires flash_attn to be enabled").
         f"fa = {'on' if (load.get('flash_attention', True) or str(cache_v).lower() not in {'f16', 'f32', 'bf16'}) else 'off'}",
-        f"jinja = {'true' if profile_uses_jinja(preset_profile) else 'false'}",
+        f"jinja = {'true' if use_jinja else 'false'}",
         'mlock = true',
         f"main-gpu = {int(launch.get('main_gpu') or 0)}",
         f"split-mode = {launch.get('split_mode') or 'none'}",
@@ -364,12 +369,19 @@ def write_server_preset(
         f"cache-type-k = {cache_k}",
         f"cache-type-v = {cache_v}",
         f"np = {int(load.get('parallel_slots') or 4)}",
+    ]
+    if is_embed:
+        lines.extend([
+            'embeddings = true',
+            f"pooling = {str(server.get('pooling') or 'mean').strip() or 'mean'}",
+        ])
+    lines.extend([
         '',
         f'[{preset_model_id}]',
         f"model = {target['path']}",
         'load-on-startup = false',
-    ]
-    if not profile_uses_jinja(preset_profile):
+    ])
+    if not use_jinja:
         lines.append('jinja = false')
 
     if draft and draft.get('path'):
@@ -404,6 +416,28 @@ def write_server_preset(
             mmproj_path = ''
     if mmproj_path:
         lines.append(f"mmproj = {Path(mmproj_path).expanduser()}")
+
+    if is_embed:
+        # Clients name the embedding model differently (OneVoice sends the
+        # checkpoint filename, the Console sends its configured id).  Router
+        # mode resolves the request by name, so register every known spelling.
+        target_name = Path(str(target.get('path') or '')).name
+        aliases: list[str] = []
+        for candidate in (
+            server.get('id'),
+            server.get('model_id'),
+            preset_model_id,
+            target_name,
+            Path(target_name).stem if target_name else '',
+            'nomic-embed',
+            'nomic-embed-text-v1.5',
+            'nomic-embed-text',
+        ):
+            text = str(candidate or '').strip()
+            if text and text not in aliases:
+                aliases.append(text)
+        if aliases:
+            lines.append(f"alias = {','.join(aliases)}")
 
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
     path = preset_path_for(server_id)

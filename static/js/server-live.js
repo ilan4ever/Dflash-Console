@@ -38,6 +38,7 @@
   let pollTimer = null;
   const serverActions = new Map();
   const pendingLoads = new Map();
+  const launcherRestartJobs = new Map();
   const ENGINE_STARTUP_GRACE_MS = 120000;
   let engineStartupGraceUntil = 0;
   let engineStartupSeenLiveId = '';
@@ -582,6 +583,15 @@
     reschedulePoll();
   }
 
+  function launcherRestartJobFor(server, row) {
+    const launcherId = String(row?.launcher_id || server?.launcher_id || server?.id || '').trim();
+    return launcherId ? (launcherRestartJobs.get(launcherId) || null) : null;
+  }
+
+  function clearLauncherRestartJob(launcherId) {
+    launcherRestartJobs.delete(launcherId);
+  }
+
   function hasPendingEngineActions() {
     return serverActions.size > 0 || pendingLoads.size > 0;
   }
@@ -734,6 +744,7 @@
       label,
       plain_gguf: !!model.plain_gguf,
       model,
+      started_at: Date.now(),
     });
     syncPendingLoadsFeed();
     renderCards();
@@ -744,7 +755,9 @@
   }
 
   function pendingLoadSettled(serverId, server) {
-    if (!server || server.booting || server.status === 'booting') return false;
+    if (!server) return true;
+    if (server.booting || server.status === 'booting') return false;
+    if (server.status === 'stopped' || server.status === 'error') return true;
     const meta = pendingLoads.get(serverId);
     const model = meta?.model || {};
     const needles = [model.path, model.model_path, model.model_id, model.id, model.filename, meta?.label]
@@ -754,7 +767,7 @@
       ...(Array.isArray(server.visible_cards) ? server.visible_cards : []),
       ...(Array.isArray(server.loaded_models) ? server.loaded_models.map((id) => ({ model_id: id, card_state: 'ready' })) : []),
     ];
-    return haystacks.some((row) => {
+    const ready = haystacks.some((row) => {
       if (row?.card_state === 'loading') return false;
       const hay = [row?.path, row?.model_path, row?.model_id, row?.id, row?.label, row?.title, row?.filename]
         .map((value) => String(value || '').replace(/\\/g, '/').toLowerCase())
@@ -763,6 +776,12 @@
       if (!needles.length) return server.status === 'loaded';
       return needles.some((needle) => hay.includes(needle));
     });
+    if (ready) return true;
+    // A failed or interrupted load leaves an idle server with no loading card.
+    // Do not leave the optimistic card spinning forever.
+    const hasLoadingCard = haystacks.some((row) => row?.card_state === 'loading');
+    const startedAt = Number(meta?.started_at || 0);
+    return !hasLoadingCard && startedAt > 0 && (Date.now() - startedAt) > 8000;
   }
 
   function releaseSettledPendingLoads() {
@@ -798,7 +817,17 @@
   }
 
   function activeServer() {
-    return servers.find((s) => s.id === activeId) || allServers.find((s) => s.id === activeId) || servers[0] || null;
+    return servers.find((s) => s.id === activeId)
+      || allServers.find((s) => s.id === activeId)
+      || externalGpuLoads
+        .filter((row) => (
+          row?.console_engine === true
+          && String(row?.launcher_id || '') === String(activeId || '')
+          && (row?.card_state !== 'stopped' || launcherRestartJobs.has(String(row?.launcher_id || '')))
+        ))
+        .map((row) => consoleLauncherServer(row))[0]
+      || servers[0]
+      || null;
   }
 
   function serverIsLive(server) {
@@ -1349,6 +1378,15 @@
   async function persistInspectorSettings() {
     if (!inspectorBound || inspectorFilling) return;
     const patch = readInspectorLoadSettings();
+    const launcherRow = inspectorBound.serverId ? launcherRowForServer(inspectorBound.serverId) : null;
+    if (launcherRow) {
+      const slots = Math.max(1, Math.min(8, parseInt(patch.load_settings?.parallel_slots || '1', 10) || 1));
+      await restartLauncherWithSlots(launcherRow.launcher_id, slots);
+      inspectorDirty = false;
+      inspectorPendingReload = false;
+      updateInspectorReloadNotice();
+      return;
+    }
     if (inspectorBound.serverId) {
       await api(`/api/servers/${encodeURIComponent(inspectorBound.serverId)}`, {
         method: 'PATCH',
@@ -1742,9 +1780,12 @@
     return {
       id: server.id,
       server_id: server.id,
+      launcher_id: server.launcher_id || row.launcher_id || '',
+      console_engine: server.console_engine === true || row.console_engine === true,
+      engine_mode: server.engine_mode || '',
       ...displayFields,
       profile: server.profile || '',
-      path: row.path || '',
+      path: row.path || row.model_path || server.model_path || '',
       size_gb: cardSizeGb(row),
       vram_gb: row.vram_gb,
       vram_by_gpu: row.vram_by_gpu || server.vram_by_gpu || {},
@@ -1763,6 +1804,9 @@
       quant: row.quant || '—',
       model_context_max: server.model_context_max || modelContextCap(server),
       context_max: modelContextCap(server),
+      context_size: server.context_size,
+      load_settings: { ...(server.load_settings || {}) },
+      inference_settings: { ...(server.inference_settings || {}) },
       gpu_layers_max: server.gpu_layers_max || 128,
       capabilities: row.capabilities || [],
     };
@@ -1909,7 +1953,7 @@
       <hr>
       <button type="button" data-cmd="goto-library" title="Open the same model in the Model library to load it, set it up or delete it">Go to model in Model library</button>
       <hr>
-      <button type="button" data-cmd="unload"${ready && row.ejectable ? '' : ' disabled'} title="${isEmbedding ? 'Stop embedding engine and unload its model' : 'Unload model'}">Unload</button>
+      <button type="button" data-cmd="unload"${ready && row.ejectable ? '' : ' disabled'} title="${isEmbedding ? 'Unload the embedding model; the router stays ready for the next request' : 'Unload model'}">Unload</button>
       <button type="button" data-cmd="cancel"${loading && row.ejectable ? '' : ' disabled'}>Cancel load</button>`;
 
     menu.classList.remove('hidden');
@@ -2022,10 +2066,6 @@
       return;
     }
     if (cmd === 'unload') {
-      if (server.engine_mode === 'embedding' || server.model_kind === 'embedding' || row.model_kind === 'embedding' || EMBEDDING_PROFILES.has(server.profile)) {
-        await stopServer(server.id);
-        return;
-      }
       await ejectServer(server.id);
       return;
     }
@@ -2039,7 +2079,7 @@
   }
 
   function loadedServerCount() {
-    return dflashLoadedCount() + externalGpuLoads.length;
+    return dflashLoadedCount() + externalGpuLoads.filter((row) => row?.card_state !== 'stopped').length;
   }
 
   function fallbackLoadedRow(server, modelId) {
@@ -2164,18 +2204,14 @@
       const pid = Number(externalPid);
       const row = externalGpuLoads.find((entry) => Number(entry.pid) === pid);
       if (!row) return null;
-      return {
-        server: {
-          id: `external-${row.pid}`,
-          label: row.app_label || 'External app',
-          port: row.listen_port || '',
-          external: true,
-          status: 'loaded',
-          gpu_display: row.gpu_display || '',
-        },
-        row,
-      };
+      return { server: serverForExternalRow(row), row };
     }
+
+    const launcherRow = externalGpuLoads.find((entry) => (
+      entry?.console_engine === true
+      && String(entry?.launcher_id || '') === String(serverId || '')
+    ));
+    if (launcherRow) return { server: serverForExternalRow(launcherRow), row: launcherRow };
 
     const server = servers.find((s) => s.id === serverId);
     if (!server) return null;
@@ -2185,6 +2221,7 @@
   }
 
   function loadedCardKey(server, row) {
+    if (row?.console_engine === true) return server?.id || `external-${row.pid}`;
     if (row?.external || server?.external) return `external-${row.pid}`;
     if (row?.role === 'loaded-model') return `${server?.id || ''}::${row.id || row.model_id || ''}`;
     return server?.id || '';
@@ -2192,6 +2229,63 @@
 
   function bootingServerCount() {
     return servers.filter((s) => s.status === 'booting' || s.booting || s.warming).length;
+  }
+
+  function consoleLauncherServer(row) {
+    const launcherId = String(row?.launcher_id || '').trim();
+    const stats = row?.inference_stats || {};
+    const stopped = row?.card_state === 'stopped';
+    const contextSize = Number(row?.context_size || stats.context_tokens) || null;
+    const parallelSlots = Math.max(1, Number(row?.parallel_slots || stats.parallel_slots) || 1);
+    const perSlot = Number(row?.per_slot_context || contextSize) || null;
+    return {
+      id: launcherId || `external-${row?.pid || ''}`,
+      label: row?.title || row?.app_label || 'DFlash Console',
+      display_name: row?.display_name || row?.title || '',
+      display_name_full: row?.display_name_full || row?.title || '',
+      port: row?.listen_port || '',
+      external: false,
+      console_engine: true,
+      launcher_id: launcherId,
+      status: stopped ? 'stopped' : 'loaded',
+      engine_mode: 'strata',
+      model_id: row?.model_id || '',
+      active_model_id: stopped ? '' : (row?.model_id || ''),
+      target_path: row?.model_path || row?.path || '',
+      context_size: contextSize,
+      per_slot_context: perSlot,
+      parallel_slots: parallelSlots,
+      model_context_max: row?.model_context_max || perSlot || contextSize,
+      load_settings: { parallel_slots: parallelSlots },
+      gpu_display: row?.gpu_display || '',
+      loaded_by: row?.loaded_by || 'DFlash Console',
+      active_clients: [],
+      visible_cards: [],
+      loaded_models: !stopped && row?.model_id ? [row.model_id] : [],
+      inference_stats: stats,
+    };
+  }
+
+  function launcherRowForServer(serverId) {
+    return externalGpuLoads.find((row) => (
+      row?.console_engine === true
+      && String(row?.launcher_id || '') === String(serverId || '')
+    )) || null;
+  }
+
+  function serverForExternalRow(row) {
+    if (row?.console_engine === true && row?.launcher_id) {
+      return consoleLauncherServer(row);
+    }
+    return {
+      id: `external-${row.pid}`,
+      label: row.app_label || 'External app',
+      port: row.listen_port || '',
+      external: true,
+      status: 'loaded',
+      gpu_display: row.gpu_display || '',
+      inference_stats: row.inference_stats || {},
+    };
   }
 
   function collectLoadedEntries() {
@@ -2203,18 +2297,12 @@
       }
     }
     for (const row of externalGpuLoads) {
-      entries.push({
-        server: {
-          id: `external-${row.pid}`,
-          label: row.app_label || 'External app',
-          port: row.listen_port || '',
-          external: true,
-          status: 'loaded',
-          gpu_display: row.gpu_display || '',
-          inference_stats: row.inference_stats || {},
-        },
-        row,
-      });
+      const launcherId = String(row?.launcher_id || '').trim();
+      // An unloaded launcher should disappear from Engines like any other
+      // unloaded engine. Keep a stopped card only while its restart job is
+      // running, so the progress panel has something to sit on.
+      if (row?.card_state === 'stopped' && !(launcherId && launcherRestartJobs.has(launcherId))) continue;
+      entries.push({ server: serverForExternalRow(row), row });
     }
     let result = entries;
     for (const serverId of pendingLoads.keys()) {
@@ -2424,6 +2512,10 @@
   }
 
   function aggregateStatusLabel() {
+    if (launcherRestartJobs.size) {
+      const job = [...launcherRestartJobs.values()][0];
+      return job?.label ? `${job.label}…` : 'Restarting engine…';
+    }
     if (!initialStatusSettled || (!serverIsLive(activeServer()) && engineStartupPending())) {
       return hasEngineLoadActivity() ? 'Loading models…' : 'Starting engines…';
     }
@@ -2785,6 +2877,35 @@
     return `<span class="lm-engine-slots-label" aria-hidden="true">Slots</span><select class="lm-select small lm-engine-slots-pick" data-action="slots-pick" data-slots-server-id="${escapeHtml(server.id)}" aria-label="Parallel slots for ${escapeHtml(row?.label || server.label || 'model')}" title="Parallel slots used when this engine loads the model. Changing it offers a reload.">${options}</select>`;
   }
 
+  function launcherSlotsPickerHtml(row, { disabled = false } = {}) {
+    const current = Math.max(1, Math.min(8, Number(row?.parallel_slots) || 1));
+    const choices = [1, 2, 3, 4, 6, 8];
+    if (!choices.includes(current)) choices.push(current);
+    choices.sort((a, b) => a - b);
+    const options = choices
+      .map((count) => `<option value="${count}"${count === current ? ' selected' : ''}>${count}</option>`)
+      .join('');
+    return `<span class="lm-engine-slots-label" aria-hidden="true">Slots</span><select class="lm-select small lm-engine-slots-pick" data-action="launcher-slots-pick" data-launcher-id="${escapeHtml(row?.launcher_id || '')}" aria-label="Parallel slots for ${escapeHtml(row?.title || 'Strata')}" title="Parallel requests Strata should serve at once. Changing it restarts the Strata engine."${disabled ? ' disabled aria-disabled="true"' : ''}>${options}</select>`;
+  }
+
+  function launcherRestartShellHtml(job) {
+    if (!job) return '';
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Number(job.started_at || Date.now())) / 1000));
+    const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+    const target = job.target_slots ? `${job.target_slots} slot${Number(job.target_slots) === 1 ? '' : 's'}` : '';
+    const right = [target, elapsed].filter(Boolean).join(' · ');
+    const label = String(job.label || 'Restarting engine');
+    const detail = String(job.detail || 'Waiting for the engine to restart…');
+    return `<div class="lm-model-card-load-shell is-indeterminate" role="status" aria-live="polite">
+      <div class="lm-model-card-load-head">
+        <span class="lm-model-card-load-label">${escapeHtml(label)}<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span></span>
+        <span class="lm-model-card-load-percent">${escapeHtml(right)}</span>
+      </div>
+      <div class="lm-model-card-load-detail">${escapeHtml(detail)}</div>
+      <div class="lm-model-card-load-track" role="progressbar" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100"><div class="lm-model-card-load-fill"></div></div>
+    </div>`;
+  }
+
   function engineHeadControlsHtml(gpuPick, gpuNow, action, slotsPick = '') {
     if (!gpuPick && !gpuNow && !action && !slotsPick) return '';
     const gpuPicker = gpuPick
@@ -2809,7 +2930,11 @@
     const titles = clients.length ? clients : agents;
     if (!titles.length && !controls) return '';
     const multi = titles.length > 1;
-    const badges = titles.map((label) => {
+    const launcherLabel = String(row?.launcher_id || '').trim().toUpperCase();
+    const launcherBadge = launcherLabel
+      ? `<span class="lm-loaded-by-engine-badge" title="${escapeHtml(launcherLabel)} launcher engine">${escapeHtml(launcherLabel)}</span>`
+      : '';
+    const badges = launcherBadge + titles.map((label) => {
       const isConsole = /^dflash console$/i.test(label);
       return `<span class="lm-loaded-by-app-badge${isConsole ? ' is-console' : ''}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
     }).join('');
@@ -3040,7 +3165,7 @@
       ...row,
       label: row?.title || row?.model_name || row?.label || row?.id || '',
       filename: row?.filename || target?.name || row?.model_name || '',
-      path: row?.path || target?.path || '',
+      path: row?.path || row?.model_path || target?.path || '',
       draft_path: row?.draft_path || draft?.path || '',
       draft_filename: row?.draft_filename || draft?.name || '',
       draft_size_gb: row?.draft_size_gb ?? draft?.size_gb,
@@ -3418,9 +3543,9 @@
     return app || cardAppLabel(row);
   }
 
-  /** True when the app name is shown as a chip on the desktop card header. */
+  /** The owning app is always a header chip; never spend a body line on it. */
   function externalAppInHeader() {
-    return desktopEngineCardLayout() && !document.documentElement.classList.contains('df-narrow');
+    return true;
   }
 
   function externalDetailLineHtml(kind, items) {
@@ -3438,7 +3563,7 @@
    * stays put.
    */
   function externalCardDetailsHtml(row, server, { includeDiskCtx = false } = {}) {
-    if (!row?.external && !server?.external) return '';
+    if (!row?.external && !server?.external && !row?.console_engine && !row?.launcher_id) return '';
     const consoleEngine = row?.console_engine === true;
     const appLabel = externalAppLabel(row);
     const component = String(row?.component_label || '').trim();
@@ -3613,27 +3738,246 @@
     return `${prefix}${text} GB total`;
   }
 
-  const GPU_OTHER_CHIP_LIMIT = 18;
+  const GPU_OTHER_GROUP_CHIP_LIMIT = 18;
+
+  // Group non-model GPU processes under the card they run on, so the card name
+  // appears once per group instead of on every chip. Cards with no other
+  // processes still get a group, which keeps the section split by card.
+  function gpuOtherProcessGroups(rows, block) {
+    const groups = new Map();
+    const ensureGroup = (index, display, fullName = '') => {
+      const numeric = Number(index);
+      const hasIndex = index != null && index !== '' && Number.isFinite(numeric) && numeric >= 0;
+      const key = hasIndex ? `gpu:${numeric}` : `display:${String(display || '').trim() || 'unknown'}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          key,
+          index: hasIndex ? numeric : null,
+          display: String(display || '').trim() || 'GPU',
+          fullName: String(fullName || '').trim(),
+          rows: [],
+        };
+        groups.set(key, group);
+      } else if (!group.fullName && fullName) {
+        group.fullName = String(fullName).trim();
+      }
+      return group;
+    };
+
+    for (const summary of Array.isArray(block?.by_gpu) ? block.by_gpu : []) {
+      const index = summary?.gpu_index;
+      if (index == null) continue;
+      const gpu = gpus.find((row) => Number(row.index) === Number(index));
+      ensureGroup(index, summary?.gpu_display || gpu?.display_name || gpu?.name, gpu?.name || '');
+    }
+
+    for (const proc of rows || []) {
+      const rawIndex = proc?.gpu_index;
+      const hasIndex = rawIndex != null && rawIndex !== ''
+        && Number.isFinite(Number(rawIndex)) && Number(rawIndex) >= 0;
+      const index = hasIndex ? Number(rawIndex) : null;
+      const gpu = hasIndex ? gpus.find((row) => Number(row.index) === index) : null;
+      const group = ensureGroup(
+        index,
+        proc?.gpu_display || gpu?.display_name || gpu?.name || (hasIndex ? `GPU ${index}` : 'GPU'),
+        gpu?.name || '',
+      );
+      group.rows.push(proc);
+    }
+
+    const result = [...groups.values()];
+    for (const group of result) {
+      group.rows.sort((a, b) => (
+        Number(b?.vram_gb || 0) - Number(a?.vram_gb || 0)
+        || String(a?.label || a?.process_name || '').localeCompare(String(b?.label || b?.process_name || ''))
+      ));
+    }
+    result.sort((a, b) => {
+      if (a.index != null && b.index != null) return a.index - b.index;
+      if (a.index != null) return -1;
+      if (b.index != null) return 1;
+      return a.display.localeCompare(b.display);
+    });
+    return result;
+  }
+
+  function gpuOtherGroupVramTotal(rows) {
+    let sum = 0;
+    let known = 0;
+    for (const proc of rows || []) {
+      const gb = Number(proc?.vram_gb);
+      if (Number.isFinite(gb) && gb > 0) {
+        sum += gb;
+        known += 1;
+      }
+    }
+    if (!known) return null;
+    return { gb: sum, partial: known < (rows || []).length };
+  }
+
+  function gpuOtherGroupMeta(group) {
+    const count = group.rows.length;
+    const parts = [count === 1 ? '1 app' : `${count} apps`];
+    const total = gpuOtherGroupVramTotal(group.rows);
+    const gb = total ? formatGpuOtherTotalGb(total.gb) : '';
+    if (gb) parts.push(`${total.partial ? '~' : ''}${gb} GB`);
+    return parts.join(' · ');
+  }
+
+  let gpuOtherTooltipEl = null;
+  let gpuOtherTooltipChip = null;
+
+  function gpuOtherExecutablePath(proc) {
+    const direct = String(proc?.executable_path || '').trim();
+    if (direct) return direct;
+    const command = String(proc?.command_line || '').trim();
+    if (!command) return '';
+    const quoted = command.match(/^"([^"]+)"/);
+    if (quoted) return quoted[1];
+    const exe = command.match(/^(.+?\.exe)(?:\s|$)/i);
+    return exe ? exe[1] : command.split(/\s+/, 1)[0];
+  }
+
+  function gpuOtherVramSourceLabel(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw === 'windows' || raw === 'tm') return 'Windows Task Manager per-process';
+    if (raw === 'nvidia') return 'nvidia-smi per-process';
+    return String(value).trim();
+  }
+
+  function gpuOtherTooltipHtml(proc) {
+    const title = String(
+      proc?.label || proc?.component_label || proc?.app_label || proc?.process_name || `PID ${proc?.pid || '?'}`,
+    ).trim();
+    const executablePath = gpuOtherExecutablePath(proc);
+    const vram = formatProcessVram(proc);
+    const rows = [
+      ['Application', proc?.app_label || '—'],
+      ['Process', proc?.process_name || proc?.label || '—'],
+      ['Process ID', proc?.pid != null ? `PID ${proc.pid}` : '—'],
+      ['Executable', executablePath || 'Not reported by Windows'],
+      ['Command line', proc?.command_line || 'Not reported by Windows', 'code'],
+      ['GPU', [proc?.gpu_display, proc?.gpu_index != null ? `#${proc.gpu_index}` : ''].filter(Boolean).join(' · ') || '—'],
+      ['VRAM', vram && vram !== '—' ? vram : 'Not reported'],
+      ['VRAM measured by', gpuOtherVramSourceLabel(proc?.vram_source) || 'Windows Task Manager per-process'],
+      ['Component', proc?.component_label || proc?.component_role || ''],
+      ['Parent process', [proc?.parent_process_name, proc?.parent_pid ? `PID ${proc.parent_pid}` : ''].filter(Boolean).join(' · ')],
+    ].filter(([, value]) => String(value || '').trim());
+    return `<div class="lm-gpu-other-tooltip-title">${escapeHtml(title)}</div>
+      <div class="lm-gpu-other-tooltip-subtitle">Other GPU process</div>
+      <div class="lm-gpu-other-tooltip-rows">${rows.map(([label, value, kind]) => (
+        `<div class="lm-gpu-other-tooltip-row"><span class="lm-gpu-other-tooltip-label">${escapeHtml(label)}</span><span class="lm-gpu-other-tooltip-value${kind === 'code' ? ' is-code' : ''}">${escapeHtml(value)}</span></div>`
+      )).join('')}</div>`;
+  }
+
+  function ensureGpuOtherTooltip() {
+    if (gpuOtherTooltipEl?.isConnected) return gpuOtherTooltipEl;
+    const tip = document.createElement('div');
+    tip.id = 'gpuOtherProcessTooltip';
+    tip.className = 'lm-gpu-other-tooltip hidden';
+    tip.setAttribute('role', 'tooltip');
+    document.body.appendChild(tip);
+    gpuOtherTooltipEl = tip;
+    return tip;
+  }
+
+  function positionGpuOtherTooltip(chip, tip) {
+    const rect = chip.getBoundingClientRect();
+    tip.style.visibility = 'hidden';
+    tip.classList.remove('hidden');
+    const width = tip.offsetWidth;
+    const height = tip.offsetHeight;
+    let left = rect.left;
+    if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+    if (left < 8) left = 8;
+    let top = rect.top - height - 8;
+    if (top < 8) top = rect.bottom + 8;
+    if (top + height > window.innerHeight - 8) top = window.innerHeight - height - 8;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+    tip.style.visibility = 'visible';
+  }
+
+  function hideGpuOtherTooltip() {
+    if (gpuOtherTooltipChip) {
+      gpuOtherTooltipChip.removeAttribute('aria-describedby');
+      gpuOtherTooltipChip = null;
+    }
+    if (gpuOtherTooltipEl) {
+      gpuOtherTooltipEl.classList.add('hidden');
+      gpuOtherTooltipEl.innerHTML = '';
+    }
+  }
+
+  function showGpuOtherTooltip(chip) {
+    const pid = Number(chip?.dataset?.gpuOtherPid);
+    if (!Number.isFinite(pid)) return;
+    const proc = (gpuOtherUsage?.processes || []).find((row) => Number(row?.pid) === pid);
+    if (!proc) return;
+    const tip = ensureGpuOtherTooltip();
+    tip.innerHTML = gpuOtherTooltipHtml(proc);
+    if (gpuOtherTooltipChip && gpuOtherTooltipChip !== chip) {
+      gpuOtherTooltipChip.removeAttribute('aria-describedby');
+    }
+    gpuOtherTooltipChip = chip;
+    chip.setAttribute('aria-describedby', tip.id);
+    positionGpuOtherTooltip(chip, tip);
+  }
+
+  function bindGpuOtherTooltips(wrap) {
+    if (!wrap || wrap.dataset.gpuOtherTooltipBound === '1') return;
+    wrap.dataset.gpuOtherTooltipBound = '1';
+    const chipFor = (event) => event.target?.closest?.('.lm-gpu-overhead-chip[data-gpu-other-pid]') || null;
+    const enter = (event) => {
+      const chip = chipFor(event);
+      if (chip) showGpuOtherTooltip(chip);
+    };
+    const leave = (event) => {
+      const chip = chipFor(event);
+      if (!chip || (event.relatedTarget && chip.contains(event.relatedTarget))) return;
+      hideGpuOtherTooltip();
+    };
+    wrap.addEventListener('mouseover', enter);
+    wrap.addEventListener('mouseout', leave);
+    wrap.addEventListener('focusin', enter);
+    wrap.addEventListener('focusout', leave);
+    window.addEventListener('scroll', hideGpuOtherTooltip, { capture: true, passive: true });
+    window.addEventListener('resize', hideGpuOtherTooltip);
+  }
+
+  function gpuOtherChipHtml(proc) {
+    const vram = formatProcessVram(proc);
+    const parts = [proc.label || proc.process_name || `PID ${proc.pid}`];
+    if (vram && vram !== '—') parts.push(vram);
+    const aria = [proc.app_label, proc.process_name, proc.pid != null ? `PID ${proc.pid}` : '', proc.command_line]
+      .filter(Boolean).join(' · ');
+    return `<span class="lm-gpu-overhead-chip" data-gpu-other-pid="${Number(proc.pid) || ''}" tabindex="0" aria-label="${escapeHtml(aria || parts.join(' · '))}">${escapeHtml(parts.join(' · '))}</span>`;
+  }
 
   function renderGpuOverheadCardHtml() {
     const block = gpuOtherUsage;
     if (!block?.processes?.length && !block?.unattributed_gb) return '';
     const rows = block.processes || [];
-    const multiGpu = (gpus?.length || 0) > 1 || new Set(rows.map((proc) => proc.gpu_index)).size > 1;
-    const visible = rows.slice(0, GPU_OTHER_CHIP_LIMIT);
-    const overflow = rows.length - visible.length;
-    const chips = visible.map((proc) => {
-      const vram = formatProcessVram(proc);
-      const title = [proc.app_label, proc.process_name, proc.command_line].filter(Boolean).join(' · ');
-      const gpu = multiGpu ? (proc.gpu_display || `GPU ${proc.gpu_index}`) : '';
-      const parts = [proc.label || proc.process_name || `PID ${proc.pid}`];
-      if (gpu) parts.push(gpu);
-      if (vram && vram !== '—') parts.push(vram);
-      return `<span class="lm-gpu-overhead-chip" title="${escapeHtml(title)}">${escapeHtml(parts.join(' · '))}</span>`;
+    const groups = rows.length ? gpuOtherProcessGroups(rows, block) : [];
+    const groupsHtml = groups.map((group) => {
+      const visible = group.rows.slice(0, GPU_OTHER_GROUP_CHIP_LIMIT);
+      const overflow = group.rows.length - visible.length;
+      const chips = visible.map(gpuOtherChipHtml).join('');
+      const overflowChip = overflow > 0
+        ? `<span class="lm-gpu-overhead-chip lm-gpu-overhead-chip-more" title="${overflow} more ${escapeHtml(group.display)} GPU apps not shown">+${overflow} more</span>`
+        : '';
+      const emptyChip = group.rows.length
+        ? ''
+        : `<span class="lm-gpu-overhead-empty">${gpuOtherScan === 'pending' ? 'Scanning…' : 'No other processes'}</span>`;
+      const meta = gpuOtherGroupMeta(group);
+      const title = [group.fullName || group.display, meta].filter(Boolean).join(' · ');
+      return `<div class="lm-gpu-overhead-group">
+        <span class="lm-gpu-overhead-gpu" title="${escapeHtml(title)}"><span class="lm-gpu-overhead-gpu-name">${escapeHtml(group.display)}</span><span class="lm-gpu-overhead-gpu-meta">${escapeHtml(meta)}</span></span>
+        <div class="lm-gpu-overhead-chips">${chips}${overflowChip}${emptyChip}</div>
+      </div>`;
     }).join('');
-    const overflowChip = overflow > 0
-      ? `<span class="lm-gpu-overhead-chip lm-gpu-overhead-chip-more" title="${overflow} more GPU apps not shown">+${overflow} more</span>`
-      : '';
     const unattributed = formatVramGb(block.unattributed_gb);
     let label = 'Other GPU';
     if (rows.length) {
@@ -3651,12 +3995,15 @@
     const totalHtml = totalLabel
       ? `<span class="lm-gpu-overhead-total" title="Combined VRAM for listed GPU apps">${escapeHtml(totalLabel)}</span>`
       : '';
+    const groupsBlock = groupsHtml
+      ? `<div class="lm-gpu-overhead-groups">${groupsHtml}</div>`
+      : '';
     return `
       <div class="lm-model-card-group-sep lm-gpu-overhead-sep" aria-hidden="true"></div>
       <article class="lm-model-card lm-model-card-compact lm-gpu-overhead-card" aria-label="Other GPU processes">
         <div class="lm-gpu-overhead-inline">
           <span class="lm-gpu-overhead-label">${escapeHtml(label)}</span>
-          <div class="lm-gpu-overhead-chips">${chips}${overflowChip}</div>
+          ${groupsBlock}
         </div>
         ${totalHtml || noteHtml ? `<div class="lm-gpu-overhead-footer">${noteHtml}${totalHtml}</div>` : ''}
       </article>`;
@@ -4094,15 +4441,31 @@
   function mobileEngineHeadHtml({ row, server, action }) {
     const title = escapeHtml(cardDisplayName(row, server));
     const unload = action ? `<div class="lm-mobile-engine-unload">${action}</div>` : '<div class="lm-mobile-engine-unload" aria-hidden="true"></div>';
+    const external = row?.external || server?.external;
+    const appLabel = external ? externalAppLabel(row) : '';
+    const appBadge = appLabel
+      ? `<span class="lm-external-app-badge lm-mobile-engine-app" title="Loaded outside DFlash Console by ${escapeHtml(appLabel)}">${escapeHtml(appLabel)}</span>`
+      : '';
     return `<div class="lm-mobile-engine-head">
       ${mobileEngineVramHtml(row, server)}
       <span class="lm-mobile-engine-meta-title lm-model-path">${title}</span>
+      ${appBadge}
       ${unload}
     </div>`;
   }
 
-  function mobileEngineMetaHtml() {
-    return '';
+  function mobileEngineMetaHtml(row, server) {
+    if (row?.external || server?.external) return '';
+    const metrics = [
+      ['CTX', formatContextTokens(cardContextSize(row, server)), 'Context window'],
+      ['DISK', formatCardGb(resolveCardSizeGb(row, server)), 'Model size on disk'],
+      ['VRAM', formatCardVramGb(cardVramTotal(row, server)), 'GPU memory used by this model'],
+      ['GPU', shortGpuLabel(cardVramGpuName(row, server)), 'GPU this model is loaded on'],
+    ].filter(([, value]) => value);
+    const body = metrics.map(([label, value, title]) => (
+      `<span class="lm-mobile-engine-meta-item" title="${escapeHtml(title)}"><span class="lbl">${label}</span><span class="val">${escapeHtml(value)}</span></span>`
+    )).join('');
+    return `<div class="lm-mobile-engine-meta-row" aria-label="Model hardware and size">${body}</div>`;
   }
 
   function buildMobileEngineCardArticle({
@@ -4407,9 +4770,13 @@
         includeTarget: true,
         includeAccelerator: true,
         includeSize: !stackDiskBreakdown(row)?.hasDraft,
+        // A launcher-managed model is not a DFlash stack, but its target path
+        // is still useful on the card.
+        alwaysForStack: !row?.launcher_id,
       }) || '');
     const kindBadge = modelKindBadge(row);
-    const statusInCard = desktopLayout ? '' : statusBadge;
+    const stopped = String(row?.card_state || '').toLowerCase() === 'stopped';
+    const statusInCard = desktopLayout && !stopped ? '' : statusBadge;
     const pinMark = isEnginePinned(server, row)
       ? '<span class="lm-engine-pin" title="Pinned to top of the Engines page">📌</span>'
       : '';
@@ -4472,6 +4839,10 @@
     const action = getServerAction(server?.id);
     if (action === 'stopping') return 'Stopping server…';
     if (action === 'ejecting') return 'Unloading model…';
+    if (action === 'launcher-restarting') {
+      const job = [...launcherRestartJobs.values()][0];
+      return job?.detail || 'Restarting engine…';
+    }
     if (action === 'starting') return 'Starting engine…';
     if (action === 'loading' || hasEngineLoadActivity()) return 'Loading models…';
     if (!serverIsLive(activeServer()) && engineStartupPending()) return 'Starting engines…';
@@ -4501,6 +4872,7 @@
   function syncGpuOverheadTail(wrap, overheadHtml) {
     if (!wrap) return;
     wrap.querySelectorAll('.lm-gpu-overhead-sep, .lm-gpu-overhead-card, .lm-gpu-scan-note').forEach((node) => node.remove());
+    if (gpuOtherTooltipChip && !gpuOtherTooltipChip.isConnected) hideGpuOtherTooltip();
     if (overheadHtml) {
       wrap.insertAdjacentHTML('beforeend', overheadHtml);
     }
@@ -4592,7 +4964,10 @@
         : '';
       const ready = row.card_state === 'ready';
       const loading = row.card_state === 'loading';
+      const stopped = row.card_state === 'stopped';
       const actionKey = loadedCardKey(server, row);
+      const restartJob = launcherRestartJobFor(server, row);
+      const restarting = !!restartJob;
       const ejecting = cardActionBusy(server, row, actionKey);
       const warming = Boolean(row.warming || server.warming || (server.runtime_id === 'freetoken' && loading));
       const rawProgress = row.progress ?? (loading ? server.load_progress : null);
@@ -4605,21 +4980,23 @@
         || row.model_kind === 'embedding'
         || EMBEDDING_PROFILES.has(server.profile);
       let action = '';
-      if (row.ejectable && !ejecting) {
+      if (restarting) {
+        action = `<button class="lm-btn ghost small" type="button" disabled title="${escapeHtml(restartJob.detail || 'Waiting for the engine')}">${escapeHtml(restartJob.action_label || 'Restarting…')}</button>`;
+      } else if (stopped && row.loadable) {
+        action = '<button class="lm-btn ghost small" data-action="launcher-load" title="Start this engine through the Console launcher">Load</button>';
+      } else if (row.ejectable && !ejecting) {
         action = ready
-          ? isEmbedding
-            ? '<button class="lm-btn ghost small" data-action="stop" title="Stop embedding engine and unload its model">Unload</button>'
-            : '<button class="lm-btn ghost small" data-action="eject" title="Unload model">Unload</button>'
+          ? `<button class="lm-btn ghost small" data-action="eject" title="${isEmbedding ? 'Unload the embedding model; the router stays ready for the next request' : 'Unload model'}">Unload</button>`
           : '<button class="lm-btn ghost small" data-action="cancel-load">Cancel</button>';
       }
       const isSelected = actionKey === selectedLoadedKey;
       const inferenceStats = row?.inference_stats || server?.inference_stats || {};
       const isGenerating = cardIsGenerating(row, server);
-      const cardClass = `lm-model-card lm-model-card-compact ${ejecting ? 'ejecting' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external && row?.console_engine !== true ? ' external-gpu' : ' dflash-model'}`;
+      const cardClass = `lm-model-card lm-model-card-compact ${restarting ? 'restarting loading' : ejecting ? 'ejecting' : stopped ? 'stopped' : ready ? 'ready' : 'loading'}${isGenerating ? ' generating' : ''}${isSelected ? ' selected' : ''}${row.external && row?.console_engine !== true ? ' external-gpu' : ' dflash-model'}`;
       const cardStyle = loading && progressKnown && progressPct != null
         ? ` style="--card-progress:${progressPct}%"`
         : '';
-      const installedBadge = row.external ? '' : '<span class="lm-badge installed">Installed</span>';
+      const installedBadge = row.external || row.launcher_id ? '' : '<span class="lm-badge installed">Installed</span>';
       const loadChrome = loading && !isGenerating
         ? `<div class="lm-model-card-load-shell${progressKnown ? '' : ' is-indeterminate'}"${cardStyle} role="status" aria-live="polite">
             <div class="lm-model-card-load-head">
@@ -4635,12 +5012,17 @@
             <span class="lm-model-card-eject-label">Unloading<span class="lm-loading-dots"><span>.</span><span>.</span><span>.</span></span></span>
           </div>`
         : '';
+      const restartChrome = restarting ? launcherRestartShellHtml(restartJob) : '';
       const desktopLayout = desktopEngineCardLayout();
-      const badge = ejecting
-        ? ''
-        : ready
-          ? (desktopLayout ? '' : '<span class="lm-badge ready">READY</span>')
-          : `<span class="lm-badge loading">${progress.label || 'Loading'}</span>`;
+      const badge = restarting
+        ? '<span class="lm-badge loading">RESTARTING</span>'
+        : ejecting
+          ? ''
+          : stopped
+            ? '<span class="lm-badge stopped">STOPPED</span>'
+            : ready
+              ? (desktopLayout ? '' : '<span class="lm-badge ready">READY</span>')
+              : `<span class="lm-badge loading">${progress.label || 'Loading'}</span>`;
       const missing = row.path_missing ? '<span class="lm-tag yellow">missing</span>' : '';
       const hoverTitle = cardHoverTitle({ server, row });
       const centerBlock = cardCenterBlock({
@@ -4660,7 +5042,7 @@
       // when there is an actual file to copy.
       const externalPrompt = row.external ? externalCardPromptHtml(row, server) : '';
 
-      const useMobileCard = isMobileEngineCards() && !loading && !ejecting;
+      const useMobileCard = isMobileEngineCards() && !loading && !ejecting && !restarting;
       if (useMobileCard) {
         return `
         ${groupSep}
@@ -4679,8 +5061,13 @@
           action,
         })}`;
       }
-      const gpuPick = row.external ? '' : engineGpuPickerHtml(server, row);
-      const slotsPick = row.external ? '' : engineSlotsPickerHtml(server, row);
+      const gpuPick = row.external || row.launcher_id ? '' : engineGpuPickerHtml(server, row);
+      const slotsPick = row.launcher_id
+        ? launcherSlotsPickerHtml(
+          restartJob?.target_slots ? { ...row, parallel_slots: restartJob.target_slots } : row,
+          { disabled: restarting },
+        )
+        : (row.external ? '' : engineSlotsPickerHtml(server, row));
       const loadedByBanner = loadedByPrompt({
         row,
         server,
@@ -4701,8 +5088,9 @@
       const desktopCls = desktopLayout ? ' lm-engine-card-desktop' : '';
       return `
         ${groupSep}
-        <article class="${cardClass}${desktopCls}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role || 'external-gpu')}"${row.external ? ` data-external-pid="${row.pid}"` : ''} role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${isGenerating ? ' aria-label="Model generating"' : ''}${ejecting ? ' aria-busy="true"' : ''}${cardStyle}>
+        <article class="${cardClass}${desktopCls}" data-server-id="${escapeHtml(server.id)}" data-role="${escapeHtml(row.role || 'external-gpu')}"${row.external ? ` data-external-pid="${row.pid}"` : ''} role="button" tabindex="0" title="${escapeHtml(hoverTitle)}"${isGenerating ? ' aria-label="Model generating"' : ''}${ejecting || restarting ? ' aria-busy="true"' : ''}${cardStyle}>
           ${loadChrome}
+          ${restartChrome}
           ${ejectChrome}
           ${loadedByBanner}
           ${externalPrompt}
@@ -4721,6 +5109,7 @@
         syncGpuOverheadTail(wrap, overheadHtml);
         lastGpuOverheadMarkup = overheadHtml;
       }
+      bindGpuOtherTooltips(wrap);
       syncEngineCardLiveMetrics(wrap);
       syncEngineCardsSectionLabel();
       return;
@@ -4729,8 +5118,11 @@
     lastEngineCardsMarkup = cardsMarkup;
     lastGpuOverheadMarkup = overheadHtml;
     wrap.innerHTML = cardsMarkup + overheadHtml;
+    if (gpuOtherTooltipChip && !gpuOtherTooltipChip.isConnected) hideGpuOtherTooltip();
     bindEngineGpuPickers(wrap);
     bindEngineSlotsPickers(wrap);
+    bindLauncherSlotsPickers(wrap);
+    bindGpuOtherTooltips(wrap);
     syncEngineCardLiveMetrics(wrap);
 
     wrap.querySelectorAll('.lm-model-card').forEach((card) => {
@@ -5096,6 +5488,7 @@
       const anyStarting = [...serverActions.values()].some((a) => a === 'starting');
       const anyActive = !initialStatusSettled
         || anyStarting
+        || launcherRestartJobs.size > 0
         || hasEngineLoadActivity()
         || engineStartupPending()
         || dflashLoadedCount() > 0
@@ -5110,6 +5503,7 @@
         : (
           !initialStatusSettled
           || serverIsLive(server)
+          || launcherRestartJobs.size > 0
           || hasEngineLoadActivity()
           || engineStartupPending()
           || (!initialStatusSettled && server.engine_on === true)
@@ -5264,6 +5658,48 @@
     if (!server || inspectorDirty) return;
     inspectorFilling = true;
     try {
+    const launcherEngine = !!server.launcher_id;
+    const recBar = document.querySelector('.lm-runtime-rec-bar');
+    recBar?.classList.toggle('hidden', launcherEngine);
+    if (launcherEngine) window.DFlashRuntimeRecommendations?.clear?.();
+    const launcherLockedIds = [
+      'inspectorContext', 'inspectorContextMax', 'inspectorGpuLayers', 'inspectorCpuThreads',
+      'inspectorEvalBatch', 'inspectorPhysicalBatch', 'inspectorFlashAttention',
+      'inspectorTemperature', 'inspectorTopP', 'inspectorTopK', 'inspectorRepeatPenalty',
+      'inspectorMaxTokens', 'inspectorReasoningEffort',
+    ];
+    for (const id of launcherLockedIds) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (launcherEngine) {
+        el.disabled = true;
+        el.dataset.launcherLocked = '1';
+      } else if (el.dataset.launcherLocked === '1') {
+        el.disabled = false;
+        delete el.dataset.launcherLocked;
+      }
+    }
+    const contextHint = document.getElementById('inspectorContextHint');
+    if (contextHint) {
+      // Recommendations rewrite this hint after they load. Do not put the
+      // generic text back on every status refresh: that made the line flicker
+      // and reflow every field below it.
+      const hintKey = `${server.id || ''}|${server.model_id || ''}|${launcherEngine ? 'launcher' : 'engine'}|${server.context_size || ''}`;
+      if (contextHint.dataset.fillKey !== hintKey) {
+        contextHint.textContent = launcherEngine
+          ? 'Context length is reported by the Strata engine and cannot be changed here.'
+          : 'Starting context — API requests may grow it up to the limit below.';
+        contextHint.dataset.fillKey = hintKey;
+      }
+    }
+    const slotsHint = document.getElementById('inspectorParallelSlotsHint');
+    if (slotsHint) {
+      slotsHint.textContent = launcherEngine
+        ? 'Parallel requests the Strata engine serves at once. Changing it restarts Strata.'
+        : 'Concurrent request slots per model (-np).';
+    }
+    const launcherSlotsEl = document.getElementById('inspectorParallelSlots');
+    if (launcherSlotsEl) launcherSlotsEl.max = launcherEngine ? '8' : '16';
     const load = server.load_settings || {};
     const modelCap = modelContextCap(server);
     const gpuMax = server.gpu_layers_max || 128;
@@ -5334,7 +5770,9 @@
         specHint.textContent = 'No speculative draft for this profile.';
       }
     }
-    refreshInspectorRecommendations({ ...server, id: server.id || inspectorBound?.serverId });
+    if (!launcherEngine) {
+      refreshInspectorRecommendations({ ...server, id: server.id || inspectorBound?.serverId });
+    }
     } finally {
       inspectorFilling = false;
     }
@@ -6354,11 +6792,16 @@
       return;
     }
     const action = target.getAttribute('data-action');
-    if (!['eject', 'stop', 'cancel-load', 'copy-to-console', 'get-matching-draft'].includes(action)) return;
+    if (!['eject', 'stop', 'cancel-load', 'launcher-load', 'copy-to-console', 'get-matching-draft'].includes(action)) return;
     event.stopPropagation();
     event.preventDefault();
 
     const card = target.closest('[data-server-id]');
+    if (action === 'launcher-load') {
+      const serverId = card?.getAttribute('data-server-id');
+      if (serverId) void loadLauncher(serverId);
+      return;
+    }
     if (action === 'get-matching-draft') {
       const entry = entryForCard(card);
       if (entry) void getMatchingDraftForCard(entry.server, entry.row);
@@ -6459,6 +6902,135 @@
     });
   }
 
+  async function waitForLauncherLoaded(launcherId, targetSlots, onProgress) {
+    const launcherName = String(launcherId).toLowerCase() === 'strata' ? 'Strata' : String(launcherId);
+    const deadline = Date.now() + 240000;
+    while (Date.now() < deadline) {
+      let payload = null;
+      try {
+        payload = await api('/api/external/launchers', { timeoutMs: 10000 });
+      } catch {
+        payload = null;
+      }
+      const entry = (payload?.launchers || []).find(
+        (row) => String(row?.id || '').toLowerCase() === String(launcherId).toLowerCase(),
+      );
+      if (entry) {
+        const activeSlots = Math.max(1, Number(entry.parallel) || 1);
+        if (entry.loaded && activeSlots === Number(targetSlots)) return entry;
+        if (entry.loaded) {
+          onProgress({
+            phase: 'starting',
+            label: `Starting ${launcherName}`,
+            action_label: 'Starting…',
+            detail: `The engine answers with ${activeSlots} slot${activeSlots === 1 ? '' : 's'}; waiting for ${targetSlots}.`,
+          });
+        } else if (entry.starting && !entry.running) {
+          onProgress({
+            phase: 'starting',
+            label: `Starting ${launcherName}`,
+            action_label: 'Starting…',
+            detail: `The engine process is starting with ${targetSlots} slot${Number(targetSlots) === 1 ? '' : 's'}; waiting for it to answer…`,
+          });
+        } else if (entry.running) {
+          onProgress({
+            phase: 'loading',
+            label: `Loading ${launcherName}`,
+            action_label: 'Loading…',
+            detail: `Engine is running; waiting for the model with ${targetSlots} slot${Number(targetSlots) === 1 ? '' : 's'} to become ready.`,
+          });
+        } else {
+          onProgress({
+            phase: 'restarting',
+            label: `Restarting ${launcherName}`,
+            action_label: 'Restarting…',
+            detail: 'Waiting for the old engine to stop before starting the new one.',
+          });
+        }
+      } else {
+        // Keep the elapsed time moving even when the launcher endpoint is
+        // briefly busy while the old process goes away.
+        onProgress({});
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error(`${launcherName} did not finish loading in time; refresh the Engines page to check again.`);
+  }
+
+  async function restartLauncherWithSlots(launcherId, slots) {
+    if (!launcherId || isServerBusy(launcherId)) return;
+    const slotText = `${slots} slot${Number(slots) === 1 ? '' : 's'}`;
+    const row = externalGpuLoads.find((entry) => String(entry?.launcher_id || '') === String(launcherId));
+    const wasStopped = row?.card_state === 'stopped';
+    const launcherName = String(launcherId).toLowerCase() === 'strata' ? 'Strata' : String(launcherId);
+    const label = wasStopped ? `Starting ${launcherName}` : `Restarting ${launcherName}`;
+    const startedAt = Date.now();
+    const applyJob = (patch) => {
+      const current = launcherRestartJobs.get(launcherId);
+      if (current) launcherRestartJobs.set(launcherId, { ...current, ...patch });
+      renderAll();
+    };
+    launcherRestartJobs.set(launcherId, {
+      target_slots: slots,
+      started_at: startedAt,
+      phase: 'restarting',
+      label,
+      action_label: wasStopped ? 'Starting…' : 'Restarting…',
+      detail: wasStopped
+        ? `Starting the engine with ${slotText}…`
+        : `Stopping the old engine before applying ${slotText}…`,
+    });
+    setServerAction(launcherId, 'launcher-restarting');
+    renderAll();
+    try {
+      const started = await api(`/api/external/launchers/${encodeURIComponent(launcherId)}/load?wait=false`, {
+        method: 'POST',
+        body: JSON.stringify({ parallel: slots }),
+        // wait=false returns after the old process stops and the new one is
+        // spawned; it must not turn into an unbounded request.
+        timeoutMs: 60000,
+      });
+      if (!started?.success) throw new Error(started?.error || 'Could not start the launcher');
+      applyJob({
+        phase: 'starting',
+        label: `Starting ${launcherName}`,
+        action_label: 'Starting…',
+        detail: `The new engine process is starting with ${slotText}; waiting for it to answer…`,
+      });
+      await waitForLauncherLoaded(launcherId, slots, applyJob);
+      toast(`${slotText} active on ${launcherId}`);
+    } catch (err) {
+      toast(err.message || 'Could not change the slot count', false);
+    } finally {
+      clearLauncherRestartJob(launcherId);
+      setServerAction(launcherId, null);
+      renderAll();
+      void refreshAfterUnload();
+    }
+  }
+
+  async function loadLauncher(launcherId) {
+    if (!launcherId || isServerBusy(launcherId)) return;
+    const row = externalGpuLoads.find((entry) => String(entry?.launcher_id || '') === String(launcherId));
+    await restartLauncherWithSlots(launcherId, Math.max(1, Number(row?.parallel_slots) || 1));
+  }
+
+  function bindLauncherSlotsPickers(wrap) {
+    if (!wrap) return;
+    wrap.querySelectorAll('select[data-action="launcher-slots-pick"]').forEach((pick) => {
+      if (pick.dataset.launcherSlotsBound === '1') return;
+      pick.dataset.launcherSlotsBound = '1';
+      pick.addEventListener('click', (event) => event.stopPropagation());
+      pick.addEventListener('change', async (event) => {
+        event.stopPropagation();
+        const launcherId = pick.dataset.launcherId || '';
+        if (!launcherId || isServerBusy(launcherId)) return;
+        const slots = parseInt(pick.value || '1', 10);
+        await restartLauncherWithSlots(launcherId, slots);
+      });
+    });
+  }
+
   async function ejectExternalLoad(pid) {
     if (!pid || Number.isNaN(pid)) return;
     const key = `external-${pid}`;
@@ -6516,6 +7088,28 @@
       return;
     }
     window.DFlashSelectTheme?.closeAllMenus?.();
+    const launcherRow = externalGpuLoads.find((row) => (
+      row?.console_engine === true
+      && String(row?.launcher_id || '') === String(serverId)
+    ));
+    if (launcherRow) {
+      setServerAction(serverId, 'ejecting');
+      renderAll();
+      try {
+        await api(`/api/external/launchers/${encodeURIComponent(serverId)}/unload`, {
+          method: 'POST',
+          timeoutMs: 0,
+        });
+        toast(`${launcherRow.title || launcherRow.app_label || 'Engine'} unloaded`);
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        setServerAction(serverId, null);
+        renderAll();
+        void refreshAfterUnload();
+      }
+      return true;
+    }
     const primary = servers.find((s) => s.id === serverId) || allServers.find((s) => s.id === serverId);
     const cards = primary ? loadedRowsForServer(primary) : [];
     const targetPath = entryTargetPath(primary, cards[0] || {});
@@ -6566,6 +7160,14 @@
 
   async function stopServer(serverId) {
     if (!serverId || isServerBusy(serverId)) return;
+    const launcherRow = externalGpuLoads.find((row) => (
+      row?.console_engine === true
+      && String(row?.launcher_id || '') === String(serverId)
+    ));
+    if (launcherRow) {
+      await ejectServer(serverId);
+      return;
+    }
     setServerAction(serverId, 'stopping');
     const label = allServers.find((s) => s.id === serverId)?.label || serverId;
     window.DFlashStatusFeed?.setTransient(`Stopping ${label}…`, { ttlMs: 30000 });

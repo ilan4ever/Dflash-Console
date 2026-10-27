@@ -236,23 +236,95 @@ def _launch_signature(entry: dict[str, Any], launch: dict[str, Any]) -> dict[str
     }
 
 
-def start_embedding_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+def embedding_router_status(api_url: str, *, timeout: float = 2.0) -> dict[str, str] | None:
+    """Return ``{preset_model_id: status}`` for a router embedding engine.
+
+    ``None`` means the listener is not in router mode (a legacy direct
+    ``-m --embedding`` server), so the caller must restart it to get on-demand
+    loading and idle unload.
+    """
+    url = str(api_url or '').strip().rstrip('/') + '/models'
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='replace') or '{}')
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    rows = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None
+    router = False
+    statuses: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        state = row.get('status')
+        if isinstance(state, dict):
+            router = True
+            value = str(state.get('value') or '').strip().lower()
+        else:
+            value = ''
+        model_id = str(row.get('id') or row.get('model') or row.get('name') or '').strip()
+        if model_id:
+            statuses[model_id] = value
+    return statuses if router else None
+
+
+def unload_embedding_models(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Unload the embedding model while keeping the router listener ready."""
     entry = normalize_server(server)
-    port = int(entry.get('port') or 0)
-    if port <= 0 or not entry.get('id'):
-        return {'success': False, 'error': 'invalid embedding server config'}
-    acquired = _acquire_port_boot(port)
-    if acquired is None:
+    api_url = str(entry.get('api_url') or '').strip().rstrip('/')
+    if not api_url:
+        return {'success': False, 'error': 'embedding server has no api_url'}
+    statuses = embedding_router_status(api_url)
+    if statuses is None:
         return {
             'success': False,
-            'error': 'timed out waiting for the model server to finish starting',
-            'port': port,
+            'unloaded': False,
+            'error': 'embedding engine is running in direct mode; stop it to free the GPU',
+            'requires_stop': True,
         }
-    lock, _joined = acquired
-    try:
-        return _start_embedding_server_locked(entry, cfg=cfg)
-    finally:
-        lock.release()
+    loaded = [model_id for model_id, state in statuses.items() if state in {'loaded', 'running'}]
+    if not loaded:
+        return {'success': True, 'unloaded': False, 'models': [], 'listener_ready': True}
+    from core.runtime import unload_model
+
+    unloaded: list[str] = []
+    errors: list[str] = []
+    for model_id in loaded:
+        result = unload_model(api_url=api_url, model_id=model_id)
+        if result.get('success'):
+            unloaded.append(model_id)
+        elif result.get('error'):
+            errors.append(str(result['error']))
+    return {
+        'success': bool(unloaded) and not errors,
+        'unloaded': bool(unloaded),
+        'models': unloaded,
+        'errors': errors or None,
+        'listener_ready': True,
+    }
+
+
+def start_embedding_server(server: dict[str, Any], *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Start the embedding engine's router listener without loading weights.
+
+    The router owns the stable engine port.  It spins up the embedding child on
+    the first ``/v1/embeddings`` request and puts it to sleep after idle time.
+    """
+    from core.server_boot import start_router_listener
+
+    entry = normalize_server(server)
+    if not is_embedding_server(entry):
+        return {'success': False, 'error': 'not an embedding server'}
+    result = start_router_listener(entry, cfg=cfg)
+    if not result.get('success'):
+        return result
+    return {
+        **result,
+        'embedding': True,
+        'router_idle': True,
+        'loaded': False,
+    }
 
 
 def _start_embedding_server_locked(

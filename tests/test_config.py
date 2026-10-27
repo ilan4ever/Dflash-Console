@@ -84,6 +84,28 @@ class ConfigTests(unittest.TestCase):
                 }],
             })
 
+    def test_validate_config_moves_ssh_tunnel_off_engine_port(self):
+        validated = cfg.validate_config({
+            'ui_port': 8900,
+            'servers': [{
+                'id': 'embed',
+                'port': 8901,
+                'host': '127.0.0.1',
+                'profile': 'nomic-embed',
+            }],
+            'remote_nodes': [{
+                'id': 'production',
+                'label': 'Production',
+                'base_url': 'http://127.0.0.1:8901',
+                'ssh_host': 'production',
+                'share_gpu': True,
+            }],
+        })
+
+        node = validated['remote_nodes'][0]
+        self.assertEqual(node['ssh_local_port'], 8990)
+        self.assertEqual(node['base_url'], 'http://127.0.0.1:8990')
+
     def test_config_root_wins_unless_explicit_override_is_set(self):
         with patch.dict('os.environ', {'DFLASH_ROOT': r'C:\env-root'}, clear=False):
             self.assertEqual(
@@ -539,7 +561,7 @@ class ConfigTests(unittest.TestCase):
                 {'id': 'gemma-12b-ar', 'enabled': True, 'port': 8301, 'label': 'Gemma 12B', 'profile': 'generic-ar', 'model_id': 'gemma-4-12b-it-qat'},
                 {'id': 'nomic-embed', 'enabled': True, 'port': 8891, 'label': 'Nomic Embed', 'engine_mode': 'embedding'},
             ],
-        }):
+        }), patch('core.external_models.external_model_entries', return_value=[]):
             result = asyncio.run(list_models(SimpleNamespace(headers={})))
         ids = {m['id'] for m in result['data']}
         # The public gateway list includes both the canonical model id and the

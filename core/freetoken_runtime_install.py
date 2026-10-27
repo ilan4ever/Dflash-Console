@@ -44,18 +44,18 @@ def is_installed() -> bool:
 def install_status() -> dict[str, Any]:
     if is_installed():
         with _STATE_LOCK:
-            if _JOB:
+            if _JOB and str(_JOB.get('status') or '') not in {'installing', 'error'}:
                 _JOB.clear()
     with _STATE_LOCK:
         job = dict(_JOB)
     installed = is_installed()
     status = str(job.get('status') or ('installed' if installed else 'idle'))
-    if installed:
+    if installed and status not in {'installing', 'error'}:
         status = 'installed'
     return {
         'installed': installed,
         'status': status,
-        'error': '' if installed else str(job.get('error') or ''),
+        'error': (str(job.get('error') or '') if status == 'error' else ('' if installed else str(job.get('error') or ''))),
         'started_at': job.get('started_at'),
         'finished_at': job.get('finished_at'),
         'backend': 'wsl',
@@ -64,8 +64,11 @@ def install_status() -> dict[str, Any]:
     }
 
 
-def _install_worker() -> None:
+def _install_worker(*, force: bool = False) -> None:
     started = time.time()
+    if force:
+        _stop_runtime()
+        time.sleep(0.5)
     apply_job_progress(
         _STATE_LOCK,
         _JOB,
@@ -119,7 +122,7 @@ def _install_worker() -> None:
         return
     stop.set()
     if code != 0:
-        detail = '\n'.join(log_tail[-12:]).strip()
+        detail = '\n'.join(log_tail[-40:]).strip()
         apply_job_progress(
             _STATE_LOCK,
             _JOB,
@@ -139,23 +142,33 @@ def _install_worker() -> None:
             'error': '' if installed else 'FreeToken install finished without a manifest',
             'finished_at': time.time(),
         })
+    try:
+        from core.component_versions import invalidate
+
+        invalidate('freetoken')
+    except Exception:
+        pass
 
 
-def start_install(*, backend: str = 'wsl') -> dict[str, Any]:
+def start_install(*, backend: str = 'wsl', force: bool = False) -> dict[str, Any]:
     requested = str(backend or 'wsl').strip().lower()
     if requested not in {'auto', 'wsl'}:
         return {'success': False, 'error': 'FreeToken currently supports WSL installation on Windows only'}
+    busy = False
+    already = False
     with _STATE_LOCK:
-        in_progress = str(_JOB.get('status') or '') == 'installing'
-        already_installed = is_installed()
-        if not in_progress and not already_installed:
+        if str(_JOB.get('status') or '') == 'installing':
+            busy = True
+        elif is_installed() and not force:
+            already = True
+        else:
             _JOB.clear()
             _JOB.update({'status': 'installing', 'progress': 0.0, 'started_at': time.time(), 'backend': 'wsl'})
-    if in_progress:
+    if busy:
         return {'success': False, 'error': 'install already in progress', **install_status()}
-    if already_installed:
+    if already:
         return {'success': True, 'already_installed': True, **install_status()}
-    thread = threading.Thread(target=_install_worker, daemon=True)
+    thread = threading.Thread(target=_install_worker, kwargs={'force': force}, daemon=True)
     thread.start()
     return {'success': True, 'started': True, **install_status()}
 

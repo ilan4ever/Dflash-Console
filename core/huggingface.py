@@ -139,6 +139,8 @@ _pending_loaded = False
 _cleared_ids: set[str] = set()
 _discover_roots_override: list[Path] | None = None
 _disk_scan_at = 0.0
+_incomplete_scan_at = 0.0
+_incomplete_scan_lock = threading.Lock()
 _DISK_SCAN_TTL = 60.0
 _MIN_DISK_FILE_BYTES = 10_000
 _repo_lookup_lock = threading.Lock()
@@ -1846,19 +1848,69 @@ _FILENAME_TAIL_RE = re.compile(
     r'(?:[\s|]+-?\s*|\s+)[^\s/]+\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$',
     re.I,
 )
+_FILE_EXT_RE = re.compile(r'(?i)\.(?:gguf|safetensors|bin|pt|pth|onnx|ggml)\s*$')
+# A pasted GGUF filename ends in the quant (Q6_K, IQ4_XS, Q4_0). That token is
+# not part of the Hugging Face repo id.
+_QUANT_SEGMENT_RE = re.compile(
+    r'(?i)(?:^|(?<=[\s/_-]))(?:ud[-_])?(?:iq\d+(?:[_-][a-z0-9]+)*|q\d+(?:[_-][a-z0-9]+)*)(?=$|[\s/_-])',
+)
+_PRECISION_SEGMENT_RE = re.compile(
+    r'(?i)(?:^|(?<=[\s/_-]))(?:bf16|fp16|fp32|f16|f32)(?=$|[\s/_-])',
+)
 _CLEAN_REPO_RE = re.compile(r'^[\w][\w.-]*/[\w][\w.-]*$')
+# Display names people paste in front of a model, mapped to the Hub account.
+_CREATOR_PREFIXES = (
+    ('lm studio', 'lmstudio-community'),
+    ('the bloke', 'TheBloke'),
+    ('unsloth', 'unsloth'),
+    ('bartowski', 'bartowski'),
+    ('lmstudio', 'lmstudio-community'),
+    ('thebloke', 'TheBloke'),
+    ('mradermacher', 'mradermacher'),
+    ('google', 'google'),
+)
+
+
+def _strip_pasted_quant(text: str) -> str:
+    cleaned = _QUANT_SEGMENT_RE.sub(' ', text)
+    cleaned = _PRECISION_SEGMENT_RE.sub(' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = re.sub(r'[-_\s]+$', '', cleaned)
+    cleaned = re.sub(r'^[-_\s]+', '', cleaned)
+    return cleaned.strip()
+
+
+def _rewrite_creator_prefix(text: str) -> str:
+    lower = text.lower()
+    for prefix, org in _CREATOR_PREFIXES:
+        if not (lower.startswith(prefix + ' ') or lower.startswith(prefix + '/')):
+            continue
+        rest = text[len(prefix):].lstrip(' /')
+        if not rest:
+            return org
+        if text[len(prefix):].startswith('/'):
+            return f'{org}/{rest}'
+        return f'{org} {rest}'
+    return text
 
 
 def normalize_hf_search_query(query: str) -> str:
     """Turn pasted download identifiers into a Hub search string.
 
-    Last-downloads copy often looks like ``org/repo - file.gguf``. Hugging Face
-    has no such repo; strip the filename and keep ``org/repo``.
+    Last-downloads copy often looks like ``org/repo - file.gguf`` or
+    ``Unsloth gemma-4-31B-it-Q6_K``. Hugging Face repos do not include the
+    quant filename, so that suffix is dropped and a known creator name is
+    kept as the account.
     """
     text = str(query or '').replace('\u2013', '-').replace('\u2014', '-').strip()
     text = text.replace('\n', ' ').replace('\t', ' ')
     text = _FILENAME_TAIL_RE.sub('', text).strip(' -|')
+    text = _FILE_EXT_RE.sub('', text).strip()
+    stripped = _strip_pasted_quant(text)
+    if stripped:
+        text = stripped
     text = re.sub(r'\s+', ' ', text).strip()
+    text = _rewrite_creator_prefix(text)
     first = text.split(' ', 1)[0] if text else ''
     # A pasted sentence often keeps the final period: org/repo.
     first = first.rstrip('.,;:!?)]}\'"')
@@ -2040,6 +2092,10 @@ def _lookup_hf_repo_models_uncached(query: str, *, category: str = 'all') -> lis
         add_model(light)
         if str(light.get('id') or '').strip().lower() == normalized:
             return list(found.values())
+    if '/' in query:
+        _org, _name = query.split('/', 1)
+        if _name and not _name.lower().endswith('gguf'):
+            add_model(_fetch_repo_summary_light(f'{_org}/{_name}-GGUF', category=category))
 
     search_terms = []
     if '/' in query:
@@ -2076,26 +2132,29 @@ def _lookup_hf_repo_models_uncached(query: str, *, category: str = 'all') -> lis
 
     models = list(found.values())
     # Enrich only the best match with full detail (README/files) when needed.
-    models.sort(
-        key=lambda row: (
-            0 if str(row.get('id') or '').lower() == normalized else 1,
-            0 if slug and _normalize_repo_slug(str(row.get('id') or '').split('/')[-1]) == slug else 1,
+    query_author = query.split('/')[0].lower() if '/' in query else ''
+
+    def _lookup_sort_key(row: dict[str, Any]) -> tuple[int, int, int, int, int]:
+        repo_id = str(row.get('id') or '').lower()
+        repo_author = repo_id.split('/')[0] if '/' in repo_id else ''
+        repo_slug = _normalize_repo_slug(repo_id.split('/')[-1] if '/' in repo_id else repo_id)
+        close_slug = bool(slug and repo_slug in {slug, f'{slug}-gguf'})
+        return (
+            0 if repo_id == normalized else 1,
+            0 if query_author and repo_author == query_author else 1,
+            0 if close_slug else 1,
+            0 if slug and repo_slug == slug else 1,
             -int(row.get('downloads') or 0),
-        ),
-    )
+        )
+
+    models.sort(key=_lookup_sort_key)
     best_id = str(models[0].get('id') or '').strip() if models else ''
     if best_id and not models[0].get('download_files') and not models[0].get('gguf_files'):
         detail = _cached_model_detail(best_id, category=category)
         if detail.get('success') and isinstance(detail.get('model'), dict):
             found[best_id] = detail['model']
             models = list(found.values())
-            models.sort(
-                key=lambda row: (
-                    0 if str(row.get('id') or '').lower() == normalized else 1,
-                    0 if slug and _normalize_repo_slug(str(row.get('id') or '').split('/')[-1]) == slug else 1,
-                    -int(row.get('downloads') or 0),
-                ),
-            )
+            models.sort(key=_lookup_sort_key)
     return models
 
 
@@ -5665,8 +5724,16 @@ def _discover_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> list[di
     return found
 
 
-def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None) -> None:
+def _merge_incomplete_repo_jobs(cfg: dict[str, Any] | None = None, *, force: bool = False) -> None:
     """Persist discovered incomplete shard folders into the download job table."""
+    global _incomplete_scan_at
+    now = time.time()
+    if not force and _incomplete_scan_at and now - _incomplete_scan_at < 300.0:
+        return
+    with _incomplete_scan_lock:
+        if not force and _incomplete_scan_at and time.time() - _incomplete_scan_at < 300.0:
+            return
+        _incomplete_scan_at = time.time()
     _drop_nested_component_jobs()
     discovered = _discover_incomplete_repo_jobs(cfg)
     if not discovered:
@@ -5862,14 +5929,15 @@ def list_download_jobs(
     active_only: bool = False,
     discover: bool = False,
     console_only: bool = True,
+    fast: bool = False,
 ) -> dict[str, Any]:
     _ensure_download_history_loaded()
-    if not console_only:
+    if not fast and not console_only:
         _merge_disk_download_history(force=discover)
     # Active download views must include resumable shard jobs as well; callers
     # that only want a passive history still avoid the disk scan.
-    if discover or active_only:
-        _merge_incomplete_repo_jobs()
+    if not fast and discover:
+        _merge_incomplete_repo_jobs(force=True)
     with _jobs_lock:
         raw_jobs = [dict(job) for job in _download_jobs.values()]
     jobs = [_enrich_download_job(job) for job in raw_jobs]

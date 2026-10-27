@@ -43,7 +43,7 @@
     void ui?.flush?.();
   }
 
-  const ACTION_COL_MIN_PX = 300;
+  const ACTION_COL_MIN_PX = 280;
 
   function fitActionColumn(table, widths) {
     const next = widths.slice();
@@ -54,17 +54,53 @@
     const total = next.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0) || 1;
     const actionIndex = next.length - 1;
     const actionPx = (next[actionIndex] / total) * available;
-    if (actionPx >= ACTION_COL_MIN_PX) return next;
-    const scale = total / available;
-    const maxAction = available * 0.48 * scale;
-    let need = Math.min((ACTION_COL_MIN_PX - actionPx) * scale, Math.max(0, maxAction - next[actionIndex]));
-    for (let i = 0; i < actionIndex && need > 0.5; i += 1) {
-      const floor = (i === 0 ? 120 : 28) * scale;
-      const spare = Math.max(0, next[i] - floor);
-      const take = Math.min(spare, need);
-      next[i] -= take;
-      next[actionIndex] += take;
-      need -= take;
+    if (actionPx < ACTION_COL_MIN_PX) {
+      const scale = total / available;
+      const maxAction = available * 0.48 * scale;
+      let need = Math.min((ACTION_COL_MIN_PX - actionPx) * scale, Math.max(0, maxAction - next[actionIndex]));
+      for (let i = 0; i < actionIndex && need > 0.5; i += 1) {
+        const floor = colMinWidth(table.querySelectorAll('thead th')[i]) * scale;
+        const spare = Math.max(0, next[i] - floor);
+        const take = Math.min(spare, need);
+        next[i] -= take;
+        next[actionIndex] += take;
+        need -= take;
+      }
+    } else if (total > available + 0.5) {
+      // The model column keeps its full minimum width. Give the action column
+      // only what is left, down to its own minimum; if that still does not fit,
+      // the wrapper scrolls horizontally instead of compressing a model name.
+      const otherTotal = total - next[actionIndex];
+      const targetAction = Math.max(ACTION_COL_MIN_PX, available - otherTotal);
+      if (targetAction < next[actionIndex]) next[actionIndex] = targetAction;
+    }
+    let fittedTotal = next.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+    if (fittedTotal > available + 0.5) {
+      let excess = fittedTotal - available;
+      const actionHeader = table.querySelectorAll('thead th')[actionIndex];
+      const actionFloor = Math.max(132, colMinWidth(actionHeader));
+      const actionSpare = Math.max(0, next[actionIndex] - actionFloor);
+      const takeAction = Math.min(actionSpare, excess);
+      next[actionIndex] -= takeAction;
+      excess -= takeAction;
+
+      // If the action column is already at its floor, trim the model only
+      // down to its configured minimum (still enough for the longest name).
+      const headers = table.querySelectorAll('thead th');
+      const modelFloor = colMinWidth(headers[0]);
+      const modelSpare = Math.max(0, next[0] - modelFloor);
+      const takeModel = Math.min(modelSpare, excess);
+      next[0] -= takeModel;
+      excess -= takeModel;
+
+      // Last, use any spare room in the metadata columns.
+      for (let i = 1; i < actionIndex && excess > 0.5; i += 1) {
+        const floor = colMinWidth(headers[i]);
+        const spare = Math.max(0, next[i] - floor);
+        const take = Math.min(spare, excess);
+        next[i] -= take;
+        excess -= take;
+      }
     }
     return next;
   }
@@ -75,6 +111,12 @@
     if (table) table._dfColWidths = widths.slice();
     const total = fitted.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
     const base = total > 0 ? total : 1;
+    if (table) {
+      // Honor the minimum widths instead of squeezing the Model name into the
+      // available window. The wrapper provides a horizontal scrollbar when
+      // the requested columns genuinely do not fit.
+      table.style.minWidth = `${Math.ceil(total)}px`;
+    }
     colEls.forEach((col, index) => {
       const value = Number.isFinite(fitted[index]) ? fitted[index] : 0;
       col.style.width = `${((value / base) * 100).toFixed(3)}%`;
@@ -122,7 +164,14 @@
   function measureWidths(table, headers) {
     const prevLayout = table.style.tableLayout;
     table.style.tableLayout = 'auto';
-    const widths = headers.map((th) => th.getBoundingClientRect().width);
+    const widths = headers.map((th) => {
+      const measured = Math.round(th.getBoundingClientRect().width);
+      const preferred = defaultWidthFor(th);
+      // Auto layout hands spare space to the widest column. That is not a real
+      // content requirement, especially for Model, so do not let it inflate
+      // the remembered width beyond the column's preferred width.
+      return Math.max(colMinWidth(th), Math.min(measured, preferred));
+    });
     table.style.tableLayout = prevLayout;
     return widths;
   }

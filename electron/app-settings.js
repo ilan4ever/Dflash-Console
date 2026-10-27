@@ -12,6 +12,7 @@ const DEFAULTS = {
   showSplashOnStartup: true,
   notifyOnEngineReady: false,
   allowAutomaticUpdates: true,
+  uiZoomFactor: 1,
   postInstallWelcome: false,
   postInstallSetup: false,
 };

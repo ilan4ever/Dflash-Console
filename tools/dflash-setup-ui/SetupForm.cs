@@ -56,6 +56,11 @@ namespace DFlashConsoleSetup
         private readonly string _version;
         private readonly string _doneFlag;
         private readonly string _packagePath;
+        private readonly string _readyFile;
+        private readonly bool _hasOwnPayload;
+        private readonly long _ownPayloadOffset;
+        private readonly long _ownPayloadLength;
+        private string _ownPayloadExtractRoot;
         private readonly bool _silent;
         private readonly bool _autoInstall;
         private readonly bool _uninstall;
@@ -84,6 +89,8 @@ namespace DFlashConsoleSetup
             {
                 _packagePath = (Environment.GetEnvironmentVariable("DFLASH_SETUP_PACKAGE") ?? "").Trim();
             }
+            _readyFile = GetArgValue(_args, "/ReadyFile=");
+            _hasOwnPayload = TryReadPayloadTrailer(Application.ExecutablePath, out _ownPayloadOffset, out _ownPayloadLength);
             _autoInstall = HasAutoInstallArg(_args)
                 || string.Equals(Environment.GetEnvironmentVariable("DFLASH_SETUP_AUTOINSTALL"), "1", StringComparison.OrdinalIgnoreCase);
             _uninstall = HasArg(_args, "/Uninstall");
@@ -224,6 +231,7 @@ namespace DFlashConsoleSetup
                 ApplyDarkTitleBar();
                 Activate();
                 BringToFront();
+                SignalElevatedReady();
                 if (_uninstall)
                 {
                     await RunUninstallAsync();
@@ -369,7 +377,7 @@ namespace DFlashConsoleSetup
             await RunInstallAsync();
         }
 
-        private bool EnsureInstallAccess()
+        private async Task<bool> EnsureInstallAccessAsync()
         {
             try
             {
@@ -386,37 +394,49 @@ namespace DFlashConsoleSetup
                 // silent in-app update sitting on its progress window forever.
             }
 
+            string readyFile = Path.Combine(
+                Path.GetTempPath(),
+                "dflash-setup-elevated-" + Guid.NewGuid().ToString("N") + ".flag");
+            Process elevated = null;
             try
             {
-                string args = BuildRelaunchArgs();
                 ProcessStartInfo psi = new ProcessStartInfo
                 {
                     FileName = Application.ExecutablePath,
-                    Arguments = args,
+                    Arguments = BuildRelaunchArgs() + " /ReadyFile=\"" + readyFile + "\"",
                     UseShellExecute = true,
                     Verb = "runas"
                 };
-                Process.Start(psi);
-                Close();
-                return false;
+                elevated = Process.Start(psi);
             }
             catch
             {
-                MessageBox.Show(
-                    this,
-                    "Administrator approval is required to install DFlash Console for all users.",
-                    Text,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-                _installStarted = false;
-                SetScopeControlsVisible(true);
-                _barHost.Visible = false;
-                _finish.Text = "Install";
-                _finish.BackColor = Accent;
-                _finish.ForeColor = Color.FromArgb(8, 28, 24);
-                _finish.Cursor = Cursors.Hand;
+                ShowElevationFailed("Windows did not grant administrator rights.");
                 return false;
             }
+
+            // Keep this window on screen while Windows asks for administrator
+            // rights. It closes only after the elevated setup window is shown,
+            // so the desktop never goes empty between the two windows.
+            SetStatus("Waiting for administrator approval…\nThe installation continues right after.");
+            SetProgress(0, true);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(90);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(readyFile))
+                {
+                    try { File.Delete(readyFile); } catch { }
+                    Close();
+                    return false;
+                }
+                bool exited;
+                try { exited = elevated != null && elevated.HasExited; } catch { exited = true; }
+                if (exited) break;
+                await Task.Delay(150);
+            }
+            try { if (File.Exists(readyFile)) File.Delete(readyFile); } catch { }
+            ShowElevationFailed("The administrator prompt was cancelled.");
+            return false;
         }
 
         private string BuildRelaunchArgs()
@@ -642,19 +662,35 @@ namespace DFlashConsoleSetup
         {
             try
             {
-                if (!EnsureInstallAccess()) return;
+                if (!await EnsureInstallAccessAsync()) return;
 
-                if (!string.IsNullOrEmpty(_packagePath))
+                string packagePath = _packagePath;
+                if (_hasOwnPayload && (string.IsNullOrEmpty(packagePath) || IsSamePath(packagePath, Application.ExecutablePath)))
                 {
-                    if (!File.Exists(_packagePath))
-                    {
-                        throw new Exception("Update package not found:\n" + _packagePath);
-                    }
+                    _ownPayloadExtractRoot = Path.Combine(
+                        Path.GetTempPath(),
+                        "DFlash_Setup_" + _version + "_" + Process.GetCurrentProcess().Id);
+                    _payloadRoot = Path.Combine(_ownPayloadExtractRoot, "payload");
+                    _packageExtractRoot = _ownPayloadExtractRoot;
+                    SetStatus("Preparing installation…\nUnpacking the setup package…");
+                    SetProgress(2, true);
+                    packagePath = await Task.Run(() => ExtractOwnPayloadArchive(_ownPayloadExtractRoot));
+                }
+                else if (!string.IsNullOrEmpty(packagePath))
+                {
                     _payloadRoot = _uiRoot + "_payload";
                     _packageExtractRoot = _payloadRoot;
+                }
+
+                if (!string.IsNullOrEmpty(packagePath))
+                {
+                    if (!File.Exists(packagePath))
+                    {
+                        throw new Exception("Update package not found:\n" + packagePath);
+                    }
                     SetStatus("Preparing installation…\nExtracting update package…");
                     SetProgress(2, true);
-                    await Task.Run(() => ExtractPackage(_packagePath, _payloadRoot));
+                    await Task.Run(() => ExtractPackage(packagePath, _payloadRoot));
                     _payloadRoot = ResolvePayloadRoot(_payloadRoot);
                     SetStatus("Package ready. Continuing install…");
                 }
@@ -744,14 +780,18 @@ namespace DFlashConsoleSetup
                 SetProgress(100, false);
                 _finish.Text = "Finish";
                 ApplyFinishReadyStyle();
-                if (!LaunchInstalledApp(firstRun))
+                Process appProcess = LaunchInstalledApp(firstRun);
+                if (appProcess == null)
                 {
                     SetStatus("Installation complete.\nDFlash Console is ready from the Start menu.");
                     _finish.Focus();
                     return;
                 }
                 SetStatus("Installation complete.\nStarting DFlash Console…");
-                await Task.Delay(_silent ? 200 : 600);
+                // Keep this window on screen until the app shows its own window,
+                // so the desktop is never empty between installer and app.
+                await WaitForAppWindowAsync(appProcess);
+                await Task.Delay(_silent ? 120 : 400);
                 Close();
             }
             catch (Exception ex)
@@ -763,6 +803,177 @@ namespace DFlashConsoleSetup
                 SetErrorStatus("Installation failed:\n" + _error);
                 _finish.Text = "Close";
                 ApplyFinishReadyStyle();
+            }
+        }
+
+        private const string PayloadMagic = "DFLASHPL";
+        private const int PayloadTrailerSize = 24;
+
+        /// <summary>
+        /// Reads the trailer this installer writes after its bundled package
+        /// (magic + payload offset + payload length). An Authenticode signature
+        /// can be appended after the payload, so the trailer is searched near
+        /// the end of the file instead of being assumed to sit at EOF.
+        /// </summary>
+        private static bool TryReadPayloadTrailer(string exePath, out long offset, out long length)
+        {
+            offset = 0;
+            length = 0;
+            if (string.IsNullOrEmpty(exePath)) return false;
+            try
+            {
+                using (FileStream stream = new FileStream(exePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    long fileLength = stream.Length;
+                    if (fileLength < PayloadTrailerSize) return false;
+                    int window = (int)Math.Min(fileLength, 2 * 1024 * 1024);
+                    byte[] tail = new byte[window];
+                    stream.Seek(fileLength - window, SeekOrigin.Begin);
+                    int read = 0;
+                    while (read < window)
+                    {
+                        int n = stream.Read(tail, read, window - read);
+                        if (n <= 0) break;
+                        read += n;
+                    }
+                    byte[] magic = System.Text.Encoding.ASCII.GetBytes(PayloadMagic);
+                    for (int i = read - PayloadTrailerSize; i >= 0; i--)
+                    {
+                        bool match = true;
+                        for (int j = 0; j < magic.Length; j++)
+                        {
+                            if (tail[i + j] != magic[j]) { match = false; break; }
+                        }
+                        if (!match) continue;
+                        long payloadOffset = BitConverter.ToInt64(tail, i + 8);
+                        long payloadLength = BitConverter.ToInt64(tail, i + 16);
+                        long trailerPosition = fileLength - window + i;
+                        if (payloadOffset <= 0 || payloadLength <= 0) continue;
+                        if (payloadOffset + payloadLength != trailerPosition) continue;
+                        if (payloadOffset + payloadLength > fileLength) continue;
+                        offset = payloadOffset;
+                        length = payloadLength;
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private string ExtractOwnPayloadArchive(string extractRoot)
+        {
+            Directory.CreateDirectory(extractRoot);
+            string payloadFile = Path.Combine(extractRoot, "payload.7z");
+            using (FileStream source = new FileStream(Application.ExecutablePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (FileStream target = new FileStream(payloadFile, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                source.Seek(_ownPayloadOffset, SeekOrigin.Begin);
+                byte[] buffer = new byte[1024 * 1024];
+                long remaining = _ownPayloadLength;
+                while (remaining > 0)
+                {
+                    int want = (int)Math.Min(buffer.Length, remaining);
+                    int n = source.Read(buffer, 0, want);
+                    if (n <= 0) break;
+                    target.Write(buffer, 0, n);
+                    remaining -= n;
+                }
+            }
+            return payloadFile;
+        }
+
+        private static bool IsSamePath(string left, string right)
+        {
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(left ?? ""),
+                    Path.GetFullPath(right ?? ""),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void CopyUiOnly(string sourcePath, string destPath)
+        {
+            try
+            {
+                long offset;
+                long length;
+                if (!TryReadPayloadTrailer(sourcePath, out offset, out length))
+                {
+                    File.Copy(sourcePath, destPath, true);
+                    return;
+                }
+                string dir = Path.GetDirectoryName(destPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                using (FileStream source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (FileStream target = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    byte[] buffer = new byte[1024 * 1024];
+                    long remaining = offset;
+                    while (remaining > 0)
+                    {
+                        int want = (int)Math.Min(buffer.Length, remaining);
+                        int n = source.Read(buffer, 0, want);
+                        if (n <= 0) break;
+                        target.Write(buffer, 0, n);
+                        remaining -= n;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void SignalElevatedReady()
+        {
+            if (string.IsNullOrEmpty(_readyFile)) return;
+            try
+            {
+                File.WriteAllText(_readyFile, "ready");
+            }
+            catch { }
+        }
+
+        private void ShowElevationFailed(string reason)
+        {
+            _installStarted = false;
+            if (_silent)
+            {
+                _ok = false;
+                SetProgress(0, false);
+                SetErrorStatus("Administrator approval is required to install DFlash Console for all users.\n" + reason);
+                _finish.Text = "Close";
+                ApplyFinishReadyStyle();
+                return;
+            }
+            SetErrorStatus("Administrator approval is required to install DFlash Console for all users.\n" + reason);
+            SetScopeControlsVisible(true);
+            _barHost.Visible = false;
+            _finish.Text = "Install";
+            _finish.BackColor = Accent;
+            _finish.ForeColor = Color.FromArgb(8, 28, 24);
+            _finish.Cursor = Cursors.Hand;
+        }
+
+        private static async Task WaitForAppWindowAsync(Process process)
+        {
+            if (process == null) return;
+            DateTime deadline = DateTime.UtcNow.AddSeconds(45);
+            while (DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    if (process.HasExited) return;
+                    process.Refresh();
+                    if (process.MainWindowHandle != IntPtr.Zero) return;
+                }
+                catch { return; }
+                await Task.Delay(200);
             }
         }
 
@@ -779,7 +990,34 @@ namespace DFlashConsoleSetup
             {
                 if (!string.IsNullOrEmpty(path) && File.Exists(path)) return path;
             }
-            return null;
+            // No 7-Zip installation: use the standalone extractor that travels
+            // inside this installer, so updates never depend on other software.
+            return ExtractEmbeddedSevenZip();
+        }
+
+        private static string ExtractEmbeddedSevenZip()
+        {
+            string resourceName = IntPtr.Size == 4 ? "dflash-7za-x86.exe" : "dflash-7za-x64.exe";
+            string dir = Path.Combine(Path.GetTempPath(), "DFlash_Setup_tools_" + SetupVersion.Value);
+            string target = Path.Combine(dir, resourceName);
+            try
+            {
+                if (File.Exists(target) && new FileInfo(target).Length > 0) return target;
+                Directory.CreateDirectory(dir);
+                using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null) return null;
+                    using (FileStream file = File.Create(target))
+                    {
+                        stream.CopyTo(file);
+                    }
+                }
+                return File.Exists(target) ? target : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void ExtractPackage(string packagePath, string extractRoot)
@@ -879,7 +1117,8 @@ namespace DFlashConsoleSetup
             }
 
             string tempUi = Path.Combine(Path.GetTempPath(), "dflash-setup-ui-uninstall.exe");
-            File.Copy(myPath, tempUi, true);
+            CopyUiOnly(myPath, tempUi);
+            if (!File.Exists(tempUi)) return false;
             string versionFile = Path.Combine(destDir, "install-version.txt");
             if (File.Exists(versionFile))
             {
@@ -904,7 +1143,9 @@ namespace DFlashConsoleSetup
         private void RegisterUninstall(string destExe)
         {
             string uiExe = Path.Combine(_destRoot, "dflash-setup-ui.exe");
-            try { File.Copy(Application.ExecutablePath, uiExe, true); } catch { }
+            // The installer carries the full payload; the uninstaller only needs
+            // the UI part, so copy everything before the appended package.
+            CopyUiOnly(Application.ExecutablePath, uiExe);
             try { File.WriteAllText(Path.Combine(_destRoot, "install-version.txt"), _version); } catch { }
             if (!File.Exists(uiExe)) uiExe = destExe;
 
@@ -1190,14 +1431,14 @@ namespace DFlashConsoleSetup
             }
         }
 
-        private bool LaunchInstalledApp(bool firstRun)
+        private Process LaunchInstalledApp(bool firstRun)
         {
-            if (_appLaunchStarted) return true;
+            if (_appLaunchStarted) return null;
             string destExe = Path.Combine(_destRoot, "DFlash Console.exe");
-            if (!File.Exists(destExe)) return false;
+            if (!File.Exists(destExe)) return null;
             try
             {
-                Process.Start(new ProcessStartInfo
+                Process started = Process.Start(new ProcessStartInfo
                 {
                     FileName = destExe,
                     WorkingDirectory = _destRoot,
@@ -1205,11 +1446,11 @@ namespace DFlashConsoleSetup
                     UseShellExecute = true
                 });
                 _appLaunchStarted = true;
-                return true;
+                return started;
             }
             catch
             {
-                return false;
+                return null;
             }
         }
 
@@ -1417,7 +1658,7 @@ namespace DFlashConsoleSetup
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = "robocopy.exe",
-                Arguments = "\"" + src + "\" \"" + dst + "\" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XF dflash-setup-ui.exe install-version.txt _install.cmd _install.vbs _install-ui.ps1",
+                Arguments = "\"" + src + "\" \"" + dst + "\" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XF setup.exe dflash-setup-ui.exe install-version.txt _install.cmd _install.vbs _install-ui.ps1",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
@@ -1566,7 +1807,7 @@ namespace DFlashConsoleSetup
 
             if (_ok)
             {
-                if (!LaunchInstalledApp(_firstRunLaunch))
+                if (!_appLaunchStarted && LaunchInstalledApp(_firstRunLaunch) == null)
                 {
                     MessageBox.Show(this, "DFlash Console was installed, but could not be started.\nYou can launch it from the Start menu.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;

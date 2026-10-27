@@ -14,6 +14,10 @@ other separately distributed assets.
 Before redistributing a build, review the licenses and notices for:
 
 - Electron, Electron Builder, and their transitive dependencies.
+- The standalone 7-Zip extractor (`7za.exe`, © Igor Pavlov, GNU LGPL with the
+  unRAR restriction) embedded in the Windows setup UI so installers can unpack
+  their own package without requiring 7-Zip on the user's machine. See
+  <https://www.7-zip.org/license.txt>.
 - `static/vendor/` libraries and their bundled notices.
 - `llama-server`, DFlash, Piper, whisper.cpp, CUDA, and other runtime
   binaries or libraries.

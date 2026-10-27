@@ -706,6 +706,17 @@ def _rank_rows(query: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             score += 160
         if tokens and all(_token_in_text(token, slug, _fold(slug)) for token in tokens):
             score += 220
+        # "Unsloth gemma-4-31B-it" should lead with that account's repo, not a
+        # QAT or fine-tune whose name merely contains the same words.
+        parts = needle.split()
+        if len(parts) >= 2:
+            row_author = str(row.get('author') or (repo_id.split('/')[0] if '/' in repo_id else '')).lower()
+            if row_author and row_author == parts[0]:
+                score += 250
+            model_fold = _fold(' '.join(parts[1:]))
+            slug_fold = _fold(slug)
+            if model_fold and slug_fold in {model_fold, f'{model_fold}gguf'}:
+                score += 500
         if folded and folded in _fold(haystack):
             score += 40
         scored.append((max(score, 1), int(row.get('downloads') or 0), row))
@@ -721,7 +732,9 @@ def search_local(
     limit: int = 25,
 ) -> dict[str, Any] | None:
     """Search the on-disk Hub index. None means caller should use live Hugging Face."""
-    needle = str(query or '').strip()
+    from core.huggingface import normalize_hf_search_query
+
+    needle = normalize_hf_search_query(query)
     try:
         with _lock:
             conn = _connect()

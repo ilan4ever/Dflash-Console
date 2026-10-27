@@ -387,6 +387,9 @@ class TransformersRuntimeAdapter:
                 'execution_mode': self.execution_mode,
                 'generated_by': 'core.runtimes.transformers_hf',
             }
+            for key in ('torch_variant', 'package_version'):
+                if existing.get(key):
+                    payload[key] = str(existing.get(key))
             temporary = TF_MANIFEST.with_suffix('.tmp')
             temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
             temporary.replace(TF_MANIFEST)

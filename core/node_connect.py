@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from core.config import load_config
+from core.config import DEFAULT_REMOTE_TUNNEL_PORT, load_config
 from core.remote_nodes import check_remote_node_health
 
 _TAILSCALE_IPV4 = re.compile(r'^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
@@ -172,7 +172,7 @@ def build_connect_wizard(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     config = cfg or load_config()
     ui_port = int(config.get('ui_port') or 8900)
     tailscale = detect_tailscale()
-    local_bind_port = ui_port + 1
+    local_bind_port = DEFAULT_REMOTE_TUNNEL_PORT
     self_url = ''
     if tailscale.get('self_ip'):
         self_url = f'http://{tailscale["self_ip"]}:{ui_port}'

@@ -47,6 +47,7 @@ param(
     [ValidateSet("auto", "none", "low", "medium", "high", "max")]
     [string]$ReasoningEffort = "auto",
     [switch]$RouterMode,
+    [switch]$ModelsAutoload,
     [switch]$NoJinja
 )
 
@@ -159,10 +160,12 @@ if ($RouterMode) {
         "--main-gpu", "$MainGpu",
         "--split-mode", $SplitMode,
         "--models-preset", $ModelsPreset,
-        "--no-models-autoload",
         $(if ($NoJinja) { "--no-jinja" } else { "--jinja" }),
         "--fit", "off"
     )
+    if (-not $ModelsAutoload) {
+        $routerArgs += "--no-models-autoload"
+    }
     if ($KvOffload -eq "off") {
         $routerArgs += "--no-kv-offload"
     } else {

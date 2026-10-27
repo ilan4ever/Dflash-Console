@@ -44,18 +44,18 @@ def is_installed() -> bool:
 def install_status() -> dict[str, Any]:
     if is_installed():
         with _STATE_LOCK:
-            if _JOB:
+            if _JOB and str(_JOB.get('status') or '') not in {'installing', 'error'}:
                 _JOB.clear()
     with _STATE_LOCK:
         job = dict(_JOB)
     installed = is_installed()
     status = str(job.get('status') or ('installed' if installed else 'idle'))
-    if installed:
+    if installed and status not in {'installing', 'error'}:
         status = 'installed'
     return {
         'installed': installed,
         'status': status,
-        'error': '' if installed else str(job.get('error') or ''),
+        'error': (str(job.get('error') or '') if status == 'error' else ('' if installed else str(job.get('error') or ''))),
         'started_at': job.get('started_at'),
         'finished_at': job.get('finished_at'),
         'backend': str(job.get('backend') or ''),
@@ -64,8 +64,11 @@ def install_status() -> dict[str, Any]:
     }
 
 
-def _install_worker(*, backend: str) -> None:
+def _install_worker(*, backend: str, force: bool = False) -> None:
     started = time.time()
+    if force:
+        _stop_runtime()
+        time.sleep(0.5)
     apply_job_progress(
         _STATE_LOCK,
         _JOB,
@@ -120,7 +123,7 @@ def _install_worker(*, backend: str) -> None:
         return
     stop.set()
     if code != 0:
-        detail = '\n'.join(log_tail[-12:]).strip()
+        detail = '\n'.join(log_tail[-40:]).strip()
         apply_job_progress(
             _STATE_LOCK,
             _JOB,
@@ -148,17 +151,30 @@ def _install_worker(*, backend: str) -> None:
             'error': '' if ok else (verify_error or 'install finished but vLLM is not importable yet'),
             'finished_at': time.time(),
         })
+    try:
+        from core.component_versions import invalidate
+
+        invalidate('vllm')
+    except Exception:
+        pass
 
 
-def start_install(*, backend: str = 'auto') -> dict[str, Any]:
+def start_install(*, backend: str = 'auto', force: bool = False) -> dict[str, Any]:
+    busy = False
+    already = False
     with _STATE_LOCK:
         if str(_JOB.get('status') or '') == 'installing':
-            return {'success': False, 'error': 'install already in progress', **install_status()}
-        if is_installed():
-            return {'success': True, 'already_installed': True, **install_status()}
-        _JOB.clear()
-        _JOB.update({'status': 'installing', 'progress': 0.0, 'started_at': time.time(), 'backend': backend})
-    thread = threading.Thread(target=_install_worker, kwargs={'backend': backend}, daemon=True)
+            busy = True
+        elif is_installed() and not force:
+            already = True
+        else:
+            _JOB.clear()
+            _JOB.update({'status': 'installing', 'progress': 0.0, 'started_at': time.time(), 'backend': backend})
+    if busy:
+        return {'success': False, 'error': 'install already in progress', **install_status()}
+    if already:
+        return {'success': True, 'already_installed': True, **install_status()}
+    thread = threading.Thread(target=_install_worker, kwargs={'backend': backend, 'force': force}, daemon=True)
     thread.start()
     return {'success': True, 'started': True, **install_status()}
 

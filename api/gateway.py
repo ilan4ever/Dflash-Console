@@ -466,6 +466,40 @@ async def list_models(request: Request) -> dict[str, Any]:
                 },
             })
     listed_ids = {str(row.get('id') or '').lower() for row in data}
+    # Models another app runs (Strata and apps like it) are advertised too, so a
+    # client can pick one from the list instead of guessing its name.
+    from core.external_models import external_model_entries
+
+    for entry in external_model_entries():
+        public_id = str(entry.get('id') or '').strip()
+        if not public_id or public_id.lower() in listed_ids:
+            continue
+        label = str(entry.get('label') or public_id).strip() or public_id
+        data.append({
+            'id': public_id,
+            'object': 'model',
+            'created': 0,
+            'owned_by': 'dflash-console',
+            'name': label,
+            'context_size': max(2048, int(entry.get('context_size') or 8192)),
+            'meta': {
+                'engine': label,
+                'display_name': label,
+                'external': not bool(entry.get('launcher_id')),
+                'launcher_id': str(entry.get('launcher_id') or ''),
+                'app_source': str(entry.get('app_source') or ''),
+                'api_url': str(entry.get('api_url') or ''),
+                'api_model_id': str(entry.get('api_model_id') or ''),
+                'canonical_id': public_id,
+                'running': bool(entry.get('loaded', True)),
+                'note': (
+                    'Starts through the Console launcher on the first request.'
+                    if entry.get('launcher_id')
+                    else 'Runs in another app; the Console forwards requests to it.'
+                ),
+            },
+        })
+        listed_ids.add(public_id.lower())
     try:
         default_server = default_gateway_chat_server(cfg)
         # Cursor compatibility aliases are useful only when the default local
@@ -771,6 +805,65 @@ async def chat_completions(request: Request) -> Response:
         if isinstance(response, Response):
             response.headers['X-DFlash-Route'] = 'local'
             response.headers['X-DFlash-Server-Id'] = sid
+        return response
+    from core.external_models import resolve_external_model_entry
+
+    external = resolve_external_model_entry(model)
+    if external is not None:
+        external_id = str(external.get('id') or '')
+        launcher_id = str(external.get('launcher_id') or '').strip()
+        if launcher_id and not external.get('loaded'):
+            # A registered launcher (Strata) is a Console-managed engine.  An
+            # external app asking for its model starts it here, just like a
+            # normal JIT load, instead of getting an empty model list.  Run the
+            # blocking launcher wait off the gateway event loop.
+            import asyncio
+            from core.external_launchers import start as start_launcher
+
+            started = await asyncio.to_thread(
+                start_launcher,
+                launcher_id,
+                wait=True,
+                client_label=client_label,
+            )
+            if not started.get('success'):
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        'error': 'launcher_start_failed',
+                        'message': str(
+                            started.get('error')
+                            or f'{launcher_id} did not start'
+                        ),
+                        'launcher_id': launcher_id,
+                    },
+                )
+            from core.external_models import forget_external_models
+
+            forget_external_models()
+            external = resolve_external_model_entry(model) or external
+            external_id = str(external.get('id') or external_id)
+        record_gateway_route(
+            model=model,
+            route='local',
+            target=external_id,
+            client=client_label,
+            note=str(external.get('api_url') or ''),
+        )
+        body: bytes | None = None
+        if isinstance(payload, dict):
+            payload['model'] = str(external.get('api_model_id') or model)
+            try:
+                body = json.dumps(payload).encode('utf-8')
+            except Exception:
+                body = None
+        if body is None:
+            body = await request.body()
+        url = f"{str(external.get('api_url') or '').rstrip('/')}/chat/completions"
+        response = await _forward_chat(request, url, body)
+        if isinstance(response, Response):
+            response.headers['X-DFlash-Route'] = 'external'
+            response.headers['X-DFlash-External'] = external_id
         return response
     server, upstream = await _resolve_chat_target(cfg, model)
     sid = str(server.get('id') or '')

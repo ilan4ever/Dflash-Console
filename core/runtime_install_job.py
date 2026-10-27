@@ -177,7 +177,7 @@ def start_progress_heartbeat(
                 creep = max(creep, min(98.5, current + 0.35))
             msg = ''
             if current >= 90.0 and creep > current:
-                msg = 'Installing large packages in WSL — can take 10+ minutes'
+                msg = 'Installing large packages — can take 10+ minutes'
             apply_job_progress(lock, job, progress=creep, message=msg)
 
     thread = threading.Thread(target=beat, daemon=True, name='runtime-install-heartbeat')

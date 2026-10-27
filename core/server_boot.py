@@ -220,12 +220,50 @@ def managed_process_identity(pid: int) -> bool:
     return any(token in hay for token in tokens)
 
 
+_SSH_FORWARD_PROCESS_NAMES = frozenset({'ssh.exe', 'plink.exe', 'putty.exe'})
+
+
+def _is_ssh_forward_process(pid: int) -> bool:
+    """Return whether a listener process is an SSH local/remote forward."""
+    if sys.platform != 'win32':
+        return False
+    details = _windows_process_details(pid)
+    if details is None:
+        return False
+    name, command = details
+    process_name = Path(str(name or '').replace('\\', '/')).name.lower()
+    if process_name not in _SSH_FORWARD_PROCESS_NAMES:
+        return False
+    tokens = str(command or '').replace('"', ' ').lower().split()
+    return any(
+        token in {'-l', '-r', '-d', '--localforward', '--remote-forward', '--dynamic-forward'}
+        or token.startswith(('-l', '-r', '-d'))
+        for token in tokens
+    )
+
+
+def listener_is_ssh_tunnel(host: str, port: int) -> bool:
+    """True when an SSH port forward, rather than an engine, owns ``port``."""
+    if int(port or 0) <= 0 or not _tcp_port_open(host, port):
+        return False
+    pid = listener_pid(host, port)
+    return pid is not None and _is_ssh_forward_process(pid)
+
+
 def listener_is_managed_engine(host: str, port: int) -> bool:
     """True when the process listening on ``port`` is a Console llama/runtime engine."""
     if int(port or 0) <= 0:
         return False
     if not _tcp_port_open(host, port):
         return False
+    pid = listener_pid(host, port)
+    # A forwarded production llama API can look exactly like a local
+    # llama-server over HTTP. Process identity must win for SSH forwards, or
+    # the Console will adopt the remote engine as one of its local engines.
+    if pid is not None and _is_ssh_forward_process(pid):
+        return False
+    if pid is not None and managed_process_identity(pid):
+        return True
     # Ask the engine itself first. A Windows process lookup starts PowerShell
     # and can sit for many seconds even when the model is already loaded.
     try:
@@ -236,9 +274,6 @@ def listener_is_managed_engine(host: str, port: int) -> bool:
         api_url = f'http://{host}:{int(port)}/v1'
         if _is_llama_compatible_models_payload(_fetch_models_payload(api_url)):
             return True
-    pid = listener_pid(host, port)
-    if pid is not None and managed_process_identity(pid):
-        return True
     return False
 
 
@@ -269,6 +304,16 @@ def ensure_managed_listen_port(
 
     if not _tcp_port_open(host, port):
         return {'success': True, 'port': port, 'reason': 'free'}
+    if listener_is_ssh_tunnel(host, port):
+        return {
+            'success': False,
+            'error': (
+                f'port {port} is occupied by an SSH tunnel. '
+                'Close that local forward or choose a different tunnel port before starting this engine.'
+            ),
+            'port': port,
+            'reason': 'ssh_tunnel',
+        }
     if listener_is_managed_engine(host, port):
         return {'success': True, 'port': port, 'reason': 'ours'}
 
@@ -348,6 +393,13 @@ def adopt_running_engine(server: dict[str, Any], *, cfg: dict[str, Any] | None =
         return {'success': False, 'adopted': False, 'error': 'invalid port'}
     if not _tcp_port_open(host, port):
         return {'success': False, 'adopted': False, 'port': port}
+    if listener_is_ssh_tunnel(host, port):
+        return {
+            'success': False,
+            'adopted': False,
+            'port': port,
+            'error': 'configured port is occupied by an SSH tunnel, not a local engine',
+        }
 
     api_url = str(entry.get('api_url') or '').strip()
     models = _fetch_models_payload(api_url) if api_url else []
@@ -581,6 +633,11 @@ def _spawn_router(
     reasoning_effort = str(signature.get('reasoning_effort') or 'auto')
     if reasoning_effort != 'auto':
         cmd.extend(['-ReasoningEffort', reasoning_effort])
+    if is_embedding_server(entry):
+        # Direct embedding clients call the engine port without going through
+        # the Console proxy.  Let the router load the model itself on the first
+        # /v1/embeddings request, and sleep after the idle timeout.
+        cmd.append('-ModelsAutoload')
     if not profile_uses_jinja(entry.get('profile')):
         cmd.append('-NoJinja')
 
@@ -1774,12 +1831,7 @@ def load_server_checkpoint(
     skip_memory_check: bool = False,
 ) -> dict[str, Any]:
     """Ensure router is listening, then load the configured or ad-hoc checkpoint."""
-    from core.config import is_embedding_server
-    from core.embedding_server import start_embedding_server
-
     entry = normalize_server(server)
-    if is_embedding_server(entry):
-        return start_embedding_server(entry, cfg=cfg)
     stack_check = validate_dflash_stack(entry, cfg=cfg, model_path=model_path)
     if not stack_check.get('valid'):
         return stack_check
@@ -2311,7 +2363,35 @@ def reload_server(
 
     from core.runtime import stop_server
 
-    result = stop_server(port=int(entry['port']), host=str(entry['host']), api_url=entry.get('api_url'))
-    if not result.get('success'):
-        return result
-    return start_server(entry, cfg=cfg)
+    port = int(entry['port'] or 0)
+    from core.load_activity import active_model_loads
+
+    if any(str(row.get('server_id') or '') == str(entry.get('id') or '') for row in active_model_loads()):
+        return {
+            'success': True,
+            'starting': True,
+            'already_starting': True,
+            'port': port,
+            'message': 'a model load is already in progress; this reload was not applied',
+        }
+    lock = _port_lock(port) if port > 0 else None
+    if lock is not None and not lock.acquire(blocking=False):
+        # A model load/boot already owns this port. Stopping it here restarted
+        # the same 31B load several times when OneVoice sent a reload while its
+        # chat request was still bringing the engine up. Leave the working load
+        # alone and report that it is already starting.
+        return {
+            'success': True,
+            'starting': True,
+            'already_starting': True,
+            'port': port,
+            'message': 'a model load is already in progress; this reload was not applied',
+        }
+    try:
+        result = stop_server(port=port, host=str(entry['host']), api_url=entry.get('api_url'))
+        if not result.get('success'):
+            return result
+        return start_server(entry, cfg=cfg)
+    finally:
+        if lock is not None:
+            lock.release()

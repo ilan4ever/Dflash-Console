@@ -23,7 +23,8 @@ function Write-VllmManifest {
         [string]$InstallBackend,
         [string]$PythonPath = '',
         [string]$WslDistro = '',
-        [string]$WslPython = ''
+        [string]$WslPython = '',
+        [string]$PackageVersion = ''
     )
     $manifest = @{
         version = 1
@@ -34,6 +35,7 @@ function Write-VllmManifest {
         python = $PythonPath
         wsl_distro = $WslDistro
         wsl_python = $WslPython
+        package_version = $PackageVersion
         generated_by = 'scripts/install-vllm-runtime.ps1'
     } | ConvertTo-Json -Depth 4
     Write-Utf8JsonFile -Path $manifestPath -Content $manifest
@@ -79,7 +81,8 @@ function Install-NativeVllm {
     if (-not (Test-NativeVllm)) {
         throw 'No official Windows wheel for vLLM. Switching to WSL.'
     }
-    Write-VllmManifest -InstallBackend 'native' -PythonPath $venvPy
+    $packageVersion = (& $venvPy -c "import vllm; print(vllm.__version__)" 2>$null | Select-Object -Last 1)
+    Write-VllmManifest -InstallBackend 'native' -PythonPath $venvPy -PackageVersion ([string]$packageVersion).Trim()
     Write-Host 'DFLASH_PROGRESS 95 vLLM runtime installed natively'
     Write-Host "vLLM runtime installed natively at $bundleDest"
 }
@@ -141,7 +144,8 @@ function Install-WslVllm {
     if (-not (Test-WslVllm -Distro $distro -WslPython $wslPython.Trim())) {
         throw 'vLLM installed in WSL but import still failed. Check NVIDIA drivers and WSL GPU passthrough.'
     }
-    Write-VllmManifest -InstallBackend 'wsl' -WslDistro $distro -WslPython $wslPython.Trim()
+    $packageVersion = (& wsl -d $distro -- $wslPython.Trim() -c "import vllm; print(vllm.__version__)" 2>$null | Select-Object -Last 1)
+    Write-VllmManifest -InstallBackend 'wsl' -WslDistro $distro -WslPython $wslPython.Trim() -PackageVersion ([string]$packageVersion).Trim()
     Write-Host "DFLASH_PROGRESS 95 vLLM runtime installed in WSL ($distro)"
     Write-Host "vLLM runtime installed in WSL ($distro)"
 }

@@ -73,8 +73,9 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 }
 $ErrorActionPreference = 'Continue'
 try {
-    & wsl -d $selectedDistro -- $wslFt --version 2>&1 | ForEach-Object { Write-Host ([string]$_) }
+    $ftVersionOutput = @(& wsl -d $selectedDistro -- $wslFt --version 2>&1)
     $ftExit = $LASTEXITCODE
+    foreach ($line in $ftVersionOutput) { Write-Host ([string]$line) }
 } finally {
     $ErrorActionPreference = $prevPref
     if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
@@ -82,6 +83,10 @@ try {
     }
 }
 if ($ftExit -ne 0) {    throw 'FreeToken was installed, but its ft command check failed. Verify the NVIDIA driver and WSL CUDA passthrough.'
+}
+$ftVersion = ''
+foreach ($line in @($ftVersionOutput)) {
+    if (([string]$line) -match '([0-9]+\.[0-9]+(?:\.[0-9]+)?)') { $ftVersion = $Matches[1] }
 }
 
 $manifest = @{
@@ -93,6 +98,7 @@ $manifest = @{
     wsl_distro = $selectedDistro
     wsl_python = $wslPython
     wsl_ft = $wslFt
+    package_version = $ftVersion
     generated_by = 'scripts/install-freetoken-runtime.ps1'
 } | ConvertTo-Json -Depth 4
 Write-Utf8JsonFile -Path $manifestPath -Content $manifest

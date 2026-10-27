@@ -738,6 +738,8 @@ class FreeTokenRuntimeAdapter:
             'wsl_ft': str(existing.get('wsl_ft') or ''),
             'generated_by': 'core.runtimes.freetoken',
         }
+        if existing.get('package_version'):
+            payload['package_version'] = str(existing.get('package_version'))
         _write_json(FREETOKEN_MANIFEST, payload)
         return FREETOKEN_MANIFEST
 

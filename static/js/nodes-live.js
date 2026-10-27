@@ -208,7 +208,7 @@
 
   function renderSshPanel() {
     const uiPort = Number(connectWizard?.ui_port || 8900);
-    const bindPort = Number(connectWizard?.ssh?.default_local_bind_port || uiPort + 1);
+    const bindPort = Number(connectWizard?.ssh?.default_local_bind_port || 8990);
     const reachActive = connectSshScenario === 'reach_remote';
     return `
       <button class="lm-btn ghost small" type="button" data-connect-back>← Back</button>
@@ -307,7 +307,7 @@
     if (connectMethod !== 'ssh') return;
     const user = document.getElementById('nodeConnectSshUser')?.value?.trim() || 'user';
     const host = document.getElementById('nodeConnectSshHost')?.value?.trim() || '';
-    const localPort = Number(document.getElementById('nodeConnectLocalPort')?.value || connectWizard?.ssh?.default_local_bind_port || 8901);
+    const localPort = Number(document.getElementById('nodeConnectLocalPort')?.value || connectWizard?.ssh?.default_local_bind_port || 8990);
     const remotePort = Number(document.getElementById('nodeConnectRemotePort')?.value || connectWizard?.ui_port || 8900);
     if (!host) return;
     try {
@@ -419,7 +419,7 @@
       };
       if (connectMethod === 'ssh' && connectSshScenario === 'reach_remote' && sshDestination) {
         body.ssh_host = sshDestination;
-        body.ssh_local_port = Number(document.getElementById('nodeConnectLocalPort')?.value || 8901);
+        body.ssh_local_port = Number(document.getElementById('nodeConnectLocalPort')?.value || 8990);
         body.ssh_remote_port = Number(document.getElementById('nodeConnectRemotePort')?.value || 8900);
       }
       await api('/api/nodes', {

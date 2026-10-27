@@ -83,6 +83,47 @@ function Start-Relaunch {
     return $false
 }
 
+function Test-DflashPayloadInstaller {
+    param([string]$Path)
+    # New installers are the branded setup UI itself with the package appended
+    # (magic + payload offset + payload length, searched near the end because a
+    # code signature can be added after the payload).
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $length = $stream.Length
+            if ($length -lt 24) { return $false }
+            $window = [int][Math]::Min($length, 2097152)
+            $buffer = New-Object byte[] $window
+            $stream.Seek($length - $window, [IO.SeekOrigin]::Begin) | Out-Null
+            $read = 0
+            while ($read -lt $window) {
+                $n = $stream.Read($buffer, $read, $window - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+            $magic = [Text.Encoding]::ASCII.GetBytes('DFLASHPL')
+            for ($i = $read - 24; $i -ge 0; $i--) {
+                $match = $true
+                for ($j = 0; $j -lt 8; $j++) {
+                    if ($buffer[$i + $j] -ne $magic[$j]) { $match = $false; break }
+                }
+                if (-not $match) { continue }
+                $offset = [BitConverter]::ToInt64($buffer, $i + 8)
+                $payloadLength = [BitConverter]::ToInt64($buffer, $i + 16)
+                if ($offset -le 0 -or $payloadLength -le 0) { continue }
+                if (($offset + $payloadLength) -ne ($length - $window + $i)) { continue }
+                return $true
+            }
+            return $false
+        } finally {
+            $stream.Dispose()
+        }
+    } catch {
+        return $false
+    }
+}
+
 function Start-UpdateInstaller {
     param(
         [string]$Path,
@@ -104,11 +145,18 @@ function Start-UpdateInstaller {
             Write-HelperLog "No install at $InstallRoot — setup UI will ask for scope"
         }
     }
-    # The SFX keeps the branded setup UI at its root as setup.exe (7zS2.sfx
-    # launches the first match of start/run/install/setup/*.exe). Older
-    # packages used dflash-setup-ui.exe, so accept both names; extracting only
-    # the old name failed on every update and silently fell back to running the
-    # whole SFX, which lost /AutoInstall and showed the manual scope dialog.
+    # Self-contained installers show their window immediately, so run them as
+    # they are. Unpacking a wrapper first used to leave the desktop empty for
+    # many seconds before anything appeared.
+    if (Test-DflashPayloadInstaller -Path $Path) {
+        Write-HelperLog 'Installer carries its own package; launching it directly (instant window)'
+        return Start-Process -FilePath $Path -ArgumentList $setupArgs -PassThru
+    }
+    # Older releases shipped a 7z SFX that kept the branded setup UI at its
+    # root as setup.exe (7zS2.sfx launches the first match of
+    # start/run/install/setup/*.exe). Those artifacts are still handled here:
+    # extract the UI and run it with /AutoInstall. Newer self-contained
+    # installers return earlier and never reach this path.
     $bootstrapNames = @('setup.exe', 'dflash-setup-ui.exe')
     $sevenZip = Resolve-SevenZipExe
     if ($sevenZip) {

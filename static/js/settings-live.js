@@ -1260,12 +1260,25 @@
     const text = String(raw || '').replace(/\s+/g, ' ').trim();
     if (!text) return 'Install failed — try again.';
     const noise = /CategoryInfo|FullyQualifiedErrorId|NativeCommandError|At C:\\|char:\d+/i;
+    const errorLike = /error|failed|denied|no matching|cannot|exception|not found/i;
     const parts = String(raw || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const useful = parts.filter((line) => !noise.test(line));
-    const pick = useful.length ? useful[useful.length - 1] : text;
+    const pickedError = useful.find((line) => errorLike.test(line));
+    const pick = pickedError || (useful.length ? useful[useful.length - 1] : text);
     const cleaned = pick.replace(/\s+/g, ' ').trim();
     if (cleaned.length <= 220) return cleaned;
     return `${cleaned.slice(0, 217)}…`;
+  }
+
+  function componentProgressHtml(row) {
+    if (String(row?.status || '') !== 'installing') return '';
+    const raw = Number(row?.install_progress);
+    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+    const message = String(row?.install_message || row?.log_line || 'Downloading and installing…');
+    return `<div class="lm-component-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}">
+      <div class="lm-component-progress-track"><div class="lm-component-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      <div class="lm-component-progress-meta"><span>${escapeHtml(message)}</span><strong>${Math.round(pct)}%</strong></div>
+    </div>`;
   }
 
   function componentStatusLine(row) {
@@ -1274,15 +1287,37 @@
       if (row?.installed) return 'Part of this DFlash Console install — update via app releases, not uninstall here.';
       return 'Expected bundle missing — repair by reinstalling DFlash Console.';
     }
+    if (status === 'update_available') {
+      const installed = String(row?.installed_version || '').trim();
+      const latest = String(row?.latest_version || '').trim();
+      if (installed && latest) return `Update available: ${installed} → ${latest}. Click Update / repair.`;
+      return 'A newer download is available — click Update / repair.';
+    }
     if (status === 'installed') return 'Ready — pick this engine on Engines, Models, or Playground, then Load.';
     if (status === 'installing') {
       const pct = row?.install_progress != null ? ` (${Math.round(Number(row.install_progress))}%)` : '';
       return `Downloading and installing…${pct}`;
     }
-    if (status === 'update_available') return 'A newer download is available — click Update / repair.';
     if (status === 'error') return formatInstallError(row?.install_error);
     if (status === 'not_installed') return 'Not on this PC yet — click Install to download.';
     return '—';
+  }
+
+  function componentVersionHtml(row) {
+    if (row?.install_mode !== 'on_demand') {
+      const version = String(row?.installed_version || '').trim();
+      return version ? `<span class="lm-component-version is-bundled">included · v${escapeHtml(version)}</span>` : '';
+    }
+    const installed = String(row?.installed_version || '').trim();
+    const latest = String(row?.latest_version || '').trim();
+    const pending = Boolean(row?.version_update_available);
+    if (pending && latest) {
+      const from = installed ? `v${escapeHtml(installed)} → ` : '';
+      return `<span class="lm-component-version is-new">${from}<strong>v${escapeHtml(latest)}</strong></span>`;
+    }
+    if (installed) return `<span class="lm-component-version">v${escapeHtml(installed)}</span>`;
+    if (latest) return `<span class="lm-component-version">latest v${escapeHtml(latest)}</span>`;
+    return '';
   }
 
   function componentCardKindLabel(row) {
@@ -1307,12 +1342,13 @@
       <div class="lm-component-card-head">
         <div class="lm-component-card-identity">
           <span class="lm-component-card-kind">${escapeHtml(kind)}</span>
-          <strong class="lm-component-card-title">${escapeHtml(row.label || row.id)}</strong>
+          <strong class="lm-component-card-title">${escapeHtml(row.label || row.id)}${componentVersionHtml(row)}</strong>
         </div>
         ${componentStatusTag(row)}
       </div>
       <p class="lm-setting-desc lm-component-card-desc">${escapeHtml(row.description || '')}</p>
       <p class="lm-component-card-status">${escapeHtml(componentStatusLine(row))}</p>
+      ${componentProgressHtml(row)}
       ${actions}
     </article>`;
   }
@@ -1369,21 +1405,25 @@
     const disabled = row?.status === 'installing';
     const label = row?.status === 'update_available' || row?.installed ? 'Update / repair' : 'Install';
     if (rid === 'vllm') {
+      const backend = String(row?.manifest?.backend || 'auto').toLowerCase();
+      const current = ['native', 'wsl'].includes(backend) ? backend : 'auto';
       return `<div class="lm-setting-actions">
         <select class="lm-select small" data-component-option="backend" data-component-id="${escapeHtml(rid)}" title="Install path">
-          <option value="auto" selected>Auto (Windows, then WSL)</option>
-          <option value="native">Windows only</option>
-          <option value="wsl">WSL only</option>
+          <option value="auto"${current === 'auto' ? ' selected' : ''}>Auto (Windows, then WSL)</option>
+          <option value="native"${current === 'native' ? ' selected' : ''}>Windows only</option>
+          <option value="wsl"${current === 'wsl' ? ' selected' : ''}>WSL only</option>
         </select>
         <button class="lm-btn primary small" type="button" data-action="component-install" data-component-id="${escapeHtml(rid)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>
       </div>`;
     }
     if (rid === 'transformers') {
+      const variant = String(row?.manifest?.torch_variant || 'auto').toLowerCase();
+      const current = ['cuda', 'cpu'].includes(variant) ? variant : 'auto';
       return `<div class="lm-setting-actions">
         <select class="lm-select small" data-component-option="torch_variant" data-component-id="${escapeHtml(rid)}" title="PyTorch build">
-          <option value="auto" selected>Auto (GPU if available)</option>
-          <option value="cuda">CUDA</option>
-          <option value="cpu">CPU only</option>
+          <option value="auto"${current === 'auto' ? ' selected' : ''}>Auto (GPU if available)</option>
+          <option value="cuda"${current === 'cuda' ? ' selected' : ''}>CUDA</option>
+          <option value="cpu"${current === 'cpu' ? ' selected' : ''}>CPU only</option>
         </select>
         <button class="lm-btn primary small" type="button" data-action="component-install" data-component-id="${escapeHtml(rid)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>
       </div>`;
@@ -1478,10 +1518,21 @@
         renderComponentsDownloads(data?.active_downloads);
         renderComponentsAttentionBanner(data);
         updateComponentsNavBadge(data);
+        const autoToggle = document.getElementById('componentsAutoUpdate');
+        if (autoToggle) autoToggle.checked = data?.auto_update_components === true;
+        const meta = document.getElementById('componentsVersionMeta');
+        if (meta) {
+          const checkedAt = Number(data?.version_checked_at || 0);
+          const when = checkedAt ? new Date(checkedAt * 1000).toLocaleTimeString() : 'not yet checked';
+          const pending = data?.version_check_pending ? ' · checking in background…' : '';
+          meta.textContent = `Installed and PyPI versions · ${when}${pending} · ${data?.auto_update_components ? 'automatic updates on' : 'automatic updates off'}.`;
+        }
+        const versionError = document.getElementById('componentsVersionError');
+        if (versionError) versionError.textContent = String(data?.version_check_error || '');
         const installing = (data?.components || []).some((row) => row?.status === 'installing');
-        if (installing) startComponentsPolling();
-        else if (!Number(data?.active_download_count || 0)) stopComponentsPolling();
-        else startComponentsPolling();
+        const pending = Boolean(data?.version_check_pending);
+        if (installing || pending || Number(data?.active_download_count || 0)) startComponentsPolling();
+        else stopComponentsPolling();
       } catch (err) {
         if (!quiet) {
           listEl.innerHTML = `<p class="lm-setting-desc lm-settings-load-err">${escapeHtml(err.message || 'Could not load components')}</p>`;
@@ -1494,13 +1545,54 @@
     return componentsRefreshInFlight;
   }
 
+  async function saveComponentsAutoUpdate(enabled) {
+    const toggle = document.getElementById('componentsAutoUpdate');
+    if (toggle) toggle.disabled = true;
+    try {
+      await api('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_update_components: Boolean(enabled) }),
+        timeoutMs: 10000,
+      });
+      toast(enabled ? 'Automatic engine updates enabled' : 'Automatic engine updates disabled');
+      if (enabled) await checkComponentsNow();
+      else await refreshComponentsPanel({ quiet: true });
+    } catch (err) {
+      toast(err.message || 'Could not save the engine update setting', false);
+      if (toggle) toggle.checked = !enabled;
+    } finally {
+      if (toggle) toggle.disabled = false;
+    }
+  }
+
+  async function checkComponentsNow() {
+    const button = document.getElementById('componentsCheckUpdatesBtn');
+    if (button) button.disabled = true;
+    try {
+      const data = await api('/api/components/check-updates', { method: 'POST', timeoutMs: 120000 });
+      renderComponentsList(data?.components);
+      renderComponentsDownloads(data?.active_downloads);
+      renderComponentsAttentionBanner(data);
+      updateComponentsNavBadge(data);
+      const auto = data?.auto_update || {};
+      if (auto?.started) toast(`Update started for ${auto.runtime_id}`);
+      else toast('Engine versions checked');
+      void refreshComponentsPanel({ quiet: true });
+    } catch (err) {
+      toast(err.message || 'Could not check engine updates', false);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function installComponent(runtimeId) {
     const rid = String(runtimeId || '').trim().toLowerCase();
     if (!rid) return;
     const btn = document.querySelector(`[data-action="component-install"][data-component-id="${rid}"]`);
     if (btn) btn.disabled = true;
     try {
-      const body = {};
+      const body = { force: true };
       if (rid === 'vllm') {
         const pick = document.querySelector(`[data-component-option="backend"][data-component-id="${rid}"]`);
         body.backend = pick?.value || 'auto';
@@ -1519,7 +1611,7 @@
         timeoutMs: 15000,
       });
       toast(`${rid} install started`);
-      void refreshComponentsPanel();
+      void refreshComponentsPanel({ quiet: true });
     } catch (err) {
       toast(err.message || 'Could not start install', false);
       if (btn) btn.disabled = false;
@@ -2901,6 +2993,12 @@
     });
     document.getElementById('llamaSettingsPick')?.addEventListener('change', () => {
       renderGatewayPanel();
+    });
+    document.getElementById('componentsAutoUpdate')?.addEventListener('change', (event) => {
+      void saveComponentsAutoUpdate(event.target.checked);
+    });
+    document.getElementById('componentsCheckUpdatesBtn')?.addEventListener('click', () => {
+      void checkComponentsNow();
     });
     bindApiProviderUi();
   }

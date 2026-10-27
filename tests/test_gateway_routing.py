@@ -24,6 +24,16 @@ def _request():
     return SimpleNamespace(headers={})
 
 
+@pytest.fixture(autouse=True)
+def _no_external_models(monkeypatch: pytest.MonkeyPatch):
+    """Keep the model list independent of whatever runs on this PC.
+
+    The gateway also lists models that other apps run (Strata and like apps);
+    those depend on the machine, so these tests opt out of them.
+    """
+    monkeypatch.setattr('core.external_models.external_model_entries', lambda **_kwargs: [])
+
+
 def _cfg() -> dict:
     return {
         'ui_port': 8900,

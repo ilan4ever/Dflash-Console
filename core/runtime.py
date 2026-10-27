@@ -54,6 +54,8 @@ from core.server_boot import (
     clear_server_tracking,
     dflash_live_launch_state,
     get_started_launch,
+    listener_is_managed_engine,
+    listener_is_ssh_tunnel,
     managed_process_identity,
     terminate_started_process,
     wait_for_port_closed,
@@ -831,8 +833,21 @@ def _build_embedding_server_status(
     gpu_display = format_gpu_assignment(str(entry.get('gpu_device') or 'auto'), launch, gpus)
     configured_model_id = str(entry.get('model_id') or '').strip()
     port_open = tcp_port_open(host, port) if port > 0 else False
+    listener_managed = (
+        listener_is_managed_engine(host, port)
+        if port_open
+        else False
+    )
+    port_conflict = port_open and not listener_managed
+    port_owner = (
+        'ssh_tunnel'
+        if port_conflict and listener_is_ssh_tunnel(host, port)
+        else 'foreign'
+        if port_conflict
+        else ''
+    )
     engine_on = entry.get('engine_on') is True
-    running = port_open
+    running = port_open and listener_managed
     healthy = False
     loaded_models: list[str] = []
     if running:
@@ -844,7 +859,13 @@ def _build_embedding_server_status(
     from core.load_progress import boot_failure_message
 
     boot_error = boot_failure_message(log_lines)
-    active_boot = is_active_boot(log_lines)
+    if port_conflict:
+        owner = 'SSH tunnel' if port_owner == 'ssh_tunnel' else 'another local process'
+        boot_error = (
+            f'Configured embedding port {port} is occupied by {owner}; '
+            'stop the port forward before starting this engine.'
+        )
+    active_boot = is_active_boot(log_lines) if not port_conflict else False
     load_progress = parse_load_progress(log_lines) if active_boot else None
     booting = running and not healthy and active_boot and not boot_error
     status = 'stopped'
@@ -1016,22 +1037,9 @@ def _build_embedding_server_status(
     active_model_id = loaded_models[0] if loaded_models else configured_model_id
     started = get_started_launch(port)
 
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-    from core.inference_stats import fetch_inference_stats, get_cached_inference_stats
-
+    # Embedding routers autoload their model to answer /slots, so a token-stats
+    # poll would defeat idle unload. Embeddings have no chat counters anyway.
     inference_stats: dict[str, Any] = {}
-    if healthy and api_url:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(
-                fetch_inference_stats,
-                api_url,
-                server_id=server_id,
-                model_id=active_model_id,
-            )
-            try:
-                inference_stats = future.result(timeout=2.5)
-            except FuturesTimeoutError:
-                inference_stats = get_cached_inference_stats(server_id)
 
     for card in visible_cards:
         card['inference_stats'] = inference_stats
@@ -1082,6 +1090,8 @@ def _build_embedding_server_status(
         'component_role': primary_component.get('component_role', ''),
         **process_attribution,
         'boot_error': boot_error,
+        'port_conflict': port_conflict,
+        'port_owner': port_owner,
     }
 
 
@@ -1121,6 +1131,9 @@ def _cached_status_while_generating(
     if not is_proxy_generating(server_id):
         return None
 
+    if port <= 0 or listener_is_ssh_tunnel(host, port):
+        return None
+
     api_url = str(server.get('api_url') or '').strip()
     if not api_url and port > 0:
         api_url = f'http://{host}:{port}'
@@ -1140,10 +1153,6 @@ def _cached_status_while_generating(
         refreshed['running'] = True
         _SERVER_STATUS_CACHE[server_id] = dict(refreshed)
         return refreshed
-
-    port_open = tcp_port_open(host, port) if port > 0 else False
-    if not port_open:
-        return None
 
     stats = _live_stats_during_generation(
         server_id=server_id,
@@ -1215,7 +1224,20 @@ def build_server_status(
         port_open = port > 0 and port in open_ports
     else:
         port_open = tcp_port_open(host, port) if port > 0 else False
-    running = port_open
+    listener_managed = (
+        listener_is_managed_engine(host, port)
+        if port_open
+        else False
+    )
+    port_conflict = port_open and not listener_managed
+    port_owner = (
+        'ssh_tunnel'
+        if port_conflict and listener_is_ssh_tunnel(host, port)
+        else 'foreign'
+        if port_conflict
+        else ''
+    )
+    running = port_open and listener_managed
     if live_probe and running and not get_started_launch(port) and engine_on:
         adopt_running_engine(server, cfg=cfg)
     started_launch = get_started_launch(port) if port > 0 else {}
@@ -1248,6 +1270,13 @@ def build_server_status(
 
     boot_error = boot_failure_message(log_lines)
     load_error = None if boot_error else model_load_failure_message(log_lines)
+    if port_conflict:
+        owner = 'SSH tunnel' if port_owner == 'ssh_tunnel' else 'another local process'
+        boot_error = (
+            f'Configured engine port {port} is occupied by {owner}; '
+            'stop the port forward before starting this engine.'
+        )
+        load_error = None
     status_error = boot_error or load_error
     if status_error and loaded_models:
         status_error = None
@@ -1506,6 +1535,8 @@ def build_server_status(
         **process_attribution,
         'boot_error': status_error,
         'load_error': load_error,
+        'port_conflict': port_conflict,
+        'port_owner': port_owner,
     }
     if server_id and live_probe:
         _SERVER_STATUS_CACHE[server_id] = dict(result)

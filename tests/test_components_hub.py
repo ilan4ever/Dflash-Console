@@ -3,13 +3,13 @@
 from core.components_hub import BUNDLE_REVISIONS, list_components_payload
 
 
-def test_component_row_prefers_installed_over_stale_error(monkeypatch):
+def test_component_row_keeps_a_failed_update_visible(monkeypatch):
     monkeypatch.setattr(
         'core.components_hub._on_demand_status',
         lambda runtime_id: {
             'installed': True,
             'status': 'error',
-            'error': 'stale PowerShell noise from an old install attempt',
+            'error': 'python.exe is locked by the running engine',
         },
     )
     monkeypatch.setattr(
@@ -18,9 +18,8 @@ def test_component_row_prefers_installed_over_stale_error(monkeypatch):
     )
     row = next(entry for entry in list_components_payload()['components'] if entry['id'] == 'freetoken')
     assert row['installed'] is True
-    assert row['status'] == 'installed'
-    assert row['install_error'] == ''
-    assert row['update_available'] is False
+    assert row['status'] == 'error'
+    assert 'python.exe is locked' in row['install_error']
 
 def test_list_components_payload_shape():
     payload = list_components_payload()

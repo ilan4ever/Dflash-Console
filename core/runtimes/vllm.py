@@ -532,6 +532,8 @@ class VllmRuntimeAdapter:
             'backend': backend or ('native' if VLLM_VENV_PY.is_file() else ''),
             'generated_by': str(existing.get('generated_by') or 'core.runtimes.vllm'),
         }
+        if existing.get('package_version'):
+            payload['package_version'] = str(existing.get('package_version'))
         if payload['backend'] == 'wsl':
             payload['wsl_distro'] = str(existing.get('wsl_distro') or 'Ubuntu')
             payload['wsl_python'] = str(existing.get('wsl_python') or existing.get('python') or self.python())

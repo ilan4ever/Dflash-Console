@@ -90,14 +90,29 @@ def test_unload_with_closed_port_preserves_engine_on(monkeypatch):
     assert cleared == []
 
 
-def test_embedding_unload_explains_required_stop(monkeypatch):
+def test_embedding_unload_frees_model_and_keeps_router(monkeypatch):
     monkeypatch.setattr(app, 'load_config', lambda: _cfg('nomic-embed'))
     monkeypatch.setattr(app, 'tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(app, '_invalidate_status_cache', lambda: None)
+    monkeypatch.setattr(app, 'note_boot_cycle_end', lambda port: None)
+    monkeypatch.setattr('core.load_progress.append_log', lambda *args, **kwargs: None)
+    monkeypatch.setattr('core.engine_state.note_engine_idle', lambda *args, **kwargs: None)
+    monkeypatch.setattr('core.client_identity.clear_active_clients', lambda *args, **kwargs: None)
+    called: list[str] = []
+    monkeypatch.setattr(
+        'core.embedding_server.unload_embedding_models',
+        lambda server: called.append(str(server.get('id'))) or {
+            'success': True,
+            'unloaded': True,
+            'models': ['nomic-embed-text-v1.5.q8-0'],
+            'listener_ready': True,
+        },
+    )
 
-    try:
-        app.server_unload('engine-a')
-    except HTTPException as exc:
-        assert exc.status_code == 409
-        assert 'Stop' in str(exc.detail)
-    else:
-        raise AssertionError('embedding unload should require an explicit stop')
+    result = app.server_unload('engine-a')
+
+    assert called == ['engine-a']
+    assert result['success'] is True
+    assert result['unloaded'] is True
+    assert result['engine_stopped'] is False
+    assert result['listener_ready'] is True

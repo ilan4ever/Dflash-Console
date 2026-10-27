@@ -215,7 +215,17 @@ def test_list_download_jobs_includes_incomplete(monkeypatch):
         hf._download_jobs.clear()
         hf._cleared_ids.clear()
 
-    payload = list_download_jobs(active_only=True)
+    payload = list_download_jobs(active_only=True, discover=True)
     assert payload['success'] is True
     assert payload['active_count'] >= 1
     assert any(job.get('status') == 'incomplete' for job in payload['jobs'])
+
+
+def test_active_download_poll_does_not_run_a_full_disk_scan(monkeypatch):
+    monkeypatch.setattr(
+        'core.huggingface._merge_incomplete_repo_jobs',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('disk scan ran')),
+    )
+    monkeypatch.setattr('core.huggingface._ensure_download_history_loaded', lambda: None)
+    payload = list_download_jobs(active_only=True)
+    assert payload['success'] is True

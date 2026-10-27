@@ -1106,6 +1106,11 @@ body.lm-resizing-inspector .lm-inspector-resize-handle::before {
   background: #1a1a20;
 }
 
+.lm-badge.stopped {
+  color: #fcd34d;
+  background: rgba(252, 211, 77, 0.1);
+}
+
 .lm-badge.installed {
   color: #93c5fd;
   background: rgba(147, 197, 253, 0.08);
@@ -2037,9 +2042,9 @@ body.lm-resizing-logs {
 .lm-models-table-wrap {
   flex: 1;
   min-height: 0;
-  /* The table is always 100% wide (flexible columns), so it never scrolls
-     horizontally — clipped cell content must not create a scrollbar. */
-  overflow-x: hidden;
+  /* The Model column keeps full names; if the window is too narrow for every
+     column, allow a horizontal scrollbar instead of compressing the name. */
+  overflow-x: auto;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3628,6 +3633,39 @@ body.lm-resizing-logs {
 .lm-component-card-title {
   font-size: 15px;
   line-height: 1.3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.lm-component-version {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.lm-component-version.is-bundled {
+  color: var(--text-dim);
+}
+
+.lm-component-version.is-new {
+  color: var(--gold, #d4af37);
+}
+
+.lm-component-version.is-new strong {
+  color: var(--gold, #d4af37);
+  font-weight: 800;
+}
+
+.lm-component-update-settings {
+  margin-bottom: 16px;
+}
+
+.lm-component-version-meta {
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .lm-component-card-desc {
@@ -3652,6 +3690,48 @@ body.lm-resizing-logs {
   max-height: 5.5em;
   overflow: auto;
   padding-right: 2px;
+}
+
+.lm-component-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 0 2px;
+}
+
+.lm-component-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.lm-component-progress-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold, #d4af37), #f1cc65);
+  transition: width 0.35s ease;
+}
+
+.lm-component-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.lm-component-progress-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lm-component-progress-meta strong {
+  color: var(--gold, #d4af37);
+  white-space: nowrap;
 }
 
 .lm-component-card-actions {

@@ -66,7 +66,27 @@ test('uses the branded setup UI instead of the Windows NSIS wizard', () => {
   assert.equal(packageJson.scripts?.dist, 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-fast-installer.ps1');
   const builder = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'build-fast-installer.ps1'), 'utf8');
   assert.match(builder, /dflash-setup-ui\.exe/);
-  assert.match(builder, /7zS2\.sfx/);
+  // The branded UI is the executable itself with the package appended; there
+  // is no silent outer wrapper that would hide the window while unpacking.
+  assert.match(builder, /DFLASHPL/);
+  assert.doesNotMatch(builder, /7zS2\.sfx/);
+});
+
+test('installer window appears immediately and carries its own package', () => {
+  const form = fs.readFileSync(path.join(__dirname, '..', 'tools', 'dflash-setup-ui', 'SetupForm.cs'), 'utf8');
+  const helper = fs.readFileSync(path.join(__dirname, '..', 'electron', 'update-helper.ps1'), 'utf8');
+  const build = fs.readFileSync(path.join(__dirname, '..', 'tools', 'dflash-setup-ui', 'build.ps1'), 'utf8');
+  // The UI reads its appended package and unpacks it with a bundled extractor,
+  // so no system-wide 7-Zip is required and the window is visible from t=0.
+  assert.match(form, /TryReadPayloadTrailer/);
+  assert.match(form, /ExtractOwnPayloadArchive/);
+  assert.match(form, /ExtractEmbeddedSevenZip/);
+  assert.match(form, /CopyUiOnly/);
+  assert.match(build, /dflash-7za-x64\.exe/);
+  // The update helper runs that executable directly instead of unpacking a
+  // wrapper first, which used to leave the screen empty for many seconds.
+  assert.match(helper, /Test-DflashPayloadInstaller/);
+  assert.match(helper, /launching it directly \(instant window\)/);
 });
 
 test('update helper extracts the setup.exe the SFX really contains', () => {
@@ -122,6 +142,15 @@ test('Windows startup registration uses the installed executable and startup mar
   assert.match(settings, /path: exe/);
   assert.match(settings, /STARTUP_ARGS/);
   assert.match(settings, /startupRegistrationState/);
+});
+
+test('persists Electron page zoom across UI reloads', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  const settings = fs.readFileSync(path.join(__dirname, '..', 'electron', 'app-settings.js'), 'utf8');
+  assert.match(main, /did-finish-load/);
+  assert.match(main, /zoom-changed/);
+  assert.match(main, /applyStoredUiZoom/);
+  assert.match(settings, /uiZoomFactor/);
 });
 
 test('does not attach authentication headers to public update requests', () => {

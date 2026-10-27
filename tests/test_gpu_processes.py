@@ -1,9 +1,11 @@
+import http.client
 import json
 import time
 
 import pytest
 
 from core.gpu_processes import (
+    _apply_owner_labels,
     _apply_external_loading_ttl,
     _attach_external_gpu_activity,
     _attach_external_inference_stats,
@@ -33,6 +35,137 @@ from core.gpu_processes import (
     _size_gb_from_path,
 )
 import core.gpu_processes as gpu_processes
+
+
+def test_classify_strata_engine_and_picture_reader():
+    # Both processes belong to Strata (github.com/Niko1221/Strata); the engine
+    # runs on the card and the reader is grouped with it.
+    assert _classify_app(process_name='strata.exe', command_line='', parent_name='python.exe') == (
+        'strata',
+        'Strata',
+    )
+    assert _classify_app(process_name='strata-vision.exe', command_line='', parent_name='python.exe') == (
+        'strata',
+        'Strata',
+    )
+
+
+def test_strata_engine_is_an_external_model_load_and_its_reader_is_not():
+    # The engine names no .gguf on its command line and Windows reports no
+    # per-process VRAM yet, so it must still count as a model load.
+    assert _is_gpu_model_load(
+        process_name='strata.exe',
+        command_line='',
+        model_name='',
+        model_path='',
+        vram_mib=None,
+    ) is True
+    assert _is_gpu_model_load(
+        process_name='strata-vision.exe',
+        command_line='',
+        model_name='Strata · Qwen3.8-Flash-Next',
+        model_path='',
+        vram_mib=1024.0,
+    ) is False
+
+
+def test_starting_strata_launcher_keeps_a_loading_card(monkeypatch, tmp_path):
+    import core.external_launchers as launchers
+
+    model = tmp_path / 'model.gguf'
+    model.write_bytes(b'x')
+    config = tmp_path / 'strata.json'
+    config.write_text(
+        json.dumps({
+            'model_name': 'qwen3.8-flash-next-unsloth-ud-iq4_xs',
+            'args': ['--max-context', '131072', '--native', str(model)],
+        }),
+        encoding='utf-8',
+    )
+    entry = {
+        'id': 'strata',
+        'kind': 'strata',
+        'config': str(config),
+        'port': 8080,
+        'health_url': 'http://127.0.0.1:8080/health',
+        'parallel': 2,
+        'gpu': 0,
+        'loaded_by': 'OneVoice',
+    }
+    monkeypatch.setattr(launchers, 'launchers', lambda: [dict(entry)])
+    monkeypatch.setattr(launchers, '_http_json', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        launchers,
+        'status',
+        lambda _entry, probe=True: {'starting': True, 'pids': [123], 'running': False, 'loaded': False},
+    )
+
+    cards = gpu_processes._stopped_launcher_cards([], gpus=[{'index': 0, 'name': 'RTX 4090'}])
+
+    assert len(cards) == 1
+    card = cards[0]
+    assert card['card_state'] == 'loading'
+    assert card['loadable'] is False
+    assert card['ejectable'] is True
+    assert card['launcher_id'] == 'strata'
+    assert card['app_label'] == 'OneVoice'
+    assert card['context_size'] == 262144
+    assert card['per_slot_context'] == 131072
+    assert card['parallel_slots'] == 2
+    assert card['model_path'] == str(model)
+
+
+def test_unloaded_strata_launcher_creates_no_card(monkeypatch, tmp_path):
+    import core.external_launchers as launchers
+
+    entry = {
+        'id': 'strata',
+        'kind': 'strata',
+        'config': str(tmp_path / 'strata.json'),
+        'port': 8080,
+        'health_url': 'http://127.0.0.1:8080/health',
+    }
+    monkeypatch.setattr(launchers, 'launchers', lambda: [dict(entry)])
+    monkeypatch.setattr(launchers, '_http_json', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        launchers,
+        'status',
+        lambda _entry, probe=True: {'starting': False, 'pids': [], 'running': False, 'loaded': False},
+    )
+
+    assert gpu_processes._stopped_launcher_cards([], gpus=[{'index': 0, 'name': 'RTX 4090'}]) == []
+
+
+def test_external_probe_ignores_a_non_http_local_banner(monkeypatch):
+    def _bad_urlopen(*_args, **_kwargs):
+        raise http.client.BadStatusLine('Android Console: Authentication required')
+
+    monkeypatch.setattr('urllib.request.urlopen', _bad_urlopen)
+
+    entries, timed_out = gpu_processes._probe_models_fast('http://127.0.0.1:8080/v1')
+
+    assert entries == []
+    assert timed_out is False
+
+
+def test_strata_card_names_the_model_it_serves():
+    name, path = _resolve_external_model_name(
+        app_source='strata',
+        app_label='Strata',
+        process_name='strata.exe',
+        command_line='',
+        parent_name='python.exe',
+    )
+    assert name == 'Strata · Qwen3.8-Flash-Next'
+    assert path == ''
+
+
+def test_strata_model_kind_is_llm():
+    kind, _label = gpu_processes._infer_model_kind(
+        process_name='strata.exe',
+        model_name='Strata · Qwen3.8-Flash-Next',
+    )
+    assert kind == 'llm'
 
 
 def test_classify_onevoice_llama_with_lmstudio_model_path():
@@ -130,6 +263,39 @@ def test_classify_onevoice_stt():
     )
     assert source == 'onevoice'
     assert label == 'OneVoice'
+
+
+def test_classify_onevoice_speak_helpers():
+    speak_root = r'C:\Users\me\AppData\Local\Programs\OneVoiceSpeak\resources\tools'
+    source, label = _classify_app(
+        process_name='python.exe',
+        command_line=f'python.exe -u {speak_root}\\f5-tts\\warm_server.py --listen 127.0.0.1:8881',
+        parent_name='python.exe',
+    )
+    assert (source, label) == ('onevoice', 'OneVoice Speak')
+
+    source, label = _classify_app(
+        process_name='python.exe',
+        command_line=f'python.exe -u {speak_root}\\stt\\speak_stt.py',
+        parent_name='python.exe',
+    )
+    assert (source, label) == ('onevoice', 'OneVoice Speak')
+
+
+def test_owner_labels_name_onevoice_speak_f5_tts():
+    card = _apply_owner_labels(
+        {'process_name': 'python.exe'},
+        {
+            'process_name': 'python.exe',
+            'command_line': (
+                'python.exe -u C:\\Users\\me\\AppData\\Local\\Programs\\OneVoiceSpeak\\resources\\tools\\'
+                'f5-tts\\warm_server.py --listen 127.0.0.1:8881 --ckpt C:\\models\\f5.safetensors'
+            ),
+        },
+    )
+    assert card['app_label'] == 'OneVoice Speak'
+    assert card['component_label'] == 'OneVoice F5-TTS'
+    assert card['model_path'] == r'C:\models\f5.safetensors'
 
 
 def test_onevoice_component_identity_distinguishes_gpu_workers():
@@ -1558,8 +1724,10 @@ def test_get_gpu_other_processes_excludes_model_cards(monkeypatch):
             200: {'process_name': 'dwm.exe', 'command_line': '', 'parent_process_name': ''},
             300: {
                 'process_name': 'custom-cuda.exe',
+                'executable_path': r'C:\tools\custom-cuda.exe',
                 'command_line': r'C:\tools\custom-cuda.exe --benchmark',
-                'parent_process_name': '',
+                'parent_process_name': 'pwsh.exe',
+                'parent_pid': 120,
             },
         },
     )
@@ -1578,6 +1746,10 @@ def test_get_gpu_other_processes_excludes_model_cards(monkeypatch):
     assert 200 in pids
     assert 300 in pids
     assert payload['processes'][0]['label'] in {'custom-cuda', 'dwm'}
+    custom = next(row for row in payload['processes'] if row['pid'] == 300)
+    assert custom['executable_path'] == r'C:\tools\custom-cuda.exe'
+    assert custom['parent_process_name'] == 'pwsh.exe'
+    assert custom['parent_pid'] == 120
     assert payload['by_gpu'][0]['unattributed_gb'] is not None
     assert payload['vram_per_process_limited'] is False
     assert payload['total_other_vram_gb'] == 0.5

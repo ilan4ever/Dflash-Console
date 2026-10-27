@@ -620,6 +620,16 @@ def _start_background_tasks() -> None:
 
     threading.Thread(target=context_maintenance_loop, daemon=True, name='context-maintenance').start()
 
+    def component_update_loop() -> None:
+        try:
+            from core.components_hub import start_auto_update_loop
+
+            start_auto_update_loop()
+        except Exception as exc:
+            logger.exception('component auto-update loop failed: %s', exc)
+
+    component_update_loop()
+
 
 def _release_gpu_on_shutdown() -> None:
     """Unload managed engines on intentional Console shutdown."""
@@ -703,6 +713,7 @@ class ConfigPatch(BaseModel):
     model_slots: dict[str, int] | None = None
     remote_nodes: list[dict[str, Any]] | None = None
     api_providers: list[dict[str, Any]] | None = None
+    auto_update_components: bool | None = None
 
 
 class DownloadSettingsPatch(BaseModel):
@@ -712,6 +723,16 @@ class DownloadSettingsPatch(BaseModel):
 class ModelSlotsPatch(BaseModel):
     path: str = Field(..., min_length=3, max_length=2048)
     slots: int = Field(..., ge=1, le=16)
+
+
+class ExternalLauncherLoad(BaseModel):
+    # Requests the external server answers at the same time (Strata: --parallel).
+    parallel: int | None = Field(default=None, ge=1, le=8)
+
+
+class ExternalLauncherPatch(BaseModel):
+    parallel: int | None = Field(default=None, ge=1, le=8)
+    label: str | None = Field(default=None, max_length=120)
 
 
 class DownloadBenchmarkRequest(BaseModel):
@@ -954,6 +975,7 @@ class RuntimeLoadRequest(BaseModel):
 class RuntimeInstallRequest(BaseModel):
     torch_variant: str = Field(default='auto', max_length=20)
     backend: str = Field(default='auto', max_length=20)
+    force: bool = False
 
 
 class RuntimeUnloadRequest(BaseModel):
@@ -2956,7 +2978,15 @@ def components_hub() -> dict[str, Any]:
     """Engines and runtimes users can install or update (vLLM, Transformers, speech bundles)."""
     from core.components_hub import list_components_payload
 
-    return list_components_payload()
+    return list_components_payload(refresh_versions=True)
+
+
+@app.post('/api/components/check-updates')
+def components_check_updates() -> dict[str, Any]:
+    """Check PyPI and installed engine versions now, then run auto-updates if enabled."""
+    from core.components_hub import check_components_now
+
+    return check_components_now()
 
 
 @app.get('/api/runtimes/{runtime_id}/install')
@@ -2984,17 +3014,17 @@ def runtime_install_start(runtime_id: str, body: RuntimeInstallRequest | None = 
     if rid == 'transformers':
         from core.transformers_runtime_install import start_install
 
-        result = start_install(torch_variant=payload.torch_variant or 'auto')
+        result = start_install(torch_variant=payload.torch_variant or 'auto', force=payload.force)
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
     if rid == 'vllm':
         from core.vllm_runtime_install import start_install
 
-        result = start_install(backend=payload.backend or 'auto')
+        result = start_install(backend=payload.backend or 'auto', force=payload.force)
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
     if rid == 'freetoken':
         from core.freetoken_runtime_install import start_install
 
-        result = start_install(backend=payload.backend or 'wsl')
+        result = start_install(backend=payload.backend or 'wsl', force=payload.force)
         return {'success': bool(result.get('success')), 'runtime_id': rid, **result}
     raise HTTPException(status_code=404, detail=f'no on-demand installer for runtime: {runtime_id}')
 
@@ -3540,7 +3570,7 @@ async def diagnostics_report(body: DiagnosticsReportRequest) -> dict[str, Any]:
 @app.post('/api/servers/{server_id}/engine/start')
 def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     from core.config import is_embedding_server
-    from core.engine_state import note_engine_idle
+    from core.engine_state import note_engine_started
     from core.server_boot import start_router_listener
 
     cfg = load_config()
@@ -3561,16 +3591,16 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
         return result
     server = normalize_server(server)
     if is_embedding_server(server):
-        from core.engine_state import note_engine_on
-
-        note_engine_on(server_id)
-        note_engine_idle(server_id)
+        started = start_router_listener(server, cfg=cfg)
+        if not started.get('success'):
+            raise HTTPException(status_code=400, detail=started.get('error') or 'embedding router failed to start')
+        note_engine_started(server_id, loaded_by=_request_client_label(request))
         _invalidate_status_cache()
         return {
-            'success': True,
+            **started,
             'deferred': True,
             'loaded': False,
-            'message': 'Embedding engine armed; loads on first embed request.',
+            'message': 'Embedding router ready; loads on the first embed request.',
         }
     from core.runtime import tcp_port_open
     from core.server_boot import adopt_running_engine
@@ -3580,7 +3610,7 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     if port > 0 and tcp_port_open(host, port):
         adopted = adopt_running_engine(server, cfg=cfg)
         if adopted.get('success'):
-            note_engine_idle(server_id)
+            note_engine_started(server_id, loaded_by=_request_client_label(request))
             _invalidate_status_cache()
             return {
                 'success': True,
@@ -3592,7 +3622,7 @@ def server_listen(server_id: str, request: Request) -> dict[str, Any]:
     result = start_router_listener(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'listen failed')
-    note_engine_idle(server_id)
+    note_engine_started(server_id, loaded_by=_request_client_label(request))
     _invalidate_status_cache()
     return result
 
@@ -4423,6 +4453,16 @@ def server_inference_stats(server_id: str) -> dict[str, Any]:
 
     cfg = load_config()
     server = _require_server(cfg, server_id)
+    if is_embedding_server(server):
+        # A router embedding engine autoloads its model to answer /slots, so a
+        # token-stats poll would defeat idle unload. Embeddings have no chat
+        # token counters anyway.
+        return {
+            'success': True,
+            'server_id': server_id,
+            'status': 'embedding',
+            'inference_stats': {},
+        }
     # Always hit /slots directly. Never route through build_server_status — that
     # path returns a frozen cache while proxy inference is active.
     cached = _SERVER_STATUS_CACHE.get(server_id) or {}
@@ -5206,6 +5246,103 @@ def gpu_process_unload(pid: int, body: GpuProcessUnload | None = None) -> dict[s
     return result
 
 
+@app.get('/api/external/launchers')
+def external_launchers_list(request: Request) -> dict[str, Any]:
+    """External model servers the Console can start and stop (Strata and alike)."""
+    from core.external_launchers import list_with_status, note_launcher_client
+
+    rows = list_with_status()
+    client = _request_client_label(request)
+    for row in rows:
+        if row.get('running') and not row.get('loaded_by'):
+            updated = note_launcher_client(str(row.get('id') or ''), client)
+            if updated:
+                row['loaded_by'] = str(updated.get('loaded_by') or '')
+    return {'success': True, 'launchers': rows}
+
+
+@app.post('/api/external/launchers')
+def external_launcher_register(body: dict[str, Any]) -> dict[str, Any]:
+    from core.external_launchers import save_launcher
+
+    if not str(body.get('id') or '').strip():
+        raise HTTPException(status_code=400, detail='an id is required')
+    if not str(body.get('command') or '').strip():
+        raise HTTPException(status_code=400, detail='a command is required')
+    return {'success': True, 'launcher': save_launcher(body)}
+
+
+@app.post('/api/external/launchers/{launcher_id}/load')
+def external_launcher_load(
+    launcher_id: str,
+    request: Request,
+    body: ExternalLauncherLoad | None = None,
+    wait: bool = True,
+) -> dict[str, Any]:
+    """Start an external model server and wait until it answers.
+
+    ``parallel`` sets how many requests it serves at once (default 1).  Changing
+    it while the server runs restarts it with the new number.
+    """
+    from core.external_launchers import start
+    from core.external_models import forget_external_models
+
+    payload = body.model_dump(exclude_none=True) if body else {}
+    result = start(
+        launcher_id,
+        parallel=payload.get('parallel'),
+        wait=wait,
+        client_label=_request_client_label(request),
+    )
+    _invalidate_status_cache()
+    forget_external_models()
+    try:
+        from core.gpu_processes import _forget_external_scan
+
+        _forget_external_scan()
+    except Exception:
+        pass
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'load failed')
+    return result
+
+
+@app.post('/api/external/launchers/{launcher_id}/unload')
+def external_launcher_unload(launcher_id: str) -> dict[str, Any]:
+    from core.external_launchers import stop
+    from core.external_models import forget_external_models
+
+    result = stop(launcher_id)
+    _invalidate_status_cache()
+    forget_external_models()
+    try:
+        from core.gpu_processes import _forget_external_scan
+
+        _forget_external_scan()
+    except Exception:
+        pass
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'unload failed')
+    return result
+
+
+@app.patch('/api/external/launchers/{launcher_id}')
+def external_launcher_patch(launcher_id: str, body: ExternalLauncherPatch) -> dict[str, Any]:
+    from core.external_launchers import get_launcher, save_launcher, set_parallel
+    from core.external_models import forget_external_models
+
+    entry = get_launcher(launcher_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f'unknown launcher: {launcher_id}')
+    payload = body.model_dump(exclude_none=True)
+    if 'parallel' in payload:
+        entry = set_parallel(launcher_id, int(payload['parallel'])) or entry
+    if payload.get('label'):
+        entry = save_launcher({**entry, 'label': str(payload['label'])})
+    forget_external_models()
+    return {'success': True, 'launcher': entry}
+
+
 @app.post('/api/servers/{server_id}/unload')
 def server_unload(server_id: str) -> dict[str, Any]:
     from core.load_progress import append_log
@@ -5248,10 +5385,32 @@ def server_unload(server_id: str) -> dict[str, Any]:
             'message': 'Engine listener is not running; nothing to unload.',
         }
     if is_embedding_server(server):
-        raise HTTPException(
-            status_code=409,
-            detail='Embedding engines must stay loaded while running. Use Stop instead of Unload.',
-        )
+        from core.client_identity import clear_active_clients
+        from core.embedding_server import unload_embedding_models
+        from core.engine_state import note_engine_idle
+
+        result = unload_embedding_models(server)
+        if not result.get('success'):
+            status_code = 409 if result.get('requires_stop') else 502
+            raise HTTPException(
+                status_code=status_code,
+                detail=result.get('error') or 'embedding unload failed',
+            )
+        if result.get('unloaded'):
+            append_log(
+                server_id,
+                f"=== embedding unload {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"model={','.join(result.get('models') or [])} ===",
+            )
+            note_boot_cycle_end(port)
+        note_engine_idle(server_id)
+        clear_active_clients(server_id)
+        return {
+            **result,
+            'engine_stopped': False,
+            'listener_ready': tcp_port_open(host, port),
+            'message': 'Embedding model unloaded; router stays ready for the next request.',
+        }
 
     from core.runtime import probe_models
 
@@ -5329,7 +5488,8 @@ def server_reload(server_id: str, request: Request) -> dict[str, Any]:
     result = reload_server(server, cfg=cfg)
     if not result.get('success'):
         raise HTTPException(status_code=400, detail=result.get('error') or 'reload failed')
-    note_engine_loaded(server_id, loaded_by=_request_client_label(request))
+    if not result.get('starting'):
+        note_engine_loaded(server_id, loaded_by=_request_client_label(request))
     _invalidate_status_cache()
     return result
 

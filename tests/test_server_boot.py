@@ -1,10 +1,73 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import core.server_boot as server_boot
+
+
+def test_reload_spares_a_load_that_already_owns_the_port(monkeypatch):
+    server = {
+        'id': 'gemma-31b-it-quant-dflash',
+        'label': 'Gemma 31B',
+        'profile': 'gemma-chat',
+        'host': '127.0.0.1',
+        'port': 18093,
+        'api_url': 'http://127.0.0.1:18093/v1',
+    }
+    stopped: list[dict] = []
+    monkeypatch.setattr(
+        'core.runtime.stop_server',
+        lambda **kwargs: stopped.append(dict(kwargs)) or {'success': True},
+    )
+    lock = server_boot._port_lock(18093)
+    started = threading.Event()
+    release = threading.Event()
+
+    def _hold_lock():
+        lock.acquire()
+        started.set()
+        release.wait(timeout=5)
+        lock.release()
+
+    holder = threading.Thread(target=_hold_lock, daemon=True)
+    holder.start()
+    assert started.wait(timeout=2)
+    try:
+        result = server_boot.reload_server(server, cfg={})
+    finally:
+        release.set()
+        holder.join(timeout=2)
+
+    assert result['success'] is True
+    assert result['starting'] is True
+    assert result['already_starting'] is True
+    assert stopped == []
+
+
+def test_reload_spares_an_active_checkpoint_load(monkeypatch):
+    server = {
+        'id': 'gemma-31b-it-quant-dflash',
+        'label': 'Gemma 31B',
+        'profile': 'gemma-chat',
+        'host': '127.0.0.1',
+        'port': 18094,
+        'api_url': 'http://127.0.0.1:18094/v1',
+    }
+    stopped: list[dict] = []
+    monkeypatch.setattr('core.load_activity.active_model_loads', lambda: [{'server_id': server['id']}])
+    monkeypatch.setattr(
+        'core.runtime.stop_server',
+        lambda **kwargs: stopped.append(dict(kwargs)) or {'success': True},
+    )
+
+    result = server_boot.reload_server(server, cfg={})
+
+    assert result['success'] is True
+    assert result['starting'] is True
+    assert stopped == []
 
 
 def test_resolve_load_target_path_ignores_missing_config_path(tmp_path):
@@ -57,6 +120,41 @@ def test_managed_process_identity_accepts_llama_process(monkeypatch):
     assert server_boot.managed_process_identity(1234) is True
 
 
+def test_ssh_forward_is_not_treated_as_managed_engine(monkeypatch):
+    monkeypatch.setattr(server_boot.sys, 'platform', 'win32')
+    monkeypatch.setattr(
+        server_boot,
+        '_windows_process_details',
+        lambda pid: ('ssh.exe', 'ssh -N -L 8092:127.0.0.1:8092 production'),
+    )
+    monkeypatch.setattr(server_boot, 'listener_pid', lambda host, port: 1234)
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(
+        'core.runtime._fetch_models_payload',
+        lambda api_url: [{'id': 'remote-model', 'status': {'value': 'unloaded'}}],
+    )
+
+    assert server_boot.listener_is_ssh_tunnel('127.0.0.1', 8092) is True
+    assert server_boot.listener_is_managed_engine('127.0.0.1', 8092) is False
+
+
+def test_ensure_managed_listen_port_blocks_ssh_forward(monkeypatch):
+    server = {
+        'id': 'gemma',
+        'host': '127.0.0.1',
+        'port': 8092,
+        'api_url': 'http://127.0.0.1:8092/v1',
+    }
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: True)
+    monkeypatch.setattr(server_boot, 'listener_is_ssh_tunnel', lambda host, port: True)
+
+    result = server_boot.ensure_managed_listen_port(server, cfg={'servers': [dict(server)]})
+
+    assert result['success'] is False
+    assert result['reason'] == 'ssh_tunnel'
+    assert server['port'] == 8092
+
+
 def test_wait_for_port_closed_retries_until_listener_is_gone(monkeypatch):
     states = iter([True, True, False])
     monkeypatch.setattr(server_boot, '_tcp_port_open', lambda host, port: next(states))
@@ -97,6 +195,59 @@ def test_ensure_managed_listen_port_rebinds_foreign_occupant(monkeypatch):
     assert server['port'] == 8097
     assert server['api_url'] == 'http://127.0.0.1:8097/v1'
     assert saved == [{'id': 'qwen3-8-27b-q6-k-l', 'port': 8097, 'persist': True}]
+
+
+def test_load_server_checkpoint_routes_embedding_through_router(monkeypatch, tmp_path):
+    target = tmp_path / 'nomic-embed-text-v1.5.Q8_0.gguf'
+    target.write_bytes(b'fake')
+    entry = {
+        'id': 'nomic-embed-text-v1-5-q8-0',
+        'profile': 'nomic-embed',
+        'engine_mode': 'embedding',
+        'model_id': 'nomic-embed-text-v1.5.q8-0',
+        'target_path': str(target),
+        'host': '127.0.0.1',
+        'port': 8101,
+        'api_url': 'http://127.0.0.1:8101/v1',
+    }
+    loads: list[dict] = []
+
+    monkeypatch.setattr(
+        server_boot,
+        'validate_dflash_stack',
+        lambda *args, **kwargs: {'success': True, 'valid': True, 'required': False},
+    )
+    monkeypatch.setattr('core.memory_guardrails.assess_load', lambda *args, **kwargs: {'level': 'ok'})
+    monkeypatch.setattr(server_boot, 'find_target_loaded_elsewhere', lambda *args, **kwargs: None)
+    monkeypatch.setattr(server_boot, 'write_server_preset', lambda *args, **kwargs: None)
+    monkeypatch.setattr(server_boot, '_tcp_port_open', lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        server_boot,
+        'adopt_running_engine',
+        lambda *args, **kwargs: {'success': True, 'adopted': True},
+    )
+    monkeypatch.setattr(server_boot, '_is_llama_compatible_models_payload', lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        'core.runtime._fetch_models_payload',
+        lambda *args, **kwargs: [{'id': entry['model_id']}],
+    )
+    monkeypatch.setattr('core.chat_vision.router_registration_stale', lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        'core.runtime.load_model',
+        lambda **kwargs: loads.append(dict(kwargs)) or {'success': True},
+    )
+    monkeypatch.setattr(
+        server_boot,
+        '_wait_for_checkpoint_load',
+        lambda **kwargs: {'status': 'loaded'},
+    )
+    monkeypatch.setattr(server_boot, 'note_boot_cycle_end', lambda *args, **kwargs: None)
+
+    result = server_boot.load_server_checkpoint(entry)
+
+    assert result['success'] is True
+    assert result['loaded'] is True
+    assert loads and loads[0]['model_id'] == entry['model_id']
 
 
 def test_checkpoint_load_failure_error_prefers_log_message(monkeypatch, tmp_path):

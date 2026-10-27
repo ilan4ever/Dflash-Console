@@ -37,14 +37,31 @@ $versionCs = Join-Path $PSScriptRoot 'SetupVersion.cs'
 
 $srcDir = Join-Path $ProjectRoot "tools\dflash-setup-ui"
 $out = Join-Path $OutDir "dflash-setup-ui.exe"
-& $csc /nologo /target:winexe /optimize+ /platform:anycpu `
-    /reference:System.Windows.Forms.dll `
-    /reference:System.Drawing.dll `
-    /reference:System.dll `
-    /out:"$out" `
-    (Join-Path $srcDir "SetupForm.cs") `
-    (Join-Path $srcDir "UninstallOptionsForm.cs") `
+$compilerArgs = @(
+    '/nologo', '/target:winexe', '/optimize+', '/platform:anycpu',
+    '/reference:System.Windows.Forms.dll',
+    '/reference:System.Drawing.dll',
+    '/reference:System.dll',
+    "/out:$out"
+)
+# The installer unpacks its own payload, so the standalone 7-Zip extractor
+# travels inside the UI executable and no system-wide 7-Zip is required.
+$embeddedTools = @(
+    @{ File = '7za-x64.exe'; Name = 'dflash-7za-x64.exe' },
+    @{ File = '7za-x86.exe'; Name = 'dflash-7za-x86.exe' }
+)
+foreach ($tool in $embeddedTools) {
+    $toolPath = Join-Path $ProjectRoot ("tools\" + $tool.File)
+    if (Test-Path -LiteralPath $toolPath) {
+        $compilerArgs += "/resource:$toolPath,$($tool.Name)"
+    }
+}
+$compilerArgs += @(
+    (Join-Path $srcDir "SetupForm.cs"),
+    (Join-Path $srcDir "UninstallOptionsForm.cs"),
     "$versionCs"
+)
+& $csc @compilerArgs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $out)) {
     throw "Failed to compile dflash-setup-ui.exe"
 }

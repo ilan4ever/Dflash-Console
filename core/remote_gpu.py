@@ -112,11 +112,23 @@ def _ssh_executable() -> str:
 
 def ensure_ssh_tunnel(node: dict[str, Any], *, wait_seconds: float = 8.0) -> None:
     """Open the local forward if this node is reached through SSH."""
+    from core.config import load_config, reserved_ports
+    from core.server_boot import listener_is_managed_engine
+
     host = str(node.get('ssh_host') or '').strip()
     local_port = int(node.get('ssh_local_port') or 0)
     remote_port = int(node.get('ssh_remote_port') or 0)
     if not host or local_port <= 0 or remote_port <= 0:
         return
+    if local_port in reserved_ports(load_config()):
+        raise RuntimeError(
+            f'Local SSH tunnel port {local_port} is reserved by this Console. '
+            'Choose a different tunnel port so it cannot shadow a local engine.'
+        )
+    if listener_is_managed_engine('127.0.0.1', local_port):
+        raise RuntimeError(
+            f'Local SSH tunnel port {local_port} is already used by a Console engine.'
+        )
     if _port_open(local_port):
         return
     with _TUNNEL_LOCK:

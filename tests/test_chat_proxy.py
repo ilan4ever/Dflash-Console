@@ -129,6 +129,7 @@ def test_apply_reasoning_policy_forwards_none_when_non_reasoning_model_is_disabl
     out = apply_reasoning_policy(raw, reasoning=False, disable_reasoning=True)
     body = json.loads(out)
     assert body['reasoning_effort'] == 'none'
+    assert body['chat_template_kwargs']['enable_thinking'] is False
 
 
 def test_apply_reasoning_policy_keeps_for_reasoning_model():
