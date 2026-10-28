@@ -2222,6 +2222,11 @@ def _build_external_card_base(
             or 'GPU workload'
         )
     vram_total_gb = round(float(vram_gb), 2) if vram_gb is not None else None
+    is_strata = launcher_id == 'strata' or app_source == 'strata'
+    runtime_label = 'Strata' if is_strata else (app_label or app_source or 'External')
+    engine_label = ''
+    if is_strata:
+        engine_label = 'strata-dsv41' if 'deepseek' in f'{model_name} {model_path} {command_line}'.lower() else 'Strata'
 
     return {
         'id': f'external-gpu-{pid}',
@@ -2233,6 +2238,10 @@ def _build_external_card_base(
         'process_name': process_name,
         'app_source': app_source,
         'app_label': launcher_loaded_by if launcher_id else app_label,
+        'source_label': 'Strata local' if is_strata else (app_label or app_source or 'External'),
+        'runtime_id': 'strata' if is_strata else app_source,
+        'runtime_label': runtime_label,
+        'engine_label': engine_label,
         'component_key': 'dflash.strata' if launcher_id else component_key,
         'component_label': 'Strata engine' if launcher_id else component_label,
         'component_role': 'llm' if launcher_id else component_role,

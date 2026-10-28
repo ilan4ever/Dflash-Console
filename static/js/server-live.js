@@ -1897,6 +1897,10 @@
     return window.DFlashModelsLive?.huggingFaceName?.(engineHuggingFaceProbe(server, row)) || '';
   }
 
+  function engineModelPath(server, row) {
+    return row?.model_path || row?.path || server?.model_path || server?.target_path || '';
+  }
+
   function engineModelPageUrl(server, row) {
     return window.DFlashModelsLive?.huggingFaceUrl?.(engineHuggingFaceProbe(server, row)) || '';
   }
@@ -1910,7 +1914,7 @@
       label: row?.label || server?.label || row?.title,
       source: row?.source || 'dflash-profile',
       loadable: row?.card_state === 'ready' || row?.card_state === 'loading',
-      path: row?.path || row?.model_path || server?.model_path,
+      path: engineModelPath(server, row),
       filename: row?.filename,
       port: server?.port,
     };
@@ -1923,12 +1927,14 @@
     const ready = row.card_state === 'ready';
     const loading = row.card_state === 'loading';
     const url = gatewayUrl || server.reachable_url || '';
-    const path = row.path || '';
+    const path = engineModelPath(server, row);
     const catalogRow = engineCatalogRow(server, row);
     const apiId = window.DFlashModelsLive?.apiModelIdentifier?.(catalogRow) || '';
     const displayName = cardDisplayName(row, server);
     const hfName = engineHuggingFaceName(server, row);
+    const hfResolvable = !!path;
     const modelPage = engineModelPageUrl(server, row);
+    const updateReady = catalogRow?.hf_update_available === true;
     const isEmbedding = server.engine_mode === 'embedding'
       || server.model_kind === 'embedding'
       || row.model_kind === 'embedding'
@@ -1947,8 +1953,9 @@
       <button type="button" data-cmd="copy-path"${path ? '' : ' disabled'}>Copy model path</button>
       <button type="button" data-cmd="copy-identifier"${apiId ? '' : ' disabled'} title="Name you send as the model in an API request">Copy API name</button>
       <button type="button" data-cmd="copy-display-name"${displayName ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
-      <button type="button" data-cmd="copy-hf-name"${hfName ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
-      <button type="button" data-cmd="open-hf"${modelPage ? '' : ' disabled'} title="Open this model's page on Hugging Face">Open Hugging Face</button>
+      <button type="button" data-cmd="copy-hf-name"${(hfName || hfResolvable) ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
+      <button type="button" data-cmd="open-hf"${(modelPage || hfResolvable) ? '' : ' disabled'} title="Open this model's page on Hugging Face">Open Hugging Face</button>
+      ${updateReady ? '<button type="button" data-cmd="update-model" class="lm-context-update-action">Download and replace…</button>' : ''}
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
       <button type="button" data-cmd="goto-library" title="Open the same model in the Model library to load it, set it up or delete it">Go to model in Model library</button>
@@ -2010,7 +2017,7 @@
       return;
     }
     if (cmd === 'copy-path') {
-      const path = row.path;
+      const path = engineModelPath(server, row);
       if (!path) return;
       await navigator.clipboard.writeText(path);
       toast('Model path copied');
@@ -2031,22 +2038,34 @@
       return;
     }
     if (cmd === 'copy-hf-name') {
-      const name = engineHuggingFaceName(server, row);
-      if (!name) return;
+      const name = await window.DFlashModelsLive?.resolveHuggingFaceName?.(engineHuggingFaceProbe(server, row)) || '';
+      if (!name) {
+        toast('Could not verify a Hugging Face repository for this file', false);
+        return;
+      }
       await navigator.clipboard.writeText(name);
       toast('Hugging Face name copied');
       return;
     }
     if (cmd === 'open-hf') {
-      const url = engineModelPageUrl(server, row);
+      const url = await window.DFlashModelsLive?.resolveHuggingFaceUrl?.(engineHuggingFaceProbe(server, row)) || '';
       if (url) window.open(url, '_blank', 'noopener,noreferrer');
-      else toast('No Hugging Face page for this card', false);
+      else toast('Could not verify a Hugging Face page for this file', false);
+      return;
+    }
+    if (cmd === 'update-model') {
+      const model = engineCatalogRow(server, row);
+      if (model?.hf_update_available === true) {
+        window.DFlashModelUpdates?.open?.(model);
+      } else {
+        toast('No verified newer Hugging Face revision is available.', false);
+      }
       return;
     }
     if (cmd === 'goto-library') {
       if (window.DFlashShell?.setView) window.DFlashShell.setView('models');
       const found = await window.DFlashModelsLive?.revealModelFromEngineCard?.({
-        path: row?.model_path || row?.path || server?.model_path || '',
+        path: engineModelPath(server, row),
         serverId: server?.id || row?.server_id || '',
         modelId: server?.model_id || row?.model_id || row?.model_name || row?.id || '',
         label: server?.label || row?.label || '',
@@ -4131,16 +4150,26 @@
     const originTag = consoleEngine
       ? ''
       : '<span class="lm-external-origin">External</span>';
+    const runtimeLabel = String(row?.source_label || row?.runtime_label || '').trim();
+    const runtimeTag = runtimeLabel && runtimeLabel.toLowerCase() !== 'external'
+      ? `<span class="lm-external-origin lm-external-runtime-tag" title="Runtime and ownership">${escapeHtml(runtimeLabel)}</span>`
+      : '';
+    const engineLabel = String(row?.engine_label || '').trim();
+    const engineTag = engineLabel
+      ? `<span class="lm-external-app-badge lm-external-engine-tag" title="Engine">${escapeHtml(engineLabel)}</span>`
+      : '';
     const appBadge = externalAppInHeader()
       ? `<span class="lm-external-app-badge" title="Loaded outside DFlash Console by ${appName}">${appName}</span>`
       : '';
     return `<div class="lm-model-card-external-prompt${consoleEngine ? ' is-console-engine' : ''}">
             ${originTag}
+            ${runtimeTag}
             ${appBadge ? '<span class="lm-engine-head-stack-chip is-empty" aria-hidden="true"></span>' : ''}
             ${kindCell}
             ${vramCell}
             <span class="lm-external-head-right">
               ${externalTokenChipHtml()}
+              ${engineTag}
               ${appBadge}
               ${actions ? `<span class="lm-external-prompt-actions">${actions}</span>` : ''}
             </span>

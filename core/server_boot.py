@@ -1840,6 +1840,23 @@ def load_server_checkpoint(
     from core.memory_guardrails import assess_load
 
     config = cfg or _load_config()
+    from core.gpu_ownership import GpuOwnershipConflict, enforce_gpu_ownership, unload_console_engine
+
+    try:
+        ownership = enforce_gpu_ownership(
+            entry,
+            cfg=config,
+            target_server_id=str(entry.get('id') or ''),
+            model_id=str(model_id or model_path or entry.get('model_id') or ''),
+            unload_console_engine=lambda other_id: unload_console_engine(other_id, cfg=config),
+        )
+    except GpuOwnershipConflict as exc:
+        return {
+            'success': False,
+            'error': exc.detail.get('message') or str(exc),
+            'error_code': exc.detail.get('error') or 'gpu_ownership_conflict',
+            'gpu_ownership': exc.detail,
+        }
     if not skip_memory_check:
         memory_check = assess_load(entry, config, exclude_server_id=str(entry.get('id') or ''))
         if memory_check.get('level') == 'block':

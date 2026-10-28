@@ -110,7 +110,17 @@ def note_engine_on(server_id: str) -> dict[str, Any]:
 
 
 def note_engine_idle(server_id: str) -> dict[str, Any]:
-    return note_engine_on(server_id)
+    # Keep the listener armed, but remove the previous model owner.  An idle
+    # router is not being used by the Console or by the last client anymore.
+    from core.client_identity import clear_active_clients
+
+    clear_active_clients(server_id)
+    return update_server_runtime(
+        server_id,
+        engine_on=True,
+        loaded_by='',
+        clear_identity=True,
+    )
 
 
 def note_engine_started(
@@ -309,7 +319,7 @@ def release_and_stop_all_managed_engines(*, cfg: dict[str, Any] | None = None) -
 
 
 def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """On Console boot: restore saved engines and their configured checkpoints."""
+    """On Console boot: restore listeners, never configured checkpoints."""
     from core.server_boot import adopt_running_engine, listener_is_ssh_tunnel, start_router_listener
     from core.embedding_server import probe_embedding_models
 
@@ -402,7 +412,7 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
                 release = release_gpu_checkpoints(server)
             else:
                 release = {'success': True, 'unloaded': False, 'models': []}
-            note_engine_owned_by_console(server_id)
+            note_engine_idle(server_id)
             action = 'adopted_idle'
             results.append({
                 'server_id': server_id,
@@ -438,8 +448,9 @@ def restore_engines(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]
         started = start_router_listener(server, cfg=config)
         if started.get('success'):
             # Start the router only; never repopulate GPU memory during a
-            # Console restart.
-            note_engine_owned_by_console(server_id)
+            # Console restart.  The listener has no active client or model
+            # owner until an explicit load/chat request arrives.
+            note_engine_idle(server_id)
             results.append({'server_id': server_id, 'action': 'restarted_listener', **started})
             time.sleep(1.5)
         else:

@@ -108,6 +108,9 @@ DEFAULT_HARDWARE_SETTINGS: dict[str, Any] = {
     'desktop_vram_reserve_gb': 0.0,
     # Unload idle Console engines on a saturated GPU when another generation stalls.
     'gpu_relief_enabled': True,
+    # Protect an occupied GPU from an unrelated model load. Auto-switch is
+    # deliberately opt-in and may only unload another Console-owned engine.
+    'gpu_ownership_policy': 'reject',
 }
 
 DEFAULT_DOWNLOAD_SETTINGS: dict[str, Any] = {
@@ -584,6 +587,11 @@ def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
         desktop_reserve_gb = float(raw.get('desktop_vram_reserve_gb') or 0.0)
     except (TypeError, ValueError):
         desktop_reserve_gb = 0.0
+    ownership_policy = str(
+        raw.get('gpu_ownership_policy') or DEFAULT_HARDWARE_SETTINGS['gpu_ownership_policy']
+    ).strip().lower()
+    if ownership_policy not in ('reject', 'auto_switch'):
+        ownership_policy = DEFAULT_HARDWARE_SETTINGS['gpu_ownership_policy']
     return {
         'gpu_strategy': strategy,
         'enabled_gpu_indices': enabled_indices,
@@ -595,6 +603,7 @@ def normalize_hardware_settings(raw: Any) -> dict[str, Any]:
         ),
         'desktop_vram_reserve_gb': max(0.0, desktop_reserve_gb),
         'gpu_relief_enabled': raw.get('gpu_relief_enabled') is not False,
+        'gpu_ownership_policy': ownership_policy,
     }
 
 
@@ -698,6 +707,51 @@ def get_dflash_root(cfg: dict[str, Any] | None = None) -> Path:
     return Path(str(raw)).resolve()
 
 
+def _legacy_user_config_candidates() -> list[Path]:
+    """Return older per-user config locations used by installed builds."""
+    return [
+        default_user_data_root() / 'config.json',
+        Path.home() / 'DFlash Console' / 'config.json',
+    ]
+
+
+def _inherit_legacy_api_providers(data: dict[str, Any]) -> None:
+    """Keep a source checkout connected to providers configured in the app.
+
+    The development checkout and the installed Windows shell use different
+    config roots. When the checkout has no provider list yet, inherit the
+    existing installed provider definitions, including their locally stored
+    keys, without printing or exposing those keys.
+    """
+    if data.get('api_providers'):
+        return
+    if not is_source_checkout(PACKAGE_ROOT):
+        return
+    try:
+        current = CONFIG_PATH.resolve()
+    except OSError:
+        current = CONFIG_PATH
+    seen: set[str] = set()
+    for candidate in _legacy_user_config_candidates():
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        key = str(resolved).lower()
+        if key in seen or resolved == current or not resolved.is_file():
+            continue
+        seen.add(key)
+        try:
+            with resolved.open(encoding='utf-8') as handle:
+                legacy = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        providers = legacy.get('api_providers') if isinstance(legacy, dict) else None
+        if isinstance(providers, list) and providers:
+            data['api_providers'] = providers
+            return
+
+
 def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.is_file():
         return {'ui_port': 8900, 'gateway_port': DEFAULT_GATEWAY_PORT, 'dflash_root': str(ROOT), 'servers': []}
@@ -720,6 +774,7 @@ def load_config() -> dict[str, Any]:
         data['remote_nodes'] = normalize_remote_nodes(data.get('remote_nodes'))
     from core.api_providers import normalize_api_providers
 
+    _inherit_legacy_api_providers(data)
     data['api_providers'] = normalize_api_providers(data.get('api_providers'))
     if 'ui_layout' in data:
         data['ui_layout'] = normalize_ui_layout(data.get('ui_layout'))
@@ -942,17 +997,18 @@ def update_server_runtime(
     if engine_on is not None and (entry.get('engine_on') is True) != bool(engine_on):
         entry['engine_on'] = bool(engine_on)
         changed = True
+    if clear_identity:
+        # A fresh start replaces the previous run's caller attribution.  The
+        # stored owner is runtime state too; retaining it while the listener
+        # is idle makes an unloaded engine look as though an app still owns it.
+        for key in ('loaded_by', 'component_key', 'component_label', 'component_role'):
+            if entry.pop(key, None) is not None:
+                changed = True
     if loaded_by is not None:
         label = str(loaded_by or '').strip()
         if label and entry.get('loaded_by') != label:
             entry['loaded_by'] = label
             changed = True
-    if clear_identity:
-        # A fresh start replaces the previous run's caller attribution; those
-        # component fields belong to the old run and must not be shown again.
-        for key in ('component_key', 'component_label', 'component_role'):
-            if entry.pop(key, None) is not None:
-                changed = True
     for key, value in (
         ('component_key', component_key),
         ('component_label', component_label),

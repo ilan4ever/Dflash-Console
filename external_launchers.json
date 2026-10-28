@@ -22,7 +22,7 @@
    "models_url": "http://127.0.0.1:8080/v1/models",
    "parallel": 1,
    "parallel_flag": "--parallel",
-   "loaded_by": "OneVoice"
+   "loaded_by": "DeepSeek Harness"
   }
  ]
 }

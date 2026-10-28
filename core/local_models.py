@@ -31,7 +31,7 @@ _CATALOG_CACHE_PLAIN: dict[str, Any] | None = None
 _CATALOG_CACHE_PLAIN_AT: float = 0.0
 _CATALOG_CACHE_PLAIN_KEY = ''
 _CATALOG_TTL_SECONDS = 120.0
-_CATALOG_SCHEMA = 3
+_CATALOG_SCHEMA = 4
 _PERSISTED_CACHE_TTL_SECONDS = 24 * 60 * 60
 _PERSISTED_CACHE_PATH = ROOT / 'logs' / 'local-model-catalog-cache.json'
 _PERSISTED_CACHE_PLAIN_PATH = ROOT / 'logs' / 'local-model-catalog-cache-plain.json'
@@ -51,6 +51,7 @@ _WEIGHT_SHARD_RE = re.compile(
     r'^(?P<prefix>.+?)-(?P<part>\d{5})-of-(?P<total>\d{5})\.(?:safetensors|bin|gguf)$',
     re.I,
 )
+_STRATA_DEEPSEEK_SHARED_DIR = 'deepseek-v4.1-flash-shared'
 _PHI_RE = re.compile(r'(?:^|[^a-z])phi(?:[^a-z]|$)', re.I)
 _GPT_RE = re.compile(r'(?:^|[^a-z])gpt(?:[^a-z]|$)', re.I)
 _FW_WHISPER_RE = re.compile(r'whisper', re.I)
@@ -115,6 +116,20 @@ def model_has_reasoning(entry: dict[str, Any]) -> bool:
 
 def _row_reasoning_field(entry: dict[str, Any]) -> bool:
     return model_has_reasoning(entry)
+
+
+def _is_strata_deepseek_support_file(path: Path) -> bool:
+    """Hide Strata's DeepSeek support files from the model library.
+
+    Strata stores the Engram table, DSpark drafter, and one tiny metadata shard
+    in a dedicated ``deepseek-v4.1-flash-shared`` directory. They are consumed
+    by the real IST-DAS or UD model and are not independently loadable models.
+    """
+    try:
+        parts = {part.lower() for part in path.parts}
+    except (AttributeError, TypeError):
+        return False
+    return _STRATA_DEEPSEEK_SHARED_DIR in parts
 
 
 def _catalog_cache_key(config: dict[str, Any]) -> str:
@@ -437,6 +452,40 @@ def _directory_size_bytes(path: Path, *, seen_files: set[Any] | None = None) -> 
 def _directory_size_gb(path: Path) -> float | None:
     """Return the real on-disk size of a multi-file model directory."""
     return _bytes_to_size_gb(_directory_size_bytes(path))
+
+
+def _annotate_strata_deepseek_storage(row: dict[str, Any]) -> None:
+    """Expose the model plus Strata's shared DeepSeek support storage.
+
+    The shared Engram and DSpark files are hidden as catalog rows, but they
+    still consume disk space and are required by the official IST-DAS model.
+    Keep the model's own ``size_gb`` intact for model sizing and expose the
+    real combined footprint separately for the UI.
+    """
+    if str(row.get('library_preset') or '').strip().lower() != 'strata':
+        return
+    path_text = str(row.get('path') or '').strip()
+    if not path_text:
+        return
+    normalized = path_text.replace('\\', '/').lower()
+    if 'deepseek-v4.1-flash' not in normalized:
+        return
+    try:
+        model_path = Path(path_text)
+        model_dir = model_path if model_path.is_dir() else model_path.parent
+        if model_dir.name.lower() == _STRATA_DEEPSEEK_SHARED_DIR:
+            return
+        shared_dir = model_dir.parent / _STRATA_DEEPSEEK_SHARED_DIR
+        support_gb = _directory_size_gb(shared_dir)
+    except OSError:
+        return
+    model_gb = row.get('size_gb')
+    if not isinstance(model_gb, (int, float)) or model_gb <= 0:
+        return
+    if support_gb is None or support_gb <= 0:
+        return
+    row['support_size_gb'] = support_gb
+    row['storage_size_gb'] = round(float(model_gb) + support_gb, 2)
 
 
 def _safetensors_index_size_gb(path: Path) -> float | None:
@@ -1075,6 +1124,8 @@ def _scan_gguf(
             if len(rows) >= max_files:
                 break
             name = path.name
+            if _is_strata_deepseek_support_file(path):
+                continue
             # Keep projectors visible so the UI can label them as sidecars;
             # hide other auxiliary GGUF files from the model picker.
             if is_auxiliary_gguf_filename(name) and not _is_mmproj_name(name):
@@ -1092,6 +1143,18 @@ def _scan_gguf(
                 'source': source,
                 'capabilities': [],
             }
+            shard_match = _SPLIT_SHARD_RE.match(name)
+            if shard_match:
+                siblings = [
+                    sibling for sibling in path.parent.glob(
+                        f"{shard_match.group('prefix')}-*-of-{shard_match.group('total')}.gguf"
+                    )
+                    if sibling.is_file()
+                ]
+                shard_total = int(shard_match.group('total'))
+                row['shard_present'] = len(siblings)
+                row['shard_total'] = shard_total
+                row['incomplete'] = shard_total > 1 and len(siblings) < shard_total
             caps = row['capabilities']
             from core.vision_setup import _is_mmproj_name
 
@@ -1406,11 +1469,20 @@ def _collapse_split_shards(models: list[dict[str, Any]]) -> list[dict[str, Any]]
         rows.sort(key=lambda row: int(_SPLIT_SHARD_RE.match(Path(str(row.get('path') or '')).name).group('part')))
         survivor = rows[0]
         files = [str(row.get('path') or '') for row in rows]
+        actual_bytes = sum(
+            _file_size_bytes(Path(path))
+            for path in files
+            if path
+        )
         known_sizes = [float(row['size_gb']) for row in rows if row.get('size_gb') is not None]
         survivor['split_files'] = files
         survivor['split_count'] = len(files)
         survivor['split_total'] = int(_SPLIT_SHARD_RE.match(Path(files[0]).name).group('total'))
-        survivor['size_gb'] = round(sum(known_sizes), 2) if known_sizes else None
+        survivor['size_gb'] = (
+            _bytes_to_size_gb(actual_bytes)
+            if actual_bytes > 0
+            else round(sum(known_sizes), 2) if known_sizes else None
+        )
         survivor['label'] = survivor.get('label') or survivor.get('filename')
         for row in rows[1:]:
             hidden.add(id(row))
@@ -1665,6 +1737,14 @@ def _dflash_stack_supplement(
         if server.get('enabled', True) is not False:
             continue
         normalized = normalize_server(server)
+        target, _draft = _resolve_stack_pair(normalized, cfg=cfg)
+        target_path = str(target.get('path') or '') if target else str(normalized.get('target_path') or '')
+        _source, preset, _label = (
+            library_context_for_path(target_path, config)
+            if target_path else ('', '', '')
+        )
+        if preset == 'strata':
+            continue
         server_id = str(normalized.get('id') or '')
         if server_id in catalog_server_ids:
             continue
@@ -1680,7 +1760,10 @@ def _dflash_stack_supplement(
         for path in seen_targets
         if Path(path).name.strip()
     }
-    pool = list(catalog.values()) + list(extras or [])
+    pool = [
+        row for row in (list(catalog.values()) + list(extras or []))
+        if str(row.get('library_preset') or '').strip().lower() != 'strata'
+    ]
     targets = list(list_capable_targets(cfg=config, models=pool).get('targets') or [])
 
     def _stack_path_rank(target: dict[str, Any]) -> tuple[int, str]:
@@ -1948,6 +2031,12 @@ def model_matches_source(row: dict[str, Any], source: str) -> bool:
         return raw == 'ollama' or row_id.startswith('ollama:')
     if needle in {'lmstudio', 'lm-studio', 'lms'}:
         return raw == 'lmstudio'
+    if needle in {'strata'}:
+        return (
+            raw == 'strata'
+            or str(row.get('library_preset') or '').strip().lower() == 'strata'
+            or str(row.get('runtime_id') or '').strip().lower() == 'strata'
+        )
     if needle in {'dflash', 'stack', 'stacks'}:
         return bool(row.get('dflash_stack')) or raw in {'dflash', 'dflash-profile', 'dflash-stack'}
     if needle in {'library', 'console', 'local'}:
@@ -1968,6 +2057,7 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
     adapter in later phases when the corresponding adapter ships.
     """
     caps = list(row.get('capabilities') or [])
+    library_preset = str(row.get('library_preset') or '').strip().lower()
     profile = str(row.get('profile') or '').lower()
     engine_mode = str(row.get('engine_mode') or '').lower()
     haystack = ' '.join(
@@ -1994,6 +2084,14 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
         modality = 'llm'
     row['modality'] = modality
     runtime_id = 'llama-server'
+    if library_preset == 'strata':
+        # Strata owns these files and starts its own server. Keep them in the
+        # searchable library without creating a competing DFlash loader.
+        runtime_id = 'strata'
+        row['runtime_label'] = 'Strata'
+        row['engine_mode'] = 'Strata'
+        row['loadable'] = False
+        row['runnable'] = False
     if modality == 'text-to-speech':
         # VibeVoice TTS models are safetensors dirs (config.json declares the
         # vibevoice_streaming model_type) and run on the vibevoice runtime;
@@ -2221,7 +2319,18 @@ def _profile_catalog(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for server in list_servers(config):
         if not server.get('enabled', True):
             continue
-        row = _server_catalog_row(normalize_server(server), cfg=config)
+        normalized = normalize_server(server)
+        target, _draft = _resolve_stack_pair(normalized, cfg=config)
+        target_path = str(target.get('path') or '') if target else str(normalized.get('target_path') or '')
+        _source, preset, _label = (
+            library_context_for_path(target_path, config)
+            if target_path else ('', '', '')
+        )
+        if preset == 'strata':
+            # A stale DFlash profile must not shadow a model that belongs to
+            # Strata. The file scan below exposes the real Strata row.
+            continue
+        row = _server_catalog_row(normalized, cfg=config)
         catalog[row['server_id']] = row
     return catalog
 
@@ -2265,6 +2374,8 @@ def _build_models_payload(
         row for row in models
         if not is_auxiliary_gguf_filename(str(row.get('filename') or Path(str(row.get('path') or '')).name))
     ]
+    for row in models:
+        _annotate_strata_deepseek_storage(row)
     from core.display_names import label_with_quant_suffix
 
     for row in models:
@@ -2295,6 +2406,12 @@ def _build_models_payload(
         else:
             row['parallel_slots'] = default_slots
             row['slots_source'] = 'default'
+    # A local mtime is useful for troubleshooting, but it is not a Hugging
+    # Face release date.  Add the cached, source-verified remote state
+    # separately so the UI cannot mistake "changed today" for "new version".
+    from core.model_updates import annotate_models
+
+    annotate_models(models, cfg=config)
     models.sort(key=lambda r: (0 if r.get('loadable') else 1, (r.get('label') or '').lower()))
     total_gb = round(sum(float(r.get('size_gb') or 0) for r in models), 2)
     loadable_count = sum(1 for r in models if r.get('loadable'))

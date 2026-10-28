@@ -17,6 +17,8 @@ def test_model_matches_source_filters_ollama_and_dflash():
     hf = {'id': 'qwen', 'source': 'library', 'runtime_id': 'vllm', 'engines': ['vllm', 'transformers']}
     assert model_matches_source(hf, 'vllm')
     assert model_matches_source(hf, 'transformers')
+    strata = {'id': 'deepseek', 'source': 'strata', 'library_preset': 'strata', 'runtime_id': 'strata'}
+    assert model_matches_source(strata, 'strata')
 
 
 def test_scan_hf_llm_finds_safetensors_dir(tmp_path: Path):
@@ -33,6 +35,29 @@ def test_scan_hf_llm_finds_safetensors_dir(tmp_path: Path):
     assert rows[0]['kind'] == 'dir'
     assert 'vllm' in rows[0]['engines']
     assert rows[0]['runtime_id'] in {'vllm', 'transformers'}
+
+
+def test_strata_library_row_is_searchable_but_not_a_dflash_load_target(tmp_path: Path):
+    from core.local_models import _annotate_runtime_fields, _scan_gguf
+
+    model = tmp_path / 'DeepSeek-V4.1-Flash-IQ2_XXS.gguf'
+    model.write_bytes(b'GGUF')
+    rows = _scan_gguf(
+        tmp_path,
+        source='strata',
+        library_preset='strata',
+        library_label='Strata models',
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    row['loadable'] = True
+    _annotate_runtime_fields(row)
+    assert row['source'] == 'strata'
+    assert row['discovered_from'] == 'Strata'
+    assert row['runtime_id'] == 'strata'
+    assert row['runtime_label'] == 'Strata'
+    assert row['engine_mode'] == 'Strata'
+    assert row['loadable'] is False
 
 
 def test_scan_hf_llm_uses_hub_repo_name_not_snapshot_hash(tmp_path: Path):
@@ -767,6 +792,54 @@ def test_scanned_gguf_skips_imatrix_sidecar(tmp_path: Path):
     assert [row['filename'] for row in rows] == ['Qwen3.8-27B-GSQ-RCO-IQ2_S-mtp.gguf']
 
 
+def test_scanned_strata_deepseek_support_files_are_not_models(tmp_path: Path):
+    from core.local_models import _scan_gguf
+
+    root = tmp_path / 'models'
+    shared = root / 'deepseek-v4.1-flash-shared'
+    model = root / 'deepseek-v4.1-flash-IST-DAS-2.00bpw'
+    shared.mkdir(parents=True)
+    model.mkdir()
+    for name in (
+        'DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf',
+        'dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf',
+        'DeepSeek-V4.1-Flash-1017-UD-Q8_K_XL-00001-of-00009.gguf',
+    ):
+        (shared / name).write_bytes(b'support')
+    model_names = [
+        f'DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-{index:05d}-of-00004.gguf'
+        for index in range(1, 5)
+    ]
+    for name in model_names:
+        (model / name).write_bytes(b'model')
+
+    rows = _scan_gguf(root, source='strata', library_preset='strata')
+
+    assert {row['filename'] for row in rows} == set(model_names)
+
+
+def test_strata_deepseek_card_reports_combined_storage(tmp_path: Path, monkeypatch):
+    from core import local_models
+
+    model_dir = tmp_path / 'deepseek-v4.1-flash-IST-DAS-2.00bpw'
+    shared_dir = tmp_path / 'deepseek-v4.1-flash-shared'
+    model_dir.mkdir()
+    shared_dir.mkdir()
+    model_path = model_dir / 'DeepSeek-V4.1-Flash-IQ2_XXS.gguf'
+    model_path.write_bytes(b'model')
+    monkeypatch.setattr(local_models, '_directory_size_gb', lambda path: 110.43 if path == shared_dir else None)
+
+    row = {
+        'path': str(model_path),
+        'size_gb': 128.75,
+        'library_preset': 'strata',
+    }
+    local_models._annotate_strata_deepseek_storage(row)
+
+    assert row['support_size_gb'] == 110.43
+    assert row['storage_size_gb'] == 239.18
+
+
 def test_scanned_gguf_is_loadable(tmp_path: Path):
     from core.local_models import _scan_gguf
 
@@ -796,6 +869,42 @@ def test_split_gguf_shards_are_grouped_with_combined_size(tmp_path: Path):
     assert grouped[0]['split_total'] == 3
     assert grouped[0]['size_gb'] == 9.0
     assert grouped[0]['split_files'] == [row['path'] for row in rows]
+
+
+def test_split_gguf_shards_do_not_double_count_combined_sizes(tmp_path: Path, monkeypatch):
+    from core import local_models
+
+    rows = []
+    sizes = (2, 3, 4, 5)
+    for index, size in enumerate(sizes, start=1):
+        path = tmp_path / f'DeepSeek-{index:05d}-of-00004.gguf'
+        rows.append({
+            'path': str(path),
+            'filename': path.name,
+            # Each scanned shard used to carry the already-combined size.
+            'size_gb': 14.0,
+        })
+
+    monkeypatch.setattr(
+        local_models,
+        '_file_size_bytes',
+        lambda path: sizes[int(path.stem.split('-')[-3]) - 1] * (1024 ** 3),
+    )
+    grouped = local_models._collapse_split_shards(rows)
+
+    assert len(grouped) == 1
+    assert grouped[0]['size_gb'] == 14.0
+
+
+def test_scan_gguf_marks_missing_split_shards_incomplete(tmp_path: Path):
+    from core.local_models import _scan_gguf
+
+    (tmp_path / 'DeepSeek-00001-of-00009.gguf').write_bytes(b'GGUF')
+    rows = _scan_gguf(tmp_path, source='strata', library_preset='strata')
+    assert len(rows) == 1
+    assert rows[0]['shard_present'] == 1
+    assert rows[0]['shard_total'] == 9
+    assert rows[0]['incomplete'] is True
 
 
 def test_identical_files_in_multiple_roots_collapse_to_one_row(tmp_path: Path):

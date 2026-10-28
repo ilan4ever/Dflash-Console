@@ -21,6 +21,11 @@ def test_infer_discovered_from_lmstudio_preset():
     assert label == 'LM Studio'
 
 
+def test_infer_discovered_from_strata_preset():
+    label = infer_discovered_from(source='strata', preset='strata', library_label='Strata models')
+    assert label == 'Strata'
+
+
 def test_infer_discovered_from_library_label():
     label = infer_discovered_from(
         source='library',

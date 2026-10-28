@@ -41,6 +41,34 @@ def _release_peer_llm_engines(keep: str) -> None:
             pass
 
 
+def _unload_console_engine_for_ownership(server_id: str, *, cfg: dict[str, Any]) -> bool:
+    """Unload one Console-owned llama engine for the opt-in auto-switch mode."""
+    from core.config import get_server
+    from core.runtime import build_server_status, unload_model
+
+    server = get_server(cfg, server_id)
+    if not server:
+        return False
+    normalized = normalize_server(dict(server))
+    try:
+        status = build_server_status(normalized, cfg=cfg, live_probe=True)
+    except Exception:
+        status = {}
+    model_id = str(
+        status.get('active_model_id')
+        or normalized.get('model_id')
+        or (status.get('loaded_models') or [''])[0]
+        or ''
+    ).strip()
+    if not model_id:
+        return False
+    result = unload_model(
+        api_url=str(normalized.get('api_url') or ''),
+        model_id=model_id,
+    )
+    return bool(result.get('success'))
+
+
 def execute_catalog_load(
     *,
     path: str | None = None,
@@ -78,16 +106,6 @@ def execute_catalog_load(
                     'error': 'gpu_unavailable',
                     'gpu_device': requested_gpu,
                     'message': f'GPU {requested_gpu} is not detected on this machine.',
-                },
-            )
-        free = selected.get('vram_free_gb')
-        if free is not None and float(free) <= 0.1:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    'error': 'gpu_busy',
-                    'gpu_device': requested_gpu,
-                    'message': f'GPU {requested_gpu} is full. Unload another model or choose Automatic/another GPU.',
                 },
             )
     catalog = list_local_models(cfg=config)
@@ -238,6 +256,35 @@ def execute_catalog_load(
             **result,
         }
     if runtime_id in {'transformers', 'vllm', 'freetoken'}:
+        from core.gpu_ownership import GpuOwnershipConflict, enforce_gpu_ownership
+
+        runtime_cfg = next(
+            (
+                normalize_server(dict(row))
+                for row in (config.get('runtimes') or [])
+                if isinstance(row, dict) and str(row.get('id') or row.get('runtime_id') or '') == runtime_id
+            ),
+            {},
+        )
+        try:
+            enforce_gpu_ownership(
+                {
+                    **runtime_cfg,
+                    'runtime_id': runtime_id,
+                    'gpu_device': requested_gpu or runtime_cfg.get('gpu_device') or 'auto',
+                    'model_id': str(target.get('model_id') or target.get('id') or resolved_path),
+                    'adhoc_model_path': resolved_path,
+                },
+                cfg=config,
+                target_server_id=runtime_id,
+                model_id=str(target.get('model_id') or target.get('id') or resolved_path),
+                unload_console_engine=lambda other_id: _unload_console_engine_for_ownership(
+                    other_id,
+                    cfg=config,
+                ),
+            )
+        except GpuOwnershipConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
         _release_peer_llm_engines(runtime_id)
         adapter = get_runtime_adapter(runtime_id)
         if adapter is None:
@@ -312,6 +359,22 @@ def execute_catalog_load(
             }
     if inference_settings:
         candidate['inference_settings'] = normalize_inference_settings(inference_settings)
+
+    from core.gpu_ownership import GpuOwnershipConflict, enforce_gpu_ownership
+
+    try:
+        ownership = enforce_gpu_ownership(
+            candidate,
+            cfg=config,
+            target_server_id=str(server.get('id') or ''),
+            model_id=str(model_id or resolved_path or target.get('model_id') or ''),
+            unload_console_engine=lambda other_id: _unload_console_engine_for_ownership(
+                other_id,
+                cfg=config,
+            ),
+        )
+    except GpuOwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
 
     server_id_text = str(server.get('id') or '')
     already = checkpoint_already_loaded(
@@ -393,5 +456,6 @@ def execute_catalog_load(
         'loaded': True,
         'path': resolved_path,
         'how_to_use': how_to_use,
+        'gpu_ownership': ownership,
         **result,
     }

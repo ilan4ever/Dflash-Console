@@ -32,6 +32,8 @@ _files_bg_running: set[str] = set()
 _files_bg_lock = threading.Lock()
 _files_disk_loaded = False
 _FILES_CACHE_PATH = ROOT / 'logs' / 'hf-files-cache.json'
+_local_repo_resolution_cache: dict[str, str] = {}
+_local_repo_resolution_lock = threading.Lock()
 
 HF_CATEGORIES: dict[str, dict[str, Any]] = {
     'supported': {
@@ -1726,6 +1728,48 @@ def _summary_from_model(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def get_model_revision_metadata(repo_id: str, *, timeout: float = 20.0) -> dict[str, Any]:
+    """Return the Hub commit and current file manifest for update checks.
+
+    This intentionally uses the repository commit SHA rather than a local
+    directory mtime.  The manifest is kept small enough for the update cache
+    and contains every Hub file so a staged repository replacement can verify
+    what it downloaded.
+    """
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or repo.count('/') != 1:
+        return {'success': False, 'error': 'a Hugging Face repo id is required'}
+    encoded = urllib.parse.quote(repo, safe='/')
+    try:
+        raw = _request_json(
+            f'{HF_API}/models/{encoded}?blobs=true',
+            timeout=max(0.5, float(timeout)),
+        )
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {'success': False, 'error': str(exc)}
+    if not isinstance(raw, dict):
+        return {'success': False, 'error': 'Hugging Face returned invalid repository metadata'}
+    siblings = raw.get('siblings') if isinstance(raw.get('siblings'), list) else []
+    siblings = [row for row in siblings if isinstance(row, dict) and _entry_name(row)]
+    if not siblings:
+        siblings = _fetch_repo_siblings_with_blobs(repo, timeout=max(0.5, float(timeout) / 2))
+    files = [
+        {
+            'filename': _entry_name(item),
+            'size_bytes': int(_entry_size_bytes(item) or 0),
+        }
+        for item in siblings
+        if _entry_name(item)
+    ]
+    return {
+        'success': True,
+        'repo_id': repo,
+        'revision': str(raw.get('sha') or raw.get('lastCommitId') or '').strip(),
+        'last_modified': str(raw.get('lastModified') or raw.get('createdAt') or '').strip(),
+        'files': files,
+    }
+
+
 def _row_needs_size_enrich(row: dict[str, Any]) -> bool:
     size_gb = row.get('size_gb')
     has_gguf = bool(row.get('has_gguf') or row.get('accelerator_only'))
@@ -2762,6 +2806,63 @@ def get_model_files(repo_id: str, *, category: str = 'all', timeout: float = 100
         payload['error'] = str(exc)
         return payload
     return _finalize(siblings)
+
+
+def resolve_local_hf_repo(path: str, *, timeout: float = 12.0) -> dict[str, Any]:
+    """Find the HF repo containing a local model file when its path is flat.
+
+    A folder name is not a repository identity.  When a local model was
+    copied outside the normal ``org/repo`` layout, search Hugging Face by the
+    exact filename and confirm the file exists in the candidate repository
+    before returning it.
+    """
+    normalized_path = str(path or '').strip()
+    filename = normalized_path.replace('\\', '/').rsplit('/', 1)[-1].strip()
+    if not filename or len(filename) > 240:
+        return {'success': False, 'error': 'a model filename is required'}
+    cache_key = filename.lower()
+    with _local_repo_resolution_lock:
+        cached = _local_repo_resolution_cache.get(cache_key)
+    if cached:
+        return {'success': True, 'repo_id': cached, 'filename': filename, 'match': 'exact_filename'}
+
+    search = search_models(
+        filename,
+        limit=12,
+        category='all-gguf',
+        enrich_sizes=False,
+    )
+    candidates = [
+        str(row.get('id') or '').strip()
+        for row in (search.get('models') or [])
+        if isinstance(row, dict) and '/' in str(row.get('id') or '')
+    ]
+    for repo_id in candidates:
+        files = get_model_files(repo_id, category='all', timeout=timeout)
+        entries = files.get('gguf_files') or files.get('download_files') or []
+        for entry in entries:
+            remote_name = str(
+                entry.get('filename')
+                or entry.get('path')
+                or entry.get('rfilename')
+                or '',
+            ).replace('\\', '/')
+            if remote_name.rsplit('/', 1)[-1].lower() != cache_key:
+                continue
+            with _local_repo_resolution_lock:
+                _local_repo_resolution_cache[cache_key] = repo_id
+            return {
+                'success': True,
+                'repo_id': repo_id,
+                'filename': filename,
+                'remote_filename': remote_name,
+                'match': 'exact_filename',
+            }
+    return {
+        'success': False,
+        'filename': filename,
+        'error': f'No Hugging Face repository contains {filename}',
+    }
 
 
 def _fetch_detail_sources(repo: str, url: str, hub_timeout: float) -> tuple[Any, Exception | None, str, bool]:
@@ -4101,19 +4202,24 @@ def _disk_job_id(path: Path) -> str:
 def _infer_repo_id(path: Path) -> str:
     parts = list(path.parts)
     lower = [part.lower() for part in parts]
-    for marker in ('models', 'hub', 'huggingface'):
-        if marker not in lower:
+    for idx in range(len(parts) - 1, -1, -1):
+        if lower[idx] not in {'models', 'hub', 'huggingface'}:
             continue
-        idx = lower.index(marker)
         if idx + 2 >= len(parts):
             continue
         org = parts[idx + 1]
         repo = parts[idx + 2]
+        if org.lower() in {'models', 'hub', 'huggingface'}:
+            continue
         if org.startswith('models--'):
             return org[len('models--'):].replace('--', '/', 1)
-        if org and repo and '/' not in org and '/' not in repo:
+        # A repository layout has an org, repo, and file below the marker.
+        # Do not turn a flat local folder into a made-up HF repo.
+        if idx + 3 < len(parts) and org and repo and '/' not in org and '/' not in repo:
             return f'{org}/{repo}'
-    if len(path.parts) >= 3:
+    # Download roots outside the conventional "models" folder still use the
+    # unambiguous <org>/<repo>/<file> shape.
+    if not any(marker in lower for marker in ('models', 'hub', 'huggingface')) and len(path.parts) >= 3:
         return f'{path.parent.parent.name}/{path.parent.name}'
     return ''
 

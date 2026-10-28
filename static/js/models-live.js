@@ -190,8 +190,11 @@
   function apiProviderTag(model) {
     if (!isCloudApiModel(model)) return '';
     const label = cloudProviderLabel(model);
-    if (!label) return '';
-    return `<span class="lm-tag teal" title="Cloud API provider">${escapeHtml(label)}</span>`;
+    const runtime = String(model?.runtime_label || 'Cloud API').trim() || 'Cloud API';
+    const text = label && label.toLowerCase() !== runtime.toLowerCase()
+      ? `${runtime} · ${label}`
+      : runtime;
+    return `<span class="lm-tag teal" title="This model is provided by a remote API; it is not downloaded locally">${escapeHtml(text)}</span>`;
   }
 
   function modelKey(model) {
@@ -319,12 +322,24 @@
 
   function formatModelDiskSize(model) {
     const onDisk = formatSizeGb(model?.size_gb);
+    const total = formatSizeGb(model?.storage_size_gb);
+    if (total !== '—' && total !== onDisk) return `${total} total`;
     if (model?.incomplete) {
       const expected = formatSizeGb(model?.expected_size_gb);
       if (onDisk !== '—' && expected !== '—') return `${onDisk} / ${expected}`;
       if (onDisk !== '—') return `${onDisk} (incomplete)`;
     }
     return onDisk;
+  }
+
+  function modelDiskSizeTitle(model) {
+    const onDisk = formatSizeGb(model?.size_gb);
+    const total = formatSizeGb(model?.storage_size_gb);
+    const support = formatSizeGb(model?.support_size_gb);
+    if (total !== '—' && support !== '—' && onDisk !== '—') {
+      return `Disk total: ${total} (${onDisk} model + ${support} shared Strata support files)`;
+    }
+    return total !== '—' ? `Disk total: ${total}` : `Model size on disk: ${onDisk}`;
   }
 
   function dflashCompatibilityBadge() {
@@ -619,6 +634,7 @@
     const parts = ['lm-model-row'];
     if (selected) parts.push('selected');
     if (pinned) parts.push('pinned');
+    if (model?.hf_update_available === true) parts.push('model-update-ready');
     if (isStackUnloading(model)) parts.push('unloading-on-server');
     else if (isStackBooting(model)) parts.push('loading-on-server');
     else if (isStackLoadedOnGpu(model)) parts.push('loaded-on-gpu');
@@ -644,7 +660,11 @@
 
   function capTags(model, visibleCount, { handleOnly = false, bodyOnly = false } = {}) {
     // Title-row badges used to be only "LLM" and forced a full extra line.
-    if (handleOnly) return '';
+    if (handleOnly) {
+      return model?.hf_update_available === true
+        ? '<span class="lm-model-update-badge" title="A newer verified Hugging Face revision is ready to install">NEW VERSION READY</span>'
+        : '';
+    }
     const classification = window.DFlashModelCard?.classificationTags?.(model)
       || modalityBadge(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
@@ -871,6 +891,7 @@
     actionStack,
     actionStackSetup,
     size,
+    sizeTitle,
     dupVisible,
     title,
     handleBadges,
@@ -897,7 +918,7 @@
           <td class="lm-col-meta lm-library-handle-meta">${libraryScaleCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelLabCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelSourceCell(model)}</td>
-          <td class="lm-col-meta lm-library-handle-meta">${escapeHtml(size)}</td>
+          <td class="lm-col-meta lm-library-handle-meta" title="${escapeHtml(sizeTitle || '')}">${escapeHtml(size)}</td>
           <td class="lm-col-meta lm-col-updated lm-library-handle-meta">${libraryUpdatedCell(model)}</td>
           <td class="lm-col-meta lm-library-handle-meta">${modelSlotsCell(model)}</td>
           <td class="${actionCls}" rowspan="${actionRowspan}">${loadBtn}</td>
@@ -1030,6 +1051,7 @@
 
   function canLoadInConsole(model) {
     if (!model?.path || modelFileMissing(model)) return false;
+    if (String(model?.runtime_id || '').trim().toLowerCase() === 'strata') return false;
     if (isProjectorModel(model)) return false;
     if (isDflashAccelerator(model)) return false;
     if (Number(model.split_count || 0) > 1) return false;
@@ -1167,6 +1189,10 @@
   }
 
   function modelCatalogRoleTag(model) {
+    if (String(model?.runtime_id || '').trim().toLowerCase() === 'strata'
+      || String(model?.source || '').trim().toLowerCase() === 'strata') {
+      return '<span class="lm-badge green" title="Installed and served by Strata">Strata</span>';
+    }
     if (model?.server_id && String(model?.source || '') === 'dflash-profile') {
       return '<span class="lm-badge blue" title="Registered DFlash engine profile">Engine profile</span>';
     }
@@ -1186,21 +1212,40 @@
     return `<div class="lm-model-path-hint" title="${escapeHtml(model.path)}">${escapeHtml(shortPath(model.path))}</div>`;
   }
 
-  // The Hugging Face repo a model file was downloaded from:
-  //   <root>/<org>/<repo>/<file>.gguf   or   .../models--<org>--<repo>/snapshots/<sha>/<file>
+  function cleanHfRepo(value) {
+    const repo = String(value || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!repo || !repo.includes('/') || repo.includes('..') || /\s/.test(repo)) return '';
+    const parts = repo.split('/');
+    if (parts.length !== 2 || parts.some((part) => !/^[A-Za-z0-9._-]+$/.test(part))) return '';
+    return repo;
+  }
+
+  // Resolve only authoritative Hugging Face layouts:
+  //   <root>/<org>/<repo>/<file>.gguf
+  //   .../models--<org>--<repo>/snapshots/<sha>/<file>
+  // A local folder such as <root>/models/unsloth-UD-IQ4_XS is not enough
+  // information to identify a repository and must never become
+  // "models/unsloth-UD-IQ4_XS".
   function modelHfRepoFromPath(model) {
-    const explicit = String(model?.hf_repo || model?.repo_id || '').trim().replace(/^\/+|\/+$/g, '');
-    if (explicit.includes('/')) return explicit;
-    const path = String(model?.path || '').replace(/\\/g, '/');
+    const explicit = cleanHfRepo(model?.hf_repo || model?.repo_id);
+    if (explicit) return explicit;
+    const path = String(model?.path || model?.model_path || model?.target_path || '').replace(/\\/g, '/');
     if (!path) return '';
     const hub = path.match(/models--([^/]+?)--([^/]+)/i);
-    if (hub?.[1] && hub?.[2]) return `${hub[1]}/${hub[2]}`;
+    const cached = cleanHfRepo(`${hub?.[1] || ''}/${hub?.[2] || ''}`);
+    if (cached) return cached;
     const parts = path.split('/').filter(Boolean);
-    const modelsIdx = parts.findIndex((part) => part.toLowerCase() === 'models');
-    if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
+    const modelIndexes = parts
+      .map((part, index) => part.toLowerCase() === 'models' ? index : -1)
+      .filter((index) => index >= 0);
+    for (const modelsIdx of modelIndexes.reverse()) {
+      if (parts.length <= modelsIdx + 2) continue;
       const org = parts[modelsIdx + 1];
       const repo = parts[modelsIdx + 2];
-      if (org && repo && !/\.(gguf|bin|onnx|safetensors|part)$/i.test(repo)) return `${org}/${repo}`;
+      if (!org || !repo || org.toLowerCase() === 'models') continue;
+      if (/\.(gguf|bin|onnx|safetensors|part)$/i.test(repo)) continue;
+      const candidate = cleanHfRepo(`${org}/${repo}`);
+      if (candidate) return candidate;
     }
     return '';
   }
@@ -1244,8 +1289,8 @@
   }
 
   function libraryUpdatedCell(model) {
-    const modified = String(model?.modified || '').trim();
-    if (modified) return escapeHtml(modified);
+    const modified = String(model?.local_changed || model?.modified || '').trim();
+    if (modified) return `<span title="This is the local file change age, not the Hugging Face release date">Local changed ${escapeHtml(modified)}</span>`;
     if (isCloudApiModel(model)) return 'Cloud';
     return '—';
   }
@@ -1936,26 +1981,9 @@
   }
 
   function huggingFaceUrl(model) {
-    const repo = String(model?.hf_repo || model?.repo_id || '').trim().replace(/^\/+|\/+$/g, '');
-    if (repo.includes('/') && !repo.includes('..') && !/\s/.test(repo)) {
+    const repo = modelHfRepoFromPath(model);
+    if (repo) {
       return `https://huggingface.co/${repo}`;
-    }
-    const normalized = String(model?.path || model?.model_path || model?.target_path || '').replace(/\\/g, '/');
-    const hub = normalized.match(/models--([^/]+)--([^/]+)/i);
-    if (hub?.[1] && hub?.[2]) return `https://huggingface.co/${hub[1]}/${hub[2]}`;
-    const parts = normalized.split('/').filter(Boolean);
-    const modelsIdx = parts.findIndex((part) => part.toLowerCase() === 'models');
-    if (modelsIdx >= 0 && parts.length > modelsIdx + 2) {
-      const org = parts[modelsIdx + 1];
-      const name = parts[modelsIdx + 2];
-      if (org && name && !/\.(gguf|bin|onnx|safetensors)$/i.test(name)) {
-        return `https://huggingface.co/${org}/${name}`;
-      }
-    }
-    const publisher = String(model?.publisher || '').trim();
-    const folder = String(model?.label || '').trim();
-    if ((model?.arch === 'hf' || model?.kind === 'dir') && publisher && folder && !folder.includes('/')) {
-      return `https://huggingface.co/${publisher}/${folder}`;
     }
     return '';
   }
@@ -1964,6 +1992,31 @@
     const url = huggingFaceUrl(model);
     if (!url) return '';
     return url.replace(/^https:\/\/huggingface\.co\//i, '').replace(/\/+$/, '');
+  }
+
+  async function resolveHuggingFaceName(model) {
+    const known = huggingFaceName(model);
+    if (known) return known;
+    const path = String(model?.path || model?.model_path || model?.target_path || '').trim();
+    if (!path) return '';
+    try {
+      const result = await api(`/api/hf/resolve-local?path=${encodeURIComponent(path)}`, {
+        timeoutMs: 30000,
+      });
+      const repo = cleanHfRepo(result?.repo_id);
+      if (repo) {
+        model.hf_repo = repo;
+        return repo;
+      }
+    } catch {
+      // A missing or offline Hugging Face lookup must not invent a repo name.
+    }
+    return '';
+  }
+
+  async function resolveHuggingFaceUrl(model) {
+    const repo = await resolveHuggingFaceName(model);
+    return repo ? `https://huggingface.co/${repo}` : '';
   }
 
   function getActiveDownloadJobs() {
@@ -2142,6 +2195,7 @@
   const MODEL_TYPE_FILTER_KEY = 'dflashConsole.modelsModelTypeFilter';
   const MODEL_TYPE_FILTERS = new Set([
     'all',
+    'updates',
     'gguf',
     'vllm',
     'transformers',
@@ -2318,6 +2372,7 @@
   }
 
   function matchesModelType(model) {
+    if (modelTypeFilter === 'updates') return model?.hf_update_available === true;
     if (modelTypeFilter === 'hf-accelerator') return isHfAcceleratorAvailable(model);
     if (modelTypeFilter === 'gguf') return matchesLoadEngine(model, 'dflash');
     if (modelTypeFilter === 'vllm') return matchesLoadEngine(model, 'vllm');
@@ -2405,13 +2460,15 @@
   }
 
   function shouldHideAcceleratorRow(model) {
-    return isDflashAccelerator(model) && !showingAcceleratorsOnly();
+    return isDflashAccelerator(model)
+      && !showingAcceleratorsOnly()
+      && modelTypeFilter !== 'updates';
   }
 
   function modelsRenderSignature(filterText) {
     const needle = normalizeSearchText(filterText);
     const rows = models.filter((model) => {
-      if (shouldHideAcceleratorRow(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      if (shouldHideAcceleratorRow(model)) return false;
       if (typeFilter === 'dflash' && !isDflashStack(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
@@ -2428,6 +2485,8 @@
       model.path,
       model.draft_path,
       model.size_gb,
+      model.support_size_gb,
+      model.storage_size_gb,
       model.draft_size_gb,
       model.dflash_generation_label,
       model.accelerator_only,
@@ -2436,12 +2495,22 @@
       model.stack_status,
       model.duplicate_group,
       model.match_score,
+      model.hf_update_status,
+      model.hf_update_available,
+      model.hf_remote_revision,
     ].join(':')).join('|');
     return `${typeFilter}:${modelTypeFilter}:${hfAcceleratorRevision}:${selectedKey}:${needle}:${rows}`;
   }
 
   // Provider source label for the Source column (LM Studio, OneVoice, HF hub, etc.).
   function modelSourceLabel(model) {
+    if (isCloudApiModel(model)) {
+      const runtime = String(model?.runtime_label || 'Cloud API').trim() || 'Cloud API';
+      const provider = cloudProviderLabel(model);
+      return provider && provider.toLowerCase() !== runtime.toLowerCase()
+        ? `${runtime} · ${provider}`
+        : runtime;
+    }
     const discovered = String(model?.discovered_from || '').trim();
     if (discovered) return discovered;
     const libLabel = String(model?.library_label || '').trim();
@@ -2454,8 +2523,6 @@
     if (source === 'ollama') return 'Ollama';
     const app = externalAppLabel(model);
     if (app) return app;
-    // Never show bare External for enabled API provider rows.
-    if (isCloudApiModel(model)) return cloudLabel || 'API';
     return 'External';
   }
 
@@ -2480,11 +2547,15 @@
 
   function libraryMobileCardLabels(model) {
     const quant = quantizationBadge(model);
+    const update = model?.hf_update_available === true
+      ? '<span class="lm-model-update-badge" title="A newer verified Hugging Face revision is ready to install">NEW VERSION READY</span>'
+      : '';
     const tags = window.DFlashModelCard?.classificationTags?.(model, { includeReasoning: false, includeModality: false }) || '';
     const modality = modalityBadge(model);
     const status = isDflashStack(model) ? stackStatusTag(model) : '';
     const apiProv = apiProviderTag(model);
-    return `${quant}${tags}${apiProv}${status}${modality}`;
+    const role = modelCatalogRoleTag(model);
+    return `${update}${quant}${tags}${apiProv}${role}${status}${modality}`;
   }
 
   function libraryMobileActionHtml(model) {
@@ -2580,6 +2651,7 @@
           ? `<div class="lm-model-path-hint">${escapeHtml(String(model?.model_id || model?.id || ''))}</div>`
           : modelRepoHintHtml(model),
         diskLabel: size,
+        diskTitle: modelDiskSizeTitle(model),
         actionHtml,
         selected,
         external: isExternalModel(model),
@@ -2622,9 +2694,9 @@
     const needle = normalizeSearchText(filterText);
     const pinned = loadPinnedSet();
     const activeDownloads = filterDownloadJobs(getActiveDownloadJobs(), needle);
-    const visibleDownloads = modelTypeFilter === 'hf-accelerator' ? [] : activeDownloads;
+    const visibleDownloads = ['hf-accelerator', 'updates'].includes(modelTypeFilter) ? [] : activeDownloads;
     const catalogRows = models.filter((model) => {
-      if (shouldHideAcceleratorRow(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
+      if (shouldHideAcceleratorRow(model)) return false;
       if (typeFilter === 'dflash' && !isDflashStack(model) && !(needle && modelMatchesSearch(model, filterText))) return false;
       if (typeFilter === 'accelerators' && !isDflashAccelerator(model)) return false;
       if (typeFilter === 'loaded' && !isStackLoadedOnGpu(model)) return false;
@@ -2700,7 +2772,9 @@
         }
         return;
       }
-      const emptyLabel = modelTypeFilter === 'hf-accelerator'
+      const emptyLabel = modelTypeFilter === 'updates'
+        ? 'No verified Hugging Face model updates are ready to install.'
+        : modelTypeFilter === 'hf-accelerator'
         ? hfAcceleratorStatus === 'loading'
           ? 'Checking Hugging Face for compatible DFlash accelerators…'
           : hfAcceleratorStatus === 'error'
@@ -2770,6 +2844,7 @@
         actionStack,
         actionStackSetup,
         size,
+        sizeTitle: modelDiskSizeTitle(model),
         dupVisible,
         title,
         handleBadges,
@@ -3221,6 +3296,7 @@
     const pinned = loadPinnedSet();
     const isPinned = pinned.has(key);
     const hfUrl = huggingFaceUrl(model);
+    const hfResolvable = !!String(model?.path || model?.model_path || model?.target_path || '').trim();
     const canDelete = !!model.path || !!model.server_id;
 
     const targetIssue = stackTargetIssue(model);
@@ -3235,10 +3311,13 @@
       <button type="button" data-cmd="pin" title="Keep this model at the top of the Model library">${isPinned ? 'Unpin from top' : 'Pin to top'}</button>
       <button type="button" data-cmd="copy-id"${apiModelIdentifier(model) ? '' : ' disabled'} title="Name you send as the model in an API request">Copy API name</button>
       <button type="button" data-cmd="copy-name"${displayModelName(model) ? '' : ' disabled'} title="The name shown on this card">Copy display name</button>
-      <button type="button" data-cmd="copy-hf-name"${huggingFaceName(model) ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
+      <button type="button" data-cmd="copy-hf-name"${(huggingFaceName(model) || hfResolvable) ? '' : ' disabled'} title="Full Hugging Face repo, such as org/model">Copy Hugging Face name</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <button type="button" data-cmd="model-note">${modelNoteText(model) ? 'Edit personal note…' : 'Add personal note…'}</button>
-      <button type="button" data-cmd="huggingface"${hfUrl ? '' : ' disabled'}>Open Hugging Face</button>
+      <button type="button" data-cmd="huggingface"${(hfUrl || hfResolvable) ? '' : ' disabled'}>Open Hugging Face</button>
+      ${model?.hf_update_available === true
+        ? '<button type="button" data-cmd="update-model" class="lm-context-update-action">Download and replace…</button>'
+        : ''}
       <button type="button" data-cmd="add-vision"${canAddVision(model) ? '' : ' disabled'} title="${modelHasVision(model) ? 'This model already has a vision projector wired' : 'Download vision projector from Hugging Face and wire it to this model'}">${modelHasVision(model) ? 'Vision already supported' : 'Add vision support…'}</button>
       ${canImportToConsole(model) ? `<button type="button" data-cmd="copy-to-console">${escapeHtml(importLabels.copy)}</button>
       <button type="button" data-cmd="move-to-console">${escapeHtml(importLabels.move)}</button>` : ''}
@@ -3376,8 +3455,11 @@
       return;
     }
     if (cmd === 'copy-hf-name') {
-      const name = huggingFaceName(model);
-      if (!name) return;
+      const name = await resolveHuggingFaceName(model);
+      if (!name) {
+        toast('Could not verify a Hugging Face repository for this file', false);
+        return;
+      }
       await navigator.clipboard.writeText(name);
       toast('Hugging Face name copied');
       return;
@@ -3396,9 +3478,17 @@
       return;
     }
     if (cmd === 'huggingface') {
-      const url = huggingFaceUrl(model);
+      const url = await resolveHuggingFaceUrl(model);
       if (url) window.open(url, '_blank', 'noopener,noreferrer');
-      else toast('No Hugging Face URL for this model', false);
+      else toast('Could not verify a Hugging Face page for this file', false);
+      return;
+    }
+    if (cmd === 'update-model') {
+      if (model?.hf_update_available !== true) {
+        toast('No verified newer Hugging Face revision is available.', false);
+        return;
+      }
+      window.DFlashModelUpdates?.open?.(model);
       return;
     }
     if (cmd === 'find-attach-draft') {
@@ -4212,6 +4302,7 @@
       : (data?.models || models);
     models = mergeModelsWithState(sourceModels, serversData, loadBrowsePrefs())
       .filter((row) => !isSuppressedLibraryModel(row));
+    window.DFlashModelUpdates?.setModels?.(models);
     autoPickLoadEngine();
     if (data?.models && !partialCatalog) saveCachedModelCatalog(data);
     catalogLoading = false;
@@ -4277,6 +4368,11 @@
     if (modelTypeFilter === 'hf-accelerator') void ensureHfAcceleratorCatalog();
     renderTable(document.getElementById('modelsFilterInput')?.value || '', { force: true });
     renderFooter(meta);
+  }
+
+  function showUpdatesFilter() {
+    window.DFlashShell?.setView?.('models');
+    applyModelTypeFilter('updates');
   }
 
   function setTypeFilter(next) {
@@ -5019,6 +5115,8 @@
     displayModelName,
     huggingFaceUrl,
     huggingFaceName,
+    resolveHuggingFaceName,
+    resolveHuggingFaceUrl,
     findAndAttachDraftForTarget,
     waitForDraftAttach,
     refresh,
@@ -5030,6 +5128,8 @@
     setLoadEngine,
     isHfEngineModel,
     setTypeFilter,
+    setModelTypeFilter: applyModelTypeFilter,
+    showUpdatesFilter,
     modelHasReasoning,
     revealModelFromEngineCard,
     findModelForDownload,

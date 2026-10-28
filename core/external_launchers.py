@@ -87,6 +87,57 @@ def _http_json(url: str, *, timeout: float = 2.0, method: str = 'GET') -> dict[s
         return None
 
 
+def _dflash_ownership_check(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask a running DFlash Console before starting a Strata launcher.
+
+    The check is cooperative: if no Console is listening, Strata remains
+    usable as a standalone runtime. A live Console's 409 response is returned
+    to the caller so it can explain the ownership conflict.
+    """
+    if str(entry.get('kind') or entry.get('id') or '').strip().lower() != 'strata':
+        return None
+    base = str(
+        entry.get('dflash_console_url')
+        or os.environ.get('DFLASH_CONSOLE_URL')
+        or 'http://127.0.0.1:8900'
+    ).strip().rstrip('/')
+    if not base:
+        return None
+    config = _config_data(entry)
+    gpu = str(config.get('gpu_device') or config.get('gpu') or 'auto').strip()
+    payload = json.dumps({
+        'gpu_device': gpu or 'auto',
+        'model_id': launcher_model_id(entry),
+        'model_path': launcher_model_path(entry),
+        'runtime_id': 'strata',
+    }).encode('utf-8')
+    request = urllib.request.Request(
+        f'{base}/api/gpu/ownership/check',
+        data=payload,
+        method='POST',
+        headers={'Accept': 'application/json', 'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.5) as response:
+            return json.loads(response.read().decode('utf-8', 'replace') or '{}')
+    except urllib.error.HTTPError as exc:
+        if exc.code != 409:
+            return None
+        try:
+            payload = json.loads(exc.read().decode('utf-8', 'replace') or '{}')
+        except Exception:
+            payload = {}
+        detail = payload.get('detail') if isinstance(payload, dict) else {}
+        return {
+            'success': False,
+            'error': (detail or {}).get('error') if isinstance(detail, dict) else 'gpu_ownership_conflict',
+            'message': (detail or {}).get('message') if isinstance(detail, dict) else 'GPU ownership conflict',
+            'detail': detail,
+        }
+    except Exception:
+        return None
+
+
 def _system_exe(name: str) -> str:
     """Resolve a Windows tool even when this process was started with a bare PATH.
 
@@ -493,6 +544,14 @@ def start(
         entry = get_launcher(launcher_id) or entry
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f'external-{entry["id"]}.log'
+        ownership = _dflash_ownership_check(entry)
+        if ownership and ownership.get('success') is False:
+            return {
+                'success': False,
+                'error': str(ownership.get('message') or 'DFlash Console rejected the GPU claim'),
+                'error_code': str(ownership.get('error') or 'gpu_ownership_conflict'),
+                'gpu_ownership': ownership.get('detail') or ownership,
+            }
         argv = [str(entry.get('command') or sys.executable), *_args_with_parallel(entry, wanted_parallel)]
         try:
             with log_path.open('ab') as log_file:

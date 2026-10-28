@@ -60,6 +60,34 @@ class ConfigTests(unittest.TestCase):
             finally:
                 cfg.CONFIG_PATH = original
 
+    def test_load_config_inherits_legacy_cloud_provider_for_source_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / 'config.json'
+            legacy = root / 'legacy-config.json'
+            current.write_text(
+                json.dumps({'ui_port': 8900, 'servers': [], 'api_providers': []}),
+                encoding='utf-8',
+            )
+            legacy.write_text(json.dumps({
+                'api_providers': [{
+                    'id': 'deepseek',
+                    'enabled': True,
+                    'api_key': 'test-key',
+                    'models': [{'id': 'deepseek-flash', 'active': True}],
+                }],
+            }), encoding='utf-8')
+            original_path = cfg.CONFIG_PATH
+            cfg.CONFIG_PATH = current
+            try:
+                with patch.object(cfg, '_legacy_user_config_candidates', return_value=[legacy]), \
+                     patch.object(cfg, 'is_source_checkout', return_value=True):
+                    loaded = cfg.load_config()
+                self.assertEqual(loaded['api_providers'][0]['id'], 'deepseek')
+                self.assertEqual(loaded['api_providers'][0]['api_key'], 'test-key')
+            finally:
+                cfg.CONFIG_PATH = original_path
+
     def test_validate_config_rejects_duplicate_ports_and_non_loopback_hosts(self):
         with self.assertRaisesRegex(ValueError, 'already used'):
             cfg.validate_config({
@@ -292,6 +320,7 @@ class ConfigTests(unittest.TestCase):
 
         cfg_payload = {
             'ui_port': 8900,
+            'hardware_settings': {'gpu_ownership_policy': 'auto_switch'},
             'servers': [
                 {'id': 'a', 'port': 8090, 'host': '127.0.0.1'},
                 {'id': 'b', 'port': 8091, 'host': '127.0.0.1', 'engine_mode': 'embedding'},

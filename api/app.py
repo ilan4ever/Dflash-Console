@@ -226,8 +226,21 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         daemon=True,
         name='runtime-manifest',
     ).start()
-    _start_background_tasks()
-    _start_gateway_server()
+    # Optional catalog, update, repair, and runtime initialization must never
+    # hold the primary Console API in "Waiting for application startup".
+    # Some of these helpers inspect installed runtimes or external resources;
+    # keep them off the lifespan thread so /api/health becomes available even
+    # when one optional initializer is slow or stuck.
+    threading.Thread(
+        target=_start_background_tasks,
+        daemon=True,
+        name='console-background-init',
+    ).start()
+    threading.Thread(
+        target=_start_gateway_server,
+        daemon=True,
+        name='console-gateway-init',
+    ).start()
     _start_parent_watchdog()
     _start_listener_watchdog()
     try:
@@ -534,6 +547,9 @@ def _start_background_tasks() -> None:
 
             cfg = load_config()
             start_model_catalog_refresh_loop()
+            from core.model_updates import start_model_update_refresh_loop
+
+            start_model_update_refresh_loop()
             warm_model_catalog(cfg=cfg)
         except Exception as exc:
             logger.exception('model catalog warm failed: %s', exc)
@@ -813,10 +829,23 @@ class HardwarePatch(BaseModel):
     offload_kv_cache_to_gpu: bool | None = None
     gpu_performance_mode: str | None = None
     desktop_vram_reserve_gb: float | None = Field(default=None, ge=0.0)
+    gpu_ownership_policy: str | None = None
+
+
+class GpuOwnershipCheckRequest(BaseModel):
+    gpu_device: str | None = None
+    model_id: str = ''
+    model_path: str = ''
+    runtime_id: str = 'external'
 
 
 class HfResumeDownloadRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
+
+
+class ModelUpdateRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=4096)
+    server_id: str | None = Field(default=None, max_length=120)
 
 
 class HfDownloadRequest(BaseModel):
@@ -1027,9 +1056,14 @@ def _hf_engine_profile(cfg: dict[str, Any], runtime_id: str) -> dict[str, Any]:
 
 def _invalidate_status_cache() -> None:
     global _ADAPTER_ENGINE_ROWS_CACHE
-    from core.runtime import invalidate_status_payload_cache
+    from core.runtime import _SERVER_STATUS_CACHE, invalidate_status_payload_cache
 
     _ADAPTER_ENGINE_ROWS_CACHE = (0.0, [])
+    # Per-server entries include loaded_models and are used by the inference
+    # stats route to decide whether /slots is safe to query.  Leaving an old
+    # loaded snapshot behind after unload can turn the next refresh into a
+    # model-load request on router builds with eager slot probing.
+    _SERVER_STATUS_CACHE.clear()
     invalidate_status_payload_cache()
 
 
@@ -1935,6 +1969,15 @@ def hf_model_files(
     return result
 
 
+@app.get('/api/hf/resolve-local')
+def hf_resolve_local(
+    path: str = Query(..., min_length=1, max_length=2000),
+) -> dict[str, Any]:
+    from core.huggingface import resolve_local_hf_repo
+
+    return resolve_local_hf_repo(path)
+
+
 @app.get('/api/hf/models/{repo_id:path}')
 def hf_model_detail(
     repo_id: str,
@@ -2230,6 +2273,81 @@ def models_catalog(
 
     attach_notes(models)
     return payload
+
+
+def _model_update_catalog_row(body: ModelUpdateRequest) -> dict[str, Any]:
+    cfg = load_config()
+    wanted_path = str(body.path or '').strip().lower().replace('/', '\\')
+    wanted_server = str(body.server_id or '').strip()
+    payload = list_local_models(cfg=cfg, scan_disk=True)
+    rows = [row for row in (payload.get('models') or []) if isinstance(row, dict)]
+    for row in rows:
+        row_path = str(row.get('path') or '').strip().lower().replace('/', '\\')
+        if wanted_server and str(row.get('server_id') or '').strip() == wanted_server:
+            return row
+        if wanted_path and row_path == wanted_path:
+            return row
+        split_paths = [
+            str(item).strip().lower().replace('/', '\\')
+            for item in (row.get('split_files') or [])
+            if str(item).strip()
+        ]
+        if wanted_path and wanted_path in split_paths:
+            return row
+    raise HTTPException(status_code=404, detail='model was not found in the local catalog')
+
+
+@app.get('/api/models/update/details')
+def model_update_details(
+    path: str = Query(..., min_length=1, max_length=4096),
+    server_id: str | None = Query(default=None, max_length=120),
+) -> dict[str, Any]:
+    from core.model_updates import get_model_update_details
+
+    row = _model_update_catalog_row(ModelUpdateRequest(path=path, server_id=server_id))
+    result = get_model_update_details(row)
+    if not result.get('success'):
+        status = 409 if result.get('details') else 400
+        raise HTTPException(status_code=status, detail=result.get('error') or 'model update unavailable')
+    return result
+
+
+@app.post('/api/models/updates/refresh')
+def refresh_model_updates_route() -> dict[str, Any]:
+    from core.model_updates import refresh_model_updates
+
+    cfg = load_config()
+    payload = list_local_models(cfg=cfg, scan_disk=True, force_refresh=True)
+    result = refresh_model_updates(
+        [row for row in (payload.get('models') or []) if isinstance(row, dict)],
+        cfg=cfg,
+        force=True,
+    )
+    invalidate_model_catalog_cache()
+    result['models'] = list_local_models(cfg=cfg, scan_disk=True, force_refresh=True).get('models') or []
+    return result
+
+
+@app.post('/api/models/update')
+def start_model_update_route(body: ModelUpdateRequest) -> dict[str, Any]:
+    from core.model_updates import start_model_update
+
+    row = _model_update_catalog_row(body)
+    result = start_model_update(row, cfg=load_config())
+    if not result.get('success'):
+        status = 409 if result.get('details') else 400
+        raise HTTPException(status_code=status, detail=result.get('error') or 'model update could not start')
+    return result
+
+
+@app.get('/api/models/update/{job_id}')
+def model_update_status(job_id: str) -> dict[str, Any]:
+    from core.model_updates import get_update_job
+
+    result = get_update_job(job_id)
+    if not result.get('success'):
+        raise HTTPException(status_code=404, detail=result.get('error') or 'update job not found')
+    return result
 
 
 @app.get('/api/model-notes')
@@ -2956,6 +3074,46 @@ def gpu_contention() -> dict[str, Any]:
     return gpu_contention_report(cfg=load_config())
 
 
+@app.post('/api/gpu/ownership/check')
+def gpu_ownership_check(body: GpuOwnershipCheckRequest) -> dict[str, Any]:
+    """Cooperative preflight for runtimes that are not launched by the Console."""
+    from core.gpu_ownership import inspect_gpu_ownership
+
+    cfg = load_config()
+    candidate = {
+        'id': str(body.runtime_id or 'external'),
+        'runtime_id': str(body.runtime_id or 'external'),
+        'gpu_device': body.gpu_device or 'auto',
+        'model_id': str(body.model_id or body.model_path or ''),
+        'adhoc_model_path': str(body.model_path or ''),
+    }
+    state = inspect_gpu_ownership(
+        candidate,
+        cfg=cfg,
+        target_server_id=str(body.runtime_id or 'external'),
+        model_id=str(body.model_id or body.model_path or ''),
+    )
+    conflicts = state.get('conflicts') or []
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                'error': 'gpu_ownership_conflict',
+                'message': 'The requested GPU is already owned by another runtime.',
+                'policy': str((cfg.get('hardware_settings') or {}).get('gpu_ownership_policy') or 'reject'),
+                'requested_gpu_indices': state.get('requested_gpu_indices') or [],
+                'conflicts': conflicts,
+                'retryable': True,
+            },
+        )
+    return {
+        'success': True,
+        'policy': str((cfg.get('hardware_settings') or {}).get('gpu_ownership_policy') or 'reject'),
+        'requested_gpu_indices': state.get('requested_gpu_indices') or [],
+        'conflicts': [],
+    }
+
+
 @app.get('/api/gpu/budget')
 def gpu_budget() -> dict[str, Any]:
     """GPU VRAM budget, loaded engine count, and performance mode limits."""
@@ -3115,6 +3273,26 @@ def runtime_load(runtime_id: str, body: RuntimeLoadRequest) -> dict[str, Any]:
         payload['preset'] = body.preset
     if body.load_settings:
         payload['load_settings'] = dict(body.load_settings)
+    from core.gpu_ownership import GpuOwnershipConflict, enforce_gpu_ownership
+
+    try:
+        enforce_gpu_ownership(
+            {
+                'id': runtime_id,
+                'runtime_id': runtime_id,
+                'gpu_device': gpu_device or 'auto',
+                'model_id': str(body.voice or body.path or runtime_id),
+                'adhoc_model_path': str(body.path or ''),
+            },
+            cfg=cfg,
+            target_server_id=runtime_id,
+            model_id=str(body.voice or body.path or runtime_id),
+            unload_console_engine=lambda other_id: bool(
+                server_unload(other_id).get('success')
+            ),
+        )
+    except GpuOwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     from core.load_activity import track_model_load
 
     label = Path(str(body.path or body.voice or runtime_id)).name or runtime_id
@@ -4250,6 +4428,8 @@ def _auto_stop_other_servers(cfg: dict[str, Any], target_server_id: str) -> list
     """
     from core.gpu_policy import should_stop_others_on_load
 
+    if str((cfg.get('hardware_settings') or {}).get('gpu_ownership_policy') or 'reject').strip().lower() != 'auto_switch':
+        return []
     if not should_stop_others_on_load(cfg):
         return []
     from core.config import get_server, is_embedding_server, normalize_server
@@ -4353,6 +4533,28 @@ def server_load_plan(
             'message': detail['message'],
             **detail,
         }
+    from core.gpu_ownership import inspect_gpu_ownership
+
+    ownership = inspect_gpu_ownership(
+        candidate,
+        cfg=cfg,
+        target_server_id=server_id,
+        model_id=model_id.strip(),
+    )
+    ownership_policy = str((cfg.get('hardware_settings') or {}).get('gpu_ownership_policy') or 'reject').strip().lower()
+    unresolved = [
+        row for row in (ownership.get('conflicts') or [])
+        if ownership_policy != 'auto_switch' or row.get('owner_type') != 'console'
+    ]
+    ownership['unresolved_conflicts'] = unresolved
+    if unresolved:
+        return {
+            'success': True,
+            'server_id': server_id,
+            'level': 'gpu_ownership_conflict',
+            'message': 'The requested GPU is already owned by another runtime.',
+            'ownership': ownership,
+        }
     return {
         'success': True,
         'server_id': server_id,
@@ -4409,6 +4611,20 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         )
         _invalidate_status_cache()
         return already
+    from core.gpu_ownership import GpuOwnershipConflict, enforce_gpu_ownership
+
+    try:
+        ownership = enforce_gpu_ownership(
+            server,
+            cfg=cfg,
+            target_server_id=server_id,
+            model_id=str(model_id or model_path or ''),
+            unload_console_engine=lambda other_id: bool(
+                server_unload(other_id).get('success')
+            ),
+        )
+    except GpuOwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if _auto_stop_other_servers(cfg, server_id):
         _invalidate_status_cache()
         cfg = load_config()
@@ -4431,7 +4647,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
         if result.get('already_loaded_elsewhere'):
             raise HTTPException(status_code=409, detail=duplicate_load_detail(result))
         raise HTTPException(
-            status_code=409 if result.get('repair') else 400,
+            status_code=409 if result.get('repair') or result.get('error_code') == 'gpu_ownership_conflict' else 400,
             detail=result,
         )
     note_engine_loaded(
@@ -4443,6 +4659,7 @@ def server_load(server_id: str, request: Request, body: ServerLoadRequest | None
     if check.get('level') == 'warn' and check.get('message'):
         result['memory_warning'] = check['message']
     result.setdefault('gpu_device', str(server.get('gpu_device') or 'auto'))
+    result.setdefault('gpu_ownership', ownership)
     return result
 
 
@@ -4463,9 +4680,22 @@ def server_inference_stats(server_id: str) -> dict[str, Any]:
             'status': 'embedding',
             'inference_stats': {},
         }
-    # Always hit /slots directly. Never route through build_server_status — that
-    # path returns a frozen cache while proxy inference is active.
     cached = _SERVER_STATUS_CACHE.get(server_id) or {}
+    # A router listener is deliberately allowed to exist without a checkpoint.
+    # Never probe /slots for that idle state: some llama-server/router builds
+    # interpret a model-qualified slots request as a request to materialize the
+    # preset. Status refresh must remain read-only and must not consume VRAM.
+    if not cached.get('loaded_models') and not cached.get('active_model_id'):
+        stats = fetch_inference_stats('', server_id=server_id)
+        return {
+            'success': True,
+            'server_id': server_id,
+            'status': str(cached.get('status') or 'running'),
+            'inference_stats': stats,
+        }
+    # Hit /slots directly only after the status cache confirms a loaded model.
+    # Never route through build_server_status — that path returns a frozen cache
+    # while proxy inference is active.
     stats = fetch_inference_stats(
         str(server.get('api_url') or ''),
         server_id=server_id,

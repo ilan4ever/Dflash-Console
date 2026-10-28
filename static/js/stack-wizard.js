@@ -237,7 +237,8 @@
     const parts = [];
 
     if (replaceMode && current) {
-      parts.push('<div class="df-stack-section-label">Current accelerator</div>');
+      const bestInstalled = !state.matchData?.has_better_local;
+      parts.push(`<div class="df-stack-section-label">${bestInstalled ? 'Current accelerator — best installed' : 'Current accelerator'}</div>`);
       parts.push(`
         <div class="df-stack-pick active is-current" aria-current="true">
           <span class="df-stack-pick-title">${escapeHtml(current.filename || state.currentDraftLabel || 'Current')}</span>
@@ -250,7 +251,10 @@
       : local;
 
     if (localRows.length) {
-      parts.push(`<div class="df-stack-section-label">${replaceMode ? 'Other accelerators on this PC' : 'On this PC'}</div>`);
+      const otherLabel = replaceMode && !state.matchData?.has_better_local
+        ? 'Other installed matches — not better than current'
+        : (replaceMode ? 'Other accelerators on this PC' : 'On this PC');
+      parts.push(`<div class="df-stack-section-label">${otherLabel}</div>`);
       parts.push('<div class="df-stack-pick-list">');
       localRows.forEach((row) => {
         const active = state.draftPath === row.path ? ' active' : '';
@@ -305,11 +309,15 @@
   function replaceSummaryHtml() {
     const better = state.matchData?.has_better_local;
     const hfCount = (state.matchData?.hf_suggestions || []).length;
+    const current = state.matchData?.current_draft;
+    const bestInstalled = !!current && !better;
     const generation = state.dflashGeneration === 'dflash2' ? 'DFlash 2' : 'DFlash 1';
     let hint = 'Compare your current draft with other local files and Hugging Face results.';
     if (better) hint = 'A stronger local match is available — pick it below or search Hugging Face for a newer accelerator.';
-    else if (state.dflashGeneration === 'dflash1' && !better) {
-      hint = 'Your current accelerator is already the best installed DFlash 1 match. To upgrade to DFlash 2, switch generation below, then browse Model catalog.';
+    else if (bestInstalled) {
+      hint = state.dflashGeneration === 'dflash1'
+        ? 'No better DFlash 1 accelerator is installed. Keep the current one, or switch to DFlash 2 to look for a newer generation.'
+        : `No better ${generation} accelerator is installed. Keep the current one, or browse Model catalog for a download.`;
     } else if (hfCount) {
       const rec = state.matchData?.recommended_hf;
       if (rec?.author || rec?.id) {
@@ -318,7 +326,11 @@
         hint = `No stronger local ${generation} match yet. Browse Model catalog to download one — it will connect automatically when the download finishes.`;
       }
     }
+    const status = bestInstalled
+      ? `<div class="df-stack-accelerator-status is-best" role="status"><span class="df-stack-accelerator-status-mark">✓</span><span><strong>Best accelerator already installed</strong><small>${escapeHtml(current.filename || state.currentDraftLabel || 'Current accelerator')} is the best matching accelerator currently found on this PC.</small></span></div>`
+      : '';
     return `
+      ${status}
       <p class="lm-setting-desc">Stack: <strong>${escapeHtml(state.stackLabel || state.targetLabel || state.targetPath)}</strong></p>
       <p class="lm-setting-desc">${escapeHtml(hint)}</p>`;
   }
@@ -474,10 +486,11 @@
 
     if (backBtn) backBtn.classList.toggle('hidden', mode === 'replace' || step === 1);
     if (nextBtn) {
+      const ready = canContinue();
       nextBtn.textContent = mode === 'replace'
-        ? 'Replace accelerator'
+        ? (ready ? 'Replace accelerator' : 'No better accelerator selected')
         : (step === 3 ? 'Create stack' : 'Continue');
-      nextBtn.disabled = !canContinue();
+      nextBtn.disabled = !ready;
     }
   }
 

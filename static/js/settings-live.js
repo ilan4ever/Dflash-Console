@@ -782,10 +782,14 @@
     filling = true;
     const dedicated = document.getElementById('settingsLimitDedicatedVram');
     const kv = document.getElementById('settingsOffloadKvGpu');
+    const ownership = document.getElementById('settingsGpuOwnershipPolicy');
     setGpuStrategyValue(hardwareDraft.gpu_strategy || 'single_largest');
     setGpuPerformanceValue(hardwareDraft.gpu_performance_mode || 'balanced');
     if (dedicated) dedicated.checked = hardwareDraft.limit_offload_dedicated_vram !== false;
     if (kv) kv.checked = hardwareDraft.offload_kv_cache_to_gpu !== false;
+    if (ownership) ownership.value = hardwareDraft.gpu_ownership_policy === 'auto_switch'
+      ? 'auto_switch'
+      : 'reject';
     renderGpuList();
     filling = false;
   }
@@ -796,6 +800,9 @@
     hardwareDraft.gpu_performance_mode = gpuPerformanceValue();
     hardwareDraft.limit_offload_dedicated_vram = !!document.getElementById('settingsLimitDedicatedVram')?.checked;
     hardwareDraft.offload_kv_cache_to_gpu = !!document.getElementById('settingsOffloadKvGpu')?.checked;
+    hardwareDraft.gpu_ownership_policy = document.getElementById('settingsGpuOwnershipPolicy')?.value === 'auto_switch'
+      ? 'auto_switch'
+      : 'reject';
     if (!Array.isArray(hardwareDraft.enabled_gpu_indices) || !hardwareDraft.enabled_gpu_indices.length) {
       hardwareDraft.enabled_gpu_indices = (hardwareData?.gpus || []).map((g) => Number(g.index));
     }
@@ -2894,6 +2901,7 @@
     document.getElementById('hardwareApplyClose')?.addEventListener('click', closeHardwareApplyModal);
     document.getElementById('settingsLimitDedicatedVram')?.addEventListener('change', scheduleHardwareSave);
     document.getElementById('settingsOffloadKvGpu')?.addEventListener('change', scheduleHardwareSave);
+    document.getElementById('settingsGpuOwnershipPolicy')?.addEventListener('change', scheduleHardwareSave);
     document.getElementById('settingsHardwareCopy')?.addEventListener('click', copyHardwareInfo);
     document.getElementById('settingsMcpCopy')?.addEventListener('click', copyMcpJson);
     document.getElementById('runtimeSettingsSave')?.addEventListener('click', () => void persistRuntimes());

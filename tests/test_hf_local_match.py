@@ -1,6 +1,55 @@
 from pathlib import Path
 
-from core.hf_local_match import find_local_matches, primary_local_match
+from core.hf_local_match import (
+    _extract_hf_repo_from_path,
+    find_local_matches,
+    primary_local_match,
+)
+
+
+def test_extract_hf_repo_ignores_flat_models_folder(tmp_path):
+    root = tmp_path / 'models'
+    target = root / 'models' / 'unsloth-UD-IQ4_XS' / 'Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'gguf')
+    cfg = {'model_libraries': [{'path': str(root), 'enabled': True}]}
+
+    assert _extract_hf_repo_from_path(target, cfg) is None
+
+
+def test_extract_hf_repo_accepts_nested_hf_layout(tmp_path):
+    root = tmp_path / 'models'
+    target = root / 'models' / 'unsloth' / 'Qwen3.8-Flash-Next-GGUF' / 'model.gguf'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'gguf')
+    cfg = {'model_libraries': [{'path': str(root), 'enabled': True}]}
+
+    assert _extract_hf_repo_from_path(target, cfg) == 'unsloth/Qwen3.8-Flash-Next-GGUF'
+
+
+def test_resolve_local_hf_repo_confirms_exact_filename(monkeypatch):
+    from core import huggingface
+
+    filename = 'Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf'
+    monkeypatch.setattr(
+        huggingface,
+        'search_models',
+        lambda *args, **kwargs: {'models': [{'id': 'unsloth/Qwen3.8-Flash-Next-GGUF'}]},
+    )
+    monkeypatch.setattr(
+        huggingface,
+        'get_model_files',
+        lambda *args, **kwargs: {
+            'gguf_files': [{
+                'filename': f'UD-IQ4_XS/{filename}',
+            }],
+        },
+    )
+
+    result = huggingface.resolve_local_hf_repo(f'D:/models/models/unsloth-UD-IQ4_XS/{filename}')
+
+    assert result['success'] is True
+    assert result['repo_id'] == 'unsloth/Qwen3.8-Flash-Next-GGUF'
 
 
 def test_find_exact_hf_layout_match(tmp_path, monkeypatch):

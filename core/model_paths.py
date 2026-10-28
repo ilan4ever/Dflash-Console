@@ -28,6 +28,10 @@ _STORAGE_PRESETS: dict[str, dict[str, str]] = {
         'label': 'DFlash checkpoints',
         'description': 'Default GGUF library for this console',
     },
+    'strata': {
+        'label': 'Strata models',
+        'description': 'Models installed and served by Strata',
+    },
     'gguf': {
         'label': 'GGUF checkpoints',
         'description': 'Generic GGUF weight files',
@@ -77,6 +81,7 @@ def _preset_path(preset: str, cfg: dict[str, Any]) -> Path:
     mapping = {
         'dflash': models_root,
         'gguf': models_root,
+        'strata': models_root,
         'lmstudio': home / '.lmstudio' / 'models',
         'speech': models_root / 'speech',
         'tts': models_root / 'tts',
@@ -91,6 +96,8 @@ def _source_for_preset(preset: str) -> str:
         return 'lmstudio'
     if preset == 'dflash':
         return 'dflash'
+    if preset == 'strata':
+        return 'strata'
     return 'library'
 
 
@@ -107,6 +114,8 @@ def infer_discovered_from(
         return 'LM Studio'
     if source_key == 'ollama':
         return 'Ollama'
+    if source_key == 'strata':
+        return 'Strata'
     if source_key in {'dflash', 'dflash-profile', 'dflash-stack'}:
         return 'DFlash'
 

@@ -260,9 +260,18 @@ def _extract_hf_repo_from_path(path: Path, config: dict[str, Any]) -> str | None
         except (OSError, ValueError):
             continue
         if len(rel.parts) >= 3 and rel.suffix.lower() == '.gguf':
-            author, repo_name = rel.parts[0], rel.parts[1]
-            if author and repo_name:
-                return f'{author}/{repo_name}'
+            relative_parts = list(rel.parts)
+            # A user model root is often named "models" itself, so a path
+            # like <root>/models/<org>/<repo>/<file> must not be read as
+            # the repository "models/<org>".  Strip only that optional
+            # layout marker; a flat <root>/<folder>/<file> still has no
+            # authoritative Hugging Face repository identity.
+            if relative_parts and relative_parts[0].lower() in {'models', 'hub', 'huggingface'}:
+                relative_parts = relative_parts[1:]
+            if len(relative_parts) >= 3:
+                author, repo_name = relative_parts[0], relative_parts[1]
+                if author and repo_name:
+                    return f'{author}/{repo_name}'
     return None
 
 

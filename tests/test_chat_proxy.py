@@ -367,6 +367,7 @@ def test_build_server_status_exposes_agent_fields(monkeypatch):
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)
     monkeypatch.setattr('core.runtime.adopt_running_engine', lambda s, cfg=None: None)
+    monkeypatch.setattr('core.runtime.listener_is_managed_engine', lambda h, p: True)
     monkeypatch.setattr('core.runtime.resolve_model_stack', lambda s, cfg=None: [])
     monkeypatch.setattr('core.runtime.query_gpu_devices', lambda: [])
     monkeypatch.setattr('core.inference_stats.fetch_inference_stats', lambda url, server_id='', model_id='': {})
@@ -398,6 +399,7 @@ def test_build_server_status_running_not_ready(monkeypatch):
     monkeypatch.setattr('core.runtime.is_active_boot', lambda lines: False)
     monkeypatch.setattr('core.runtime.get_started_launch', lambda port: None)
     monkeypatch.setattr('core.runtime.adopt_running_engine', lambda s, cfg=None: None)
+    monkeypatch.setattr('core.runtime.listener_is_managed_engine', lambda h, p: True)
     monkeypatch.setattr('core.runtime.resolve_model_stack', lambda s, cfg=None: [])
     monkeypatch.setattr('core.runtime.query_gpu_devices', lambda: [])
 

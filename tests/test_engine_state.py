@@ -292,7 +292,7 @@ def test_restore_embedding_resets_stale_caller_to_console(config_file: Path, mon
     assert 'component_role' not in row
 
 
-def test_restore_adopted_engine_resets_stale_caller_to_console(config_file: Path, monkeypatch: pytest.MonkeyPatch):
+def test_restore_adopted_idle_engine_clears_stale_caller(config_file: Path, monkeypatch: pytest.MonkeyPatch):
     _update_first_server(
         config_file,
         loaded_by='OneVoice AI',
@@ -311,5 +311,5 @@ def test_restore_adopted_engine_resets_stale_caller_to_console(config_file: Path
 
     assert results[0]['action'] == 'adopted_idle'
     row = json.loads(config_file.read_text(encoding='utf-8'))['servers'][0]
-    assert row['loaded_by'] == 'DFlash Console'
+    assert row.get('loaded_by', '') == ''
     assert 'component_key' not in row

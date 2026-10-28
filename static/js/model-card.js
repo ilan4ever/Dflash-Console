@@ -280,6 +280,7 @@
     labelsHtml = '',
     detailsHtml: detailsBlock = '',
     diskLabel = '',
+    diskTitle = '',
     actionHtml = '',
     selected = false,
     external = false,
@@ -292,7 +293,7 @@
     const stateCls = loadedOnGpu ? ' ready' : '';
     const selectedCls = selected ? ' selected' : '';
     const foot = diskLabel && diskLabel !== '—'
-      ? `<div class="lm-external-foot-metrics"><span class="lm-external-foot-line lm-external-foot-disk" title="Model size on disk"><span class="lm-external-foot-lbl">Disk</span><span class="lm-external-foot-val">${escapeHtml(diskLabel)}</span></span></div>`
+      ? `<div class="lm-external-foot-metrics"><span class="lm-external-foot-line lm-external-foot-disk" title="${escapeHtml(diskTitle || 'Model size on disk')}"><span class="lm-external-foot-lbl">Disk</span><span class="lm-external-foot-val">${escapeHtml(diskLabel)}</span></span></div>`
       : '';
     const stats = `<div class="lm-external-stats-col">${actionHtml || ''}${foot}</div>`;
     const tokenRow = '<div class="lm-model-card-center-row lm-model-card-token-row" aria-hidden="true"></div>';
