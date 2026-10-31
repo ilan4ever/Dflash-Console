@@ -44,12 +44,205 @@
   }
 
   const ACTION_COL_MIN_PX = 280;
+  const MODEL_ACTION_FLOOR_PX = 248;
+  const META_SQUEEZE = {
+    family: 48,
+    scale: 36,
+    lab: 52,
+    source: 48,
+    disk: 42,
+    updated: 64,
+    slots: 40,
+  };
+
+  function metaSqueeze(header) {
+    const id = header?.dataset?.colId || '';
+    return META_SQUEEZE[id] ?? colMinWidth(header);
+  }
+
+  function wrapNameCut(text, firstWidth, source) {
+    const probe = wrapNameCut.probe || (wrapNameCut.probe = document.createElement('span'));
+    if (!probe.isConnected) {
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText = 'position:absolute;left:0;top:0;visibility:hidden;white-space:nowrap;pointer-events:none;';
+      document.body.appendChild(probe);
+    }
+    const cs = source ? getComputedStyle(source) : null;
+    probe.style.font = cs?.font || '';
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      probe.textContent = text.slice(0, mid);
+      if (probe.getBoundingClientRect().width <= firstWidth) lo = mid;
+      else hi = mid - 1;
+    }
+    if (lo >= text.length) return text.length;
+    const start = Math.max(0, lo - 14);
+    const slice = text.slice(start, lo);
+    const rel = Math.max(slice.lastIndexOf('-'), slice.lastIndexOf('_'), slice.lastIndexOf(' '));
+    return rel >= 0 ? start + rel + 1 : Math.max(1, lo);
+  }
+
+  function namesOnScreen(table) {
+    const wrap = table.parentElement;
+    if (!wrap) return [];
+    const view = wrap.getBoundingClientRect();
+    if (view.height < 40) return [];
+    const headerBottom = table.querySelector('thead')?.getBoundingClientRect().bottom ?? view.top;
+    const top = Math.max(view.top, headerBottom);
+    const bottom = view.bottom;
+    const visible = [];
+    table.querySelectorAll('tr.lm-library-card-line1 .lm-model-title-text').forEach((name) => {
+      const rect = name.getBoundingClientRect();
+      if (rect.height < 1) return;
+      if (rect.bottom > top + 1 && rect.top < bottom - 1) visible.push(name);
+    });
+    return visible;
+  }
+
+  function measureVisibleModelName(table) {
+    const names = namesOnScreen(table);
+    if (!names.length) return 0;
+    const sampleCell = names[0].closest('td');
+    const cs = sampleCell ? getComputedStyle(sampleCell) : null;
+    const pad = (parseFloat(cs?.paddingLeft) || 0) + (parseFloat(cs?.paddingRight) || 0) + 8;
+    let max = 0;
+    names.forEach((name) => {
+      const title = name.closest('.lm-library-handle-title');
+      const pin = title?.querySelector('.lm-model-pin');
+      const pinWidth = pin ? pin.offsetWidth + 6 : 0;
+      max = Math.max(max, name.scrollWidth + pinWidth);
+    });
+    return max > 0 ? Math.ceil(max + pad) : 0;
+  }
+
+  function syncWrappedModelNames(table) {
+    if (!table || table.dataset.resizeKey !== 'models-library') return;
+    const span = table.querySelector('tr.lm-library-card-line2 td.lm-library-card-span');
+    table.querySelectorAll('tr.lm-library-card-line1').forEach((row) => {
+      const name = row.querySelector('.lm-model-title-text');
+      const key = row.dataset.modelKey || '';
+      const line2 = key
+        ? table.querySelector(`tr.lm-library-card-line2[data-model-key="${CSS.escape(key)}"]`)
+        : null;
+      const line3 = key
+        ? table.querySelector(`tr.lm-library-card-line3[data-model-key="${CSS.escape(key)}"]`)
+        : null;
+      const overflows = Boolean(name) && name.scrollWidth > name.clientWidth + 48;
+      const wrap = Boolean(overflows && line2);
+      row.classList.toggle('is-name-wrapped', wrap);
+      line2?.classList.toggle('is-name-wrapped', wrap);
+      line3?.classList.toggle('is-name-wrapped', wrap);
+      const cell = line2?.querySelector('td.lm-library-card-span');
+      if (!cell) return;
+      let cover = cell.querySelector('.lm-model-name-cover');
+      if (!wrap) {
+        cover?.remove();
+        return;
+      }
+      if (!cover) {
+        cover = document.createElement('div');
+        cover.className = 'lm-model-name-cover';
+        cell.prepend(cover);
+      }
+      const text = name.textContent || '';
+      cover.title = text;
+      const nameRect = name.getBoundingClientRect();
+      const cellRect = cell.getBoundingClientRect();
+      const left = Math.max(0, nameRect.left - cellRect.left);
+      const firstWidth = Math.max(40, name.clientWidth);
+      const secondWidth = Math.max(firstWidth, cellRect.width - left - 8);
+      const cut = wrapNameCut(text, firstWidth, name);
+      const headText = text.slice(0, cut);
+      const tailText = text.slice(cut).replace(/^[-_\s]+/, '');
+      cover.replaceChildren();
+      const first = document.createElement('div');
+      first.className = 'lm-model-name-cover-line';
+      first.textContent = headText;
+      first.style.maxWidth = `${firstWidth}px`;
+      cover.appendChild(first);
+      if (tailText) {
+        const second = document.createElement('div');
+        second.className = 'lm-model-name-cover-line';
+        second.textContent = tailText;
+        second.style.maxWidth = `${secondWidth}px`;
+        cover.appendChild(second);
+      }
+      cover.style.top = `${nameRect.top - cellRect.top}px`;
+      cover.style.left = `${left}px`;
+      cover.style.width = `${secondWidth}px`;
+    });
+    if (span) void span.offsetWidth;
+  }
+
+  function fitModelNameColumn(table, widths, available) {
+    const headers = Array.from(table.querySelectorAll('thead th'));
+    const next = widths.slice();
+    const actionIndex = next.length - 1;
+    const modelFloor = colMinWidth(headers[0]);
+    const measured = measureVisibleModelName(table);
+    const modelCap = measured > 0
+      ? Math.max(modelFloor, measured)
+      : Math.max(modelFloor, Math.min(next[0] || defaultWidthFor(headers[0]), 280));
+    const actionFloor = Math.max(
+      MODEL_ACTION_FLOOR_PX,
+      colMinWidth(headers[actionIndex]) || 132,
+    );
+
+    for (let i = 1; i < actionIndex; i += 1) {
+      const min = colMinWidth(headers[i]);
+      next[i] = Math.max(min, Number.isFinite(next[i]) ? next[i] : defaultWidthFor(headers[i]));
+    }
+
+    const metaSum = () => next.slice(1, actionIndex).reduce((sum, value) => sum + value, 0);
+    const squeezeSum = () => headers.slice(1, actionIndex).reduce((sum, header) => sum + metaSqueeze(header), 0);
+    let model = Math.min(modelCap, Math.max(96, available - squeezeSum() - actionFloor));
+    let action = available - model - metaSum();
+
+    if (action < actionFloor) {
+      let need = actionFloor - action;
+      for (let i = actionIndex - 1; i >= 1 && need > 0.5; i -= 1) {
+        const floor = metaSqueeze(headers[i]);
+        const spare = Math.max(0, next[i] - floor);
+        const take = Math.min(spare, need);
+        next[i] -= take;
+        need -= take;
+      }
+      action = available - model - metaSum();
+      if (action < actionFloor) {
+        const room = available - metaSum() - actionFloor;
+        model = Math.max(96, Math.min(model, room));
+        action = actionFloor;
+      }
+    }
+
+    next[0] = model;
+    const used = next.slice(0, actionIndex).reduce((sum, value) => sum + value, 0);
+    if (used + actionFloor > available + 0.5) {
+      next[actionIndex] = actionFloor;
+    } else {
+      next[actionIndex] = Math.max(actionFloor, available - used);
+    }
+    return next;
+  }
+
+  function tableAvailableWidth(table) {
+    const wrap = table?.parentElement;
+    if (!wrap) return table?.getBoundingClientRect().width || 0;
+    const cs = getComputedStyle(wrap);
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    return Math.max(0, wrap.clientWidth - pad);
+  }
 
   function fitActionColumn(table, widths) {
     const next = widths.slice();
     if (!table || next.length < 2) return next;
-    const available = table.parentElement?.getBoundingClientRect().width
-      || table.getBoundingClientRect().width;
+    const available = tableAvailableWidth(table);
+    if (table.dataset.resizeKey === 'models-library') {
+      if (!(available > 80)) return next;
+      return fitModelNameColumn(table, next, available);
+    }
     if (!(available > 480)) return next;
     const total = next.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0) || 1;
     const actionIndex = next.length - 1;
@@ -111,6 +304,30 @@
     if (table) table._dfColWidths = widths.slice();
     const total = fitted.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
     const base = total > 0 ? total : 1;
+    const available = table ? tableAvailableWidth(table) : 0;
+    const pinModelColumn = table?.dataset.resizeKey === 'models-library' && available > 80;
+    if (table && pinModelColumn) {
+      table.style.width = '100%';
+      table.style.minWidth = '0';
+      table.style.maxWidth = '100%';
+      const rounded = fitted.map((value) => Math.round(Number.isFinite(value) ? value : 0));
+      const others = rounded.slice(0, -1).reduce((sum, value) => sum + value, 0);
+      rounded[rounded.length - 1] = Math.max(MODEL_ACTION_FLOOR_PX, available - others);
+      const used = rounded.reduce((sum, value) => sum + value, 0);
+      if (used > available + 1) {
+        const extra = used - available;
+        rounded[0] = Math.max(96, rounded[0] - extra);
+        const rest = rounded.slice(0, -1).reduce((sum, value) => sum + value, 0);
+        rounded[rounded.length - 1] = Math.max(MODEL_ACTION_FLOOR_PX, available - rest);
+      }
+      colEls.forEach((col, index) => {
+        col.style.width = `${rounded[index]}px`;
+        col.style.minWidth = index === rounded.length - 1 ? `${rounded[index]}px` : '';
+        col.style.maxWidth = index === 0 ? `${rounded[index]}px` : '';
+      });
+      syncWrappedModelNames(table);
+      return;
+    }
     if (table) {
       // Honor the minimum widths instead of squeezing the Model name into the
       // available window. The wrapper provides a horizontal scrollbar when
@@ -121,6 +338,7 @@
       const value = Number.isFinite(fitted[index]) ? fitted[index] : 0;
       col.style.width = `${((value / base) * 100).toFixed(3)}%`;
       col.style.minWidth = '';
+      col.style.maxWidth = '';
     });
   }
 
@@ -273,6 +491,8 @@
 
     headers.forEach((th, index) => {
       if (index >= headers.length - 1) return;
+      // The model column width follows the longest name, so it is not dragged.
+      if (table.dataset.resizeKey === 'models-library' && index === 0) return;
       if (th.querySelector('.lm-col-resize-handle')) return;
 
       const handle = document.createElement('span');
@@ -344,6 +564,14 @@
     });
     observer.observe(wrap);
     table._dfColObserver = observer;
+    if (table.dataset.resizeKey === 'models-library' && !wrap._dfNameScroll) {
+      wrap._dfNameScroll = true;
+      let timer = 0;
+      wrap.addEventListener('scroll', () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => reflowTable(table), 90);
+      }, { passive: true });
+    }
   }
 
   function initAll(root = document) {
@@ -380,5 +608,15 @@
     });
   });
 
-  window.DFlashTableColumnResize = { init: initTable, initAll };
+  function reflow(table) {
+    if (!table) return;
+    if (!table.classList.contains('lm-resizable-table') || table.dataset.colsReady !== '1') {
+      table.dataset.colsReady = '0';
+      initTable(table);
+      return;
+    }
+    reflowTable(table);
+  }
+
+  window.DFlashTableColumnResize = { init: initTable, initAll, reflow };
 })();

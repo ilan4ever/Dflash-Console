@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.295</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.297</span>
           </div>
         </div>
       </div>
@@ -81,6 +81,14 @@
             </div>
           </div>
         </div>
+        <button type="button" class="df-model-update-pill hidden" id="modelUpdatePill" title="Show the model update">
+          <span class="df-model-update-pill-icon" aria-hidden="true">↓</span>
+          <span class="df-model-update-pill-copy">
+            <span class="df-model-update-pill-label" id="modelUpdatePillLabel">Updating model</span>
+            <span class="df-model-update-pill-track" aria-hidden="true"><span id="modelUpdatePillFill"></span></span>
+          </span>
+          <span class="df-model-update-pill-pct" id="modelUpdatePillPct">0%</span>
+        </button>
       </div>
       <div class="df-sidenav-resize-handle" id="sidenavResizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize navigation sidebar" tabindex="0"></div>
     </aside>
@@ -433,7 +441,7 @@ try {
             <table class="lm-models-table" data-resizable-columns data-resize-key="models-library">
               <thead>
                 <tr>
-                  <th class="lm-col-model" data-col-id="model" data-col-min="380" data-col-default="420">Model</th>
+                  <th class="lm-col-model" data-col-id="model" data-col-min="160" data-col-default="240">Model</th>
                   <th class="lm-col-meta" data-col-id="family" data-col-min="48">Family</th>
                   <th class="lm-col-meta" data-col-id="scale" data-col-min="40">Scale</th>
                   <th class="lm-col-meta" data-col-id="lab" data-col-min="72">Lab</th>
@@ -549,7 +557,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.295</strong>
+                <strong id="dfAboutVersion">v0.3.297</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -1877,6 +1885,20 @@ try {
     </div>
   </div>
 
+  <div id="modelUpdateFloat" class="df-model-update-float hidden" role="dialog" aria-modal="false" aria-labelledby="modelUpdateFloatTitle">
+    <div class="df-model-update-float-head" id="modelUpdateFloatHead">
+      <div class="df-model-update-float-titles">
+        <div class="df-update-kicker">Model update</div>
+        <h2 id="modelUpdateFloatTitle">Updating model</h2>
+      </div>
+      <div class="df-model-update-float-actions">
+        <button class="lm-icon-btn" type="button" id="modelUpdateMinimize" aria-label="Minimize">−</button>
+        <button class="lm-icon-btn" type="button" id="modelUpdateFloatClose" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="df-model-update-float-body" id="modelUpdateFloatBody"></div>
+  </div>
+
   <!-- GPU layout apply progress (reload loaded engines after Multi-GPU changes). -->
   <div class="lm-modal df-confirm-modal" id="hardwareApplyModal" aria-hidden="true">
     <div class="lm-modal-backdrop">
@@ -2149,7 +2171,7 @@ try {
   <script src="/static/js/model-card.js?v=0.3.291-notehover"></script>
   <script src="/static/js/server-live.js?v=0.3.278-consolelogo"></script>
   <script src="/static/js/status-feed.js?v=0.3.294-gpufix"></script>
-  <script src="/static/js/table-column-resize.js"></script>
+  <script src="/static/js/table-column-resize.js?v=0.3.297"></script>
   <script src="/static/js/models-live.js?v=0.3.290-model-updates"></script>
   <script src="/static/js/model-updates-live.js"></script>
   <script src="/static/js/stack-wizard.js"></script>

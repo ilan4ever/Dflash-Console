@@ -2861,6 +2861,8 @@
     }
 
     bindModelRowInteractions(body);
+    const libraryTable = body.closest('table');
+    requestAnimationFrame(() => window.DFlashTableColumnResize?.reflow?.(libraryTable));
   }
 
   function bindModelRowInteractions(root) {
