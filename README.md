@@ -15,7 +15,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.297
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.298
 
 ## Download (Windows)
 
@@ -110,7 +110,7 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.297)
+### Recent improvements (v0.3.298)
 
 - **Models page** — the name column follows the cards on screen, so one long name lower in the list no longer hides Load. Names that still do not fit use a second line in place of the target line, and the card stays the same height. Load and Unload stay visible while you resize or open the runtime panel.
 - **Windows sign-in** — with **Start minimized to tray** on, the app now goes straight to the tray at sign-in: no splash or window flashes on screen, and update prompts wait until you open it from the tray

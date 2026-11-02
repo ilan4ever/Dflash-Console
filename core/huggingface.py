@@ -1753,14 +1753,20 @@ def get_model_revision_metadata(repo_id: str, *, timeout: float = 20.0) -> dict[
     siblings = [row for row in siblings if isinstance(row, dict) and _entry_name(row)]
     if not siblings:
         siblings = _fetch_repo_siblings_with_blobs(repo, timeout=max(0.5, float(timeout) / 2))
-    files = [
-        {
-            'filename': _entry_name(item),
+    files = []
+    for item in siblings:
+        name = _entry_name(item)
+        if not name:
+            continue
+        lfs = item.get('lfs') if isinstance(item.get('lfs'), dict) else {}
+        files.append({
+            'filename': name,
             'size_bytes': int(_entry_size_bytes(item) or 0),
-        }
-        for item in siblings
-        if _entry_name(item)
-    ]
+            # Per-file content identity: LFS sha256 for large files, git blob
+            # id otherwise.  Update checks compare these, not the repo commit.
+            'sha256': str(lfs.get('sha256') or lfs.get('oid') or '').strip().lower(),
+            'blob_id': str(item.get('blobId') or item.get('oid') or '').strip().lower(),
+        })
     return {
         'success': True,
         'repo_id': repo,

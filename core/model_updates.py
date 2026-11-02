@@ -8,8 +8,10 @@ from Console download history or a canonical Hugging Face cache layout.
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -153,11 +155,181 @@ def _remote_files(remote: dict[str, Any]) -> list[dict[str, Any]]:
         {
             'filename': str(item.get('filename') or item.get('rfilename') or item.get('path') or ''),
             'size_bytes': int(item.get('size') or item.get('size_bytes') or 0),
+            'sha256': str(item.get('sha256') or '').strip().lower(),
+            'blob_id': str(item.get('blob_id') or '').strip().lower(),
         }
         for item in (remote.get('files') or [])
         if isinstance(item, dict)
         and str(item.get('filename') or item.get('rfilename') or item.get('path') or '').strip()
     ]
+
+
+_SPLIT_RE = re.compile(r'-(\d{5})-of-(\d{5})(?=\.gguf$)', re.IGNORECASE)
+_QUANT_RE = re.compile(
+    r'(?<![A-Za-z0-9])(I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32|FP16|FP8|MXFP4)(?![A-Za-z0-9])',
+    re.IGNORECASE,
+)
+
+
+def _quant_tag(name: str) -> str:
+    """Quant label from a GGUF filename (``Q4_K_M``, ``IQ3_XXS``, ``F16``...)."""
+    stem = _SPLIT_RE.sub('', Path(str(name or '')).name)
+    stem = re.sub(r'\.gguf$', '', stem, flags=re.IGNORECASE)
+    matches = _QUANT_RE.findall(stem)
+    return matches[-1].upper() if matches else ''
+
+
+def _set_key(name: str) -> str:
+    return _SPLIT_RE.sub('', Path(str(name or '')).name.lower())
+
+
+def _fingerprint(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'filename': str(item.get('filename') or ''),
+        'size_bytes': int(item.get('size_bytes') or 0),
+        'sha256': str(item.get('sha256') or '').strip().lower(),
+        'blob_id': str(item.get('blob_id') or '').strip().lower(),
+    }
+
+
+def _same_content(baseline: dict[str, Any], remote: dict[str, Any]) -> bool:
+    """True unless we can prove the remote file differs from the baseline."""
+    for key in ('sha256', 'blob_id'):
+        left = str(baseline.get(key) or '').strip().lower()
+        right = str(remote.get(key) or '').strip().lower()
+        if left and right:
+            return left == right
+    left_size = int(baseline.get('size_bytes') or 0)
+    right_size = int(remote.get('size_bytes') or 0)
+    if left_size and right_size:
+        return left_size == right_size
+    # Nothing comparable: never promise an update we cannot prove.
+    return True
+
+
+def _resolve(value: Any) -> Path:
+    path = Path(str(value)).expanduser()
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _local_targets(row: dict[str, Any]) -> tuple[Path | None, bool, list[Path]]:
+    text = str(row.get('path') or '').strip()
+    if not text:
+        return None, False, []
+    old_path = _resolve(text)
+    if old_path.is_dir():
+        return old_path, True, []
+    local_paths = [_resolve(item) for item in (row.get('split_files') or []) if str(item).strip()]
+    if not local_paths and old_path.is_file():
+        local_paths = [old_path]
+    return old_path, False, local_paths
+
+
+def _quant_replacement(local_paths: list[Path], remote_files: list[dict[str, Any]]) -> list[tuple[Path, dict[str, Any]]]:
+    """Map renamed upstream files onto the installed ones by quant label."""
+    if not local_paths:
+        return []
+    quant = _quant_tag(local_paths[0].name)
+    if not quant:
+        return []
+    mmproj = 'mmproj' in local_paths[0].name.lower()
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in remote_files:
+        filename = str(item.get('filename') or '')
+        name = Path(filename).name
+        if not name.lower().endswith('.gguf'):
+            continue
+        if ('mmproj' in name.lower()) != mmproj:
+            continue
+        if _quant_tag(name) != quant:
+            continue
+        key = (str(Path(filename).parent).lower(), _set_key(name))
+        groups.setdefault(key, []).append(item)
+    candidates = [(key, items) for key, items in groups.items() if len(items) == len(local_paths)]
+    if not candidates:
+        return []
+    local_key = _set_key(local_paths[0].name)
+    candidates.sort(
+        key=lambda pair: difflib.SequenceMatcher(None, local_key, pair[0][1]).ratio(),
+        reverse=True,
+    )
+    chosen = sorted(candidates[0][1], key=lambda item: str(item.get('filename') or '').lower())
+    return list(zip(sorted(local_paths, key=lambda path: path.name.lower()), chosen))
+
+
+def _match_installed_files(row: dict[str, Any], remote_files: list[dict[str, Any]]) -> dict[str, Any]:
+    old_path, is_directory, local_paths = _local_targets(row)
+    pairs: list[tuple[Path, dict[str, Any]]] = []
+    mode = 'none'
+    if old_path is not None and is_directory:
+        for item in remote_files:
+            rel = str(item.get('filename') or '').strip()
+            if rel and (old_path / Path(rel)).is_file():
+                pairs.append((old_path / Path(rel), item))
+        mode = 'directory' if pairs else 'none'
+    elif local_paths:
+        by_name = {Path(str(item.get('filename') or '')).name.lower(): item for item in remote_files}
+        exact = [(local, by_name.get(local.name.lower())) for local in local_paths]
+        if all(item is not None for _local, item in exact):
+            pairs = [(local, item) for local, item in exact if item is not None]
+            mode = 'same-name'
+        else:
+            pairs = _quant_replacement(local_paths, remote_files)
+            mode = 'replacement' if pairs else 'none'
+    return {'mode': mode, 'path': old_path, 'is_directory': is_directory, 'pairs': pairs}
+
+
+def _evaluate(row: dict[str, Any], state: dict[str, Any], remote: dict[str, Any]) -> dict[str, Any]:
+    """Decide whether the installed files differ from the remote revision.
+
+    A repo commit alone never means an update: README/config edits or other
+    quants do not touch the installed file.  Each installed file is compared
+    with its remote counterpart (same name, or the same quant if renamed) by
+    LFS sha256 / blob id against the recorded baseline, falling back to the
+    local file size when no baseline was recorded yet.
+    """
+    match = _match_installed_files(row, list(remote.get('files') or []))
+    raw_baselines = state.get('installed_files')
+    baselines = dict(raw_baselines) if isinstance(raw_baselines, dict) else {}
+    new_baselines = dict(baselines)
+    entries: list[dict[str, Any]] = []
+    changed: list[dict[str, Any]] = []
+    for local, item in match['pairs']:
+        key = _path_key(local)
+        base = baselines.get(key) if isinstance(baselines.get(key), dict) else None
+        if base and (base.get('sha256') or base.get('blob_id') or base.get('size_bytes')):
+            same = _same_content(base, item)
+        else:
+            try:
+                local_size = local.stat().st_size
+            except OSError:
+                local_size = 0
+            same = _same_content({'size_bytes': local_size}, item)
+        filename = str(item.get('filename') or '')
+        entry = {
+            **_fingerprint(item),
+            'local_path': str(local),
+            'renamed': local.name.lower() != Path(filename).name.lower(),
+        }
+        if entry['renamed']:
+            entry['replaces'] = local.name
+        entries.append(entry)
+        if same:
+            new_baselines[key] = _fingerprint(item)
+        else:
+            changed.append(entry)
+    return {
+        'mode': match['mode'],
+        'path': match['path'],
+        'is_directory': match['is_directory'],
+        'files': entries,
+        'changed': changed,
+        'available': bool(changed),
+        'baselines': new_baselines,
+    }
 
 
 def _remote_payload(remote: dict[str, Any]) -> dict[str, Any]:
@@ -182,14 +354,21 @@ def _state_details(row: dict[str, Any], cache: dict[str, Any]) -> dict[str, Any]
     remote = dict(remote) if isinstance(remote, dict) else {}
     available = False
     status = 'unknown'
+    match_mode = ''
+    changed_files: list[dict[str, Any]] = []
     if provenance.get('verified') and remote.get('revision'):
-        installed = str(state.get('installed_revision') or '').strip()
-        remote_revision = str(remote.get('revision') or '').strip()
-        available = bool(installed and installed != remote_revision)
-        status = 'update-ready' if available else 'current'
-        if state.get('update_unknown_baseline') is True:
+        evaluation = _evaluate(row, state, remote)
+        match_mode = evaluation['mode']
+        changed_files = evaluation['changed']
+        if match_mode == 'none':
+            # The installed file is not in this repo and no same-quant file
+            # replaces it (e.g. a GGUF filed under a safetensors repo).
+            status = 'not-in-repo'
+        elif evaluation['available']:
             available = True
             status = 'update-ready'
+        else:
+            status = 'current'
     elif provenance.get('verified'):
         status = 'checking'
     result = {
@@ -205,6 +384,8 @@ def _state_details(row: dict[str, Any], cache: dict[str, Any]) -> dict[str, Any]
         'remote_files': list(remote.get('files') or []),
         'remote_size_bytes': int(remote.get('size_bytes') or 0),
         'checked_at': remote.get('checked_at'),
+        'match_mode': match_mode,
+        'changed_files': changed_files,
     }
     if state.get('installed_at'):
         result['installed_at'] = state['installed_at']
@@ -275,17 +456,17 @@ def refresh_model_updates(
                 key = _model_state_key(row, repo_key)
                 state = cache['models'].get(key)
                 state = dict(state) if isinstance(state, dict) else {}
-                if not str(state.get('installed_revision') or '').strip():
+                if not state.get('installed_at'):
                     provenance = source_provenance(row)
-                    installed_at = float(provenance.get('installed_at') or 0)
-                    remote_at = _date_timestamp(str(remote.get('last_modified') or ''))
-                    if installed_at and remote_at > installed_at:
-                        state['installed_revision'] = ''
-                        state['update_unknown_baseline'] = True
-                    else:
-                        state['installed_revision'] = str(remote.get('revision') or '')
-                        state['update_unknown_baseline'] = False
-                    state['installed_at'] = installed_at or now
+                    state['installed_at'] = float(provenance.get('installed_at') or 0) or now
+                evaluation = _evaluate(row, state, remote)
+                state['installed_files'] = evaluation['baselines']
+                state['match_mode'] = evaluation['mode']
+                if not evaluation['available']:
+                    # New commit but the installed files are unchanged (or not
+                    # tracked by this repo): record it as current silently.
+                    state['installed_revision'] = str(remote.get('revision') or '')
+                state['update_unknown_baseline'] = False
                 state['repo_id'] = repo_key
                 state['path'] = str(row.get('path') or '')
                 state['source_verified'] = True
@@ -306,28 +487,28 @@ def get_model_update_details(row: dict[str, Any]) -> dict[str, Any]:
     details = _state_details(row, cache)
     if not details['source_verified']:
         return {'success': False, 'error': 'This model source is not verified as a Hugging Face download.'}
-    if not details['available']:
-        return {'success': False, 'error': 'No newer Hugging Face revision is available for this model.', 'details': details}
-    remote_files = list(details.get('remote_files') or [])
-    old_path = Path(str(row.get('path') or '')).expanduser().resolve()
-    local_paths = [Path(str(item)).expanduser().resolve() for item in (row.get('split_files') or []) if str(item).strip()]
-    if not local_paths and old_path.is_file():
-        local_paths = [old_path]
-    if old_path.is_dir():
-        selected = remote_files
+    repo = _repo_id(row)
+    state = cache.get('models', {}).get(_model_state_key(row, repo)) if repo else None
+    remote = cache.get('repos', {}).get(repo.lower()) if repo else None
+    evaluation = _evaluate(
+        row,
+        dict(state) if isinstance(state, dict) else {},
+        dict(remote) if isinstance(remote, dict) else {},
+    )
+    if evaluation['mode'] == 'none':
+        return {
+            'success': False,
+            'error': 'This Hugging Face repo does not contain the installed file or a matching quant to replace it.',
+            'details': details,
+        }
+    if not details['available'] or not evaluation['available']:
+        return {'success': False, 'error': 'No newer Hugging Face revision changes the installed model files.', 'details': details}
+    old_path = Path(str(evaluation['path'] or row.get('path') or '')).expanduser().resolve()
+    if evaluation['is_directory']:
+        selected = list(evaluation['changed'])
     else:
-        local_names = {item.name.lower() for item in local_paths}
-        selected = [
-            item for item in remote_files
-            if Path(str(item.get('filename') or '')).name.lower() in local_names
-        ]
-        if not selected:
-            selected = [
-                item for item in remote_files
-                if Path(str(item.get('filename') or '')).name.lower() == old_path.name.lower()
-            ]
-    if not selected:
-        return {'success': False, 'error': 'The new revision does not contain the installed model files.'}
+        # Replace the whole installed set (all split parts) when any part changed.
+        selected = list(evaluation['files'])
     size_bytes = sum(int(item.get('size_bytes') or 0) for item in selected)
     if not size_bytes:
         size_bytes = int(details.get('remote_size_bytes') or 0)
@@ -342,6 +523,7 @@ def get_model_update_details(row: dict[str, Any]) -> dict[str, Any]:
             'old_revision': details.get('installed_revision') or 'Unknown',
             'new_revision': details.get('remote_revision') or 'Unknown',
             'files': selected,
+            'replacement_mode': evaluation['mode'],
             'required_bytes': required_bytes,
             'free_bytes': int(free_bytes),
             'enough_space': free_bytes >= required_bytes,
@@ -476,7 +658,12 @@ def _run_update_job(job_id: str, row: dict[str, Any], details: dict[str, Any], c
     local_paths = [Path(str(item)).expanduser().resolve() for item in (row.get('split_files') or []) if str(item).strip()]
     if not local_paths and not is_directory:
         local_paths = [old_path]
-    if not is_directory and local_paths:
+    mapped = [item for item in selected_files if str(item.get('local_path') or '').strip()]
+    if not is_directory and mapped:
+        # Planned pairs (may map a renamed upstream file onto the installed name).
+        selected_files = mapped
+        local_paths = [Path(str(item['local_path'])).expanduser().resolve() for item in mapped]
+    elif not is_directory and local_paths:
         by_name = {
             Path(str(item.get('filename') or '')).name.lower(): item
             for item in selected_files
@@ -555,6 +742,12 @@ def _run_update_job(job_id: str, row: dict[str, Any], details: dict[str, Any], c
             cache = _read_cache()
             key = _model_state_key(row, str(details['repo_id']))
             state = dict(cache['models'].get(key) or {})
+            baselines = dict(state.get('installed_files') or {})
+            for item in selected_files:
+                local_text = str(item.get('local_path') or '').strip()
+                if local_text:
+                    baselines[_path_key(local_text)] = _fingerprint(item)
+            state['installed_files'] = baselines
             state.update({
                 'repo_id': str(details['repo_id']).lower(),
                 'path': str(old_path),

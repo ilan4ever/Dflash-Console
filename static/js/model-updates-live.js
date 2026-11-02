@@ -157,7 +157,7 @@
         <span>Required while replacing</span><strong>${escapeHtml(bytesLabel(required))}</strong>
       </div>
       <p class="lm-setting-desc">${enough ? 'The disk has enough space for the staged replacement.' : 'There is not enough free disk space for a safe staged replacement.'}</p>
-      <div class="df-model-update-files"><strong>Files that will be replaced</strong><ul>${files.map((item) => `<li>${escapeHtml(item?.filename || '')} <span>${escapeHtml(bytesLabel(item?.size_bytes))}</span></li>`).join('')}</ul></div>
+      <div class="df-model-update-files"><strong>Files that will be replaced</strong><ul>${files.map((item) => `<li>${escapeHtml(item?.filename || '')}${item?.replaces ? ` <em>(renamed upstream; replaces ${escapeHtml(item.replaces)}, same quant)</em>` : ''} <span>${escapeHtml(bytesLabel(item?.size_bytes))}</span></li>`).join('')}</ul></div>
     `;
     if (confirm) confirm.disabled = !enough;
   }

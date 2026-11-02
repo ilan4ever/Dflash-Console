@@ -1,5 +1,6 @@
 'use strict';
 
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -133,7 +134,23 @@ function ensureRuntimeTree(destRoot, resourcesPath) {
   }
 
   fs.writeFileSync(stampPath, bundledVersion, 'utf8');
+  ensureInstallPermissions(destRoot);
   return destRoot;
+}
+
+function ensureInstallPermissions(destRoot) {
+  if (process.platform !== 'win32') return;
+  const script = path.join(destRoot, 'scripts', 'set-install-permissions.ps1');
+  if (!fs.existsSync(script)) return;
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Path', destRoot, '-Kind', 'data', '-Recurse'],
+    { windowsHide: true, timeout: 120000 },
+  );
+  if (result.status !== 0) {
+    const detail = `${result.stderr || result.stdout || ''}`.trim();
+    console.error(`Could not set Console folder access.${detail ? ` ${detail}` : ''}`);
+  }
 }
 
 function isDevCheckout(root) {

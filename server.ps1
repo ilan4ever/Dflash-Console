@@ -496,7 +496,8 @@ function Resolve-BootstrapPython {
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
-        'C:\Python314\python.exe'
+        'C:\Python\python314\python.exe',
+        'C:\Python\python313\python.exe'
     )) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
     }

@@ -75,4 +75,10 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     ($config | ConvertTo-Json -Depth 8) + "`n" | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
 
+$permissions = Join-Path $PSScriptRoot 'set-install-permissions.ps1'
+if (-not (Test-Path -LiteralPath $permissions)) {
+    throw "Installer permission script is missing: $permissions"
+}
+& $permissions -Path $DataRoot -Kind data -Recurse
+
 Write-Output $DataRoot

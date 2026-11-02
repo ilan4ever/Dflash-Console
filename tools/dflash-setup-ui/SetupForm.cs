@@ -722,6 +722,9 @@ namespace DFlashConsoleSetup
                     throw new Exception("File copy failed (code " + rc + ").");
                 }
 
+                SetStatus("Setting folder access…");
+                await Task.Run(() => ApplyInstallPermissions(_destRoot, _perMachine));
+
                 try
                 {
                     File.WriteAllText(Path.Combine(_destRoot, "install-version.txt"), _version);
@@ -1651,6 +1654,51 @@ namespace DFlashConsoleSetup
             }
 
             return paths.ToArray();
+        }
+
+        private static void ApplyInstallPermissions(string programRoot, bool shared)
+        {
+            string script = Path.Combine(programRoot, "resources", "console-runtime", "scripts", "set-install-permissions.ps1");
+            if (!File.Exists(script))
+            {
+                script = Path.Combine(programRoot, "scripts", "set-install-permissions.ps1");
+            }
+            if (!File.Exists(script))
+            {
+                throw new Exception("Installer permission script is missing (set-install-permissions.ps1).");
+            }
+
+            string shell = ResolvePowerShellExe();
+            string arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script
+                + "\" -Path \"" + programRoot + "\" -Kind program -Recurse";
+            if (shared) arguments += " -Shared";
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = shell,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (Process p = Process.Start(psi))
+            {
+                if (p == null) throw new Exception("Could not set folder access.");
+                string stdout = "";
+                string stderr = "";
+                try { stdout = p.StandardOutput.ReadToEnd(); } catch { }
+                try { stderr = p.StandardError.ReadToEnd(); } catch { }
+                p.WaitForExit();
+                if (p.ExitCode != 0)
+                {
+                    string detail = (stderr + " " + stdout).Trim();
+                    if (detail.Length > 220) detail = detail.Substring(0, 220) + "…";
+                    throw new Exception(
+                        "Could not set folder access (code " + p.ExitCode + ")."
+                        + (string.IsNullOrEmpty(detail) ? "" : "\n" + detail));
+                }
+            }
         }
 
         private static int RunRobocopy(string src, string dst)
