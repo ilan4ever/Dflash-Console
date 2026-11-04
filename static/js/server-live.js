@@ -6444,6 +6444,9 @@
 
   async function pollTick() {
     if (pollInFlight) return;
+    // A hidden or minimised window has nothing to repaint; skip the poll so an
+    // idle Console does not keep the backend busy.
+    if (document.hidden) return;
     pollInFlight = true;
     const view = document.body.dataset.activeView;
     const onEngines = view === 'server';
@@ -7251,12 +7254,14 @@
     reschedulePoll();
     if (!inferenceStatsTimer) {
       inferenceStatsTimer = window.setInterval(() => {
-        if (!enginesViewActive()) return;
+        if (document.hidden || !enginesViewActive()) return;
         void refreshInferenceStats(true);
       }, LIVE_STATS_INTERVAL_MS);
     }
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
+      void window.DFlashSysbarLive?.refresh?.();
+      void pollTick();
       if (!enginesViewActive()) return;
       // Wake up with the local snapshot first. A fresh external GPU scan here
       // can hold the shared status lock and make a newly opened window look

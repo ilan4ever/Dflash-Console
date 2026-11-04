@@ -395,19 +395,27 @@ def _load_windows_parent_pid_map() -> dict[int, int]:
         _PARENT_MAP_CACHE['map'] = dict(mapping)
         return mapping
 
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
-    )
-    from core.bounded_proc import powershell_argv, run_bounded
-
-    code, text = run_bounded(powershell_argv(script), timeout=8)
-    if code != 0 or not text:
-        return {}
+    # [polling-fix 2026-11-04] Toolhelp snapshot in-process before falling back to PowerShell.
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+        from core.fast_probe import win32_process_rows
+
+        payload = win32_process_rows()
+    except Exception:
+        payload = None
+    if payload is None:
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
+        )
+        from core.bounded_proc import powershell_argv, run_bounded
+
+        code, text = run_bounded(powershell_argv(script), timeout=8)
+        if code != 0 or not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
     rows = payload if isinstance(payload, list) else [payload]
     for row in rows:
         if not isinstance(row, dict):
@@ -915,24 +923,32 @@ def _process_table_powershell() -> dict[int, dict[str, Any]]:
 def _query_process_table_powershell() -> dict[int, dict[str, Any]]:
     if sys.platform != 'win32':
         return {}
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath | "
-        "ConvertTo-Json -Depth 3 -Compress"
-    )
-    from core.bounded_proc import powershell_argv, run_bounded
-
-    code, text = run_bounded(
-        powershell_argv(script),
-        timeout=12,
-    )
-    if code != 0 or not text:
-        return {}
-
+    # [polling-fix 2026-11-04] Toolhelp + NtQueryInformationProcess in-process (no PowerShell).
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+        from core.fast_probe import win32_process_rows
+
+        payload = win32_process_rows()
+    except Exception:
+        payload = None
+    if payload is None:
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath | "
+            "ConvertTo-Json -Depth 3 -Compress"
+        )
+        from core.bounded_proc import powershell_argv, run_bounded
+
+        code, text = run_bounded(
+            powershell_argv(script),
+            timeout=12,
+        )
+        if code != 0 or not text:
+            return {}
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
     if isinstance(payload, dict):
         payload = [payload]
     if not isinstance(payload, list):

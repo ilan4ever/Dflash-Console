@@ -70,6 +70,16 @@ def run_bounded(argv: list[str], *, timeout: float = 3.0) -> tuple[int | None, s
     ``returncode`` is ``None`` when the command does not finish in time. The
     caller is never left waiting on a process that will not die.
     """
+    # [polling-fix 2026-11-04] answer supported nvidia-smi queries from NVML instead of spawning.
+    if argv and str(argv[0]).lower() in ('nvidia-smi', 'nvidia-smi.exe'):
+        try:
+            from core.fast_probe import nvidia_smi_emulated
+
+            emulated = nvidia_smi_emulated(list(argv[1:]))
+        except Exception:
+            emulated = None
+        if emulated is not None:
+            return 0, emulated
     try:
         proc = subprocess.Popen(
             argv,
@@ -102,6 +112,16 @@ def run_nvidia_smi(args: list[str], *, timeout: float = 3.0) -> str:
     """
     global _NVIDIA_COOLDOWN_UNTIL
     key = tuple(args)
+    # [polling-fix 2026-11-04] in-process NVML: no child process, no lock, always live.
+    try:
+        from core.fast_probe import nvidia_smi_emulated
+
+        emulated = nvidia_smi_emulated(list(args))
+    except Exception:
+        emulated = None
+    if emulated is not None:
+        _NVIDIA_LAST_OK[key] = emulated
+        return emulated
     now = time.time()
     if now < _NVIDIA_COOLDOWN_UNTIL:
         cached = _NVIDIA_LAST_OK.get(key, '')

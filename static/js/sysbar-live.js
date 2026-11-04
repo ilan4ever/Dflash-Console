@@ -82,9 +82,16 @@
   function startPolling() {
     if (pollTimer) return;
     pollTimer = window.setInterval(() => {
+      // Nothing on screen is moving while the window is hidden or minimised.
+      if (document.hidden) return;
       void refresh();
-    }, 5000);
+    }, 1000);
   }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    void refresh();
+  });
 
   document.addEventListener('DOMContentLoaded', () => {
     void refresh().then(startPolling);

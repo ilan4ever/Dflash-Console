@@ -176,6 +176,22 @@ def _query_gpus_live() -> list[dict[str, Any]]:
 
 
 def _query_cpu_ram_windows() -> tuple[int | None, dict[str, float | int | None]]:
+    # [polling-fix 2026-11-04] GetSystemTimes / GlobalMemoryStatusEx in-process (no PowerShell).
+    try:
+        from core.fast_probe import cpu_percent as _fast_cpu, ram_info as _fast_ram
+
+        fast_ram = _fast_ram()
+        fast_cpu = _fast_cpu()
+    except Exception:
+        fast_ram, fast_cpu = None, None
+    if fast_ram is not None:
+        if fast_cpu is not None:
+            return _apply_cpu_smoothing(fast_cpu), dict(fast_ram)
+        # Two samples inside one clock tick give no delta. Reuse the last value
+        # instead of spawning PowerShell for a single poll.
+        last_load = cpu_load_hint()
+        if last_load is not None:
+            return last_load, dict(fast_ram)
     script = (
         "$ErrorActionPreference='SilentlyContinue';"
         "$sum = (Get-Process | Measure-Object -Property CPU -Sum).Sum;"
@@ -229,6 +245,15 @@ def get_system_stats_payload() -> dict[str, Any]:
 def get_cpu_info_payload() -> dict[str, Any]:
     if sys.platform != 'win32':
         return {'name': 'Unknown CPU', 'arch': 'unknown', 'features': []}
+    # [polling-fix 2026-11-04] registry lookup, cached for the process lifetime.
+    try:
+        from core.fast_probe import cpu_name as _fast_cpu_name
+
+        fast_name = _fast_cpu_name()
+    except Exception:
+        fast_name = None
+    if fast_name:
+        return {'name': fast_name, 'arch': 'x86_64', 'features': ['AVX', 'AVX2']}
     script = (
         '$p = Get-CimInstance Win32_Processor | Select-Object -First 1 Name; '
         '@{ name = [string]$p.Name } | ConvertTo-Json -Compress'

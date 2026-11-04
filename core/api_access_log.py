@@ -23,6 +23,23 @@ _entries: deque[dict[str, Any]] = deque(maxlen=_MAX_ENTRIES)
 _ERROR_HINTS = ('error', 'exception', 'traceback', 'failed', 'critical', ' 4', ' 5')
 
 
+# [polling-fix 2026-11-04] routine UI polls are kept in memory only; errors still hit disk.
+_ROUTINE_GET_PATHS = frozenset({
+    '/api/servers', '/api/ui-state', '/api/system-stats', '/api/health',
+    '/api/gpu-devices', '/api/gpu/contention', '/api/gpu/budget', '/api/runtimes',
+})
+_ROUTINE_GET_SUFFIXES = ('/inference-stats', '/status', '/chat-ready')
+
+
+def _is_routine_poll(row: dict[str, Any]) -> bool:
+    if row.get('method') != 'GET' or row.get('error') or int(row.get('status') or 0) >= 400:
+        return False
+    path = str(row.get('path') or '')
+    if path in _ROUTINE_GET_PATHS:
+        return True
+    return path.startswith('/api/servers/') and path.endswith(_ROUTINE_GET_SUFFIXES)
+
+
 def record_api_call(
     *,
     method: str,
@@ -48,7 +65,8 @@ def record_api_call(
     }
     with _lock:
         _entries.append(row)
-    _append_disk(row)
+    if not _is_routine_poll(row):
+        _append_disk(row)
     return row
 
 
