@@ -106,11 +106,19 @@ function applyWindowsStartup(enabled) {
     errors.push(err);
   }
 
-  // Keep an explicit quoted Run value as a compatibility fallback for older
-  // Electron builds and repair entries written by earlier Console versions.
+  // Electron's login item ("com.dflash.console") is the single startup entry.
+  // Only write our own Run value when that API is unavailable; otherwise remove
+  // the legacy "DFlash Console" value so the app is never registered twice.
   try {
     const regQuiet = { windowsHide: true, stdio: 'ignore' };
-    if (enabled) {
+    const deleteLegacy = (key) => {
+      try {
+        execFileSync('reg', ['delete', key, '/v', STARTUP_VALUE, '/f'], regQuiet);
+      } catch (_err) {
+        // The legacy value is normally absent.
+      }
+    };
+    if (enabled && !applied) {
       const launchCommand = `"${exe}" ${STARTUP_ARGS.join(' ')}`;
       execFileSync(
         'reg',
@@ -119,20 +127,12 @@ function applyWindowsStartup(enabled) {
       );
       // A previous Task Manager disablement must not survive an explicit
       // checked setting. A missing approval value is treated as enabled.
-      try {
-        execFileSync('reg', ['delete', STARTUP_APPROVED_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
-      } catch (_err) {
-        // The approval value is normally absent.
-      }
+      deleteLegacy(STARTUP_APPROVED_KEY);
       applied = true;
     } else {
-      execFileSync('reg', ['delete', RUN_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
-      try {
-        execFileSync('reg', ['delete', STARTUP_APPROVED_KEY, '/v', STARTUP_VALUE, '/f'], regQuiet);
-      } catch (_err) {
-        // The approval value is normally absent.
-      }
-      applied = true;
+      deleteLegacy(RUN_KEY);
+      deleteLegacy(STARTUP_APPROVED_KEY);
+      if (!enabled) applied = true;
     }
   } catch (err) {
     errors.push(err);
