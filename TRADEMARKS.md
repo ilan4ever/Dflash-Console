@@ -41,3 +41,14 @@ partnership is stated.
 
 For permission to use DFlash branding beyond these guidelines, contact the
 maintainer before publishing the distribution.
+
+## Comparisons with other products
+
+DFlash Console documentation compares it with other local LLM tools, such as
+LM Studio, Ollama, and Jan, to help people choose the right tool. These
+references are descriptive only. DFlash Console is not affiliated with,
+endorsed by, or associated with LM Studio or Element Labs, Inc., Ollama, or
+Jan. LM Studio is a trademark of its respective owner. DFlash Console does not
+use their names in its product name, package names, or executables, and does
+not use their logos. Comparisons rely on each product's public documentation at
+the time of writing; please open an issue if something is out of date.

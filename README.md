@@ -1,8 +1,15 @@
 # DFlash Console
 
-Local Windows control panel for **DFlash speculative-decoding stacks** and a
-unified model runtime. Load GGUF, Hugging Face, speech, and embedding models
-from one UI, then talk to them through a single OpenAI-compatible port.
+**Open-source Windows control panel for local LLMs.** Download, load, and serve
+GGUF and Hugging Face models with **DFlash speculative decoding**, llama-server
+(llama.cpp), vLLM, Transformers, and local speech engines, then talk to all of
+them through a single OpenAI-compatible port.
+
+DFlash Console is an **open-source alternative to LM Studio** for Windows users
+who want DFlash draft stacks, several engines and GPUs at once, and one local
+gateway for chat, embeddings, text-to-speech, and speech-to-text. See
+[Compared to LM Studio and other local LLM tools](#compared-to-lm-studio-and-other-local-llm-tools).
+*Not affiliated with LM Studio or Element Labs, Inc.*
 
 > **Status:** Public preview for local, single-user use. **Windows is the only
 > supported platform**; Linux and macOS are not supported or tested (see
@@ -90,6 +97,61 @@ whenever GPUs are listed. Full steps, including Tailscale and SSH:
 | **Speech** | Piper TTS and whisper.cpp STT |
 | **CLI** | `dflash list`, `load`, `chat`, `search`, `pull` — same library as the UI |
 | **Docs** | In-app user guide, CLI reference, and API catalog |
+
+---
+
+## Compared to LM Studio and other local LLM tools
+
+LM Studio, Ollama, and Jan are popular ways to run models locally. DFlash
+Console covers the same basics (download models from Hugging Face, chat, and
+serve an OpenAI-compatible API) and is built for Windows users who want more
+control over engines, GPUs, and speculative decoding.
+
+| | DFlash Console | LM Studio (per its public docs, Nov 2026) |
+|---|---|---|
+| **Source code** | Open source, GNU AGPL v3 or later | Proprietary desktop app, free for home and work use; the `lms` CLI and SDKs are MIT |
+| **Platforms** | Windows 10+ | macOS, Windows, Linux |
+| **Inference engines** | llama-server (llama.cpp) with DFlash 1 and DFlash 2, vLLM, Transformers, FreeToken (WSL2), and external launchers such as Strata | llama.cpp; MLX on Apple Silicon |
+| **Speculative decoding** | DFlash 1 and DFlash 2 draft stacks. **Find and attach draft** searches your library and Hugging Face, checks architecture compatibility, and attaches the draft | Draft-model speculative decoding; the draft must share the main model's vocabulary |
+| **OpenAI-compatible API** | One gateway at `http://127.0.0.1:8001/v1` for every loaded engine: chat, embeddings, `/v1/audio/speech` (Piper TTS), and `/v1/audio/transcriptions` (whisper.cpp STT) | OpenAI-compatible and LM Studio REST APIs; audio endpoints are an [open feature request](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/1715) |
+| **Existing model folders** | Scans LM Studio (`~/.lmstudio/models`), Ollama, and Hugging Face folders, so the same files load without copying | Imports model files downloaded outside LM Studio |
+| **Another computer's GPU** | **Nodes**: load a model on a GPU in another DFlash Console | LM Link routes workloads across devices |
+
+Also in DFlash Console:
+
+- Several engines loaded at once on different GPUs and ports, each with its own
+  **Engines** card: live per-slot stats, context size, and the app using it
+  (`X-DFlash-Client`).
+- GPU choice per model (for example an RTX 4090 or a TITAN), a VRAM preflight
+  that suggests what to unload first, and VRAM chips for other apps on the GPU.
+- Hugging Face model catalog and download wizard with file-level update checks.
+- Cloud API models (DeepSeek and other OpenAI-compatible providers) listed next
+  to local models on the same gateway.
+- A terminal CLI (`dflash list`, `load`, `chat`, `pull`) and
+  `pip install dflash-console`.
+
+### FAQ
+
+**Is there an open-source alternative to LM Studio?**
+Yes. DFlash Console is open source under the GNU AGPL, with Windows installers
+on [GitHub Releases](https://github.com/ilan4ever/Dflash-Console/releases/latest)
+and `pip install dflash-console` for the server and CLI.
+
+**Is there an LM Studio alternative for Windows with speculative decoding?**
+DFlash Console runs DFlash 1 and DFlash 2 draft stacks on llama-server and can
+find and attach a compatible draft for a target GGUF from the Models page.
+
+**Can I keep using the models I downloaded with LM Studio?**
+Yes. Turn on the LM Studio library (`~/.lmstudio/models`) and those GGUF files
+appear in **Models** and in `dflash list --lmstudio`.
+
+**Can DFlash Console and LM Studio run at the same time?**
+Yes. They use different ports, and **Engines** shows LM Studio as another app on
+the GPU with its VRAM use.
+
+> Not affiliated with, endorsed by, or associated with LM Studio or Element Labs, Inc. LM Studio is a trademark of its respective owner. Comparisons are based on
+> each product's public documentation as of November 2026 and may change.
+> See [TRADEMARKS.md](./TRADEMARKS.md).
 
 ---
 
@@ -312,6 +374,7 @@ model weights.
 
 GNU AGPL v3 or later. See [LICENSE](./LICENSE), [NOTICE.md](./NOTICE.md), and
 [TRADEMARKS.md](./TRADEMARKS.md).
+Not affiliated with, endorsed by, or associated with LM Studio or Element Labs, Inc. LM Studio is a trademark of its respective owner.
 
 DFlash Console is developed by **ILAN AVIV**. Related project:
 [DFlash](https://github.com/z-lab/DFlash).

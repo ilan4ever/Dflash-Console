@@ -34,3 +34,7 @@ upstream licenses and terms.
 The DFlash Console name and logos are trademarks or protected branding of
 ILAN AVIV where applicable. They are governed separately by
 [TRADEMARKS.md](./TRADEMARKS.md).
+
+References to other products, including LM Studio, are descriptive
+comparisons only. Not affiliated with, endorsed by, or associated with LM Studio or Element Labs, Inc. LM Studio is a trademark of its respective owner. See
+[TRADEMARKS.md](./TRADEMARKS.md#comparisons-with-other-products).

@@ -5,6 +5,14 @@ loading models, reading live stats, managing libraries, and configuring the
 local runtime. The current application is developed by **ILAN AVIV** and is
 intended for one trusted user on one Windows machine.
 
+**Coming from LM Studio?** DFlash Console is an open-source (AGPL) alternative
+to LM Studio for Windows. Turn on the LM Studio library (`~/.lmstudio/models`)
+to load the GGUF files you already have, add DFlash speculative decoding with
+**Find and attach draft**, and point OpenAI clients at
+`http://127.0.0.1:8001/v1`. A feature comparison is in the
+[README](https://github.com/ilan4ever/Dflash-Console#compared-to-lm-studio-and-other-local-llm-tools).
+Not affiliated with, endorsed by, or associated with LM Studio or Element Labs, Inc. LM Studio is a trademark of its respective owner.
+
 ---
 
 ## Platform support

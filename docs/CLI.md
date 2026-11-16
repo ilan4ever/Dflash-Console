@@ -3,6 +3,9 @@
 The Console is the source of truth for models on this PC. The same library you
 see in the **Models** tab is available from PowerShell, cmd, or any terminal
 with `dflash`, the same way `ollama list` talks to Ollama.
+Coming from LM Studio or Ollama? `dflash list --lmstudio` shows the LM Studio
+models DFlash Console can load. DFlash Console is independent of both projects;
+it is not affiliated with LM Studio or Element Labs, Inc.
 
 The Console server must be running for most commands (`dflash serve` or
 `.\server.ps1`). These work without a running server: `help`, `version`,
