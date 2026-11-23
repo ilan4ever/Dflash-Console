@@ -23,6 +23,7 @@ from core.runtimes.base import RUNTIME_LLAMA_SERVER, RuntimeAdapter
 _BASE_PROCESS_TOKENS: tuple[str, ...] = (
     'llama-server',
     'start_llama_server.ps1',
+    'start_llama_server.sh',
 )
 
 _ADAPTERS: dict[str, RuntimeAdapter] = {}
