@@ -220,6 +220,21 @@ is shown only while it is actually starting. If an app asks the Console gateway
 for the Strata model while it is stopped, the Console starts the launcher and
 then serves the request.
 
+Colibri (github.com/JustVugg/colibri) is the second launcher kind. It runs very
+large MoE GGUFs (for example GLM-5.3-Flash) by keeping the hot experts on the
+graphics card and streaming the rest from RAM and disk. Colibri lives in
+`C:\dev\colibri`; its models sit in the **Colibri models** library
+(`D:\models\unsloth\GLM-5.3-Flash-GGUF`), so a Hugging Face download into that library lands
+where Colibri reads it and shows in **Downloads** with progress. Colibri rows
+in **Models** carry a **Colibri** badge and are not loaded by llama-server.
+Register a downloaded model with `POST /api/external/launchers/colibri`
+(`{"gguf_path": "...-00001-of-0000N.gguf", "port": 8120}`); the first start
+runs `coli import` once (it writes a small model folder next to the GGUF and
+reads the weights in place). The engine runs on Vulkan: the RTX 4090 is the
+primary device and the TITAN RTX holds extra experts. Its card works like
+Strata's: a **COLIBRI** badge, slot changes restart it, **Unload** stops the
+launcher, and a gateway request for its model starts it.
+
 Use **Import model to DFlash Console** on GGUF or STT paths when you want the
 same weights in your Console library.
 

@@ -74,7 +74,7 @@ def _launcher_entries(entries: list[dict[str, Any]], seen: set[str]) -> None:
     """
     try:
         from core.external_launchers import _http_json as _launcher_http_json
-        from core.external_launchers import launcher_model_id, launchers
+        from core.external_launchers import health_loaded, launcher_context_size, launcher_model_id, launchers
     except Exception:
         return
     for launcher in launchers():
@@ -91,28 +91,25 @@ def _launcher_entries(entries: list[dict[str, Any]], seen: set[str]) -> None:
         if not api_model:
             continue
         app = _slug(launcher.get('id') or '')
+        # The launcher id is the only public name. The weight filename changes
+        # when a pack is swapped; clients must not store that filename.
+        public_id = app or _slug(api_model)
+        if not public_id or public_id in seen or public_id in _RESERVED_IDS:
+            continue
+        seen.add(public_id)
         label = str(launcher.get('label') or api_model).strip() or api_model
-        context_size = health.get('max_context')
-        candidates: list[str] = []
-        if app:
-            candidates.append(f'{app}-{_slug(api_model)}')
-        candidates.append(api_model.lower())
-        for public_id in candidates:
-            if not public_id or public_id in seen or public_id in _RESERVED_IDS:
-                continue
-            seen.add(public_id)
-            entries.append({
-                'id': public_id,
-                'label': label,
-                'api_url': f'http://127.0.0.1:{int(port)}/v1',
-                'api_model_id': api_model,
-                'app_source': app,
-                'pid': None,
-                'context_size': context_size,
-                'loaded': bool(health.get('loaded')),
-                'launcher_id': str(launcher.get('id') or '').strip(),
-                'external': True,
-            })
+        entries.append({
+            'id': public_id,
+            'label': label,
+            'api_url': f'http://127.0.0.1:{int(port)}/v1',
+            'api_model_id': api_model,
+            'app_source': app,
+            'pid': None,
+            'context_size': health.get('max_context') or health.get('context_tokens') or launcher_context_size(launcher) or None,
+            'loaded': health_loaded(launcher, health),
+            'launcher_id': str(launcher.get('id') or '').strip(),
+            'external': True,
+        })
 
 
 def _scan_entries() -> list[dict[str, Any]]:
@@ -149,27 +146,22 @@ def _scan_entries() -> list[dict[str, Any]]:
         openai_base = f'{_api_base(api_url)}/v1'
         label = str(card.get('title') or card.get('model_name') or api_model).strip() or api_model
         context_size = card.get('context_size') or _upstream_context_size(_api_base(api_url))
-        candidates: list[str] = []
-        if app:
-            candidates.append(f'{app}-{_slug(api_model)}')
-        candidates.append(api_model.lower())
-        label_slug = _slug(label)
-        if label_slug:
-            candidates.append(label_slug)
-        for public_id in candidates:
-            if not public_id or public_id in seen or public_id in _RESERVED_IDS:
-                continue
-            seen.add(public_id)
-            entries.append({
-                'id': public_id,
-                'label': label,
-                'api_url': openai_base,
-                'api_model_id': api_model,
-                'app_source': app,
-                'pid': card.get('pid'),
-                'context_size': context_size,
-                'external': True,
-            })
+        # One public id. Older filename spellings still resolve, but they are
+        # not a second model.
+        public_id = app or _slug(api_model) or api_model.lower()
+        if not public_id or public_id in seen or public_id in _RESERVED_IDS:
+            continue
+        seen.add(public_id)
+        entries.append({
+            'id': public_id,
+            'label': label,
+            'api_url': openai_base,
+            'api_model_id': api_model,
+            'app_source': app,
+            'pid': card.get('pid'),
+            'context_size': context_size,
+            'external': True,
+        })
     _launcher_entries(entries, seen)
     return entries
 
@@ -185,6 +177,23 @@ def external_model_entries(*, force: bool = False) -> list[dict[str, Any]]:
     return [dict(row) for row in entries]
 
 
+def _entry_aliases(entry: dict[str, Any]) -> set[str]:
+    """Every spelling that means this one engine, including retired filenames."""
+    aliases: set[str] = set()
+    for key in ('id', 'launcher_id', 'api_model_id', 'app_source'):
+        value = str(entry.get(key) or '').strip().lower()
+        if value:
+            aliases.add(value)
+    api = str(entry.get('api_model_id') or '').strip()
+    app = _slug(entry.get('launcher_id') or entry.get('app_source') or '')
+    if api:
+        aliases.add(api.lower())
+        aliases.add(_slug(api))
+        if app:
+            aliases.add(f'{app}-{_slug(api)}')
+    return aliases
+
+
 def resolve_external_model_entry(model: str) -> dict[str, Any] | None:
     """The external workload a client asked for by name, if any."""
     wanted = str(model or '').strip().lower()
@@ -194,7 +203,7 @@ def resolve_external_model_entry(model: str) -> dict[str, Any] | None:
     if cached and time.monotonic() - cached[0] < _RESOLVED_TTL_S:
         return dict(cached[1])
     for entry in external_model_entries():
-        if str(entry.get('id') or '').lower() == wanted:
+        if wanted in _entry_aliases(entry):
             _RESOLVED[wanted] = (time.monotonic(), dict(entry))
             return entry
     _RESOLVED.pop(wanted, None)

@@ -1743,7 +1743,7 @@ def _dflash_stack_supplement(
             library_context_for_path(target_path, config)
             if target_path else ('', '', '')
         )
-        if preset == 'strata':
+        if preset in ('strata', 'colibri'):
             continue
         server_id = str(normalized.get('id') or '')
         if server_id in catalog_server_ids:
@@ -1762,7 +1762,7 @@ def _dflash_stack_supplement(
     }
     pool = [
         row for row in (list(catalog.values()) + list(extras or []))
-        if str(row.get('library_preset') or '').strip().lower() != 'strata'
+        if str(row.get('library_preset') or '').strip().lower() not in ('strata', 'colibri')
     ]
     targets = list(list_capable_targets(cfg=config, models=pool).get('targets') or [])
 
@@ -2037,6 +2037,12 @@ def model_matches_source(row: dict[str, Any], source: str) -> bool:
             or str(row.get('library_preset') or '').strip().lower() == 'strata'
             or str(row.get('runtime_id') or '').strip().lower() == 'strata'
         )
+    if needle in {'colibri'}:
+        return (
+            raw == 'colibri'
+            or str(row.get('library_preset') or '').strip().lower() == 'colibri'
+            or str(row.get('runtime_id') or '').strip().lower() == 'colibri'
+        )
     if needle in {'dflash', 'stack', 'stacks'}:
         return bool(row.get('dflash_stack')) or raw in {'dflash', 'dflash-profile', 'dflash-stack'}
     if needle in {'library', 'console', 'local'}:
@@ -2090,6 +2096,15 @@ def _annotate_runtime_fields(row: dict[str, Any]) -> None:
         runtime_id = 'strata'
         row['runtime_label'] = 'Strata'
         row['engine_mode'] = 'Strata'
+        row['loadable'] = False
+        row['runnable'] = False
+    elif library_preset == 'colibri':
+        # Colibri (github.com/JustVugg/colibri) reads these GGUFs in place and
+        # serves them from its own engine (glm53.exe, ...). The Console starts
+        # it through the registered "colibri" launcher, not llama-server.
+        runtime_id = 'colibri'
+        row['runtime_label'] = 'Colibri'
+        row['engine_mode'] = 'Colibri'
         row['loadable'] = False
         row['runnable'] = False
     if modality == 'text-to-speech':
@@ -2326,7 +2341,7 @@ def _profile_catalog(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             library_context_for_path(target_path, config)
             if target_path else ('', '', '')
         )
-        if preset == 'strata':
+        if preset in ('strata', 'colibri'):
             # A stale DFlash profile must not shadow a model that belongs to
             # Strata. The file scan below exposes the real Strata row.
             continue

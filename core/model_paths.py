@@ -32,6 +32,10 @@ _STORAGE_PRESETS: dict[str, dict[str, str]] = {
         'label': 'Strata models',
         'description': 'Models installed and served by Strata',
     },
+    'colibri': {
+        'label': 'Colibri models',
+        'description': 'GGUF models served by Colibri (github.com/JustVugg/colibri)',
+    },
     'gguf': {
         'label': 'GGUF checkpoints',
         'description': 'Generic GGUF weight files',
@@ -82,6 +86,7 @@ def _preset_path(preset: str, cfg: dict[str, Any]) -> Path:
         'dflash': models_root,
         'gguf': models_root,
         'strata': models_root,
+        'colibri': Path(r'D:\models\unsloth\GLM-5.3-Flash-GGUF'),
         'lmstudio': home / '.lmstudio' / 'models',
         'speech': models_root / 'speech',
         'tts': models_root / 'tts',
@@ -98,6 +103,8 @@ def _source_for_preset(preset: str) -> str:
         return 'dflash'
     if preset == 'strata':
         return 'strata'
+    if preset == 'colibri':
+        return 'colibri'
     return 'library'
 
 
@@ -116,6 +123,8 @@ def infer_discovered_from(
         return 'Ollama'
     if source_key == 'strata':
         return 'Strata'
+    if source_key == 'colibri':
+        return 'Colibri'
     if source_key in {'dflash', 'dflash-profile', 'dflash-stack'}:
         return 'DFlash'
 

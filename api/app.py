@@ -762,6 +762,8 @@ class ModelSlotsPatch(BaseModel):
 class ExternalLauncherLoad(BaseModel):
     # Requests the external server answers at the same time (Strata: --parallel).
     parallel: int | None = Field(default=None, ge=1, le=8)
+    # Stable card choice from the client. ``auto`` keeps the launcher config.
+    gpu_device: str | None = Field(default=None, max_length=16)
 
 
 class ExternalLauncherPatch(BaseModel):
@@ -5520,6 +5522,37 @@ def external_launcher_register(body: dict[str, Any]) -> dict[str, Any]:
     return {'success': True, 'launcher': save_launcher(body)}
 
 
+@app.post('/api/external/launchers/colibri')
+def external_launcher_register_colibri(body: dict[str, Any]) -> dict[str, Any]:
+    """Register the Colibri launcher that serves one GGUF (first shard of a split).
+
+    Body: ``gguf_path`` (required), optional ``port``, ``context``, ``gpu``
+    (primary Vulkan device) and ``gpu2`` (second card for experts, or null).
+    """
+    from core.external_launchers import register_colibri_launcher
+    from core.external_models import forget_external_models
+
+    gguf_path = str(body.get('gguf_path') or '').strip()
+    if not gguf_path.lower().endswith('.gguf'):
+        raise HTTPException(status_code=400, detail='gguf_path must name a .gguf file')
+    options: dict[str, Any] = {}
+    for key in ('port', 'context', 'gpu'):
+        if body.get(key) not in (None, ''):
+            try:
+                options[key] = int(body[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f'{key} must be a number')
+    if 'gpu2' in body:
+        options['gpu2'] = None if body.get('gpu2') in (None, '', 'none') else int(body['gpu2'])
+    if body.get('launcher_id'):
+        options['launcher_id'] = str(body['launcher_id'])
+    result = register_colibri_launcher(gguf_path, **options)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'register failed')
+    forget_external_models()
+    return result
+
+
 @app.post('/api/external/launchers/{launcher_id}/load')
 def external_launcher_load(
     launcher_id: str,
@@ -5541,6 +5574,7 @@ def external_launcher_load(
         parallel=payload.get('parallel'),
         wait=wait,
         client_label=_request_client_label(request),
+        gpu_device=payload.get('gpu_device'),
     )
     _invalidate_status_cache()
     forget_external_models()
