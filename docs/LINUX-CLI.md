@@ -21,7 +21,13 @@ desktop shell.
 | `nvidia-smi` GPU discovery | Yes — NVIDIA drivers required |
 | External GPU process cards | No — Windows-specific scan |
 | Desktop Electron app | No — Windows only |
-| **Auto engine boot** (`llama-server`) | **Not yet** — see [Engine launcher](#engine-launcher) below |
+| **Auto engine boot** (`llama-server`) | Yes — via `scripts/start_llama_server.sh` (Phase 2). Needs a Linux CUDA build in `llama.cpp/build/bin/` |
+
+**Tested 2026-11-23:** Linux Mint 22.3 (Ubuntu 24.04 base), RTX 2060 6 GB, driver 595, CUDA 13.5,
+llama.cpp commit `e42214804` built with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`.
+`install-linux.sh` → `dflash load` → `dflash chat` works (Gemma 4 E2B Q4_0, ~94 tok/s).
+On GPUs ≤ 8 GB set `hardware_settings.gpu_performance_mode` to `inference` (1 GB desktop
+reserve instead of 2 GB), otherwise the VRAM guard rejects most models.
 
 ---
 
