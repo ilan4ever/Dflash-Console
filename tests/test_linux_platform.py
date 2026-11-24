@@ -144,3 +144,31 @@ def test_linux_proc_parsers(monkeypatch):
     assert fp.cpu_percent() == 50
     ram = fp.ram_info()
     assert ram == {'ram_percent': 25, 'ram_used_gb': 3.8, 'ram_total_gb': 15.3}
+
+
+def test_config_path_text_windows_style_defaults():
+    from core.model_paths import config_path_text
+
+    # config.example.json's '.\\models': a folder separator off Windows, unchanged on Windows
+    assert config_path_text('.\\models', windows=False) == './models'
+    assert config_path_text('.\\models', windows=True) == '.\\models'
+    assert config_path_text('models\\speech', windows=False) == 'models/speech'
+    # absolute Linux paths are left alone, even if a name contains a backslash
+    assert config_path_text('/data/odd\\name', windows=False) == '/data/odd\\name'
+    assert config_path_text('', windows=False) == ''
+    assert config_path_text(None, windows=False) == ''
+
+
+def test_model_library_with_windows_default_path_off_windows(monkeypatch, tmp_path: Path):
+    import os
+
+    import core.model_paths as mp
+
+    if os.name == 'nt':
+        return  # Windows already reads '.\\models' as the models folder
+    monkeypatch.chdir(tmp_path)
+    entry = {'id': 'dflash-checkpoints', 'path': '.\\models', 'preset': 'dflash', 'download_default': True}
+    row = mp.normalize_model_library(entry, cfg={}, index=0)
+    assert row['path'] == str((tmp_path / 'models').resolve())
+    assert '\\' not in row['path']
+    assert mp.get_models_root({'models_root': '.\\models'}) == (tmp_path / 'models').resolve()
