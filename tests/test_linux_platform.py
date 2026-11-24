@@ -88,6 +88,23 @@ def test_freetoken_native_manifest(monkeypatch, tmp_path: Path):
     assert ft_mod.FreeTokenRuntimeAdapter.is_installed() is False
 
 
+def test_cached_catalog_rows_follow_installed_engines(monkeypatch):
+    import core.hf_catalog_cache as cache_mod
+    import core.huggingface as hf
+
+    rows = [
+        {'id': 'a/hf', 'engines': ['vllm', 'transformers'], 'runnable': False},
+        {'id': 'b/gguf', 'engines': [], 'runtime_id': 'llama-server', 'runnable': True},
+    ]
+    monkeypatch.setattr(hf, '_transformers_runtime_available', lambda: True)
+    monkeypatch.setattr(hf, '_vllm_runtime_available', lambda: False)
+    cache_mod._refresh_runnable(rows)
+    assert rows[0]['runnable'] is True and rows[1]['runnable'] is True
+    monkeypatch.setattr(hf, '_transformers_runtime_available', lambda: False)
+    cache_mod._refresh_runnable(rows)
+    assert rows[0]['runnable'] is False and rows[1]['runnable'] is True
+
+
 def test_linux_proc_parsers(monkeypatch):
     import core.fast_probe as fp
 
