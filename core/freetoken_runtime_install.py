@@ -15,7 +15,7 @@ from core.platform_paths import install_script_command, install_script_path
 from core.runtime_install_job import (
     apply_job_progress,
     job_snapshot,
-    parse_install_line,
+    make_install_line_parser,
     run_install_process,
     start_progress_heartbeat,
 )
@@ -93,9 +93,10 @@ def _install_worker(*, force: bool = False) -> None:
     stop = threading.Event()
     start_progress_heartbeat(_STATE_LOCK, _JOB, started_at=started, stop=stop)
     log_tail: list[str] = []
+    parse_line = make_install_line_parser()
 
     def on_line(line: str) -> None:
-        progress, message = parse_install_line(line)
+        progress, message = parse_line(line)
         cleaned = message or line.strip()
         if cleaned:
             log_tail.append(cleaned)

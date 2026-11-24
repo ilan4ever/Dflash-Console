@@ -101,7 +101,7 @@
     if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
     let step = String(row.message || '').trim();
     if (pct >= 90 && row.status === 'installing' && !/verifying|ready|finishing/i.test(step)) {
-      step = 'Installing large packages in WSL — can take 10+ minutes';
+      step = 'Installing large packages — can take 10+ minutes';
     }
     setProgressText(step || info.progress);
     if (subEl) {

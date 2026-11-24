@@ -41,7 +41,7 @@ def parse_install_line(line: str) -> tuple[float | None, str]:
     if 'installing pytorch' in lower:
         return 35.0, 'Downloading PyTorch'
     if 'freetoken' in lower:
-        return 55.0, 'Installing FreeToken in WSL'
+        return 55.0, 'Installing FreeToken'
     if 'trying official' in lower or 'pip install vllm' in lower or 'downloading vllm' in lower:
         return 32.0, 'Downloading vLLM'
     if 'wsl' in lower and 'vllm' in lower and 'install' in lower:
@@ -56,15 +56,45 @@ def parse_install_line(line: str) -> tuple[float | None, str]:
         if any(token in lower for token in ('vllm', 'freetoken', 'torch', 'transformers')):
             return 94.0, 'Finishing install'
         return 88.0, 'Installing Python packages'
-    if 'found existing installation' in lower or 'requirement already satisfied' in lower:
+    if 'found existing installation' in lower:
         return 87.0, 'Resolving Python package dependencies'
+    if 'requirement already satisfied' in lower:
+        # pip prints this while resolving, before anything downloads: not a sign of progress.
+        return None, 'Resolving Python package dependencies'
     if 'checking vllm import' in lower:
-        return 96.0, 'Verifying vLLM import in WSL'
+        return 96.0, 'Verifying vLLM import'
     if 'vllm runtime installed' in lower:
         return 99.0, 'vLLM is ready'
     if 'no official windows wheel' in lower or 'switching to wsl' in lower:
         return 38.0, 'No Windows package — switching to WSL'
     return None, text[:200]
+
+
+# DFLASH_PROGRESS values below this belong to setup steps (venv, pip upgrading itself).
+_MAIN_STAGE_PROGRESS = 30.0
+
+
+def make_install_line_parser() -> Callable[[str], tuple[float | None, str]]:
+    """parse_install_line for one install job, aware of the installer's stage.
+
+    While the installer's last DFLASH_PROGRESS marker is below the main stage, pip's own lines
+    only update the message. pip upgrading itself prints "Found existing installation",
+    "Installing collected packages" and "Successfully installed", which map to 86-88%; without
+    this the bar jumped to ~87% in the first seconds and sat there (the heartbeat even crept it
+    to 98.5%) through the whole multi-GB download.
+    """
+    last_marker: float | None = None
+
+    def parse(line: str) -> tuple[float | None, str]:
+        nonlocal last_marker
+        progress, message = parse_install_line(line)
+        if _PROGRESS_MARKER.search(str(line or '').strip()):
+            last_marker = progress
+        elif progress is not None and last_marker is not None and last_marker < _MAIN_STAGE_PROGRESS:
+            progress = None
+        return progress, message
+
+    return parse
 
 
 def job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
