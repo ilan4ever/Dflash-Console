@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -160,6 +161,23 @@ def _on_demand_status(runtime_id: str) -> dict[str, Any]:
     return {}
 
 
+# Linux/macOS wording: there is no WSL hop and no installer that ships the speech bundles.
+_SPEECH_LINUX_HINT = ' On Linux install it with scripts/install-speech-runtimes.sh, then restart the Console.'
+_NON_WINDOWS_TEXT: dict[str, dict[str, str]] = {
+    'vllm': {
+        'description': 'Fast GPU engine for Hugging Face SafeTensors models. NVIDIA GPU required. Installs natively on Linux.',
+    },
+    'freetoken': {
+        'label': 'FreeToken engine',
+        'description': 'Optional CUDA MoE engine for supported Hugging Face models. Installs natively on Linux; needs an NVIDIA driver with CUDA support.',
+    },
+    'piper': {'description': 'Local text-to-speech for Playground Speak.' + _SPEECH_LINUX_HINT},
+    'stt': {'description': 'Speech-to-text for Playground Transcribe (whisper.cpp whisper-server).' + _SPEECH_LINUX_HINT},
+    'faster-whisper': {'description': 'Alternative GPU speech-to-text.' + _SPEECH_LINUX_HINT},
+    'vibevoice': {'description': 'Diffusion TTS runtime.' + _SPEECH_LINUX_HINT},
+}
+
+
 def _component_row(entry: dict[str, Any], *, versions: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     runtime_id = str(entry.get('runtime_id') or '')
     install_mode = str(entry.get('install_mode') or 'bundled')
@@ -219,14 +237,16 @@ def _component_row(entry: dict[str, Any], *, versions: dict[str, dict[str, Any]]
     elif not installed and runtime_id:
         status = 'not_installed'
 
+    text = {**entry, **(_NON_WINDOWS_TEXT.get(runtime_id or entry['id'], {}) if sys.platform != 'win32' else {})}
     return {
         'id': entry['id'],
         'runtime_id': runtime_id,
+        'platform': sys.platform,
         'category': entry.get('category') or 'other',
         'category_label': _CATEGORY_LABELS.get(entry.get('category') or '', 'Components'),
-        'label': entry.get('label') or entry['id'],
-        'short_label': entry.get('short_label') or entry['id'],
-        'description': entry.get('description') or '',
+        'label': text.get('label') or entry['id'],
+        'short_label': text.get('short_label') or entry['id'],
+        'description': text.get('description') or '',
         'install_mode': install_mode,
         'keywords': list(entry.get('keywords') or []),
         'installed': installed,

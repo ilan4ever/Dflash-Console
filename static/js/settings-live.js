@@ -1291,8 +1291,15 @@
   function componentStatusLine(row) {
     const status = String(row?.status || '');
     if (row?.install_mode === 'bundled') {
-      if (row?.installed) return 'Part of this DFlash Console install — update via app releases, not uninstall here.';
-      return 'Expected bundle missing — repair by reinstalling DFlash Console.';
+      const windows = !row?.platform || row.platform === 'win32';
+      if (row?.installed) {
+        return windows
+          ? 'Part of this DFlash Console install — update via app releases, not uninstall here.'
+          : 'Installed on this machine.';
+      }
+      return windows
+        ? 'Expected bundle missing — repair by reinstalling DFlash Console.'
+        : 'Not installed — run scripts/install-speech-runtimes.sh, then restart the Console.';
     }
     if (status === 'update_available') {
       const installed = String(row?.installed_version || '').trim();
@@ -1411,6 +1418,12 @@
     const rid = row.runtime_id;
     const disabled = row?.status === 'installing';
     const label = row?.status === 'update_available' || row?.installed ? 'Update / repair' : 'Install';
+    if (rid === 'vllm' && row?.platform && row.platform !== 'win32') {
+      // Linux: vLLM is always native, so there is no install-path choice.
+      return `<div class="lm-setting-actions">
+        <button class="lm-btn primary small" type="button" data-action="component-install" data-component-id="${escapeHtml(rid)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>
+      </div>`;
+    }
     if (rid === 'vllm') {
       const backend = String(row?.manifest?.backend || 'auto').toLowerCase();
       const current = ['native', 'wsl'].includes(backend) ? backend : 'auto';

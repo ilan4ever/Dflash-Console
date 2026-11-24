@@ -20,11 +20,11 @@
       progress: 'Installing PyTorch and Transformers…',
     },
     freetoken: {
-      label: 'FreeToken WSL engine',
+      label: 'FreeToken engine',
       short: 'FreeToken',
-      blurb: 'FreeToken runs supported MoE Hugging Face models through WSL2 with NVIDIA CUDA. It is not included in the installer.',
-      note: 'Requires WSL2 Ubuntu and an NVIDIA driver with CUDA support. Large Linux packages — can take 15 minutes or more.',
-      progress: 'Installing FreeToken in WSL…',
+      blurb: 'FreeToken runs supported MoE Hugging Face models with NVIDIA CUDA (through WSL2 on Windows). It is not included in the installer.',
+      note: 'Needs an NVIDIA driver with CUDA support; on Windows also WSL2 Ubuntu. Large packages — can take 15 minutes or more.',
+      progress: 'Installing FreeToken…',
     },
   };
 

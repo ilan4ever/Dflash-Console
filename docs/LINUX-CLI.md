@@ -29,6 +29,37 @@ llama.cpp commit `e42214804` built with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTUR
 On GPUs ≤ 8 GB set `hardware_settings.gpu_performance_mode` to `inference` (1 GB desktop
 reserve instead of 2 GB), otherwise the VRAM guard rejects most models.
 
+**Tested 2026-11-24 (same machine):**
+- **Sysbar:** CPU, RAM and GPU stats work.
+- **Model catalog:** search and "runnable" work.
+- **Engines:** Settings → Downloads & engines installs them on Linux through `scripts/install-*-runtime.sh`:
+  - Transformers (CUDA PyTorch): installed and tested.
+  - vLLM: native, not tested yet.
+  - FreeToken: native, not tested yet.
+
+### Speech runtimes on Linux
+
+The Windows installer ships whisper-server, Piper, faster-whisper and VibeVoice ready-made.
+On Linux, install them once from a checkout:
+
+```bash
+bash scripts/install-speech-runtimes.sh            # all four
+bash scripts/install-speech-runtimes.sh stt piper  # or pick some
+```
+
+| Runtime | Where it comes from | Tested |
+|---|---|---|
+| `stt` | builds whisper.cpp `whisper-server` (latest release tag; CUDA when `nvcc` is available, can take 20+ min) | GPU transcription works |
+| `piper` | official Piper Linux release + `en_US-lessac-medium` voice | synthesis works |
+| `faster-whisper` | venv from `runtime-bundles/faster-whisper` + pip cuBLAS/cuDNN (CUDA 12) | GPU transcription works |
+| `vibevoice` | Microsoft VibeVoice repo (pinned) + venv from `runtime-bundles/vibevoice` | installs, CUDA OK; needs a model to test |
+
+Restart the Console afterwards (`systemctl --user restart dflash-console` or `./server.sh --restart`).
+
+**Network note:** if pip or Hugging Face downloads hang while `curl` works, IPv6 is probably
+broken on the network. Prefer IPv4 with this line in `/etc/gai.conf`:
+`precedence ::ffff:0:0/96  100`
+
 ---
 
 ## Roadmap
