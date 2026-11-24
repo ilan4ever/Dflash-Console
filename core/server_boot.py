@@ -226,6 +226,64 @@ def managed_process_identity(pid: int) -> bool:
     return any(token in hay for token in tokens)
 
 
+def _posix_process_details(pid: int) -> tuple[str, str] | None:
+    """(name, command line) of a process on Linux (/proc) or macOS (ps)."""
+    proc = Path('/proc') / str(int(pid))
+    try:
+        name = (proc / 'comm').read_text(encoding='utf-8', errors='replace').strip()
+        command = (proc / 'cmdline').read_bytes().replace(b'\0', b' ').decode('utf-8', errors='replace').strip()
+        return name, command
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ['ps', '-o', 'comm=', '-o', 'args=', '-p', str(int(pid))],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = result.stdout.strip()
+    if result.returncode != 0 or not text:
+        return None
+    name, _sep, command = text.partition(' ')
+    return name, command.strip()
+
+
+# A bare product name, not a marker of a process this Console started: the
+# user's own Ollama install must never be swept as an orphan.
+_ORPHAN_SWEEP_IGNORED_TOKENS = frozenset({'ollama'})
+
+
+def orphan_sweep_candidate(pid: int) -> bool:
+    """Whether the startup sweep may stop the listener owned by ``pid``.
+
+    On Windows this is ``managed_process_identity``. Elsewhere that check
+    accepts every process (stop and adopt act on engines it cannot name),
+    which is far too broad for a sweep that runs unasked at every start: on
+    Linux it stopped any loopback listener of the user, another Console's API
+    and LM Studio included. So off Windows the sweep needs a Console engine
+    marker in the command line, and never touches a Console API process.
+    """
+    if sys.platform == 'win32':
+        return managed_process_identity(pid)
+    details = _posix_process_details(pid)
+    if details is None:
+        return False
+    name, command = details
+    hay = f'{name} {command}'.lower()
+    if 'api.app:app' in hay:
+        return False
+    tokens = tuple(
+        str(token).lower()
+        for token in runtime_process_identity_tokens()
+        if str(token).strip() and str(token).lower() not in _ORPHAN_SWEEP_IGNORED_TOKENS
+    )
+    return any(token in hay for token in tokens)
+
+
 _SSH_FORWARD_PROCESS_NAMES = frozenset({'ssh.exe', 'plink.exe', 'putty.exe'})
 
 
@@ -1858,8 +1916,9 @@ def sweep_orphan_managed_listeners(*, cfg: dict[str, Any] | None = None) -> list
             allowed.add(port)
 
     results: list[dict[str, Any]] = []
+    own_pid = os.getpid()
     for pid, ports in listening_ports_map(force=True).items():
-        if not managed_process_identity(pid):
+        if pid == own_pid or not orphan_sweep_candidate(pid):
             continue
         for port in ports:
             if port in allowed:
