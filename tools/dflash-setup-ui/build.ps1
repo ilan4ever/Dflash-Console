@@ -58,6 +58,7 @@ foreach ($tool in $embeddedTools) {
 }
 $compilerArgs += @(
     (Join-Path $srcDir "SetupForm.cs"),
+    (Join-Path $srcDir "InstallFileLocks.cs"),
     (Join-Path $srcDir "UninstallOptionsForm.cs"),
     "$versionCs"
 )
