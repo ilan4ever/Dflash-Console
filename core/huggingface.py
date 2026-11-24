@@ -201,7 +201,9 @@ def _run_with_timeout(func, timeout: float):
         pool.shutdown(wait=False, cancel_futures=True)
 
 
-_requests_ipv4_session: Any = None
+# Cached session. Must not share its name with _requests_ipv4_session() below: the
+# def would rebind the name, and the "cached" value would be the function itself.
+_REQUESTS_IPV4_SESSION: Any = None
 _requests_ipv4_lock = threading.Lock()
 
 
@@ -274,12 +276,12 @@ def _http_bytes_curl(url: str, *, timeout: float, headers: dict[str, str]) -> tu
 
 
 def _requests_ipv4_session():
-    global _requests_ipv4_session
-    if _requests_ipv4_session is not None:
-        return _requests_ipv4_session
+    global _REQUESTS_IPV4_SESSION
+    if _REQUESTS_IPV4_SESSION is not None:
+        return _REQUESTS_IPV4_SESSION
     with _requests_ipv4_lock:
-        if _requests_ipv4_session is not None:
-            return _requests_ipv4_session
+        if _REQUESTS_IPV4_SESSION is not None:
+            return _REQUESTS_IPV4_SESSION
         import socket
 
         import requests
@@ -296,8 +298,8 @@ def _requests_ipv4_session():
         adapter = _IPv4HTTPAdapter(pool_connections=4, pool_maxsize=8)
         session.mount('https://', adapter)
         session.mount('http://', adapter)
-        _requests_ipv4_session = session
-        return _requests_ipv4_session
+        _REQUESTS_IPV4_SESSION = session
+        return _REQUESTS_IPV4_SESSION
 
 
 def _http_bytes(url: str, *, timeout: float = 20.0, accept_json: bool = True) -> tuple[bytes, dict[str, str]]:

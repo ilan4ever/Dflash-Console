@@ -373,19 +373,44 @@ def _system_times() -> tuple[int, int] | None:
     return _ft(idle), _ft(kern) + _ft(user)
 
 
+def _proc_stat_times() -> tuple[int, int] | None:
+    """Linux: (idle, total) jiffies from the aggregate ``cpu`` line of /proc/stat."""
+    try:
+        with open('/proc/stat', encoding='ascii') as fh:
+            fields = fh.readline().split()
+    except OSError:
+        return None
+    if not fields or fields[0] != 'cpu':
+        return None
+    try:
+        values = [int(v) for v in fields[1:]]
+    except ValueError:
+        return None
+    if len(values) < 4:
+        return None
+    # user nice system idle iowait irq softirq steal [guest guest_nice are already in user/nice]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values[:8])
+    return idle, total
+
+
 def cpu_percent() -> int | None:
-    """System CPU % since the previous call (GetSystemTimes)."""
+    """System CPU % since the previous call (GetSystemTimes on Windows, /proc/stat on Linux)."""
     global _CPU_LAST
-    if not _IS_WIN:
+    if _IS_WIN:
+        sampler = _system_times
+    elif sys.platform.startswith('linux'):
+        sampler = _proc_stat_times
+    else:
         return None
     with _CPU_LOCK:
-        cur = _system_times()
+        cur = sampler()
         if cur is None:
             return None
         prev = _CPU_LAST
         if prev is None:
             time.sleep(0.15)
-            prev, cur = cur, _system_times()
+            prev, cur = cur, sampler()
             if cur is None:
                 return None
         _CPU_LAST = cur
@@ -396,7 +421,36 @@ def cpu_percent() -> int | None:
         return max(0, min(100, int(round((1 - d_idle / d_total) * 100))))
 
 
+def _ram_info_linux() -> dict[str, Any] | None:
+    info: dict[str, int] = {}
+    try:
+        with open('/proc/meminfo', encoding='ascii') as fh:
+            for line in fh:
+                key, _, rest = line.partition(':')
+                parts = rest.split()
+                if parts:
+                    try:
+                        info[key] = int(parts[0]) * 1024  # kB -> bytes
+                    except ValueError:
+                        pass
+    except OSError:
+        return None
+    total = float(info.get('MemTotal') or 0)
+    if total <= 0:
+        return None
+    avail = float(info.get('MemAvailable', info.get('MemFree', 0)))
+    used = max(0.0, total - avail)
+    gib = 1024.0 ** 3
+    return {
+        'ram_percent': int(round(used / total * 100)),
+        'ram_used_gb': round(used / gib, 1),
+        'ram_total_gb': round(total / gib, 1),
+    }
+
+
 def ram_info() -> dict[str, Any] | None:
+    if sys.platform.startswith('linux'):
+        return _ram_info_linux()
     if not _IS_WIN:
         return None
     m = _MEMSTAT()
@@ -419,6 +473,17 @@ _CPU_NAME: str | None = None
 def cpu_name() -> str | None:
     global _CPU_NAME
     if _CPU_NAME is not None:
+        return _CPU_NAME or None
+    if sys.platform.startswith('linux'):
+        _CPU_NAME = ''
+        try:
+            with open('/proc/cpuinfo', encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if line.startswith('model name'):
+                        _CPU_NAME = line.partition(':')[2].strip()
+                        break
+        except OSError:
+            pass
         return _CPU_NAME or None
     try:
         import winreg

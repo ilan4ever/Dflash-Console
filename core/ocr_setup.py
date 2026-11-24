@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_dflash_root, load_config
+from core.platform_paths import venv_python
 from core.gguf_meta import read_gguf_architecture
 from core.model_paths import get_download_dir
 
@@ -32,7 +33,7 @@ def ensure_glmocr_transformers_model(*, cfg: dict[str, Any] | None = None) -> di
         return {'success': True, 'path': str(dest.resolve()), 'downloaded': False}
 
     root = get_dflash_root(cfg)
-    python = root / 'runtimes' / 'transformers' / 'venv' / 'Scripts' / 'python.exe'
+    python = venv_python(root / 'runtimes' / 'transformers' / 'venv')
     if not python.is_file():
         return {
             'success': False,

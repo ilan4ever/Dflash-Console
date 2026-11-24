@@ -36,6 +36,7 @@ import urllib.error
 import urllib.request
 import shutil
 from pathlib import Path
+from core.platform_paths import venv_python
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -261,7 +262,7 @@ def discover_strata_launcher() -> dict[str, Any] | None:
         config = _find_strata_config(root)
         if config is None:
             continue
-        python = root / '.venv' / 'Scripts' / 'python.exe'
+        python = venv_python(root / '.venv')
         if not python.is_file():
             python = root / '.venv' / 'bin' / 'python'
         if not python.is_file():

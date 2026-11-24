@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_LLM, RUNTIME_TRANSFORMERS
 
 TF_BUNDLE = ROOT / 'runtimes' / 'transformers'
 TF_SERVER = TF_BUNDLE / 'server.py'
-TF_VENV_PY = TF_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+TF_VENV_PY = venv_python(TF_BUNDLE / 'venv')
 TF_MANIFEST = TF_BUNDLE / 'manifest.json'
 
 LOG_DIR = ROOT / 'logs' / 'runtimes'

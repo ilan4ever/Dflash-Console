@@ -30,11 +30,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_TEXT_TO_SPEECH, RUNTIME_VIBEVOICE
 
 VV_BUNDLE = ROOT / 'runtimes' / 'vibevoice'
 VV_SERVER = VV_BUNDLE / 'server.py'
-VV_VENV_PY = VV_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+VV_VENV_PY = venv_python(VV_BUNDLE / 'venv')
 VV_VOICES = VV_BUNDLE / 'voices'
 VV_MANIFEST = VV_BUNDLE / 'manifest.json'
 

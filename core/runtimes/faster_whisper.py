@@ -30,11 +30,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_SPEECH_TO_TEXT, RUNTIME_FASTER_WHISPER
 
 FW_BUNDLE = ROOT / 'runtimes' / 'faster-whisper'
 FW_SERVER = FW_BUNDLE / 'server.py'
-FW_VENV_PY = FW_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+FW_VENV_PY = venv_python(FW_BUNDLE / 'venv')
 FW_MANIFEST = FW_BUNDLE / 'manifest.json'
 
 LOG_DIR = ROOT / 'logs' / 'runtimes'

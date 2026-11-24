@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
+from core.platform_paths import install_script_command, install_script_path, venv_python
 from core.runtime_install_job import (
     apply_job_progress,
     job_snapshot,
@@ -20,7 +21,9 @@ from core.runtime_install_job import (
 )
 
 _BUNDLE = ROOT / 'runtimes' / 'transformers'
-_SCRIPT = ROOT / 'scripts' / 'install-transformers-runtime.ps1'
+_SCRIPT_STEM = 'install-transformers-runtime'
+_SCRIPT = install_script_path(ROOT / 'scripts', _SCRIPT_STEM)
+_VENV_PY = venv_python(_BUNDLE / 'venv')
 _STATE_LOCK = threading.Lock()
 _JOB: dict[str, Any] = {}
 
@@ -29,13 +32,13 @@ def bundle_paths() -> dict[str, str]:
     return {
         'bundle': str(_BUNDLE),
         'worker': str(_BUNDLE / 'server.py'),
-        'venv_python': str(_BUNDLE / 'venv' / 'Scripts' / 'python.exe'),
+        'venv_python': str(_VENV_PY),
         'install_script': str(_SCRIPT),
     }
 
 
 def is_installed() -> bool:
-    return (_BUNDLE / 'server.py').is_file() and (_BUNDLE / 'venv' / 'Scripts' / 'python.exe').is_file()
+    return (_BUNDLE / 'server.py').is_file() and _VENV_PY.is_file()
 
 
 def install_status() -> dict[str, Any]:
@@ -76,16 +79,13 @@ def _install_worker(*, torch_variant: str, force: bool = False) -> None:
         with _STATE_LOCK:
             _JOB['finished_at'] = time.time()
         return
-    cmd = [
-        'powershell',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        str(_SCRIPT),
-        '-TorchVariant',
-        str(torch_variant or 'auto'),
-    ]
+    variant = str(torch_variant or 'auto')
+    cmd = install_script_command(
+        ROOT / 'scripts',
+        _SCRIPT_STEM,
+        ['-TorchVariant', variant],
+        ['--torch-variant', variant],
+    )
     stop = threading.Event()
     start_progress_heartbeat(_STATE_LOCK, _JOB, started_at=started, stop=stop)
     log_tail: list[str] = []

@@ -219,6 +219,20 @@ def _query_cpu_ram_windows() -> tuple[int | None, dict[str, float | int | None]]
     }
 
 
+def _query_cpu_ram_linux() -> tuple[int | None, dict[str, float | int | None]]:
+    """/proc/stat + /proc/meminfo, in-process (no subprocess)."""
+    try:
+        from core.fast_probe import cpu_percent as _fast_cpu, ram_info as _fast_ram
+
+        ram = _fast_ram() or {}
+        cpu = _fast_cpu()
+    except Exception:
+        return None, {}
+    if cpu is not None:
+        return _apply_cpu_smoothing(cpu), dict(ram)
+    return cpu_load_hint(), dict(ram)
+
+
 def get_system_stats_payload() -> dict[str, Any]:
     gpus = _query_gpus_live()
     cpu_percent: int | None = None
@@ -228,6 +242,11 @@ def get_system_stats_payload() -> dict[str, Any]:
 
     if sys.platform == 'win32':
         cpu_percent, ram_info = _query_cpu_ram_windows()
+        ram_percent = int(ram_info.get('ram_percent') or 0)
+        ram_used_gb = ram_info.get('ram_used_gb')  # type: ignore[assignment]
+        ram_total_gb = ram_info.get('ram_total_gb')  # type: ignore[assignment]
+    elif sys.platform.startswith('linux'):
+        cpu_percent, ram_info = _query_cpu_ram_linux()
         ram_percent = int(ram_info.get('ram_percent') or 0)
         ram_used_gb = ram_info.get('ram_used_gb')  # type: ignore[assignment]
         ram_total_gb = ram_info.get('ram_total_gb')  # type: ignore[assignment]
@@ -243,6 +262,23 @@ def get_system_stats_payload() -> dict[str, Any]:
 
 
 def get_cpu_info_payload() -> dict[str, Any]:
+    if sys.platform.startswith('linux'):
+        from core.fast_probe import cpu_name as _fast_cpu_name
+
+        name = _fast_cpu_name() or 'Unknown CPU'
+        flags: set[str] = set()
+        try:
+            with open('/proc/cpuinfo', encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if line.startswith('flags'):
+                        flags = set(line.partition(':')[2].split())
+                        break
+        except OSError:
+            pass
+        features = [label for flag, label in (('avx', 'AVX'), ('avx2', 'AVX2'), ('avx512f', 'AVX512')) if flag in flags]
+        import platform
+
+        return {'name': name, 'arch': platform.machine() or 'unknown', 'features': features}
     if sys.platform != 'win32':
         return {'name': 'Unknown CPU', 'arch': 'unknown', 'features': []}
     # [polling-fix 2026-11-04] registry lookup, cached for the process lifetime.
