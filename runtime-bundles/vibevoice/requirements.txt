@@ -1,6 +1,6 @@
 # VibeVoice realtime TTS worker (torch is installed separately, CUDA or CPU build).
 # The vibevoice package itself is Microsoft's repo, put on sys.path by server.py.
-transformers==4.51.3
+transformers==5.10.1
 huggingface_hub>=0.30,<1.0
 accelerate>=1.0
 diffusers>=0.30
