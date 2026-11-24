@@ -17,6 +17,12 @@ PIPER_VOICE_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/
 VIBEVOICE_REPO="https://github.com/microsoft/VibeVoice.git"
 VIBEVOICE_COMMIT="94da20d"                        # same commit as the Windows bundle
 
+# The CUDA toolkit is often only on PATH in interactive shells.
+for d in /usr/local/cuda/bin /opt/cuda/bin; do
+  [[ -x "$d/nvcc" && ":$PATH:" != *":$d:"* ]] && PATH="$d:$PATH"
+done
+export PATH
+
 [[ $# -eq 0 ]] && set -- all
 want() { local c; for c in "${TARGETS[@]}"; do [[ "$c" == all || "$c" == "$1" ]] && return 0; done; return 1; }
 TARGETS=("$@")
