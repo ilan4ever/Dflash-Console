@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Sign in · DFlash Console</title>
+  <!-- Self-contained: a visitor who is not signed in cannot load /static or /assets.
+       The empty icon stops the browser from asking for /favicon.ico before sign-in. -->
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #0a0a0c;
+      --bg-card: #141418;
+      --bg-input: #1a1a22;
+      --border: #2a2a34;
+      --text: #ececf1;
+      --text-muted: #9ca3af;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --error: #f87171;
+      --warn: #eab308;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    }
+    main {
+      width: min(380px, calc(100vw - 32px));
+      padding: 28px 28px 24px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+    h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+    .sub { margin: 0 0 20px; color: var(--text-muted); }
+    label { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 13px; }
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-input);
+      color: var(--text);
+      font: inherit;
+    }
+    input[type="password"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .msg { min-height: 21px; margin: 12px 0 0; }
+    .msg.error { color: var(--error); }
+    .msg.warn { color: var(--warn); }
+    .note { margin: 18px 0 0; color: var(--text-muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>DFlash Console</h1>
+    <p class="sub">Sign in with the owner password of this Console.</p>
+    <form id="signInForm" novalidate>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button id="signInBtn" type="submit">Sign in</button>
+      <p id="signInMsg" class="msg" role="alert" aria-live="polite"></p>
+    </form>
+    <p class="note">Other DFlash Consoles connect with a machine key, not this page.</p>
+  </main>
+  <script>
+  (function () {
+    var form = document.getElementById('signInForm');
+    var input = document.getElementById('password');
+    var button = document.getElementById('signInBtn');
+    var msg = document.getElementById('signInMsg');
+
+    function show(text, kind) {
+      msg.textContent = text || '';
+      msg.className = 'msg' + (kind ? ' ' + kind : '');
+    }
+
+    // After signing in: /login?next=/path goes to that path on this Console;
+    // the same page served in place of another page reloads that page.
+    function destination() {
+      if (location.pathname !== '/login') return location.href;
+      var next = new URLSearchParams(location.search).get('next') || '/';
+      if (next.charAt(0) !== '/' || next.charAt(1) === '/' || next.charAt(1) === '\\') return '/';
+      return next;
+    }
+
+    function detailMessage(data, fallback) {
+      var detail = data && data.detail;
+      if (detail && typeof detail === 'object' && detail.message) return String(detail.message);
+      if (typeof detail === 'string' && detail) return detail;
+      return fallback;
+    }
+
+    fetch('/api/auth/status', { cache: 'no-store' })
+      .then(function (resp) { return resp.json(); })
+      .then(function (status) {
+        if (status.local || status.signed_in) {
+          location.replace(destination());
+          return;
+        }
+        if (!status.password_set) {
+          input.disabled = true;
+          button.disabled = true;
+          show('Signing in from another computer is off: this Console has no owner password. Set one in Settings → Sign-in & keys on the Console’s own PC.', 'warn');
+        } else if (status.locked_for > 0) {
+          show('Too many wrong passwords. Try again in a few minutes.', 'warn');
+        }
+      })
+      .catch(function () { /* the form still works */ });
+
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      var password = input.value;
+      if (!password) {
+        show('Enter the password.', 'error');
+        input.focus();
+        return;
+      }
+      button.disabled = true;
+      show('Signing in…');
+      fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: password }),
+        credentials: 'same-origin',
+        cache: 'no-store'
+      })
+        .then(function (resp) {
+          return resp.json().catch(function () { return null; }).then(function (data) {
+            return { status: resp.status, data: data };
+          });
+        })
+        .then(function (result) {
+          if (result.status === 200) {
+            show('Signed in.');
+            location.replace(destination());
+            return;
+          }
+          button.disabled = false;
+          input.select();
+          if (result.status === 401) show('Wrong password.', 'error');
+          else if (result.status === 429) show(detailMessage(result.data, 'Too many wrong passwords. Try again in a few minutes.'), 'warn');
+          else show(detailMessage(result.data, 'Could not sign in (HTTP ' + result.status + ').'), 'error');
+        })
+        .catch(function () {
+          button.disabled = false;
+          show('The Console is not answering. Check that it is running, then try again.', 'error');
+        });
+    });
+  }());
+  </script>
+</body>
+</html>

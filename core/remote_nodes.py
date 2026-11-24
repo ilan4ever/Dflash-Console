@@ -23,6 +23,40 @@ def _node_headers(node: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
+def describe_remote_refusal(status: int, raw_body: str, node: dict[str, Any] | None = None) -> str:
+    """A clear message for a 401/403 from another Console's sign-in check.
+
+    Returns '' when the body is not one of those refusals.
+    """
+    if status not in (401, 403):
+        return ''
+    try:
+        payload = json.loads(raw_body or '{}')
+    except json.JSONDecodeError:
+        return ''
+    detail = payload.get('detail') if isinstance(payload, dict) else None
+    if not isinstance(detail, dict):
+        return ''
+    code = str(detail.get('error') or '')
+    name = str((node or {}).get('label') or 'The other Console')
+    if code == 'auth_required':
+        return (
+            f'{name} needs a machine key. On that computer open Settings → Sign-in & keys, '
+            'create a key, then add it to this node (Nodes → Edit).'
+        )
+    if code == 'invalid_key':
+        return (
+            f'{name} does not accept this machine key; it may have been revoked. '
+            'Create a new key there and add it to this node (Nodes → Edit).'
+        )
+    if code == 'download_not_allowed':
+        return (
+            f'{name} does not let this computer download models there. Download the model on '
+            'that computer first, or have its owner turn on “May download models here” for this key.'
+        )
+    return str(detail.get('message') or '')
+
+
 def _public_node(node: dict[str, Any], *, health: dict[str, Any] | None = None) -> dict[str, Any]:
     row = {
         'id': node.get('id'),
@@ -198,7 +232,8 @@ def check_remote_node_health(node: dict[str, Any], *, timeout: float = 8.0) -> d
             'online': False,
             'checked_at': time.time(),
             'latency_ms': int((time.time() - started) * 1000),
-            'error': detail or f'HTTP {exc.code}',
+            'error': describe_remote_refusal(exc.code, detail, node) or detail or f'HTTP {exc.code}',
+            'http_status': exc.code,
         }
     except Exception as exc:
         return {

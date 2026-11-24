@@ -20,6 +20,17 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from core.access_control import (
+    CONSOLE_MOUNTS,
+    LOCAL_ONLY_CONFIG_FIELDS,
+    LOCAL_ONLY_NODE_FIELDS,
+    AccessControlMiddleware,
+    AccessPolicy,
+    auth_context,
+    console_route_table,
+    redact_config_for_remote,
+    require_local_for_fields,
+)
 from core.config import PACKAGE_ROOT, ROOT, get_dflash_root, get_server, is_embedding_server, list_runtimes, list_servers, load_config, normalize_download_settings, normalize_hardware_settings, normalize_inference_settings, normalize_load_settings, normalize_model_libraries, normalize_remote_nodes, normalize_runtime, normalize_server, normalize_ui_layout, save_config, suggest_server_port, update_server_runtime
 from core.version import APP_VERSION
 from core.model_paths import allowed_model_roots, disk_scan_roots, get_models_root, validate_model_path
@@ -374,6 +385,11 @@ def _write_runtime_process_manifest() -> None:
 
 app = FastAPI(title='DFlash Console', version=APP_VERSION, lifespan=app_lifespan)
 
+from api.auth_routes import register_auth_routes, sign_in_page_html  # noqa: E402
+
+# Sign-in page, sign-in API, and Settings -> Security (api/auth_routes.py).
+register_auth_routes(app)
+
 
 def _request_client_label(request: Request | None) -> str:
     from core.client_identity import resolve_client_label
@@ -433,6 +449,22 @@ async def no_cache_static_assets(request: Request, call_next):
     if path.startswith('/static/') and path.rsplit('.', 1)[-1] in ('js', 'css'):
         response.headers['Cache-Control'] = 'no-store, must-revalidate'
     return response
+
+
+# Sign-in and machine keys for requests from other computers. Requests made on
+# this PC pass unchanged. Added between the two HTTP middlewares so the access
+# log (outermost) still records 401/403 answers. See core/access_control.py.
+app.add_middleware(
+    AccessControlMiddleware,
+    policy=AccessPolicy(
+        name='console',
+        routes=console_route_table(),
+        mounts=CONSOLE_MOUNTS,
+        error_style='console',
+        sign_in_page=sign_in_page_html,
+    ),
+    routes=app.router.routes,
+)
 
 
 @app.middleware('http')
@@ -1156,11 +1188,16 @@ async def api_shutdown() -> dict[str, Any]:
 
 
 @app.get('/api/gpu-devices')
-def gpu_devices() -> dict[str, Any]:
+def gpu_devices(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
     from core.remote_gpu import with_shared_gpus
 
     payload = get_gpu_devices_payload()
-    gpus = with_shared_gpus(payload.get('gpus') or [])
+    if auth_context(request).kind == 'key':
+        # Another Console sees only this PC's own GPUs: no sharing onward,
+        # and no SSH tunnels opened on its behalf.
+        gpus = list(payload.get('gpus') or [])
+    else:
+        gpus = with_shared_gpus(payload.get('gpus') or [])
     return {**payload, 'gpus': gpus, 'count': len(gpus)}
 
 
@@ -1194,7 +1231,15 @@ def remote_gpu_load(body: RemoteGpuLoadRequest) -> dict[str, Any]:
 
 
 @app.get('/api/system-stats')
-async def system_stats() -> dict[str, Any]:
+async def system_stats(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    payload = await _system_stats_payload()
+    if auth_context(request).kind == 'key':
+        # Another Console sees only this PC's own GPUs, not ones it borrows.
+        payload = {**payload, 'gpus': [row for row in payload.get('gpus') or [] if not (isinstance(row, dict) and row.get('remote'))]}
+    return payload
+
+
+async def _system_stats_payload() -> dict[str, Any]:
     global _SYSTEM_STATS_CACHE, _SYSTEM_STATS_CACHE_AT
     from core.system_stats import get_system_stats_payload
 
@@ -1219,11 +1264,23 @@ async def system_stats() -> dict[str, Any]:
 
 
 @app.get('/api/config')
-def get_config() -> dict[str, Any]:
+def get_config(request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
     from core.api_providers import redact_api_providers_in_config
 
-    cfg = load_config()
-    return {'success': True, 'config': redact_api_providers_in_config(cfg)}
+    cfg = redact_api_providers_in_config(load_config())
+    if not auth_context(request).local:
+        # A signed-in owner on another computer sees the settings, but not the
+        # keys this Console uses to reach other Consoles.
+        cfg = redact_config_for_remote(cfg)
+    return {'success': True, 'config': cfg}
+
+
+@app.get('/api/config/export')
+def export_config() -> dict[str, Any]:
+    """Settings → Paths & backup → Export config. Only on this PC (see access_control)."""
+    from core.api_providers import redact_api_providers_in_config
+
+    return {'success': True, 'config': redact_api_providers_in_config(load_config())}
 
 
 @app.get('/api/gateway')
@@ -1482,9 +1539,12 @@ async def proxy_provider_chat(provider_id: str, request: Request):
 
 
 @app.put('/api/config')
-def put_config(body: ConfigPatch) -> dict[str, Any]:
-    cfg = load_config()
+def put_config(body: ConfigPatch, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
     data = body.model_dump(exclude_none=True)
+    # Engine binaries, engine/runtime definitions, the model-library sandbox,
+    # SSH nodes, API keys, ports, and "Import config" stay on this PC.
+    require_local_for_fields(request, data, LOCAL_ONLY_CONFIG_FIELDS, 'These settings')
+    cfg = load_config()
     if 'servers' in data and isinstance(data['servers'], list):
         cfg['servers'] = [normalize_server(entry) for entry in data['servers'] if isinstance(entry, dict)]
         data.pop('servers')
@@ -1762,11 +1822,14 @@ def node_connect_ssh_command(body: NodeConnectSshCommand) -> dict[str, Any]:
 
 
 @app.post('/api/nodes')
-def create_remote_node(body: RemoteNodeCreate) -> dict[str, Any]:
+def create_remote_node(body: RemoteNodeCreate, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
     from core.remote_nodes import add_remote_node, check_remote_node_health
 
+    payload = body.model_dump(exclude_none=True)
+    # An SSH node makes this Console run ``ssh`` to that host.
+    require_local_for_fields(request, payload, LOCAL_ONLY_NODE_FIELDS, 'SSH tunnel settings')
     try:
-        node = add_remote_node(body.model_dump(exclude_none=True))
+        node = add_remote_node(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     health = check_remote_node_health(node)
@@ -1786,10 +1849,12 @@ def create_remote_node(body: RemoteNodeCreate) -> dict[str, Any]:
 
 
 @app.patch('/api/nodes/{node_id}')
-def patch_remote_node(node_id: str, body: RemoteNodePatch) -> dict[str, Any]:
+def patch_remote_node(node_id: str, body: RemoteNodePatch, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
     from core.remote_nodes import check_remote_node_health, get_remote_node, update_remote_node
 
-    updated = update_remote_node(node_id, body.model_dump(exclude_none=True))
+    payload = body.model_dump(exclude_none=True)
+    require_local_for_fields(request, payload, LOCAL_ONLY_NODE_FIELDS, 'SSH tunnel settings')
+    updated = update_remote_node(node_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail='node not found')
     health = check_remote_node_health(updated)
@@ -2046,8 +2111,8 @@ def hf_local_installs(repo_id: str = Query(..., min_length=3)) -> dict[str, Any]
 
 
 @app.post('/api/hf/download')
-def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
-    from core.huggingface import start_download, start_repo_download
+def hf_download(body: HfDownloadRequest, request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+    from core.key_downloads import plan_key_download, settle_key_download
 
     repo = str(body.repo_id or '').strip()
     filename = str(body.filename or '').strip()
@@ -2062,21 +2127,67 @@ def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
     sharded_weights = bool(
         re.search(r'-\d{5}-of-\d{5}\.(?:safetensors|bin)$', filename, re.IGNORECASE)
     )
-    if body.whole_repo or sharded_weights:
-        result = start_repo_download(repo, library_id=body.library_id, cfg=config)
+    whole_repo = bool(body.whole_repo or sharded_weights)
+    # Sharded GGUF groups: the catalog shows them as one "N files" download.
+    gguf_group = not whole_repo and len(requested) > 1 and all(name.lower().endswith('.gguf') for name in requested)
+
+    # Another Console (machine key): Hugging Face files only, within its disk
+    # limit. The bytes are reserved now and settled once the jobs started.
+    caller = auth_context(request)
+    key_plan = None
+    if caller.kind == 'key':
+        key_plan = plan_key_download(
+            caller.key_id,
+            repo_id=repo,
+            filenames=requested if gguf_group else [filename],
+            whole_repo=whole_repo,
+        )
+    try:
+        result, started = _start_hf_download(
+            repo,
+            filename,
+            requested,
+            library_id=body.library_id,
+            config=config,
+            whole_repo=whole_repo,
+            gguf_group=gguf_group,
+        )
+    except BaseException:
+        if key_plan:
+            settle_key_download(caller.key_id, key_plan, files=())
+        raise
+    if key_plan:
+        settle_key_download(caller.key_id, key_plan, files=started)
+    return result
+
+
+def _start_hf_download(
+    repo: str,
+    filename: str,
+    requested: list[str],
+    *,
+    library_id: str | None,
+    config: dict[str, Any],
+    whole_repo: bool,
+    gguf_group: bool,
+) -> tuple[dict[str, Any], list[str] | None]:
+    """Start the download jobs. Returns (response, files that started; None = all)."""
+    from core.huggingface import start_download, start_repo_download
+
+    if whole_repo:
+        result = start_repo_download(repo, library_id=library_id, cfg=config)
         if not result.get('success'):
             if result.get('already_installed'):
                 raise HTTPException(status_code=409, detail=result)
             raise HTTPException(status_code=400, detail=result.get('error') or 'download failed')
-        return result
+        return result, ([] if result.get('already_running') else None)
 
-    # Sharded GGUF groups: the catalog shows them as one "N files" download.
     # Start one job per shard so the model is complete on disk.
-    if len(requested) > 1 and all(name.lower().endswith('.gguf') for name in requested):
+    if gguf_group:
         jobs: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for name in requested:
-            row = start_download(repo, name, library_id=body.library_id, cfg=config)
+            row = start_download(repo, name, library_id=library_id, cfg=config)
             if row.get('success'):
                 jobs.append({'filename': name, 'job_id': row.get('job_id'), 'path': row.get('path')})
             elif row.get('already_installed'):
@@ -2093,15 +2204,15 @@ def hf_download(body: HfDownloadRequest) -> dict[str, Any]:
             'path': primary.get('path', ''),
             'jobs': jobs,
             'errors': errors,
-            'library_id': body.library_id or '',
-        }
+            'library_id': library_id or '',
+        }, [row['filename'] for row in jobs if row.get('job_id')]
 
-    result = start_download(repo, filename, library_id=body.library_id, cfg=config)
+    result = start_download(repo, filename, library_id=library_id, cfg=config)
     if not result.get('success'):
         if result.get('already_installed'):
             raise HTTPException(status_code=409, detail=result)
         raise HTTPException(status_code=400, detail=result.get('error') or 'download failed')
-    return result
+    return result, [filename]
 
 
 @app.get('/api/hf/download/{job_id}')

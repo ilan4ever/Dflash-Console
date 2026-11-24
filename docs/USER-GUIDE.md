@@ -329,8 +329,13 @@ computer’s name in brackets, such as **TITAN (lab)**.
 7. Open **Models** or **Engines**, choose a model, and pick the GPU with the other computer’s name in brackets.
 
 The model runs on the other computer. If that file is not there yet, this
-Console downloads it there and then loads it. A folder that is not one
-downloadable file must already be on that computer.
+Console downloads it there and then loads it, when that computer allows it. A
+folder that is not one downloadable file must already be on that computer.
+
+The other Console accepts another computer only with a **machine key**: create
+one there in **Settings → Sign-in & keys** and paste it into **Machine key**
+(when adding the node, or later with **Edit**). An SSH tunnel needs no key. See
+[SHARE-A-GPU.md](./SHARE-A-GPU.md#machine-keys) for downloads and limits.
 
 Turn sharing off with **Stop sharing GPU** if you only want a health check or a
 test chat.

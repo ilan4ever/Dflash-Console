@@ -9,6 +9,8 @@
   let connectMethod = '';
   let connectSshScenario = 'reach_remote';
   let nodeContextTarget = null;
+  // Set while the add-node modal edits an existing node (PATCH instead of POST).
+  let editingNodeId = null;
 
   function escapeHtml(value) {
     return String(value || '')
@@ -69,13 +71,14 @@
             <code class="lm-settings-path">${escapeHtml(node.base_url || '')}</code>
             <div class="lm-node-card-meta">
               Last check · ${escapeHtml(formatChecked(node))} · ${latency}${version}
-              ${node.has_token ? ' · Token set' : ''}
+              ${node.has_token ? ' · Machine key set' : ''}
               ${node.share_gpu ? ' · GPU shared with this PC' : ''}
             </div>
             ${err}
           </div>
           <div class="lm-node-card-actions">
             <button class="lm-btn ghost small" type="button" data-node-action="share" data-node-id="${escapeHtml(node.id)}">${node.share_gpu ? 'Stop sharing GPU' : 'Share GPU'}</button>
+            <button class="lm-btn ghost small" type="button" data-node-action="edit" data-node-id="${escapeHtml(node.id)}">Edit</button>
             <button class="lm-btn ghost small" type="button" data-node-action="health" data-node-id="${escapeHtml(node.id)}">Check</button>
             <button class="lm-btn ghost small" type="button" data-node-action="chat" data-node-id="${escapeHtml(node.id)}">Test chat</button>
             <button class="lm-btn ghost small danger" type="button" data-node-action="remove" data-node-id="${escapeHtml(node.id)}">Remove</button>
@@ -123,12 +126,43 @@
     }
   }
 
+  function setNodeModalMode(node) {
+    editingNodeId = node ? node.id : null;
+    const title = document.getElementById('nodeAddTitle');
+    if (title) title.textContent = node ? 'Edit node' : 'Add remote node';
+    const save = document.getElementById('nodeAddSaveBtn');
+    if (save) save.textContent = node ? 'Save' : 'Add node';
+    const token = document.getElementById('nodeAddToken');
+    if (token) {
+      token.value = '';
+      token.placeholder = node?.has_token ? 'Leave empty to keep the saved key' : 'dfk_…';
+    }
+    const clearRow = document.getElementById('nodeAddClearTokenRow');
+    if (clearRow) clearRow.classList.toggle('hidden', !node?.has_token);
+    const clear = document.getElementById('nodeAddClearToken');
+    if (clear) clear.checked = false;
+  }
+
   function openAddModal() {
     openModal('nodeAddModal');
+    setNodeModalMode(null);
     document.getElementById('nodeAddLabel').value = '';
     document.getElementById('nodeAddUrl').value = '';
-    document.getElementById('nodeAddToken').value = '';
+    const share = document.getElementById('nodeAddShareGpu');
+    if (share) share.checked = true;
     document.getElementById('nodeAddLabel')?.focus();
+  }
+
+  function openEditModal(nodeId) {
+    const node = nodes.find((row) => row.id === nodeId);
+    if (!node) return;
+    openModal('nodeAddModal');
+    setNodeModalMode(node);
+    document.getElementById('nodeAddLabel').value = node.label || '';
+    document.getElementById('nodeAddUrl').value = node.base_url || '';
+    const share = document.getElementById('nodeAddShareGpu');
+    if (share) share.checked = node.share_gpu === true;
+    document.getElementById('nodeAddToken')?.focus();
   }
 
   function closeAddModal() {
@@ -194,8 +228,9 @@
           <input class="lm-input" id="nodeConnectLabel" type="text" placeholder="Office GPU PC" autocomplete="off">
         </label>
         <label class="lm-field">
-          <span>API token (optional)</span>
-          <input class="lm-input" id="nodeConnectToken" type="password" placeholder="Shared secret" autocomplete="off">
+          <span>Machine key</span>
+          <input class="lm-input" id="nodeConnectToken" type="password" placeholder="dfk_…" autocomplete="off">
+          <span class="lm-setting-desc">Create it on the other Console: Settings → Sign-in &amp; keys → Create key.</span>
         </label>
         <label class="lm-field lm-check-field">
           <input type="checkbox" id="nodeConnectShareGpu" checked>
@@ -252,8 +287,9 @@
           <input class="lm-input" id="nodeConnectLabel" type="text" placeholder="Remote via SSH" autocomplete="off">
         </label>
         <label class="lm-field">
-          <span>API token (optional)</span>
-          <input class="lm-input" id="nodeConnectToken" type="password" placeholder="Shared secret" autocomplete="off">
+          <span>Machine key (optional through SSH)</span>
+          <input class="lm-input" id="nodeConnectToken" type="password" placeholder="dfk_…" autocomplete="off">
+          <span class="lm-setting-desc">An SSH tunnel reaches the other Console as a request from that PC itself, so it needs no key. A key from its Settings → Sign-in &amp; keys does no harm.</span>
         </label>
         <label class="lm-field lm-check-field">
           <input type="checkbox" id="nodeConnectShareGpu" checked>
@@ -446,6 +482,30 @@
     }
     const btn = document.getElementById('nodeAddSaveBtn');
     if (btn) btn.disabled = true;
+    if (editingNodeId) {
+      const body = {
+        label,
+        base_url: baseUrl,
+        share_gpu: document.getElementById('nodeAddShareGpu')?.checked === true,
+      };
+      if (apiToken) body.api_token = apiToken;
+      else if (document.getElementById('nodeAddClearToken')?.checked) body.api_token = '';
+      try {
+        await api(`/api/nodes/${encodeURIComponent(editingNodeId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+          timeoutMs: 30000,
+        });
+        closeAddModal();
+        toast('Node saved');
+        await refreshNodes({ fresh: true });
+      } catch (err) {
+        toast(err.message || 'Could not save node', false);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+      return;
+    }
     try {
       await api('/api/nodes', {
         method: 'POST',
@@ -586,6 +646,10 @@
       document.body.classList.add('modal-open');
       return;
     }
+    if (cmd === 'edit') {
+      openEditModal(node.id);
+      return;
+    }
     if (cmd === 'health') {
       await checkNode(node.id);
       return;
@@ -608,6 +672,7 @@
       <button type="button" data-cmd="copy-url"${node.base_url ? '' : ' disabled'}>Copy Console URL</button>
       <button type="button" data-cmd="metadata">Show metadata</button>
       <hr>
+      <button type="button" data-cmd="edit">Edit node…</button>
       <button type="button" data-cmd="health">Check health</button>
       <button type="button" data-cmd="chat">Test chat</button>
       <hr>
@@ -646,7 +711,8 @@
       if (!btn) return;
       const nodeId = btn.dataset.nodeId || '';
       const action = btn.dataset.nodeAction || '';
-      if (action === 'health') void checkNode(nodeId);
+      if (action === 'edit') openEditModal(nodeId);
+      else if (action === 'health') void checkNode(nodeId);
       else if (action === 'chat') void testChat(nodeId);
       else if (action === 'share') void toggleShareGpu(nodeId);
       else if (action === 'remove') void removeNode(nodeId);

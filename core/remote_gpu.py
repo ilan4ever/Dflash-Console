@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from core.remote_nodes import _node_headers, get_remote_node, list_remote_nodes
+from core.remote_nodes import _node_headers, describe_remote_refusal, get_remote_node, list_remote_nodes
 
 _REMOTE_GPU_ID = re.compile(r'^remote:([a-z0-9-]+):(\d+)$')
 _TUNNEL_LOCK = threading.Lock()
@@ -182,6 +182,10 @@ def _remote_json(
             raw = resp.read().decode('utf-8', errors='replace')
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode('utf-8', errors='replace')
+        # Sign-in refusals (no key, revoked key, downloads not allowed, ...).
+        refusal = describe_remote_refusal(exc.code, raw, node)
+        if refusal:
+            raise RuntimeError(refusal) from exc
         payload: Any = {}
         try:
             payload = json.loads(raw or '{}')

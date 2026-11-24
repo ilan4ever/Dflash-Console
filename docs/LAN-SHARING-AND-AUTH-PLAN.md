@@ -1,6 +1,6 @@
 # Plan: sign-in, pairing, and sharing on the local network
 
-**Status:** approved by the maintainer on 2026-11-24, with the decisions below. Phase 1 is next. It changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model), so update that section as each phase ships.
+**Status:** approved by the maintainer on 2026-11-24, with the decisions below. **Phase 1 is built** (branch `feat/auth-phase1`, see "Phase 1 as built" below); the Console still listens only on loopback. Phase 2 is next. Each phase changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model), so update that section as it ships.
 
 ## Decisions (2026-11-24)
 
@@ -56,6 +56,16 @@ Sign-in comes **before** any network access. Every phase can ship on its own.
 5. **Check the `api_token` that remote nodes already send.** The middleware enforces it for non-loopback requests.
 6. **Dangerous routes stay local-only even after sign-in, unless enabled one by one:** `/api/shutdown`, `/api/fs/*` (file browsing), config import/export, engine install/uninstall, and anything that runs a program.
 
+#### Phase 1 as built
+
+- **Code:** `core/auth.py` (password, sessions, keys, throttle), `core/access_control.py` (the route table and the middleware for `:8900` and `:8001`), `core/key_downloads.py` (catalog-only downloads within the disk limit), `api/auth_routes.py` (sign-in page and Settings → Sign-in & keys), `static/login.html`, `static/js/auth-fetch.js` (CSRF header), `static/js/security-live.js`. Tests: `tests/test_auth_store.py`, `tests/test_access_control.py`.
+- **Storage:** `auth.json` next to `config.json`, not inside it, so config export, presets, and the diagnostics bundle never carry the hashes, and session writes cannot race config saves.
+- **Every route is classified** in `core/access_control.py` (public, key, key-download, owner session, local-only). A test fails when a route is missing; an unlisted route is local-only.
+- **Proxies:** a loopback request with `X-Forwarded-For` (or a similar header) counts as another computer, so `tailscale serve` or a local reverse proxy cannot bypass sign-in. SSH tunnels add no header and still count as this PC.
+- **Mixed routes:** `PUT /api/config` and `POST`/`PATCH /api/nodes` refuse only their dangerous fields from another computer (engine binaries, engine/runtime definitions, model libraries, SSH nodes, API keys, ports, automatic engine updates), so a signed-in owner can still change ordinary settings.
+- **Keys** reach only: health, GPU list, system stats, engine and runtime status, the model catalog, download status, load, unload, chat, embeddings, speech, transcription, cancel; plus `POST /api/hf/download` with "May download models here". The disk limit (default 50 GB per key) counts every download the key started; the owner can raise it or reset the count.
+- **Not in Phase 1:** a CSRF guard for loopback browser requests (a malicious page in the owner's own browser can still post to `127.0.0.1`, as before). Worth adding before Phase 2.
+
 ### Phase 2: "Share this Console on my local network"
 
 1. **Settings:** Settings → Network has two switches, both off by default (Decision 1):
@@ -102,12 +112,14 @@ Requirements before any internet exposure:
 
 ## Tests to add
 
-- Middleware: loopback requests pass without a session; non-loopback requests without a session or key get 401; a wrong key gets 401; a revoked key gets 401.
-- CSRF: a remote POST without a token or with a foreign `Origin` gets 403.
-- Dangerous routes return 403 from non-loopback addresses even with a valid session.
-- Rate limit on sign-in.
-- The bind only includes private addresses; a public source address is refused.
-- Pairing: wrong code, expired code, a code used twice.
-- A machine key can't open a browser session or reach routes other than GPU sharing.
-- A machine key can't start a download unless its "May download models here" setting is on. Even then, a non-catalog URL is refused, and so is a download over the disk limit.
-- The owner, signed in remotely, can start a catalog download.
+Done in Phase 1 (`tests/test_access_control.py`, `tests/test_auth_store.py`) unless marked Phase 2.
+
+- [x] Middleware: loopback requests pass without a session; non-loopback requests without a session or key get 401; a wrong key gets 401; a revoked key gets 401.
+- [x] CSRF: a remote POST without a token or with a foreign `Origin` gets 403.
+- [x] Dangerous routes return 403 from non-loopback addresses even with a valid session.
+- [x] Rate limit on sign-in.
+- [ ] Phase 2: the bind only includes private addresses; a public source address is refused.
+- [ ] Phase 2: pairing: wrong code, expired code, a code used twice.
+- [x] A machine key can't open a browser session or reach routes other than GPU sharing.
+- [x] A machine key can't start a download unless its "May download models here" setting is on. Even then, a non-catalog URL is refused, and so is a download over the disk limit.
+- [x] The owner, signed in remotely, can start a catalog download.

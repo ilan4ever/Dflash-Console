@@ -124,6 +124,7 @@
     if (panelId === 'rt-runtimes') void refreshRuntimesPanel();
     if (panelId === 'dl-components') void refreshComponentsPanel();
     if (panelId === 'app-settings') void window.DFlashAppSettingsLive?.render?.();
+    if (panelId === 'sec-access') void window.DFlashSecurityLive?.render?.();
     if (HARDWARE_PANELS.has(panelId)) {
       if (hardwareData) {
         if (panelId === 'ws-checkpoints' || panelId === 'ws-locations') renderWorkspacePaths();
@@ -274,11 +275,13 @@
 
   async function exportConfigFile() {
     try {
-      const data = await api('/api/config');
+      // Local-only route: another computer gets 403 (config export stays on this PC).
+      const data = await api('/api/config/export');
       downloadJson('dflash-console-config.json', data.config || {});
       toast('Config exported');
     } catch (err) {
-      toast(err.message, false);
+      // 403 = refused from another computer (expected, not a bug to report).
+      toast(err.message, false, { report: err.status !== 403 });
     }
   }
 
@@ -304,7 +307,7 @@
       if (window.DFlashServerLive?.refresh) void window.DFlashServerLive.refresh();
       if (window.DFlashModelsLive?.refresh) void window.DFlashModelsLive.refresh();
     } catch (err) {
-      toast(err.message || 'Could not import config', false);
+      toast(err.message || 'Could not import config', false, { report: err.status !== 403 });
     }
   }
 
