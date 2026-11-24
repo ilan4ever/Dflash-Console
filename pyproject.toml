@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dflash-console"
-version = "0.3.299"
+version = "0.3.300"
 description = "Open-source Windows control panel and CLI for local LLMs: DFlash speculative decoding, llama.cpp, vLLM, and an OpenAI-compatible gateway. An open-source alternative to LM Studio."
 readme = "README.md"
 license = { file = "LICENSE" }
