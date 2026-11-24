@@ -105,6 +105,28 @@ def model_needs_chat_template(model_path: Path) -> bool:
     return not str(data.get('chat_template') or '').strip()
 
 
+# vLLM returns a model's thinking separately (in `reasoning`) only when it is started with
+# that family's reasoning parser. Without one, Qwen3's thinking arrived as answer text and
+# the Playground showed it as part of the reply. Only families whose parser leaves a plain
+# answer untouched are listed: DeepSeek's parser, for example, would file a whole V3 answer
+# under "reasoning". settings['reasoning_parser'] overrides this ('none' turns it off).
+_REASONING_PARSERS = {'qwen3': 'qwen3', 'qwen3_moe': 'qwen3'}
+
+
+def vllm_reasoning_parser(model_path: Path, settings: dict[str, Any] | None = None) -> str:
+    override = str((settings or {}).get('reasoning_parser') or '').strip()
+    if override:
+        return '' if override.lower() in {'none', 'off', 'false', '0'} else override
+    folder = model_path if model_path.is_dir() else model_path.parent
+    try:
+        data = json.loads((folder / 'config.json').read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    return _REASONING_PARSERS.get(str(data.get('model_type') or '').strip().lower(), '')
+
+
 def vllm_exit_reason(text: str, returncode: int | None = None) -> str:
     """Explain a vLLM process that quit before its port opened.
 
@@ -657,6 +679,9 @@ class VllmRuntimeAdapter:
             args.append('--enforce-eager')
         if settings.get('generation_config'):
             args.extend(['--generation-config', str(settings['generation_config'])])
+        reasoning_parser = vllm_reasoning_parser(model_path, settings)
+        if reasoning_parser:
+            args.extend(['--reasoning-parser', reasoning_parser])
         if backend == 'wsl':
             distro = str(manifest.get('wsl_distro') or 'Ubuntu')
             python = str(manifest.get('wsl_python') or self.python())

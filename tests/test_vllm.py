@@ -71,6 +71,26 @@ def test_model_needs_chat_template_when_tokenizer_has_none(tmp_path: Path):
     assert model_needs_chat_template(tmp_path) is False
 
 
+def test_vllm_reasoning_parser_for_qwen3_only(tmp_path: Path):
+    from core.runtimes.vllm import vllm_reasoning_parser
+
+    model = tmp_path / 'Qwen3-0.6B'
+    model.mkdir()
+    (model / 'config.json').write_text('{"model_type": "qwen3"}', encoding='utf-8')
+    assert vllm_reasoning_parser(model) == 'qwen3'
+    assert vllm_reasoning_parser(model / 'model.safetensors') == 'qwen3'  # a file inside the folder
+    (model / 'config.json').write_text('{"model_type": "qwen3_moe"}', encoding='utf-8')
+    assert vllm_reasoning_parser(model) == 'qwen3'
+    # families without a safe parser, and folders without config.json, get none
+    (model / 'config.json').write_text('{"model_type": "deepseek_v3"}', encoding='utf-8')
+    assert vllm_reasoning_parser(model) == ''
+    assert vllm_reasoning_parser(tmp_path / 'missing') == ''
+    # settings override
+    assert vllm_reasoning_parser(model, {'reasoning_parser': 'deepseek_r1'}) == 'deepseek_r1'
+    (model / 'config.json').write_text('{"model_type": "qwen3"}', encoding='utf-8')
+    assert vllm_reasoning_parser(model, {'reasoning_parser': 'none'}) == ''
+
+
 def test_registry_includes_vllm():
     adapter = get_runtime_adapter('vllm')
     assert adapter is not None
