@@ -70,6 +70,10 @@ namespace DFlashConsoleSetup
         private bool _appLaunchStarted;
         private bool _firstRunLaunch;
         private bool _finishReady;
+        // Set when copying failed because files were in use: Finish becomes Retry.
+        private bool _canRetryCopy;
+        // True once this process has unpacked the update package (kept until success).
+        private bool _payloadExtracted;
         private bool _marquee;
         private int _progressValue;
         private int _marqueeOffset;
@@ -664,8 +668,17 @@ namespace DFlashConsoleSetup
             {
                 if (!await EnsureInstallAccessAsync()) return;
 
-                string packagePath = _packagePath;
-                if (_hasOwnPayload && (string.IsNullOrEmpty(packagePath) || IsSamePath(packagePath, Application.ExecutablePath)))
+                // A Retry after a failed copy reuses the package unpacked the
+                // first time instead of extracting it again.
+                bool payloadReady = _payloadExtracted
+                    && !string.IsNullOrEmpty(_payloadRoot)
+                    && File.Exists(Path.Combine(_payloadRoot, "DFlash Console.exe"));
+                string packagePath = payloadReady ? null : _packagePath;
+                if (payloadReady)
+                {
+                    SetStatus("Package ready. Continuing install…");
+                }
+                else if (_hasOwnPayload && (string.IsNullOrEmpty(packagePath) || IsSamePath(packagePath, Application.ExecutablePath)))
                 {
                     _ownPayloadExtractRoot = Path.Combine(
                         Path.GetTempPath(),
@@ -692,6 +705,7 @@ namespace DFlashConsoleSetup
                     SetProgress(2, true);
                     await Task.Run(() => ExtractPackage(packagePath, _payloadRoot));
                     _payloadRoot = ResolvePayloadRoot(_payloadRoot);
+                    _payloadExtracted = true;
                     SetStatus("Package ready. Continuing install…");
                 }
 
@@ -716,10 +730,19 @@ namespace DFlashConsoleSetup
                 SetStatus("Copying program files…\nThis can take a minute on first install.");
                 SetProgress(15, true);
 
-                int rc = await Task.Run(() => RunRobocopy(_payloadRoot, _destRoot));
+                int rc = await Task.Run(() => CopyProgramFiles(_payloadRoot, _destRoot));
                 if (rc >= 8)
                 {
-                    throw new Exception("File copy failed (code " + rc + ").");
+                    // Offer Retry: the package stays unpacked, so a second try
+                    // only repeats the copy once the app has really closed.
+                    _canRetryCopy = true;
+                    string destExe0 = Path.Combine(_destRoot, "DFlash Console.exe");
+                    string inUse = InstallFileLocks.IsWritable(destExe0)
+                        ? "Some program files are still in use."
+                        : "DFlash Console.exe is still in use.";
+                    throw new Exception(
+                        inUse + " (code " + rc + ")\n"
+                        + "Close DFlash Console, including its tray icon, then click Retry.");
                 }
 
                 SetStatus("Setting folder access…");
@@ -804,9 +827,32 @@ namespace DFlashConsoleSetup
                 try { File.WriteAllText(_doneFlag, "install-failed " + _error); } catch { }
                 SetProgress(0, false);
                 SetErrorStatus("Installation failed:\n" + _error);
-                _finish.Text = "Close";
+                _finish.Text = _canRetryCopy ? "Retry" : "Close";
                 ApplyFinishReadyStyle();
             }
+        }
+
+        /// <summary>
+        /// Copy the program files, waiting for files the closing app still
+        /// holds. Up to three attempts; returns the last robocopy code.
+        /// </summary>
+        private static int CopyProgramFiles(string src, string dst)
+        {
+            string destExe = Path.Combine(dst, "DFlash Console.exe");
+            int rc = 16;
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                InstallFileLocks.WaitUntilWritable(
+                    destExe,
+                    attempt == 1 ? 60000 : 30000,
+                    () => KillOtherConsoleProcesses(0),
+                    5000);
+                rc = RunRobocopy(src, dst);
+                if (rc < 8) return rc;
+                KillOtherConsoleProcesses(0);
+                System.Threading.Thread.Sleep(2000);
+            }
+            return rc;
         }
 
         private const string PayloadMagic = "DFLASHPL";
@@ -1706,7 +1752,9 @@ namespace DFlashConsoleSetup
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = "robocopy.exe",
-                Arguments = "\"" + src + "\" \"" + dst + "\" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XF setup.exe dflash-setup-ui.exe install-version.txt _install.cmd _install.vbs _install-ui.ps1",
+                // /R:10 /W:2: a file the closing app or antivirus still holds
+                // gets 20 seconds to come free before the attempt fails.
+                Arguments = "\"" + src + "\" \"" + dst + "\" /E /R:10 /W:2 /NFL /NDL /NJH /NJS /NP /XF setup.exe dflash-setup-ui.exe install-version.txt _install.cmd _install.vbs _install-ui.ps1",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
@@ -1845,6 +1893,16 @@ namespace DFlashConsoleSetup
                 _perMachine = _scopeMachine.Checked;
                 _destRoot = _perMachine ? DefaultMachineInstallRoot() : DefaultUserInstallRoot();
                 await BeginInstallAsync();
+                return;
+            }
+
+            if (_canRetryCopy && !_ok)
+            {
+                _canRetryCopy = false;
+                _error = "";
+                _finish.Text = "Finish";
+                ApplyFinishIdleStyle();
+                await RunInstallAsync();
                 return;
             }
 
