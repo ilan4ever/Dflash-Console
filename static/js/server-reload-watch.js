@@ -9,6 +9,7 @@
   let hasConnected = false;
   let reloading = false;
   let checking = false;
+  let failures = 0;
   let timer = null;
   let pendingReloadUrl = '';
   let reloadFocusHandler = null;
@@ -98,9 +99,13 @@
       const restarted = hasConnected && ((bootId && nextId && nextId !== bootId)
         || (storedBootId && nextId && nextId !== storedBootId));
       const uiChanged = uiVersion && nextUi && nextUi !== uiVersion;
-      const recoveredAfterOffline = hasConnected && connectionState === 'offline' && nextId;
+      failures = 0;
       setConnectionBadge('online');
-      if (restarted || recoveredAfterOffline || uiChanged) {
+      // Reload only for a real restart (new boot id) or new UI files. A health check can
+      // time out while the server is busy (starting up, starting a download); coming back
+      // with the same boot id used to reload the page too, which threw away whatever the
+      // user had just picked or typed.
+      if (restarted || uiChanged) {
         reloading = true;
         if (nextId) sessionStorage.setItem(bootStorageKey, nextId);
         const reason = uiChanged && !restarted ? 'UI updated — refreshing page…' : 'Server restarted — refreshing page…';
@@ -117,7 +122,10 @@
       hasConnected = true;
       setConnectionBadge('online');
     } catch {
-      setConnectionBadge(hasConnected ? 'offline' : 'starting');
+      failures += 1;
+      // One slow answer is not an outage: show Offline after two missed checks in a row.
+      if (!hasConnected) setConnectionBadge('starting');
+      else if (failures >= 2) setConnectionBadge('offline');
     } finally {
       window.clearTimeout(timeout);
       checking = false;
