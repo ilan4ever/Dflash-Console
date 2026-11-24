@@ -1052,6 +1052,7 @@
   function canLoadInConsole(model) {
     if (!model?.path || modelFileMissing(model)) return false;
     if (String(model?.runtime_id || '').trim().toLowerCase() === 'strata') return false;
+    if (String(model?.runtime_id || '').trim().toLowerCase() === 'colibri') return false;
     if (isProjectorModel(model)) return false;
     if (isDflashAccelerator(model)) return false;
     if (Number(model.split_count || 0) > 1) return false;
@@ -1192,6 +1193,10 @@
     if (String(model?.runtime_id || '').trim().toLowerCase() === 'strata'
       || String(model?.source || '').trim().toLowerCase() === 'strata') {
       return '<span class="lm-badge green" title="Installed and served by Strata">Strata</span>';
+    }
+    if (String(model?.runtime_id || '').trim().toLowerCase() === 'colibri'
+      || String(model?.source || '').trim().toLowerCase() === 'colibri') {
+      return '<span class="lm-badge green" title="Served by Colibri (MoE experts streamed from disk). Starts through the Console\'s Colibri launcher.">Colibri</span>';
     }
     if (model?.server_id && String(model?.source || '') === 'dflash-profile') {
       return '<span class="lm-badge blue" title="Registered DFlash engine profile">Engine profile</span>';

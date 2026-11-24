@@ -2250,6 +2250,14 @@
     return servers.filter((s) => s.status === 'booting' || s.booting || s.warming).length;
   }
 
+  function launcherRuntimeName(launcherId, row) {
+    const runtime = String(row?.runtime_id || '').trim().toLowerCase();
+    const id = String(launcherId || '').trim().toLowerCase();
+    if (runtime === 'colibri' || id.startsWith('colibri')) return 'Colibri';
+    if (runtime === 'strata' || id === 'strata') return 'Strata';
+    return String(launcherId || '');
+  }
+
   function consoleLauncherServer(row) {
     const launcherId = String(row?.launcher_id || '').trim();
     const stats = row?.inference_stats || {};
@@ -2267,7 +2275,8 @@
       console_engine: true,
       launcher_id: launcherId,
       status: stopped ? 'stopped' : 'loaded',
-      engine_mode: 'strata',
+      engine_mode: launcherRuntimeName(launcherId, row) === 'Colibri' ? 'colibri' : 'strata',
+      runtime_id: launcherRuntimeName(launcherId, row) === 'Colibri' ? 'colibri' : 'strata',
       model_id: row?.model_id || '',
       active_model_id: stopped ? '' : (row?.model_id || ''),
       target_path: row?.model_path || row?.path || '',
@@ -2904,7 +2913,7 @@
     const options = choices
       .map((count) => `<option value="${count}"${count === current ? ' selected' : ''}>${count}</option>`)
       .join('');
-    return `<span class="lm-engine-slots-label" aria-hidden="true">Slots</span><select class="lm-select small lm-engine-slots-pick" data-action="launcher-slots-pick" data-launcher-id="${escapeHtml(row?.launcher_id || '')}" aria-label="Parallel slots for ${escapeHtml(row?.title || 'Strata')}" title="Parallel requests Strata should serve at once. Changing it restarts the Strata engine."${disabled ? ' disabled aria-disabled="true"' : ''}>${options}</select>`;
+    return `<span class="lm-engine-slots-label" aria-hidden="true">Slots</span><select class="lm-select small lm-engine-slots-pick" data-action="launcher-slots-pick" data-launcher-id="${escapeHtml(row?.launcher_id || '')}" aria-label="Parallel slots for ${escapeHtml(row?.title || launcherRuntimeName(row?.launcher_id, row))}" title="Parallel requests ${escapeHtml(launcherRuntimeName(row?.launcher_id, row))} should serve at once. Changing it restarts the ${escapeHtml(launcherRuntimeName(row?.launcher_id, row))} engine."${disabled ? ' disabled aria-disabled="true"' : ''}>${options}</select>`;
   }
 
   function launcherRestartShellHtml(job) {
@@ -5716,7 +5725,7 @@
       const hintKey = `${server.id || ''}|${server.model_id || ''}|${launcherEngine ? 'launcher' : 'engine'}|${server.context_size || ''}`;
       if (contextHint.dataset.fillKey !== hintKey) {
         contextHint.textContent = launcherEngine
-          ? 'Context length is reported by the Strata engine and cannot be changed here.'
+          ? `Context length is reported by the ${server.engine_mode === 'colibri' ? 'Colibri' : 'Strata'} engine and cannot be changed here.`
           : 'Starting context — API requests may grow it up to the limit below.';
         contextHint.dataset.fillKey = hintKey;
       }
@@ -5724,7 +5733,9 @@
     const slotsHint = document.getElementById('inspectorParallelSlotsHint');
     if (slotsHint) {
       slotsHint.textContent = launcherEngine
-        ? 'Parallel requests the Strata engine serves at once. Changing it restarts Strata.'
+        ? (server.engine_mode === 'colibri'
+          ? 'Parallel requests (KV slots) the Colibri engine serves at once. Changing it restarts Colibri.'
+          : 'Parallel requests the Strata engine serves at once. Changing it restarts Strata.')
         : 'Concurrent request slots per model (-np).';
     }
     const launcherSlotsEl = document.getElementById('inspectorParallelSlots');
@@ -6444,6 +6455,9 @@
 
   async function pollTick() {
     if (pollInFlight) return;
+    // A hidden or minimised window has nothing to repaint; skip the poll so an
+    // idle Console does not keep the backend busy.
+    if (document.hidden) return;
     pollInFlight = true;
     const view = document.body.dataset.activeView;
     const onEngines = view === 'server';
@@ -6932,8 +6946,9 @@
   }
 
   async function waitForLauncherLoaded(launcherId, targetSlots, onProgress) {
-    const launcherName = String(launcherId).toLowerCase() === 'strata' ? 'Strata' : String(launcherId);
-    const deadline = Date.now() + 240000;
+    const launcherName = launcherRuntimeName(launcherId, launcherRowForServer(launcherId));
+    // Colibri streams a 100 GB MoE from disk and fills its expert tier first.
+    const deadline = Date.now() + (launcherName === 'Colibri' ? 900000 : 240000);
     while (Date.now() < deadline) {
       let payload = null;
       try {
@@ -6991,7 +7006,7 @@
     const slotText = `${slots} slot${Number(slots) === 1 ? '' : 's'}`;
     const row = externalGpuLoads.find((entry) => String(entry?.launcher_id || '') === String(launcherId));
     const wasStopped = row?.card_state === 'stopped';
-    const launcherName = String(launcherId).toLowerCase() === 'strata' ? 'Strata' : String(launcherId);
+    const launcherName = launcherRuntimeName(launcherId, row);
     const label = wasStopped ? `Starting ${launcherName}` : `Restarting ${launcherName}`;
     const startedAt = Date.now();
     const applyJob = (patch) => {
@@ -7251,12 +7266,14 @@
     reschedulePoll();
     if (!inferenceStatsTimer) {
       inferenceStatsTimer = window.setInterval(() => {
-        if (!enginesViewActive()) return;
+        if (document.hidden || !enginesViewActive()) return;
         void refreshInferenceStats(true);
       }, LIVE_STATS_INTERVAL_MS);
     }
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'visible') return;
+      void window.DFlashSysbarLive?.refresh?.();
+      void pollTick();
       if (!enginesViewActive()) return;
       // Wake up with the local snapshot first. A fresh external GPU scan here
       // can hold the shared status lock and make a newly opened window look

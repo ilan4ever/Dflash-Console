@@ -176,6 +176,22 @@ def _query_gpus_live() -> list[dict[str, Any]]:
 
 
 def _query_cpu_ram_windows() -> tuple[int | None, dict[str, float | int | None]]:
+    # [polling-fix 2026-11-04] GetSystemTimes / GlobalMemoryStatusEx in-process (no PowerShell).
+    try:
+        from core.fast_probe import cpu_percent as _fast_cpu, ram_info as _fast_ram
+
+        fast_ram = _fast_ram()
+        fast_cpu = _fast_cpu()
+    except Exception:
+        fast_ram, fast_cpu = None, None
+    if fast_ram is not None:
+        if fast_cpu is not None:
+            return _apply_cpu_smoothing(fast_cpu), dict(fast_ram)
+        # Two samples inside one clock tick give no delta. Reuse the last value
+        # instead of spawning PowerShell for a single poll.
+        last_load = cpu_load_hint()
+        if last_load is not None:
+            return last_load, dict(fast_ram)
     script = (
         "$ErrorActionPreference='SilentlyContinue';"
         "$sum = (Get-Process | Measure-Object -Property CPU -Sum).Sum;"
@@ -203,6 +219,20 @@ def _query_cpu_ram_windows() -> tuple[int | None, dict[str, float | int | None]]
     }
 
 
+def _query_cpu_ram_linux() -> tuple[int | None, dict[str, float | int | None]]:
+    """/proc/stat + /proc/meminfo, in-process (no subprocess)."""
+    try:
+        from core.fast_probe import cpu_percent as _fast_cpu, ram_info as _fast_ram
+
+        ram = _fast_ram() or {}
+        cpu = _fast_cpu()
+    except Exception:
+        return None, {}
+    if cpu is not None:
+        return _apply_cpu_smoothing(cpu), dict(ram)
+    return cpu_load_hint(), dict(ram)
+
+
 def get_system_stats_payload() -> dict[str, Any]:
     gpus = _query_gpus_live()
     cpu_percent: int | None = None
@@ -212,6 +242,11 @@ def get_system_stats_payload() -> dict[str, Any]:
 
     if sys.platform == 'win32':
         cpu_percent, ram_info = _query_cpu_ram_windows()
+        ram_percent = int(ram_info.get('ram_percent') or 0)
+        ram_used_gb = ram_info.get('ram_used_gb')  # type: ignore[assignment]
+        ram_total_gb = ram_info.get('ram_total_gb')  # type: ignore[assignment]
+    elif sys.platform.startswith('linux'):
+        cpu_percent, ram_info = _query_cpu_ram_linux()
         ram_percent = int(ram_info.get('ram_percent') or 0)
         ram_used_gb = ram_info.get('ram_used_gb')  # type: ignore[assignment]
         ram_total_gb = ram_info.get('ram_total_gb')  # type: ignore[assignment]
@@ -227,8 +262,34 @@ def get_system_stats_payload() -> dict[str, Any]:
 
 
 def get_cpu_info_payload() -> dict[str, Any]:
+    if sys.platform.startswith('linux'):
+        from core.fast_probe import cpu_name as _fast_cpu_name
+
+        name = _fast_cpu_name() or 'Unknown CPU'
+        flags: set[str] = set()
+        try:
+            with open('/proc/cpuinfo', encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if line.startswith('flags'):
+                        flags = set(line.partition(':')[2].split())
+                        break
+        except OSError:
+            pass
+        features = [label for flag, label in (('avx', 'AVX'), ('avx2', 'AVX2'), ('avx512f', 'AVX512')) if flag in flags]
+        import platform
+
+        return {'name': name, 'arch': platform.machine() or 'unknown', 'features': features}
     if sys.platform != 'win32':
         return {'name': 'Unknown CPU', 'arch': 'unknown', 'features': []}
+    # [polling-fix 2026-11-04] registry lookup, cached for the process lifetime.
+    try:
+        from core.fast_probe import cpu_name as _fast_cpu_name
+
+        fast_name = _fast_cpu_name()
+    except Exception:
+        fast_name = None
+    if fast_name:
+        return {'name': fast_name, 'arch': 'x86_64', 'features': ['AVX', 'AVX2']}
     script = (
         '$p = Get-CimInstance Win32_Processor | Select-Object -First 1 Name; '
         '@{ name = [string]$p.Name } | ConvertTo-Json -Compress'

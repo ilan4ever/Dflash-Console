@@ -24,6 +24,7 @@ MODELS_PRESET=""
 PARALLEL=0
 REASONING_EFFORT="auto"
 ROUTER_MODE=0
+MODELS_AUTOLOAD=0
 NO_JINJA=0
 
 usage() {
@@ -49,6 +50,7 @@ Router mode (Console engine listener):
   --parallel N                  -np parallel slots (router default 4)
   --reasoning-effort LEVEL      auto|none|low|medium|high|max
   --no-jinja                    Pass --no-jinja to llama-server
+  --models-autoload             Let the router load the model on first request (embeddings)
 
 Profile mode (manual dev; same names as PowerShell script):
   --profile NAME                gemma-chat, gemma-ar, gemma-12-ar, ...
@@ -78,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --parallel) PARALLEL="$2"; shift 2 ;;
     --reasoning-effort) REASONING_EFFORT="$2"; shift 2 ;;
     --no-jinja) NO_JINJA=1; shift ;;
+    --models-autoload) MODELS_AUTOLOAD=1; shift ;;
     --profile) PROFILE="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -182,9 +185,11 @@ if [[ "$ROUTER_MODE" -eq 1 ]]; then
     --main-gpu "$MAIN_GPU"
     --split-mode "$SPLIT_MODE"
     --models-preset "$MODELS_PRESET"
-    --no-models-autoload
     --fit off
   )
+  if [[ "$MODELS_AUTOLOAD" -eq 0 ]]; then
+    args+=(--no-models-autoload)
+  fi
   if [[ "$NO_JINJA" -eq 1 ]]; then
     args+=(--no-jinja)
   else

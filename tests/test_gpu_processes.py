@@ -347,6 +347,9 @@ def test_fetch_process_details_powershell_uses_one_process_table(monkeypatch):
         captured.append(str(argv[-1]))
         return 0, stdout
 
+    # The in-process Toolhelp scan wins when it works, so the PowerShell path is
+    # exercised by making the fast probe unavailable.
+    monkeypatch.setattr('core.fast_probe.win32_process_rows', lambda: None)
     monkeypatch.setattr('core.bounded_proc.run_bounded', fake_run)
     monkeypatch.setattr(gpu_processes, '_PROCESS_TABLE_CACHE', {'at': 0.0, 'rows': {}})
     details = _fetch_process_details_powershell([42288])

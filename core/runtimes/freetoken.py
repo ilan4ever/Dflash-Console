@@ -256,6 +256,12 @@ class FreeTokenRuntimeAdapter:
     @classmethod
     def is_installed(cls) -> bool:
         manifest = cls._manifest()
+        if str(manifest.get('backend') or '').lower() == 'native':
+            # Linux: FreeToken runs directly, no WSL hop.
+            ft = str(manifest.get('ft') or '').strip()
+            return bool(sys.platform != 'win32' and ft and Path(ft).is_file())
+        if sys.platform != 'win32':
+            return False
         return bool(
             str(manifest.get('backend') or '').lower() == 'wsl'
             and str(manifest.get('wsl_distro') or '').strip()
@@ -480,31 +486,43 @@ class FreeTokenRuntimeAdapter:
         global _PROCESS, _PORT
         self._terminate()
         manifest = self._manifest()
-        distro = str(manifest.get('wsl_distro') or '').strip()
-        ft = str(manifest.get('wsl_ft') or '').strip()
-        if not distro or not ft:
-            return {'success': False, 'error': 'FreeToken WSL installation manifest is incomplete'}
+        native = str(manifest.get('backend') or '').lower() == 'native'
+        if native:
+            distro = 'native'
+            ft = str(manifest.get('ft') or '').strip()
+            if not ft:
+                return {'success': False, 'error': 'FreeToken installation manifest is incomplete'}
+        else:
+            distro = str(manifest.get('wsl_distro') or '').strip()
+            ft = str(manifest.get('wsl_ft') or '').strip()
+            if not distro or not ft:
+                return {'success': False, 'error': 'FreeToken WSL installation manifest is incomplete'}
 
         port = int(profile.get('port') or 0)
         if port <= 0:
             port = suggest_runtime_port()
-        model_wsl = _windows_to_wsl_path(model_path)
-        cmd = [
-            'wsl',
-            '-d',
-            distro,
-            '--',
-            'env',
-            f'DFLASH_CONSOLE_RUNTIME={FREETOKEN_PROCESS_TOKEN}',
+        serve_args = [
             ft,
             'serve',
             '--model',
-            model_wsl,
+            str(model_path) if native else _windows_to_wsl_path(model_path),
             '--host',
             '127.0.0.1',
             '--port',
             str(port),
         ]
+        if native:
+            cmd = ['env', f'DFLASH_CONSOLE_RUNTIME={FREETOKEN_PROCESS_TOKEN}', *serve_args]
+        else:
+            cmd = [
+                'wsl',
+                '-d',
+                distro,
+                '--',
+                'env',
+                f'DFLASH_CONSOLE_RUNTIME={FREETOKEN_PROCESS_TOKEN}',
+                *serve_args,
+            ]
         gpu = str(profile.get('gpu_device') or '').strip()
         if gpu and gpu.lower() not in {'auto', 'default'}:
             cmd.extend(['--gpu', gpu])
@@ -523,7 +541,8 @@ class FreeTokenRuntimeAdapter:
             proc = subprocess.Popen(cmd, **popen_kwargs)
         except OSError as exc:
             log_file.close()
-            return {'success': False, 'error': f'could not start FreeToken through WSL: {exc}'}
+            how = 'directly' if native else 'through WSL'
+            return {'success': False, 'error': f'could not start FreeToken {how}: {exc}'}
         log_file.close()
         deadline = time.monotonic() + 900.0
         while time.monotonic() < deadline:
@@ -732,12 +751,15 @@ class FreeTokenRuntimeAdapter:
             'bundle_revision': int(revision or 0),
             'runtime_id': self.runtime_id,
             'execution_mode': self.execution_mode,
-            'backend': str(existing.get('backend') or 'wsl'),
+            'backend': str(existing.get('backend') or ('wsl' if sys.platform == 'win32' else 'native')),
             'wsl_distro': str(existing.get('wsl_distro') or ''),
             'wsl_python': str(existing.get('wsl_python') or ''),
             'wsl_ft': str(existing.get('wsl_ft') or ''),
             'generated_by': 'core.runtimes.freetoken',
         }
+        if payload['backend'] == 'native':
+            payload['python'] = str(existing.get('python') or '')
+            payload['ft'] = str(existing.get('ft') or '')
         if existing.get('package_version'):
             payload['package_version'] = str(existing.get('package_version'))
         _write_json(FREETOKEN_MANIFEST, payload)

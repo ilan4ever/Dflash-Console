@@ -381,6 +381,23 @@ def _fill_missing_search_sizes(payload: dict[str, Any]) -> bool:
     return True
 
 
+def _refresh_runnable(models: list[Any]) -> None:
+    """Recompute ``runnable`` for Hugging Face (SafeTensors) rows from the engines installed now.
+
+    The flag is stored with cached and indexed rows; without this, models stay
+    "Can't run here yet" after Transformers or vLLM is installed until the cache expires.
+    GGUF rows (llama-server) don't depend on an optional engine and are left alone.
+    """
+    hf_rows = [row for row in models if isinstance(row, dict) and row.get('engines')]
+    if not hf_rows:
+        return
+    from core.huggingface import _transformers_runtime_available, _vllm_runtime_available
+
+    ready = _transformers_runtime_available() or _vllm_runtime_available()
+    for row in hf_rows:
+        row['runnable'] = ready
+
+
 def _annotate_search_fit(payload: dict[str, Any], *, category: str) -> dict[str, Any]:
     """Recompute fits_machine on cached rows (VRAM budget + detail files may have changed)."""
     models = payload.get('models')
@@ -388,6 +405,7 @@ def _annotate_search_fit(payload: dict[str, Any], *, category: str) -> dict[str,
         return payload
     from core.hf_model_fit import annotate_hf_models_fit
 
+    _refresh_runnable(models)
     annotate_hf_models_fit(models, category=category)
     from core.hf_catalog_recommend import apply_catalog_recommendations
 

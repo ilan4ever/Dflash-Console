@@ -11,12 +11,28 @@ from core.config import ROOT as CONSOLE_ROOT
 from core.config import get_dflash_root, load_config
 
 
+def config_path_text(raw: Any, *, windows: bool | None = None) -> str:
+    """A folder setting from config.json, as path text for this OS.
+
+    config.example.json (copied to config.json on first start) uses Windows-style relative
+    paths such as '.\\models'. On Linux and macOS a backslash is an ordinary character in a
+    file name, so that became a folder literally named '.\\models' next to the real models
+    folder, and downloads went there. Relative paths there get forward slashes instead;
+    Windows is unchanged.
+    """
+    text = str(raw or '').strip()
+    is_windows = (os.name == 'nt') if windows is None else windows
+    if not is_windows and '\\' in text and not text.startswith('/'):
+        text = text.replace('\\', '/')
+    return os.path.expanduser(text)
+
+
 def get_models_root(cfg: dict[str, Any] | None = None) -> Path:
     """Developer checkout keeps models under the Console app folder."""
     config = cfg if cfg is not None else load_config()
-    raw = str(config.get('models_root') or '').strip()
+    raw = config_path_text(config.get('models_root'))
     if raw:
-        return Path(raw).expanduser().resolve()
+        return Path(raw).resolve()
     env = str(os.environ.get('DFLASH_CONSOLE_MODELS') or '').strip()
     if env:
         return Path(env).expanduser().resolve()
@@ -31,6 +47,10 @@ _STORAGE_PRESETS: dict[str, dict[str, str]] = {
     'strata': {
         'label': 'Strata models',
         'description': 'Models installed and served by Strata',
+    },
+    'colibri': {
+        'label': 'Colibri models',
+        'description': 'GGUF models served by Colibri (github.com/JustVugg/colibri)',
     },
     'gguf': {
         'label': 'GGUF checkpoints',
@@ -82,6 +102,7 @@ def _preset_path(preset: str, cfg: dict[str, Any]) -> Path:
         'dflash': models_root,
         'gguf': models_root,
         'strata': models_root,
+        'colibri': Path(r'D:\models\unsloth\GLM-5.3-Flash-GGUF'),
         'lmstudio': home / '.lmstudio' / 'models',
         'speech': models_root / 'speech',
         'tts': models_root / 'tts',
@@ -98,6 +119,8 @@ def _source_for_preset(preset: str) -> str:
         return 'dflash'
     if preset == 'strata':
         return 'strata'
+    if preset == 'colibri':
+        return 'colibri'
     return 'library'
 
 
@@ -116,6 +139,8 @@ def infer_discovered_from(
         return 'Ollama'
     if source_key == 'strata':
         return 'Strata'
+    if source_key == 'colibri':
+        return 'Colibri'
     if source_key in {'dflash', 'dflash-profile', 'dflash-stack'}:
         return 'DFlash'
 
@@ -203,9 +228,9 @@ def normalize_model_library(entry: Any, *, cfg: dict[str, Any], index: int) -> d
         preset = 'custom'
     label = str(entry.get('label') or _STORAGE_PRESETS[preset]['label']).strip()
     lib_id = str(entry.get('id') or _slug(label or preset)).strip() or f'library-{index}'
-    raw_path = str(entry.get('path') or '').strip()
+    raw_path = config_path_text(entry.get('path'))
     if raw_path:
-        path = Path(os.path.expanduser(raw_path)).resolve()
+        path = Path(raw_path).resolve()
     else:
         path = _preset_path(preset, cfg).resolve()
     return {

@@ -110,18 +110,26 @@ foreach ($kv in $agg.GetEnumerator()) {
 }
 $out | ConvertTo-Json -Compress
 """
-    from core.bounded_proc import powershell_argv, run_bounded
-
-    code, text = run_bounded(
-        powershell_argv(script),
-        timeout=8,
-    )
-    if code != 0 or not text:
-        return {}
+    # [polling-fix 2026-11-04] PDH counters in-process before falling back to PowerShell/WMI.
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+        from core.fast_probe import gpu_process_memory_rows
+
+        payload = gpu_process_memory_rows()
+    except Exception:
+        payload = None
+    if payload is None:
+        from core.bounded_proc import powershell_argv, run_bounded
+
+        code, text = run_bounded(
+            powershell_argv(script),
+            timeout=8,
+        )
+        if code != 0 or not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
     rows = payload if isinstance(payload, list) else [payload]
     mapping: dict[tuple[int, str], int] = {}
     for row in rows:

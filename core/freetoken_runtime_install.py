@@ -8,17 +8,21 @@ import threading
 import time
 from typing import Any
 
+import sys
+
 from core.config import ROOT
+from core.platform_paths import install_script_command, install_script_path
 from core.runtime_install_job import (
     apply_job_progress,
     job_snapshot,
-    parse_install_line,
+    make_install_line_parser,
     run_install_process,
     start_progress_heartbeat,
 )
 
 _BUNDLE = ROOT / 'runtimes' / 'freetoken'
-_SCRIPT = ROOT / 'scripts' / 'install-freetoken-runtime.ps1'
+_SCRIPT_STEM = 'install-freetoken-runtime'
+_SCRIPT = install_script_path(ROOT / 'scripts', _SCRIPT_STEM)
 _STATE_LOCK = threading.Lock()
 _JOB: dict[str, Any] = {}
 
@@ -58,7 +62,7 @@ def install_status() -> dict[str, Any]:
         'error': (str(job.get('error') or '') if status == 'error' else ('' if installed else str(job.get('error') or ''))),
         'started_at': job.get('started_at'),
         'finished_at': job.get('finished_at'),
-        'backend': 'wsl',
+        'backend': 'wsl' if sys.platform == 'win32' else 'native',
         **job_snapshot(job),
         **bundle_paths(),
     }
@@ -73,7 +77,7 @@ def _install_worker(*, force: bool = False) -> None:
         _STATE_LOCK,
         _JOB,
         progress=4.0,
-        message='Starting FreeToken WSL install',
+        message='Starting FreeToken WSL install' if sys.platform == 'win32' else 'Starting FreeToken install',
         status='installing',
         error='',
     )
@@ -85,20 +89,14 @@ def _install_worker(*, force: bool = False) -> None:
             _JOB['finished_at'] = time.time()
         return
 
-    cmd = [
-        'powershell',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        str(_SCRIPT),
-    ]
+    cmd = install_script_command(ROOT / 'scripts', _SCRIPT_STEM, [], [])
     stop = threading.Event()
     start_progress_heartbeat(_STATE_LOCK, _JOB, started_at=started, stop=stop)
     log_tail: list[str] = []
+    parse_line = make_install_line_parser()
 
     def on_line(line: str) -> None:
-        progress, message = parse_install_line(line)
+        progress, message = parse_line(line)
         cleaned = message or line.strip()
         if cleaned:
             log_tail.append(cleaned)

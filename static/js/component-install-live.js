@@ -20,11 +20,11 @@
       progress: 'Installing PyTorch and Transformers…',
     },
     freetoken: {
-      label: 'FreeToken WSL engine',
+      label: 'FreeToken engine',
       short: 'FreeToken',
-      blurb: 'FreeToken runs supported MoE Hugging Face models through WSL2 with NVIDIA CUDA. It is not included in the installer.',
-      note: 'Requires WSL2 Ubuntu and an NVIDIA driver with CUDA support. Large Linux packages — can take 15 minutes or more.',
-      progress: 'Installing FreeToken in WSL…',
+      blurb: 'FreeToken runs supported MoE Hugging Face models with NVIDIA CUDA (through WSL2 on Windows). It is not included in the installer.',
+      note: 'Needs an NVIDIA driver with CUDA support; on Windows also WSL2 Ubuntu. Large packages — can take 15 minutes or more.',
+      progress: 'Installing FreeToken…',
     },
   };
 
@@ -101,7 +101,7 @@
     if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
     let step = String(row.message || '').trim();
     if (pct >= 90 && row.status === 'installing' && !/verifying|ready|finishing/i.test(step)) {
-      step = 'Installing large packages in WSL — can take 10+ minutes';
+      step = 'Installing large packages — can take 10+ minutes';
     }
     setProgressText(step || info.progress);
     if (subEl) {

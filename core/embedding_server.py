@@ -34,6 +34,12 @@ def llama_server_binary(*, cfg: dict[str, Any] | None = None) -> Path:
     binary = root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server.exe'
     if binary.is_file():
         return binary
+    for linux_binary in (
+        root / 'llama.cpp' / 'build' / 'bin' / 'llama-server',
+        root / 'llama.cpp' / 'build' / 'bin' / 'Release' / 'llama-server',
+    ):
+        if linux_binary.is_file():
+            return linux_binary
     onevoice_root = str(os.environ.get('ONEVOICE_ROOT') or '').strip()
     if onevoice_root:
         fallback = Path(onevoice_root).expanduser() / '.tmp' / 'llama-b8418-win-cuda12' / 'llama-server.exe'

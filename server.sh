@@ -45,6 +45,12 @@ export DFLASH_CONSOLE_ROOT="${DFLASH_CONSOLE_ROOT:-$ROOT}"
 export DFLASH_ROOT="${DFLASH_ROOT:-$DFLASH_CONSOLE_ROOT}"
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
+# Use the repo venv (created by scripts/setup-linux-dev.sh) even when the caller did not activate it.
+if [[ -z "${VIRTUAL_ENV:-}" && -f "$ROOT/.venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT/.venv/bin/activate"
+fi
+
 mkdir -p "$ROOT/logs"
 log_line() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$ROOT/logs/startup.log"; }
 

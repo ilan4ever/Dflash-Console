@@ -47,6 +47,7 @@ def test_freetoken_manifest_with_utf8_bom_is_readable(tmp_path: Path, monkeypatc
         b'"wsl_ft":"/root/.dflash-console/freetoken-venv/bin/ft"}'
     )
     monkeypatch.setattr(freetoken_mod, 'FREETOKEN_MANIFEST', manifest)
+    monkeypatch.setattr(freetoken_mod.sys, 'platform', 'win32')  # WSL manifests are a Windows feature
     assert freetoken_mod.FreeTokenRuntimeAdapter.is_installed() is True
 
 

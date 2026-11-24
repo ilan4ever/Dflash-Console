@@ -13,6 +13,14 @@ The registry is a JSON file beside the Console (``external_launchers.json``) so
 the settings survive restarts.  A launcher is discovered automatically from a
 running Strata server, or from a Strata checkout on this PC, and can always be
 registered by hand through the API.
+
+Colibri (github.com/JustVugg/colibri) is the second launcher kind.  Its
+``coli serve`` (a Python OpenAI-compatible server) starts one of Colibri's
+engines (``glm53.exe`` for GLM-5.3-Flash, ...) and streams MoE experts from
+the GGUF on disk.  A Colibri launcher names the GGUF it serves
+(``model_path``) and the model directory ``coli import`` writes under the Colibri install
+(``C:\\dev\\colibri\\models``, never beside the GGUF on ``D:\\models``);
+the Console runs that import once before the first start.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import urllib.error
 import urllib.request
 import shutil
 from pathlib import Path
+from core.platform_paths import venv_python
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +48,15 @@ _STARTING: dict[str, float] = {}
 
 # Where a Strata checkout usually lives on a PC that has one.
 _STRATA_ROOTS = (Path('C:/dev/Strata'), Path.home() / 'Strata', Path.home() / 'Documents' / 'Strata')
+
+# Where Colibri's release archive is unpacked on a PC that has one.
+_COLIBRI_ROOTS = (Path('C:/dev/colibri'), Path.home() / 'colibri')
+# The engines a Colibri server starts; each is a separate .exe beside ``coli``.
+COLIBRI_ENGINE_EXES = (
+    'glm53', 'colibri', 'qwen36', 'qwen38', 'deepseek_v4', 'deepseek_v41',
+    'kimi_k3', 'inkling', 'mimo', 'olmoe',
+)
+COLIBRI_DEFAULT_PORT = 8120
 
 MIN_PARALLEL = 1
 MAX_PARALLEL = 8
@@ -85,6 +103,51 @@ def _http_json(url: str, *, timeout: float = 2.0, method: str = 'GET') -> dict[s
             return json.loads(response.read().decode('utf-8', 'replace'))
     except Exception:
         return None
+
+
+def launcher_kind(entry: dict[str, Any] | None) -> str:
+    """``strata``, ``colibri`` or the saved kind of a launcher."""
+    if not isinstance(entry, dict):
+        return ''
+    kind = str(entry.get('kind') or '').strip().lower()
+    if kind:
+        return kind
+    return str(entry.get('id') or '').strip().lower()
+
+
+def launcher_runtime(entry: dict[str, Any] | None) -> dict[str, str]:
+    """Display fields of the runtime behind a launcher (Engines card, badges)."""
+    kind = launcher_kind(entry)
+    if kind == 'colibri':
+        return {
+            'runtime_id': 'colibri',
+            'runtime_label': 'Colibri',
+            'source_label': 'Colibri local',
+            'component_key': 'dflash.colibri',
+            'component_label': 'Colibri engine',
+        }
+    return {
+        'runtime_id': 'strata',
+        'runtime_label': 'Strata',
+        'source_label': 'Strata local',
+        'component_key': 'dflash.strata',
+        'component_label': 'Strata engine',
+    }
+
+
+def health_loaded(entry: dict[str, Any] | None, health: dict[str, Any] | None) -> bool:
+    """Whether a launcher's /health answer means the model can take requests.
+
+    Strata reports ``loaded: true``.  Colibri's ``coli serve`` answers
+    ``{"status": "ok"}`` once its engine is up, and 503 while it starts.
+    """
+    if not isinstance(health, dict):
+        return False
+    if health.get('loaded'):
+        return True
+    if launcher_kind(entry) == 'colibri':
+        return str(health.get('status') or '').strip().lower() == 'ok'
+    return False
 
 
 def _dflash_ownership_check(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -199,7 +262,7 @@ def discover_strata_launcher() -> dict[str, Any] | None:
         config = _find_strata_config(root)
         if config is None:
             continue
-        python = root / '.venv' / 'Scripts' / 'python.exe'
+        python = venv_python(root / '.venv')
         if not python.is_file():
             python = root / '.venv' / 'bin' / 'python'
         if not python.is_file():
@@ -229,6 +292,133 @@ def discover_strata_launcher() -> dict[str, Any] | None:
             'parallel_flag': '--parallel',
         }
     return None
+
+
+def colibri_root() -> Path | None:
+    """The folder holding Colibri's ``coli`` launcher and engines, or None."""
+    env = str(os.environ.get('COLIBRI_HOME') or '').strip()
+    for root in ([Path(env)] if env else []) + list(_COLIBRI_ROOTS):
+        try:
+            if (root / 'coli').is_file() and any((root / f'{name}.exe').is_file() for name in COLIBRI_ENGINE_EXES):
+                return root
+        except OSError:
+            continue
+    return None
+
+
+def _colibri_python() -> str:
+    """A real Python 3 for ``coli`` (stdlib only), never the Store alias stub."""
+    for candidate in (
+        os.environ.get('COLIBRI_PYTHON') or '',
+        r'C:\Python314\python.exe',
+        r'C:\Python313\python.exe',
+        r'C:\Python312\python.exe',
+    ):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    found = shutil.which('py')
+    if found:
+        return found
+    return sys.executable
+
+
+def colibri_model_dir_for(gguf_path: str | Path) -> Path:
+    """The directory ``coli import`` writes for a GGUF (first shard of a split).
+
+    Import artifacts (config, tokenizer, gguf.json) live under the Colibri
+    install, never next to the GGUF.  The weights stay in the model library
+    on ``D:\\models``; ``coli import --mode link`` only points at them.
+    """
+    path = Path(str(gguf_path))
+    stem = re.sub(r'-00001-of-\d{5}\.gguf$', '', path.name, flags=re.IGNORECASE)
+    stem = re.sub(r'\.gguf$', '', stem, flags=re.IGNORECASE)
+    root = colibri_root() or Path(r'C:\dev\colibri')
+    return root / 'models' / f'{stem}.colibri'
+
+
+def _colibri_slug(text: str) -> str:
+    slug = re.sub(r'[^a-z0-9._-]+', '-', str(text or '').strip().lower()).strip('-')
+    return slug[:64] or 'model'
+
+
+def colibri_launcher_for_gguf(
+    gguf_path: str | Path,
+    *,
+    port: int = COLIBRI_DEFAULT_PORT,
+    context: int = 32768,
+    gpu: int = 0,
+    gpu2: int | None = 1,
+    launcher_id: str = '',
+) -> dict[str, Any] | None:
+    """A Colibri launcher entry that serves one GGUF (first shard of a split).
+
+    The engine runs on Vulkan: the GLM-5.3-Flash engine (glm53.exe) has no
+    CUDA build on Windows.  ``gpu`` is the primary Vulkan device (its expert
+    tier and dense chain), ``gpu2`` a second card for more experts.
+    """
+    root = colibri_root()
+    if root is None:
+        return None
+    gguf = Path(str(gguf_path))
+    model_dir = colibri_model_dir_for(gguf)
+    stem = model_dir.name[:-len('.colibri')]
+    model_id = _colibri_slug(stem)
+    entry_id = launcher_id or f'colibri-{model_id}'[:80]
+    env = {
+        'COLI_VULKAN': '1',
+        'COLI_CUDA': '0',
+        'COLI_VK_DEV': str(int(gpu)),
+        # Keep room on the card for the Console's other engines.
+        'COLI_VK_TIER_RESERVE_GB': '4',
+    }
+    if gpu2 is not None and int(gpu2) != int(gpu):
+        env['COLI_VK_DEV2'] = str(int(gpu2))
+        env['COLI_VK_RESERVE2_GB'] = '2'
+    return {
+        'id': entry_id,
+        'label': f'Colibri \u00b7 {stem}',
+        'kind': 'colibri',
+        'command': _colibri_python(),
+        'args': [
+            str(root / 'coli'), 'serve',
+            '--model', str(model_dir),
+            '--host', '127.0.0.1',
+            '--port', str(int(port)),
+            '--model-id', model_id,
+            '--ctx', str(int(context)),
+        ],
+        'cwd': str(root),
+        'port': int(port),
+        'model_id': model_id,
+        'model_path': str(gguf),
+        'model_dir': str(model_dir),
+        'max_context': int(context),
+        'gpu': int(gpu),
+        'env': env,
+        'health_url': f'http://127.0.0.1:{int(port)}/health',
+        'models_url': f'http://127.0.0.1:{int(port)}/v1/models',
+        'parallel': MIN_PARALLEL,
+        'parallel_flag': '--kv-slots',
+    }
+
+
+def register_colibri_launcher(gguf_path: str, **options: Any) -> dict[str, Any]:
+    """Save (or refresh) the Colibri launcher that serves ``gguf_path``.
+
+    Settings the user changed on an existing entry (slots, who loaded it) are
+    kept; the command line is rebuilt from the current Colibri folder.
+    """
+    wanted = {key: value for key, value in options.items() if value is not None or key == 'gpu2'}
+    entry = colibri_launcher_for_gguf(gguf_path, **wanted)
+    if entry is None:
+        return {'success': False, 'error': 'Colibri is not installed (no coli launcher found in C:\\dev\\colibri)'}
+    existing = get_launcher(entry['id'])
+    if existing:
+        for key in ('parallel', 'loaded_by', 'start_timeout_s'):
+            if existing.get(key) is not None:
+                entry[key] = existing[key]
+    entry.setdefault('start_timeout_s', 900)
+    return {'success': True, 'launcher': save_launcher(entry)}
 
 
 def launchers() -> list[dict[str, Any]]:
@@ -284,6 +474,12 @@ def _config_data(entry: dict[str, Any] | None) -> dict[str, Any]:
 
 def launcher_context_size(entry: dict[str, Any] | None) -> int:
     """The context length configured for the launcher's engine."""
+    try:
+        saved = int((entry or {}).get('max_context') or 0)
+    except (TypeError, ValueError):
+        saved = 0
+    if saved > 0:
+        return saved
     data = _config_data(entry)
     for key in ('max_context', 'context_size', 'context'):
         try:
@@ -310,6 +506,9 @@ def launcher_context_size(entry: dict[str, Any] | None) -> int:
 
 def launcher_model_path(entry: dict[str, Any] | None) -> str:
     """The target model file named by the launcher config, when it exists."""
+    saved = str((entry or {}).get('model_path') or '').strip()
+    if saved and Path(saved).is_file():
+        return saved
     data = _config_data(entry)
     for key in ('args', 'args_written'):
         args = data.get(key)
@@ -339,6 +538,18 @@ def launcher_for_process(*, process_name: str = '', command_line: str = '') -> d
     for entry in launchers():
         entry_id = str(entry.get('id') or '').strip().lower()
         kind = str(entry.get('kind') or '').strip().lower()
+        if kind == 'colibri':
+            port = str(entry.get('port') or '').strip()
+            root = str(entry.get('cwd') or '').strip().lower().replace('/', '\\').rstrip('\\')
+            exe = re.search(r'(?:^|[\\/])(' + '|'.join(COLIBRI_ENGINE_EXES) + r')\.exe$', name)
+            if exe and root and (root + '\\') in cmd:
+                # The engine itself: its command line names the Colibri folder.
+                return dict(entry)
+            if exe and not cmd and colibri_root() is not None:
+                return dict(entry)
+            if 'coli' in cmd and ' serve' in cmd and port and (f'--port {port}' in cmd or f'--port={port}' in cmd):
+                return dict(entry)
+            continue
         if entry_id == 'strata' or kind == 'strata':
             if (
                 re.search(r'(?:^|[\\/])strata(?:-vision)?\.exe(?:\s|$)', name)
@@ -407,7 +618,19 @@ def _processes_for(entry: dict[str, Any]) -> list[dict[str, Any]]:
     port = str(entry.get('port') or '')
     if sys.platform != 'win32':
         return []
-    if config:
+    if launcher_kind(entry) == 'colibri':
+        coli = next((str(arg) for arg in args if str(arg).lower().replace('/', '\\').endswith('\\coli')), '')
+        if not coli or not port:
+            return []
+        pattern = coli.replace("'", "''")
+        query = (
+            "Get-CimInstance Win32_Process | Where-Object { "
+            "$_.Name -like 'py*' "
+            f"-and $_.CommandLine -like '*{pattern}*' -and $_.CommandLine -like '* serve *' "
+            f"-and $_.CommandLine -like '*--port {port}*' "
+            "} | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+        )
+    elif config:
         pattern = config.replace("'", "''")
         query = (
             "Get-CimInstance Win32_Process | Where-Object { "
@@ -444,24 +667,35 @@ def _processes_for(entry: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
 
+def _start_timeout(entry: dict[str, Any] | None, requested: float) -> float:
+    """A launcher may need longer than the default to answer (Colibri fills
+    its expert tier from a 100 GB GGUF); ``start_timeout_s`` raises the wait."""
+    try:
+        saved = float((entry or {}).get('start_timeout_s') or 0)
+    except (TypeError, ValueError):
+        saved = 0.0
+    return max(float(requested), saved)
+
+
 def status(entry: dict[str, Any], *, probe: bool = True) -> dict[str, Any]:
     """Running state, model and request slots of a launcher."""
     health = _http_json(str(entry.get('health_url') or ''), timeout=2.0) if probe else None
     pids = [int(row.get('ProcessId')) for row in _processes_for(entry) if row.get('ProcessId')]
-    loaded = bool((health or {}).get('loaded'))
+    loaded = health_loaded(entry, health)
     if loaded:
         # The server answers, so a pending start marker is stale.
         _STARTING.pop(str(entry.get('id') or ''), None)
     starting_since = _STARTING.get(str(entry.get('id') or ''))
+    start_window = _start_timeout(entry, DEFAULT_WAIT_S)
     return {
         **entry,
         'running': health is not None,
         'loaded': loaded,
-        'model': str((health or {}).get('model') or ''),
-        'max_context': (health or {}).get('max_context'),
+        'model': str((health or {}).get('model') or (launcher_model_id(entry) if loaded else '')),
+        'max_context': (health or {}).get('max_context') or (health or {}).get('context_tokens') or (entry.get('max_context') if loaded else None),
         'images': (health or {}).get('images'),
         'pids': pids,
-        'starting': bool(starting_since) and (time.time() - (starting_since or 0) < DEFAULT_WAIT_S),
+        'starting': bool(starting_since) and (time.time() - (starting_since or 0) < start_window),
     }
 
 
@@ -507,6 +741,95 @@ def note_launcher_client(
     return entry
 
 
+def _apply_gpu_device(entry: dict[str, Any], gpu_device: Any) -> bool:
+    """Write a chosen GPU index into the launcher config.
+
+    ``auto`` and an empty value leave the file alone. The first ``gpu`` field
+    is the engine card; a later ``gpu: true`` inside vision must stay.
+    @returns whether the saved card changed, so a running server restarts on it.
+    """
+    text = str(gpu_device or '').strip().lower()
+    if text in ('', 'auto') or not text.isdigit():
+        return False
+    path = Path(str(entry.get('config') or '').strip())
+    if not path.is_file():
+        return False
+    try:
+        original = path.read_text(encoding='utf-8')
+    except Exception:
+        return False
+    updated, count = re.subn(
+        r'("gpu"\s*:\s*)(-?\d+|true|false|"[^"]*")',
+        lambda match: f'{match.group(1)}{int(text)}',
+        original,
+        count=1,
+    )
+    if count == 0 or updated == original:
+        return False
+    path.write_text(updated, encoding='utf-8')
+    return True
+
+
+def prepare_colibri_model(entry: dict[str, Any], *, timeout_s: float = 900.0) -> dict[str, Any]:
+    """Run ``coli import`` once so the GGUF has its Colibri model directory.
+
+    The import reads the GGUF header and writes config, tokenizer, chat
+    template and ``gguf.json`` (a pointer to the file); the weights stay where
+    they are (``--mode link``).
+    """
+    model_dir = Path(str(entry.get('model_dir') or ''))
+    gguf = Path(str(entry.get('model_path') or ''))
+    if model_dir and (model_dir / 'config.json').is_file() and (model_dir / 'gguf.json').is_file():
+        return {'success': True, 'imported': False, 'model_dir': str(model_dir)}
+    if not gguf.is_file():
+        return {'success': False, 'error': f'model file is not on disk yet: {gguf}'}
+    match = re.search(r'-(\d{5})-of-(\d{5})\.gguf$', gguf.name, re.IGNORECASE)
+    if match:
+        total = int(match.group(2))
+        prefix = gguf.name[: match.start()]
+        missing = [
+            f'{prefix}-{index:05d}-of-{total:05d}.gguf'
+            for index in range(1, total + 1)
+            if not (gguf.parent / f'{prefix}-{index:05d}-of-{total:05d}.gguf').is_file()
+        ]
+        if missing:
+            return {'success': False, 'error': 'model download is not complete: missing ' + ', '.join(missing)}
+    coli = next(
+        (str(arg) for arg in (entry.get('args') or []) if str(arg).lower().replace('/', '\\').endswith('\\coli')),
+        '',
+    )
+    if not coli:
+        return {'success': False, 'error': 'launcher does not name the coli script'}
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f'external-{entry.get("id")}-import.log'
+    argv = [str(entry.get('command') or sys.executable), coli, 'import', str(gguf), '--out', str(model_dir)]
+    env = {**os.environ, **{str(k): str(v) for k, v in (entry.get('env') or {}).items()}, 'NO_COLOR': '1'}
+    try:
+        with log_path.open('ab') as log_file:
+            log_file.write(f'\n=== {time.strftime("%Y-%m-%d %H:%M:%S")} import: {" ".join(argv)}\n'.encode('utf-8'))
+            log_file.flush()
+            result = subprocess.run(
+                argv,
+                cwd=str(entry.get('cwd') or ROOT),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout_s,
+                env=env,
+                check=False,
+                **_hidden(),
+            )
+    except Exception as exc:
+        return {'success': False, 'error': f'coli import failed: {exc}', 'log': str(log_path)}
+    if result.returncode != 0 or not (model_dir / 'config.json').is_file():
+        return {
+            'success': False,
+            'error': f'coli import exited with {result.returncode}',
+            'log': str(log_path),
+        }
+    return {'success': True, 'imported': True, 'model_dir': str(model_dir), 'log': str(log_path)}
+
+
 def start(
     launcher_id: str,
     *,
@@ -514,6 +837,7 @@ def start(
     wait: bool = True,
     timeout_s: float = DEFAULT_WAIT_S,
     client_label: str = '',
+    gpu_device: Any = None,
 ) -> dict[str, Any]:
     """Start a launcher (or restart it with another slot count) and report."""
     entry = get_launcher(launcher_id)
@@ -522,20 +846,23 @@ def start(
     entry = note_launcher_client(launcher_id, client_label, allow_console=True) or entry
 
     wanted_parallel = _clamp_parallel(parallel if parallel is not None else entry.get('parallel') or MIN_PARALLEL)
+    gpu_changed = _apply_gpu_device(entry, gpu_device)
     with _LOCK:
         current = status(entry)
         # A load already in progress must never be restarted: killing it mid-load
         # made every extra load call throw away several minutes of model loading.
         if current.get('starting') and not current.get('running'):
-            return {
-                'success': True,
-                'starting': True,
-                'already_starting': True,
-                **current,
-                'parallel': wanted_parallel,
-            }
+            if not gpu_changed:
+                return {
+                    'success': True,
+                    'starting': True,
+                    'already_starting': True,
+                    **current,
+                    'parallel': wanted_parallel,
+                }
+            stop(launcher_id)
         if current['running']:
-            if wanted_parallel == _clamp_parallel(entry.get('parallel') or MIN_PARALLEL):
+            if not gpu_changed and wanted_parallel == _clamp_parallel(entry.get('parallel') or MIN_PARALLEL):
                 if parallel is not None:
                     set_parallel(launcher_id, wanted_parallel)
                 return {'success': True, 'already_running': True, **current, 'parallel': wanted_parallel}
@@ -552,7 +879,13 @@ def start(
                 'error_code': str(ownership.get('error') or 'gpu_ownership_conflict'),
                 'gpu_ownership': ownership.get('detail') or ownership,
             }
+        if launcher_kind(entry) == 'colibri':
+            prepared = prepare_colibri_model(entry)
+            if not prepared.get('success'):
+                return {**prepared, 'success': False}
         argv = [str(entry.get('command') or sys.executable), *_args_with_parallel(entry, wanted_parallel)]
+        extra_env = entry.get('env') if isinstance(entry.get('env'), dict) else {}
+        popen_env = {**os.environ, **{str(k): str(v) for k, v in extra_env.items()}} if extra_env else None
         try:
             with log_path.open('ab') as log_file:
                 log_file.write(f'\n=== {time.strftime("%Y-%m-%d %H:%M:%S")} starting: {" ".join(argv)}\n'.encode('utf-8'))
@@ -564,6 +897,7 @@ def start(
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                     close_fds=True,
+                    env=popen_env,
                     **_detached(),
                 )
         except Exception as exc:
@@ -579,10 +913,11 @@ def start(
                 'message': f'{entry.get("label") or entry.get("id")} is starting',
             }
 
+        timeout_s = _start_timeout(entry, timeout_s)
         deadline = time.time() + max(30.0, float(timeout_s))
         while time.time() < deadline:
             health = _http_json(str(entry.get('health_url') or ''), timeout=2.0)
-            if health is not None and health.get('loaded'):
+            if health_loaded(entry, health):
                 _STARTING.pop(str(entry.get('id')), None)
                 return {
                     'success': True,

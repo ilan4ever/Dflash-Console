@@ -2,7 +2,7 @@
  "launchers": [
   {
    "id": "strata",
-   "label": "Strata \u00b7 qwen3.8-flash-next-unsloth-ud-iq4_xs",
+   "label": "Strata · qwen3.8-flash-next-unsloth-ud-iq4_xs",
    "kind": "strata",
    "command": "C:\\dev\\Strata\\.venv\\Scripts\\python.exe",
    "args": [
@@ -23,6 +23,48 @@
    "parallel": 1,
    "parallel_flag": "--parallel",
    "loaded_by": "DeepSeek Harness"
+  },
+  {
+   "id": "colibri-glm-5.3-flash-ud-iq2_xxs",
+   "label": "Colibri · GLM-5.3-Flash-UD-IQ2_XXS",
+   "kind": "colibri",
+   "command": "C:\\Python314\\python.exe",
+   "args": [
+    "C:\\dev\\colibri\\coli",
+    "serve",
+    "--model",
+    "C:\\dev\\colibri\\models\\GLM-5.3-Flash-UD-IQ2_XXS.colibri",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8120",
+    "--model-id",
+    "glm-5.3-flash-ud-iq2_xxs",
+    "--ctx",
+    "4096"
+   ],
+   "cwd": "C:\\dev\\colibri",
+   "port": 8120,
+   "model_id": "glm-5.3-flash-ud-iq2_xxs",
+   "model_path": "D:\\models\\unsloth\\GLM-5.3-Flash-GGUF\\GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf",
+   "model_dir": "C:\\dev\\colibri\\models\\GLM-5.3-Flash-UD-IQ2_XXS.colibri",
+   "max_context": 4096,
+   "gpu": 0,
+   "env": {
+    "COLI_VULKAN": "1",
+    "COLI_CUDA": "0",
+    "COLI_VK_DEV": "0",
+    "COLI_VK_TIER_RESERVE_GB": "8",
+    "COLI_VK_DEV2": "1",
+    "COLI_VK_RESERVE2_GB": "3",
+    "COLI_VK_TIER_GB": "8",
+    "COLI_VK_TIER_HOST_GB": "16"
+   },
+   "health_url": "http://127.0.0.1:8120/health",
+   "models_url": "http://127.0.0.1:8120/v1/models",
+   "parallel": 1,
+   "parallel_flag": "--kv-slots",
+   "start_timeout_s": 3600
   }
  ]
 }

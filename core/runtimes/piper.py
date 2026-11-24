@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
+from core.platform_paths import exe_name
 from core.runtimes.base import EXECUTION_MODE_CLI, MODALITY_TEXT_TO_SPEECH, RUNTIME_PIPER
 
 PIPER_BUNDLE = ROOT / 'runtimes' / 'piper'
-PIPER_EXE = PIPER_BUNDLE / 'piper.exe'
+PIPER_EXE = PIPER_BUNDLE / exe_name('piper')
 PIPER_VOICES = PIPER_BUNDLE / 'voices'
 PIPER_MANIFEST = PIPER_BUNDLE / 'manifest.json'
 
@@ -41,7 +42,7 @@ _ACTIVE_VOICE: str = ''
 # command line of Console-managed piper.exe but NOT in other apps' piper
 # processes (e.g. OneVoiceSpeak's bundled piper). Matching against the bare
 # process name would let the Console kill a foreign app's piper on shutdown.
-PIPER_PROCESS_TOKEN = f'runtimes{os.sep}piper{os.sep}piper.exe'
+PIPER_PROCESS_TOKEN = f"runtimes{os.sep}piper{os.sep}{exe_name('piper')}"
 
 
 def _log_line(text: str) -> None:

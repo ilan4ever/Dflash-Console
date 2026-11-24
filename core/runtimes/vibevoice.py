@@ -30,11 +30,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_TEXT_TO_SPEECH, RUNTIME_VIBEVOICE
 
 VV_BUNDLE = ROOT / 'runtimes' / 'vibevoice'
 VV_SERVER = VV_BUNDLE / 'server.py'
-VV_VENV_PY = VV_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+VV_VENV_PY = venv_python(VV_BUNDLE / 'venv')
 VV_VOICES = VV_BUNDLE / 'voices'
 VV_MANIFEST = VV_BUNDLE / 'manifest.json'
 
@@ -265,6 +266,9 @@ class VibeVoiceRuntimeAdapter:
         popen_kwargs: dict[str, Any] = {'cwd': str(VV_BUNDLE)}
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        else:
+            # _terminate() stops it with os.killpg(pid): that needs its own process group.
+            popen_kwargs['start_new_session'] = True
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = VV_LOG.open('a', encoding='utf-8')
         popen_kwargs['stdout'] = log_file

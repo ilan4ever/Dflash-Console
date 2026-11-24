@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_LLM, RUNTIME_TRANSFORMERS
 
 TF_BUNDLE = ROOT / 'runtimes' / 'transformers'
 TF_SERVER = TF_BUNDLE / 'server.py'
-TF_VENV_PY = TF_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+TF_VENV_PY = venv_python(TF_BUNDLE / 'venv')
 TF_MANIFEST = TF_BUNDLE / 'manifest.json'
 
 LOG_DIR = ROOT / 'logs' / 'runtimes'
@@ -280,6 +281,9 @@ class TransformersRuntimeAdapter:
         popen_kwargs: dict[str, Any] = {'cwd': str(TF_BUNDLE)}
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        else:
+            # _terminate() stops it with os.killpg(pid): that needs its own process group.
+            popen_kwargs['start_new_session'] = True
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = TF_LOG.open('a', encoding='utf-8')
         popen_kwargs['stdout'] = log_file

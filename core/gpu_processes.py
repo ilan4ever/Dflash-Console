@@ -57,7 +57,8 @@ _ELECTRON_UI = re.compile(r'electron\.exe$', re.I)
 
 _ML_PROCESS = re.compile(
     r'llama-server|ollama|whisper|piper|kobold|comfyui|text-generation-webui|'
-    r'faster-whisper|whisper\.cpp|strata(?:-vision)?',
+    r'faster-whisper|whisper\.cpp|strata(?:-vision)?|'
+    r'\bglm53\.exe|\\colibri\\[a-z0-9_]+\.exe',
     re.I,
 )
 
@@ -121,6 +122,8 @@ def _infer_model_kind(
     if role in {'draft-dflash', 'draft-dspark'}:
         return 'llm', 'LLM draft'
     if 'strata.exe' in hay or 'strata-vision' in hay:
+        return 'llm', 'LLM'
+    if 'glm53.exe' in hay or re.search(r'\\colibri\\[a-z0-9_]+\.exe', hay):
         return 'llm', 'LLM'
     if '.gguf' in hay or 'llama-server' in hay or role in {'alias', 'target'}:
         return 'llm', 'LLM'
@@ -291,6 +294,12 @@ def _is_gpu_model_load(
     clean_name = str(process_name or '').strip()
     if re.search(r'strata-vision\.exe$', clean_name, re.I):
         return False
+    if re.search(r'(?:^|[\\/])glm53\.exe$', clean_name, re.I) or (
+        re.search(r'\\colibri\\[a-z0-9_]+\.exe', hay)
+    ):
+        # Colibri's engines (glm53.exe, ...) stream experts from the GGUF named
+        # by the model directory, so their command line names no .gguf either.
+        return True
     if re.search(r'strata\.exe$', clean_name, re.I):
         # Strata's engine only appears in the compute-apps scan while it runs
         # on the card.  Its VRAM is measured later (Windows per-process), so it
@@ -395,19 +404,27 @@ def _load_windows_parent_pid_map() -> dict[int, int]:
         _PARENT_MAP_CACHE['map'] = dict(mapping)
         return mapping
 
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
-    )
-    from core.bounded_proc import powershell_argv, run_bounded
-
-    code, text = run_bounded(powershell_argv(script), timeout=8)
-    if code != 0 or not text:
-        return {}
+    # [polling-fix 2026-11-04] Toolhelp snapshot in-process before falling back to PowerShell.
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+        from core.fast_probe import win32_process_rows
+
+        payload = win32_process_rows()
+    except Exception:
+        payload = None
+    if payload is None:
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress"
+        )
+        from core.bounded_proc import powershell_argv, run_bounded
+
+        code, text = run_bounded(powershell_argv(script), timeout=8)
+        if code != 0 or not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
     rows = payload if isinstance(payload, list) else [payload]
     for row in rows:
         if not isinstance(row, dict):
@@ -915,24 +932,32 @@ def _process_table_powershell() -> dict[int, dict[str, Any]]:
 def _query_process_table_powershell() -> dict[int, dict[str, Any]]:
     if sys.platform != 'win32':
         return {}
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath | "
-        "ConvertTo-Json -Depth 3 -Compress"
-    )
-    from core.bounded_proc import powershell_argv, run_bounded
-
-    code, text = run_bounded(
-        powershell_argv(script),
-        timeout=12,
-    )
-    if code != 0 or not text:
-        return {}
-
+    # [polling-fix 2026-11-04] Toolhelp + NtQueryInformationProcess in-process (no PowerShell).
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+        from core.fast_probe import win32_process_rows
+
+        payload = win32_process_rows()
+    except Exception:
+        payload = None
+    if payload is None:
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath | "
+            "ConvertTo-Json -Depth 3 -Compress"
+        )
+        from core.bounded_proc import powershell_argv, run_bounded
+
+        code, text = run_bounded(
+            powershell_argv(script),
+            timeout=12,
+        )
+        if code != 0 or not text:
+            return {}
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
     if isinstance(payload, dict):
         payload = [payload]
     if not isinstance(payload, list):
@@ -987,6 +1012,9 @@ _RUNTIME_APP_RULES: list[tuple[str, str, str]] = [
     # its picture reader.  The classification is kept here so a registered
     # launcher can promote the engine to a Console-owned card.
     ('strata', r'\\strata\\|strata(?:-vision)?\.exe', 'Strata'),
+    # Colibri (github.com/JustVugg/colibri): ``coli serve`` (Python) starts one
+    # of its engines (glm53.exe for GLM-5.3-Flash) from the Colibri folder.
+    ('colibri', r'\\colibri\\(?:coli(?:\s|"|$)|[a-z0-9_]+\.exe)|\bglm53\.exe', 'Colibri'),
     ('dflash', r'dflash|start_llama_server', 'DFlash Console'),
     ('lmstudio', r'lm studio|lmstudio\.exe|lm-studio', 'LM Studio'),
     ('ollama', r'\bollama\b', 'Ollama'),
@@ -2034,7 +2062,7 @@ def _build_external_card_base(
             listen_port = port
             break
 
-    if app_source == 'strata' and not api_url:
+    if app_source in ('strata', 'colibri') and not api_url:
         # Strata's OpenAI-compatible API is served by its own Python server, the
         # engine's parent process - not by strata.exe.  Probe the parent's
         # ports so the Console can offer the model to other apps.
@@ -2223,10 +2251,15 @@ def _build_external_card_base(
         )
     vram_total_gb = round(float(vram_gb), 2) if vram_gb is not None else None
     is_strata = launcher_id == 'strata' or app_source == 'strata'
-    runtime_label = 'Strata' if is_strata else (app_label or app_source or 'External')
+    is_colibri = app_source == 'colibri' or str((launcher or {}).get('kind') or '').lower() == 'colibri'
+    if is_colibri:
+        is_strata = False
+    runtime_label = 'Strata' if is_strata else ('Colibri' if is_colibri else (app_label or app_source or 'External'))
     engine_label = ''
     if is_strata:
         engine_label = 'strata-dsv41' if 'deepseek' in f'{model_name} {model_path} {command_line}'.lower() else 'Strata'
+    elif is_colibri:
+        engine_label = 'Colibri'
 
     return {
         'id': f'external-gpu-{pid}',
@@ -2238,12 +2271,12 @@ def _build_external_card_base(
         'process_name': process_name,
         'app_source': app_source,
         'app_label': launcher_loaded_by if launcher_id else app_label,
-        'source_label': 'Strata local' if is_strata else (app_label or app_source or 'External'),
-        'runtime_id': 'strata' if is_strata else app_source,
+        'source_label': 'Strata local' if is_strata else ('Colibri local' if is_colibri else (app_label or app_source or 'External')),
+        'runtime_id': 'strata' if is_strata else ('colibri' if is_colibri else app_source),
         'runtime_label': runtime_label,
         'engine_label': engine_label,
-        'component_key': 'dflash.strata' if launcher_id else component_key,
-        'component_label': 'Strata engine' if launcher_id else component_label,
+        'component_key': ('dflash.colibri' if is_colibri else 'dflash.strata') if launcher_id else component_key,
+        'component_label': ('Colibri engine' if is_colibri else 'Strata engine') if launcher_id else component_label,
         'component_role': 'llm' if launcher_id else component_role,
         'pids': [pid],
         'gpu_index': gpu_index,
@@ -2407,6 +2440,7 @@ def _stopped_launcher_cards(
         if not gpu_display:
             gpu_display = format_gpu_display_name(str((gpu or {}).get('name') or ''), gpu_index)
         app_label = str(entry.get('loaded_by') or 'DFlash Console').strip() or 'DFlash Console'
+        is_colibri_entry = str(entry.get('kind') or '').strip().lower() == 'colibri'
         starting_cards.append({
             'id': f'launcher-{launcher_id}',
             'external': False,
@@ -2419,8 +2453,10 @@ def _stopped_launcher_cards(
             'process_name': '',
             'app_source': str(entry.get('kind') or 'launcher'),
             'app_label': app_label,
-            'component_key': 'dflash.strata',
-            'component_label': 'Strata engine',
+            'component_key': 'dflash.colibri' if is_colibri_entry else 'dflash.strata',
+            'component_label': 'Colibri engine' if is_colibri_entry else 'Strata engine',
+            'runtime_id': 'colibri' if is_colibri_entry else 'strata',
+            'runtime_label': 'Colibri' if is_colibri_entry else 'Strata',
             'component_role': 'llm',
             'gpu_index': gpu_index,
             'gpu_display': gpu_display,

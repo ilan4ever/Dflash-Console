@@ -9,16 +9,19 @@ import shutil
 from typing import Any
 
 from core.config import ROOT
+from core.platform_paths import install_script_command, install_script_path, venv_python
 from core.runtime_install_job import (
     apply_job_progress,
     job_snapshot,
-    parse_install_line,
+    make_install_line_parser,
     run_install_process,
     start_progress_heartbeat,
 )
 
 _BUNDLE = ROOT / 'runtimes' / 'vllm'
-_SCRIPT = ROOT / 'scripts' / 'install-vllm-runtime.ps1'
+_SCRIPT_STEM = 'install-vllm-runtime'
+_SCRIPT = install_script_path(ROOT / 'scripts', _SCRIPT_STEM)
+_VENV_PY = venv_python(_BUNDLE / 'venv')
 _STATE_LOCK = threading.Lock()
 _JOB: dict[str, Any] = {}
 
@@ -26,7 +29,7 @@ _JOB: dict[str, Any] = {}
 def bundle_paths() -> dict[str, str]:
     return {
         'bundle': str(_BUNDLE),
-        'venv_python': str(_BUNDLE / 'venv' / 'Scripts' / 'python.exe'),
+        'venv_python': str(_VENV_PY),
         'install_script': str(_SCRIPT),
         'manifest': str(_BUNDLE / 'manifest.json'),
     }
@@ -38,7 +41,7 @@ def is_installed() -> bool:
 
         return VllmRuntimeAdapter.is_installed()
     except Exception:
-        return (_BUNDLE / 'venv' / 'Scripts' / 'python.exe').is_file()
+        return _VENV_PY.is_file()
 
 
 def install_status() -> dict[str, Any]:
@@ -84,22 +87,19 @@ def _install_worker(*, backend: str, force: bool = False) -> None:
         with _STATE_LOCK:
             _JOB['finished_at'] = time.time()
         return
-    cmd = [
-        'powershell',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        str(_SCRIPT),
-        '-Backend',
-        str(backend or 'auto'),
-    ]
+    cmd = install_script_command(
+        ROOT / 'scripts',
+        _SCRIPT_STEM,
+        ['-Backend', str(backend or 'auto')],
+        [],  # Linux: always native
+    )
     stop = threading.Event()
     start_progress_heartbeat(_STATE_LOCK, _JOB, started_at=started, stop=stop)
     log_tail: list[str] = []
+    parse_line = make_install_line_parser()
 
     def on_line(line: str) -> None:
-        progress, message = parse_install_line(line)
+        progress, message = parse_line(line)
         cleaned = message or line.strip()
         if cleaned:
             log_tail.append(cleaned)

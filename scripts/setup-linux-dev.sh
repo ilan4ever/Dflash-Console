@@ -36,6 +36,28 @@ if [[ ! -f config.json ]]; then
   fi
 fi
 
+# config.example.json uses Windows-style relative paths (".\\models"); on Linux
+# those become literal folder names. Point both roots at this checkout instead.
+if [[ -f config.json ]]; then
+  python3 - "$ROOT" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+path = root / 'config.json'
+cfg = json.loads(path.read_text(encoding='utf-8'))
+changed = False
+for key, default in (('dflash_root', root), ('models_root', root / 'models')):
+    value = str(cfg.get(key) or '')
+    if not value or '\\' in value or value in ('.', './models'):
+        cfg[key] = str(default)
+        changed = True
+if changed:
+    path.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
+    print(f"config.json: dflash_root={cfg['dflash_root']} models_root={cfg['models_root']}")
+PY
+  mkdir -p "$ROOT/models"
+fi
+
 export DFLASH_CONSOLE_ROOT="$ROOT"
 export DFLASH_ROOT="$ROOT"
 

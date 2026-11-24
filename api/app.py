@@ -65,11 +65,25 @@ _SERVERS_STATUS_LOCK = asyncio.Lock()
 _status_build_task: asyncio.Task | None = None
 _status_build_wants_external = False
 _ADAPTER_ENGINE_ROWS_CACHE: tuple[float, list[dict[str, Any]]] = (0.0, [])
-_ADAPTER_ENGINE_ROWS_CACHE_TTL = 2.0
+# [polling-fix 2026-11-04] status checks are cached 20 s (was 2 s). After a user action on an
+# engine (load/unload/start/stop/...) the old 2 s freshness applies for 30 s.
+_ADAPTER_ENGINE_ROWS_CACHE_TTL = 20.0
+_STATUS_CACHE_TTL = 20.0
+_STATUS_FAST_TTL = 2.0
+_STATUS_FAST_WINDOW = 30.0
+_LAST_ENGINE_MUTATION_AT = 0.0
+
+
+def _status_ttl() -> float:
+    if time.time() - _LAST_ENGINE_MUTATION_AT < _STATUS_FAST_WINDOW:
+        return _STATUS_FAST_TTL
+    return _STATUS_CACHE_TTL
 _SYSTEM_STATS_LOCK = asyncio.Lock()
 _SYSTEM_STATS_CACHE: dict[str, Any] | None = None
 _SYSTEM_STATS_CACHE_AT = 0.0
-_SYSTEM_STATS_CACHE_TTL = 2.0
+# [polling-fix 2026-11-04] the sysbar GPU widget polls every 1 s; GPU (NVML) and CPU/RAM are now
+# in-process and cheap, so this cache only coalesces concurrent callers.
+_SYSTEM_STATS_CACHE_TTL = 0.5
 
 # OpenAI gateway server (thread inside this process; see api/gateway.py).
 _GATEWAY_SERVER: Any = None
@@ -430,6 +444,10 @@ async def log_console_api_requests(request: Request, call_next):
     if not path.startswith('/api/'):
         return await call_next(request)
 
+    if request.method != 'GET' and (path.startswith('/api/servers/') or path.startswith('/api/runtimes/')) \
+            and '/v1/' not in path and not path.endswith(('/embed/batch', '/cancel-inference')):
+        global _LAST_ENGINE_MUTATION_AT
+        _LAST_ENGINE_MUTATION_AT = time.time()
     start = time.perf_counter()
     remote = request.client.host if request.client else ''
     client_label = resolve_client_label(request)
@@ -744,6 +762,8 @@ class ModelSlotsPatch(BaseModel):
 class ExternalLauncherLoad(BaseModel):
     # Requests the external server answers at the same time (Strata: --parallel).
     parallel: int | None = Field(default=None, ge=1, le=8)
+    # Stable card choice from the client. ``auto`` keeps the launcher config.
+    gpu_device: str | None = Field(default=None, max_length=16)
 
 
 class ExternalLauncherPatch(BaseModel):
@@ -2594,7 +2614,7 @@ def _adapter_engine_rows_cached() -> list[dict[str, Any]]:
     global _ADAPTER_ENGINE_ROWS_CACHE
     now = time.time()
     cached_at, cached_rows = _ADAPTER_ENGINE_ROWS_CACHE
-    if cached_rows and (now - cached_at) <= _ADAPTER_ENGINE_ROWS_CACHE_TTL:
+    if cached_rows and (now - cached_at) <= min(_ADAPTER_ENGINE_ROWS_CACHE_TTL, _status_ttl()):
         return [dict(row) for row in cached_rows]
     rows = _adapter_engine_rows()
     _ADAPTER_ENGINE_ROWS_CACHE = (now, [dict(row) for row in rows])
@@ -2947,7 +2967,7 @@ async def servers_status(
         cached = _cached_status_payload(include_external)
         if isinstance(cached, dict) and cached.get('quick'):
             cached = None
-        if isinstance(cached, dict) and (building or _status_cache_age_seconds(cached) <= 2.0):
+        if isinstance(cached, dict) and (building or _status_cache_age_seconds(cached) <= _status_ttl()):
             if building or cached.get('quick'):
                 _ensure_status_build(include_external=include_external)
             return _mark_status_stale(cached) if building else _merge_adapter_engine_rows(dict(cached))
@@ -5502,6 +5522,37 @@ def external_launcher_register(body: dict[str, Any]) -> dict[str, Any]:
     return {'success': True, 'launcher': save_launcher(body)}
 
 
+@app.post('/api/external/launchers/colibri')
+def external_launcher_register_colibri(body: dict[str, Any]) -> dict[str, Any]:
+    """Register the Colibri launcher that serves one GGUF (first shard of a split).
+
+    Body: ``gguf_path`` (required), optional ``port``, ``context``, ``gpu``
+    (primary Vulkan device) and ``gpu2`` (second card for experts, or null).
+    """
+    from core.external_launchers import register_colibri_launcher
+    from core.external_models import forget_external_models
+
+    gguf_path = str(body.get('gguf_path') or '').strip()
+    if not gguf_path.lower().endswith('.gguf'):
+        raise HTTPException(status_code=400, detail='gguf_path must name a .gguf file')
+    options: dict[str, Any] = {}
+    for key in ('port', 'context', 'gpu'):
+        if body.get(key) not in (None, ''):
+            try:
+                options[key] = int(body[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f'{key} must be a number')
+    if 'gpu2' in body:
+        options['gpu2'] = None if body.get('gpu2') in (None, '', 'none') else int(body['gpu2'])
+    if body.get('launcher_id'):
+        options['launcher_id'] = str(body['launcher_id'])
+    result = register_colibri_launcher(gguf_path, **options)
+    if not result.get('success'):
+        raise HTTPException(status_code=400, detail=result.get('error') or 'register failed')
+    forget_external_models()
+    return result
+
+
 @app.post('/api/external/launchers/{launcher_id}/load')
 def external_launcher_load(
     launcher_id: str,
@@ -5523,6 +5574,7 @@ def external_launcher_load(
         parallel=payload.get('parallel'),
         wait=wait,
         client_label=_request_client_label(request),
+        gpu_device=payload.get('gpu_device'),
     )
     _invalidate_status_cache()
     forget_external_models()

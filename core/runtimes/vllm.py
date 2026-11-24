@@ -20,10 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
+from core.platform_paths import venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_LLM, RUNTIME_VLLM
 
 VLLM_BUNDLE = ROOT / 'runtimes' / 'vllm'
-VLLM_VENV_PY = VLLM_BUNDLE / 'venv' / 'Scripts' / 'python.exe'
+VLLM_VENV_PY = venv_python(VLLM_BUNDLE / 'venv')
 VLLM_MANIFEST = VLLM_BUNDLE / 'manifest.json'
 LOG_DIR = ROOT / 'logs' / 'runtimes'
 VLLM_LOG = LOG_DIR / 'vllm.log'
@@ -102,6 +103,28 @@ def model_needs_chat_template(model_path: Path) -> bool:
     if not isinstance(data, dict):
         return True
     return not str(data.get('chat_template') or '').strip()
+
+
+# vLLM returns a model's thinking separately (in `reasoning`) only when it is started with
+# that family's reasoning parser. Without one, Qwen3's thinking arrived as answer text and
+# the Playground showed it as part of the reply. Only families whose parser leaves a plain
+# answer untouched are listed: DeepSeek's parser, for example, would file a whole V3 answer
+# under "reasoning". settings['reasoning_parser'] overrides this ('none' turns it off).
+_REASONING_PARSERS = {'qwen3': 'qwen3', 'qwen3_moe': 'qwen3'}
+
+
+def vllm_reasoning_parser(model_path: Path, settings: dict[str, Any] | None = None) -> str:
+    override = str((settings or {}).get('reasoning_parser') or '').strip()
+    if override:
+        return '' if override.lower() in {'none', 'off', 'false', '0'} else override
+    folder = model_path if model_path.is_dir() else model_path.parent
+    try:
+        data = json.loads((folder / 'config.json').read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    return _REASONING_PARSERS.get(str(data.get('model_type') or '').strip().lower(), '')
 
 
 def vllm_exit_reason(text: str, returncode: int | None = None) -> str:
@@ -242,10 +265,13 @@ def verify_vllm_installation() -> tuple[bool, str]:
         return False, 'vLLM manifest is missing — install did not finish writing runtimes/vllm/manifest.json.'
 
     backend = str(manifest.get('backend') or '').strip().lower()
-    if not backend:
+    if not backend and sys.platform == 'win32':
+        # On Windows a POSIX python path can only mean WSL. Elsewhere every path starts with '/'.
         python_hint = str(manifest.get('wsl_python') or manifest.get('python') or '').strip()
         if python_hint.startswith('/'):
             backend = 'wsl'
+    if backend == 'wsl' and sys.platform != 'win32':
+        return False, 'This vLLM manifest is for WSL on Windows. Install vLLM again on this machine.'
     if backend == 'wsl':
         distro = str(manifest.get('wsl_distro') or '').strip()
         python = str(manifest.get('wsl_python') or '').strip()
@@ -281,13 +307,13 @@ def verify_vllm_installation() -> tuple[bool, str]:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return False, 'Timed out verifying vLLM import on Windows.'
+        return False, 'Timed out verifying the native vLLM import.'
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f'Could not verify native vLLM import: {exc}'
     if proc.returncode == 0:
         return True, ''
     detail = (proc.stderr or proc.stdout or '').strip()
-    return False, detail or 'vLLM import failed in the Windows environment.'
+    return False, detail or 'vLLM import failed in the native environment.'
 
 
 class VllmRuntimeAdapter:
@@ -310,7 +336,12 @@ class VllmRuntimeAdapter:
     @staticmethod
     def is_installed() -> bool:
         if VLLM_MANIFEST.is_file():
-            return True
+            if sys.platform == 'win32':
+                return True
+            # Off Windows only a native install counts (a WSL manifest can't run here).
+            backend = str(_read_manifest_file().get('backend') or '').strip().lower()
+            if backend != 'wsl' and VLLM_VENV_PY.is_file():
+                return True
         global _VLLM_INSTALLED_CACHE
         now = time.time()
         cached_at, cached_ok = _VLLM_INSTALLED_CACHE
@@ -492,10 +523,13 @@ class VllmRuntimeAdapter:
             _ACTIVE_MODEL = ''
         _SERVED_ID_CACHE = (0.0, 0, '')
         self._chat_template_applied = False
-        try:
-            self.write_manifest()
-        except OSError:
-            pass
+        # Only refresh an existing manifest: writing one here when vLLM was never
+        # installed made the Console report vLLM as installed.
+        if VLLM_MANIFEST.is_file():
+            try:
+                self.write_manifest()
+            except OSError:
+                pass
         _log_line('vLLM engine stopped')
         return {'success': True, 'unloaded': True, 'runtime_id': self.runtime_id}
 
@@ -522,7 +556,11 @@ class VllmRuntimeAdapter:
             except Exception:
                 revision = 0
         backend = str(existing.get('backend') or '').strip().lower()
-        if not backend and str(existing.get('wsl_python') or existing.get('python') or '').startswith('/'):
+        if (
+            not backend
+            and sys.platform == 'win32'
+            and str(existing.get('wsl_python') or existing.get('python') or '').startswith('/')
+        ):
             backend = 'wsl'
         payload: dict[str, Any] = {
             'version': int(existing.get('version') or 1),
@@ -641,6 +679,9 @@ class VllmRuntimeAdapter:
             args.append('--enforce-eager')
         if settings.get('generation_config'):
             args.extend(['--generation-config', str(settings['generation_config'])])
+        reasoning_parser = vllm_reasoning_parser(model_path, settings)
+        if reasoning_parser:
+            args.extend(['--reasoning-parser', reasoning_parser])
         if backend == 'wsl':
             distro = str(manifest.get('wsl_distro') or 'Ubuntu')
             python = str(manifest.get('wsl_python') or self.python())

@@ -17,15 +17,14 @@ def _card(**over):
 
 def test_external_entries_expose_the_strata_model(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'get_external_gpu_loads', lambda: [_card()])
+    monkeypatch.setattr('core.external_models._launcher_entries', lambda entries, seen: None)
     external_models.forget_external_models()
 
     entries = external_models.external_model_entries(force=True)
     ids = [entry['id'] for entry in entries]
 
-    # The app-prefixed id comes first so a list is easy to read, and the raw
-    # name the upstream server reports also works for clients that know it.
-    assert ids[0] == 'strata-qwen3-8-flash-next-unsloth-ud-iq4-xs'
-    assert 'qwen3.8-flash-next-unsloth-ud-iq4_xs' in ids
+    # One public id, the app name. The weight filename is not a second model.
+    assert ids == ['strata']
     assert {entry['api_url'] for entry in entries} == {'http://127.0.0.1:8080/v1'}
     assert {entry['api_model_id'] for entry in entries} == {'qwen3.8-flash-next-unsloth-ud-iq4_xs'}
 
@@ -70,17 +69,22 @@ def test_launcher_entry_is_listed_before_the_model_is_loaded(monkeypatch):
 
 def test_resolve_external_model_entry_matches_advertised_ids(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'get_external_gpu_loads', lambda: [_card()])
+    monkeypatch.setattr('core.external_models._launcher_entries', lambda entries, seen: None)
     external_models.forget_external_models()
 
     entry = external_models.resolve_external_model_entry('qwen3.8-flash-next-unsloth-ud-iq4_xs')
 
     assert entry is not None
+    assert entry['id'] == 'strata'
     assert entry['api_url'] == 'http://127.0.0.1:8080/v1'
+    assert external_models.resolve_external_model_entry('strata-qwen3-8-flash-next-unsloth-ud-iq4-xs')['id'] == 'strata'
+    assert external_models.resolve_external_model_entry('strata')['id'] == 'strata'
     assert external_models.resolve_external_model_entry('a-model-that-is-not-there') is None
 
 
 def test_resolve_external_model_entry_never_captures_cursor_aliases(monkeypatch):
     monkeypatch.setattr(gpu_processes, 'get_external_gpu_loads', lambda: [_card()])
+    monkeypatch.setattr('core.external_models._launcher_entries', lambda entries, seen: None)
     external_models.forget_external_models()
 
     for reserved in ('gpt-4', 'gpt-4o', 'gpt-4-turbo', 'gpt-4o-mini'):
@@ -95,6 +99,7 @@ def test_resolving_a_model_does_not_rescan_the_gpu_for_every_request(monkeypatch
         return [_card()]
 
     monkeypatch.setattr(gpu_processes, 'get_external_gpu_loads', fake_loads)
+    monkeypatch.setattr('core.external_models._launcher_entries', lambda entries, seen: None)
     external_models.forget_external_models()
 
     first = external_models.resolve_external_model_entry('qwen3.8-flash-next-unsloth-ud-iq4_xs')
