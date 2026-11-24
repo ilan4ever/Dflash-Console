@@ -52,6 +52,9 @@ Sign-in comes **before** any network access. Every phase can ship on its own.
    - Linux: document `ufw allow from 192.168.0.0/16 to any port 8900`, or similar.
 4. **Discovery (mDNS / DNS-SD):** each shared Console announces `_dflash._tcp.local` with its name, version and port, using the `zeroconf` package.
    - Nodes → Add node lists Consoles found on the network, so nobody types an IP address.
+   - **No address allocation is needed.** The router (DHCP) gives every machine its own IP, so every Console can use the same port (8900). Port clashes can only happen inside one machine, and startup already handles that. Discovery only finds Consoles; it never assigns addresses.
+   - **Remember nodes by a permanent ID, not by IP.** Each Console gets a random `console_id` the first time it starts, and announces it. After pairing, the other side stores that ID and takes the current address from the announcements, so a DHCP address change doesn't break the node. A typed URL stays as the fallback.
+   - **Duplicate names:** mDNS renames clashing service names automatically ("OMAN (2)"); users can rename their Console in Settings.
 5. **Pairing (like Bluetooth):**
    - Machine A shows a 6-digit code for 2 minutes.
    - The user picks A in the list on machine B and types the code.
