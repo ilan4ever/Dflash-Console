@@ -138,6 +138,7 @@ def test_is_installed_reads_wsl_manifest_with_utf8_bom(monkeypatch, tmp_path: Pa
         'verify_vllm_installation',
         lambda: (True, ''),
     )
+    monkeypatch.setattr(vllm_mod.sys, 'platform', 'win32')  # WSL manifests are a Windows feature
     assert VllmRuntimeAdapter.is_installed() is True
 
 
