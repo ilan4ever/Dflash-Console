@@ -40,6 +40,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from core.access_control import AccessControlMiddleware, AccessPolicy, gateway_route_table
 from core.chat_proxy import wants_stream
 from core.config import is_embedding_server, list_runtimes, list_servers, load_config, normalize_inference_settings
 from core.gateway_routing import (
@@ -59,6 +60,15 @@ from core.model_presets import server_target_path_on_disk
 logger = logging.getLogger(__name__)
 
 gateway_app = FastAPI(title='DFlash Console OpenAI Gateway', version='0.1.0')
+
+# Same rules as the Console (core/access_control.py): requests made on this PC
+# pass unchanged; another computer needs ``Authorization: Bearer <machine key>``
+# (like OpenAI) or the owner's browser session. Errors stay OpenAI-shaped.
+gateway_app.add_middleware(
+    AccessControlMiddleware,
+    policy=AccessPolicy(name='gateway', routes=gateway_route_table(), error_style='openai'),
+    routes=gateway_app.router.routes,
+)
 
 
 def _gateway_error(error: Any, status_code: int) -> dict[str, Any]:

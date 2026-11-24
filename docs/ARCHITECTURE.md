@@ -123,11 +123,61 @@ is installed inside WSL and its manifest records the distro and `ft` executable.
 
 ## Security model
 
-The default trust boundary is one user on one machine. The Console binds to
-loopback and validates model/projector paths against configured model roots.
-It is not a multi-user service. Authentication and CSRF protection are
-required before exposing it beyond loopback. FreeToken child processes are
-started with a loopback bind even though WSL2 provides the Linux process.
+The trust boundary is one owner. The Console and the OpenAI gateway still
+listen only on loopback (`127.0.0.1`), and model/projector paths are validated
+against the configured model roots. Engine children (llama-server, FreeToken in
+WSL2, and the rest) are started with a loopback bind. Sharing on the local
+network is planned in [LAN-SHARING-AND-AUTH-PLAN.md](./LAN-SHARING-AND-AUTH-PLAN.md);
+sign-in and machine keys (Phase 1) are already enforced, so they are in place
+before any network access.
+
+### Who may call what
+
+`core/access_control.py` is an ASGI middleware on both the Console (`:8900`)
+and the gateway (`:8001`). Every route is listed in one table there; a test
+fails when a new route is not classified, and an unlisted route is treated as
+local-only.
+
+| Caller | How it is recognized | What it may do |
+|---|---|---|
+| This PC | Loopback address (`127.0.0.0/8`, `::1`) and no proxy forwarding header | Everything, with no sign-in, exactly as before |
+| Owner, signed in from a browser | `dflash_session` cookie (HttpOnly, SameSite=Strict) | Everything except local-only routes; every POST/PUT/PATCH/DELETE also needs `X-CSRF-Token` and a matching `Origin` |
+| Another Console | `Authorization: Bearer dfk_…` machine key | Only GPU-sharing routes: status, load, unload, inference. Downloads only with the key's "May download models here" setting |
+| Anyone else | — | 401 (the sign-in page for a browser) |
+
+A request relayed by a reverse proxy on this PC (`tailscale serve`, cloudflared,
+nginx) arrives from loopback but carries `X-Forwarded-For` or a similar header;
+it counts as another computer. An SSH tunnel carries no such header, so a
+tunneled request counts as this PC, as before.
+
+**Local-only routes** answer 403 to any other computer, even with a valid
+session or key: shutdown, file browsing and file operations outside the model
+libraries, config import and export, engine install and uninstall, and anything
+that registers or runs a program. Some routes refuse only certain fields from
+another computer: `PUT /api/config` (engine binaries, engine and runtime
+definitions, model libraries, SSH nodes, API keys, ports, automatic engine
+updates) and `POST`/`PATCH /api/nodes` (SSH tunnel settings, which make the
+Console run `ssh`). `GET /api/config` hides the keys this Console uses for other
+Consoles from another computer.
+
+**Machine keys** are 256-bit random values (`dfk_…`), shown once when created and
+stored as SHA-256 hashes. A key never opens a browser session. With "May
+download models here" on, a key may download only files the Hugging Face Hub
+lists in an `owner/name` repository (never another URL or a path outside the
+repository), within the key's disk limit, counted over every download it
+started. A key sees only this PC's own GPUs, not GPUs this Console borrows from
+other nodes.
+
+**Owner password** is optional while the Console is loopback-only. It is stored
+as an scrypt hash (`hashlib.scrypt`, N=2¹⁷, r=8, p=1) in a `users` list with a
+single `owner` entry. Wrong passwords slow down, then lock sign-in for five
+minutes (per address, and for everyone after many failures). Changing the
+password signs out every other browser; removing it signs out all of them.
+
+**Storage.** Password, session, and key hashes live in `auth.json` next to
+`config.json`, not in `config.json` itself, so `GET /api/config`, config export,
+presets, and the diagnostics bundle never include them. Settings → Sign-in &
+keys manages all of it.
 
 ## Validation
 

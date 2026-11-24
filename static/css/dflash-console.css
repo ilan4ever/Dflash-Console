@@ -4880,3 +4880,144 @@ body.lm-resizing-hf-search .lm-search-split-handle {
     align-items: stretch;
   }
 }
+
+/* Settings → Sign-in & keys (static/js/security-live.js) */
+.lm-settings-note p {
+  margin: 0;
+}
+
+.lm-settings-note p + p {
+  margin-top: 6px;
+}
+
+.lm-security-form {
+  display: grid;
+  gap: 10px;
+  max-width: 380px;
+  margin: 8px 0 4px;
+}
+
+.lm-security-form .lm-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.lm-security-form .lm-field > span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.lm-security-list {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.lm-security-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.lm-security-row-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.lm-security-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lm-security-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lm-security-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.lm-security-badge {
+  /* Same colors as .lm-node-status.is-online; the shell theme's --accent is near-black. */
+  padding: 1px 8px;
+  border: 1px solid rgba(125, 223, 138, 0.35);
+  border-radius: 999px;
+  color: #7ddf8a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lm-security-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lm-security-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lm-security-limit.hidden {
+  display: none;
+}
+
+.lm-security-limit-input {
+  width: 96px;
+}
+
+.lm-security-create {
+  display: flex;
+  gap: 8px;
+  max-width: 520px;
+  margin: 8px 0;
+}
+
+.lm-security-create .lm-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.lm-security-new-key {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(234, 179, 8, 0.45);
+  border-radius: 10px;
+  background: rgba(234, 179, 8, 0.06);
+}
+
+.lm-security-new-key.hidden {
+  display: none;
+}
+
+.lm-security-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lm-security-key-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}

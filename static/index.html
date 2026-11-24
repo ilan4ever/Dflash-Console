@@ -586,10 +586,14 @@ try {
               <section class="df-docs-section-block">
                 <h2>Security and privacy</h2>
                 <p>
-                  The Console is designed for one trusted user on one
-                  machine. It binds to loopback by default and does not
-                  provide multi-user authentication. Do not expose it beyond
-                  loopback without adding an authenticated access layer.
+                  The Console is designed for one owner. It listens only on
+                  this PC (loopback), and programs on this PC never need to
+                  sign in. Any other computer must sign in with the owner
+                  password (a browser) or send a machine key (another
+                  Console); set both in Settings → Sign-in &amp; keys.
+                  Shutdown, file browsing, config import and export, engine
+                  install, and anything that runs a program only work on this
+                  PC.
                 </p>
               </section>
             </div>
@@ -746,6 +750,9 @@ try {
 
             <div class="lm-settings-nav-section">General</div>
             <button type="button" class="lm-settings-nav-item active" data-settings-panel="app-settings">Desktop app</button>
+
+            <div class="lm-settings-nav-section">Security</div>
+            <button type="button" class="lm-settings-nav-item" data-settings-panel="sec-access">Sign-in &amp; keys</button>
 
             <div class="lm-settings-nav-section">Files &amp; libraries</div>
             <button type="button" class="lm-settings-nav-item" data-settings-panel="ws-checkpoints">Model libraries</button>
@@ -911,6 +918,78 @@ try {
                 </div>
               </section>
               </div>
+            </div>
+
+            <div class="lm-settings-panel" data-settings-panel="sec-access">
+              <div class="lm-settings-header">
+                <h2>Sign-in &amp; keys</h2>
+                <div class="lm-settings-header-actions">
+                  <button class="lm-btn ghost small hidden" type="button" id="securitySignOutBtn">Sign out</button>
+                </div>
+              </div>
+              <p class="lm-setting-desc" data-settings-search="security sign in password machine key other computers share">Other computers must sign in (a browser) or send a machine key (another DFlash Console). Programs and browsers on this PC never need either.</p>
+              <div class="lm-settings-note" id="securityScopeNote">
+                <p>This Console listens only on this PC (127.0.0.1), so nothing here changes how it works today. Set a password and keys now so they are ready when you share this Console.</p>
+                <p>Share only a machine dedicated to DFlash or your own personal PC. Never share a machine that does other critical work, such as a trading server.</p>
+              </div>
+              <p class="lm-setting-desc hidden" id="securityRemoteNote" role="status"></p>
+              <p class="lm-setting-desc lm-settings-load-err hidden" id="securityLoadError" role="alert"></p>
+
+              <section class="lm-settings-section" data-settings-search="owner password sign in change remove">
+                <div class="lm-settings-section-head">
+                  <strong>Owner password</strong>
+                  <p class="lm-setting-desc" id="securityPasswordStatus">Loading…</p>
+                </div>
+                <div class="lm-security-form">
+                  <label class="lm-field hidden" id="securityCurrentPasswordField">
+                    <span>Current password</span>
+                    <input class="lm-input" type="password" id="securityCurrentPassword" autocomplete="current-password">
+                  </label>
+                  <label class="lm-field">
+                    <span>New password</span>
+                    <input class="lm-input" type="password" id="securityNewPassword" autocomplete="new-password">
+                  </label>
+                  <label class="lm-field">
+                    <span>Repeat new password</span>
+                    <input class="lm-input" type="password" id="securityConfirmPassword" autocomplete="new-password">
+                  </label>
+                </div>
+                <div class="lm-settings-inline-actions">
+                  <button class="lm-btn primary small" type="button" id="securitySavePasswordBtn">Set password</button>
+                  <button class="lm-btn ghost small danger hidden" type="button" id="securityRemovePasswordBtn">Remove password</button>
+                </div>
+              </section>
+
+              <section class="lm-settings-section" data-settings-search="signed in browsers sessions sign out revoke">
+                <div class="lm-settings-section-head">
+                  <strong>Signed-in browsers</strong>
+                  <p class="lm-setting-desc">Browsers on other computers signed in as the owner. Changing or removing the password signs out every other browser.</p>
+                </div>
+                <div class="lm-security-list" id="securitySessionsList"></div>
+                <div class="lm-settings-inline-actions">
+                  <button class="lm-btn ghost small" type="button" id="securityRevokeSessionsBtn">Sign out all other browsers</button>
+                </div>
+              </section>
+
+              <section class="lm-settings-section" data-settings-search="machine keys share gpu nodes api token revoke download disk limit">
+                <div class="lm-settings-section-head">
+                  <strong>Machine keys</strong>
+                  <p class="lm-setting-desc">Another DFlash Console uses a key to check status, load, unload, and run models on this PC’s GPU. A key cannot open these pages, change settings, browse files, or stop the Console. Give each computer its own key so you can revoke it alone.</p>
+                </div>
+                <div class="lm-security-create">
+                  <input class="lm-input" type="text" id="securityKeyName" maxlength="80" placeholder="Name, such as the computer that will use it" aria-label="Machine key name" autocomplete="off">
+                  <button class="lm-btn primary small" type="button" id="securityCreateKeyBtn">Create key</button>
+                </div>
+                <div class="lm-security-new-key hidden" id="securityNewKey" role="status">
+                  <strong>Copy this key now. It will not be shown again.</strong>
+                  <div class="lm-security-key-row">
+                    <code class="lm-settings-path" id="securityNewKeyValue"></code>
+                    <button class="lm-btn ghost small" type="button" id="securityCopyKeyBtn">Copy</button>
+                  </div>
+                  <p class="lm-setting-desc">On the other computer, open <strong>Nodes → Add node</strong> and paste it into <strong>Machine key</strong>.</p>
+                </div>
+                <div class="lm-security-list" id="securityKeysList"></div>
+              </section>
             </div>
 
             <div class="lm-settings-panel" data-settings-panel="ws-checkpoints">
@@ -1833,14 +1912,19 @@ try {
             <span class="lm-setting-desc">Root URL of the remote DFlash Console (same port as its UI).</span>
           </label>
           <label class="lm-field">
-            <span>API token (optional)</span>
-            <input class="lm-input" id="nodeAddToken" type="password" placeholder="Shared secret" autocomplete="off">
+            <span>Machine key</span>
+            <input class="lm-input" id="nodeAddToken" type="password" placeholder="dfk_…" autocomplete="off">
+            <span class="lm-setting-desc">Create it on the other Console: <strong>Settings → Sign-in &amp; keys → Create key</strong>. Not needed when you reach it through an SSH tunnel.</span>
+          </label>
+          <label class="lm-field lm-check-field hidden" id="nodeAddClearTokenRow">
+            <input type="checkbox" id="nodeAddClearToken">
+            <span>Forget the saved key</span>
           </label>
           <label class="lm-field lm-check-field">
             <input type="checkbox" id="nodeAddShareGpu" checked>
             <span>Use this computer’s GPU</span>
           </label>
-          <p class="lm-setting-desc">Its GPU appears in the model list here. Loading a model runs it on that computer. If the file is missing there, it is downloaded there first.</p>
+          <p class="lm-setting-desc">Its GPU appears in the model list here. Loading a model runs it on that computer. If the file is missing there, it is downloaded there first, when that Console allows it (through SSH, or when its owner turned on “May download models here” for this machine’s key).</p>
         </div>
         <div class="lm-modal-foot">
           <button class="lm-btn ghost" type="button" data-action="close-modal">Cancel</button>
@@ -2147,6 +2231,7 @@ try {
     </div>
   </div>
 
+  <script src="/static/js/auth-fetch.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
   <script src="/static/js/console-api.js"></script>
@@ -2162,6 +2247,7 @@ try {
   <script src="/static/js/model-search-live.js?v=0.3.288-truth"></script>
   <script src="/static/js/sysbar-live.js"></script>
   <script src="/static/js/settings-live.js"></script>
+  <script src="/static/js/security-live.js"></script>
   <script src="/static/js/setup-wizard-live.js"></script>
   <script src="/static/js/app-settings-live.js"></script>
   <script src="/static/js/runtime-steppers.js"></script>

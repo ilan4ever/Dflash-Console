@@ -35,6 +35,40 @@ X-DFlash-Component: myapp.worker
 X-DFlash-Role: chat
 ```
 
+## Sign-in and machine keys
+
+Programs on the same PC (loopback) never authenticate; nothing changes for
+them. A request from any other computer must carry one of:
+
+- a machine key: `Authorization: Bearer dfk_…`, created in **Settings → Sign-in &
+  keys**. Keys work only on the GPU-sharing routes (health, GPU list, status,
+  catalog, load, unload, chat, embeddings, speech, transcription) and on every
+  gateway `/v1` route, just like an OpenAI key;
+- the owner's browser session cookie, from `POST /api/auth/login`. Every
+  POST/PUT/PATCH/DELETE then also needs `X-CSRF-Token` (the `dflash_csrf`
+  cookie's value) and a matching `Origin`.
+
+Shutdown, file browsing, config import and export, engine install and
+uninstall, and anything that runs a program answer 403 to other computers. The
+full table is in `core/access_control.py`; see the security model in
+[ARCHITECTURE.md](./ARCHITECTURE.md#security-model).
+
+| Method | Route | Use |
+|---|---|---|
+| GET | `/login` | Sign-in page |
+| GET | `/api/auth/status` | Whether this caller is local, signed in, or must sign in |
+| POST | `/api/auth/login` | `{"password": "…"}`; sets the session and CSRF cookies; 429 when locked |
+| POST | `/api/auth/logout` | End this browser's session |
+| GET | `/api/security` | Password state, signed-in browsers, machine keys (owner only) |
+| PUT | `/api/security/password` | Set or change the owner password |
+| POST | `/api/security/password/remove` | Remove it (signs every browser out) |
+| DELETE | `/api/security/sessions` | Sign out every other browser |
+| DELETE | `/api/security/sessions/{session_id}` | Sign out one browser |
+| POST | `/api/security/keys` | Create a machine key; the full key is returned only here |
+| PATCH | `/api/security/keys/{key_id}` | Rename; "May download models here"; disk limit; reset usage |
+| DELETE | `/api/security/keys/{key_id}` | Revoke a key |
+| GET | `/api/config/export` | Full config for backup (this PC only) |
+
 ## Gateway API: OpenAI-compatible traffic
 
 Base URL: `http://127.0.0.1:8001/v1`
@@ -275,6 +309,8 @@ Typical status meanings:
 | Status | Meaning |
 |---|---|
 | 400 | Invalid request or impossible setting |
+| 401 | Another computer without a valid sign-in or machine key (`auth_required`, `invalid_key`, `session_expired`) |
+| 403 | Refused for this caller: `local_only`, `key_not_allowed`, `download_not_allowed`, `download_limit`, `not_catalog`, `csrf_failed`, `origin_mismatch` |
 | 404 | Unknown model, server, route, or job |
 | 409 | Model mismatch, duplicate ownership, or lifecycle conflict |
 | 422 | Validation error; fix the request fields |

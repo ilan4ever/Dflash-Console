@@ -662,6 +662,24 @@ def _fetch_repo_siblings_with_blobs(repo: str, *, timeout: float = 15.0) -> list
     return [row for row in siblings if isinstance(row, dict)] if isinstance(siblings, list) else []
 
 
+def repo_file_sizes(repo_id: str, *, timeout: float = 15.0) -> dict[str, int]:
+    """File name -> size in bytes for a Hugging Face repository (Hub API).
+
+    Empty when the Hub cannot be reached or lists no files. Files whose size the
+    Hub does not report are left out.
+    """
+    repo = str(repo_id or '').strip().strip('/')
+    if not repo or '/' not in repo:
+        return {}
+    sizes: dict[str, int] = {}
+    for row in _fetch_repo_siblings_with_blobs(repo, timeout=timeout):
+        name = _entry_name(row)
+        size = _entry_size_bytes(row)
+        if name and isinstance(size, int) and size > 0:
+            sizes[name] = size
+    return sizes
+
+
 def _siblings_from_api_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
