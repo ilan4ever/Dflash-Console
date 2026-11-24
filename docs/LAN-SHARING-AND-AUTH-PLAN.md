@@ -1,6 +1,20 @@
 # Plan: sign-in, pairing, and sharing on the local network
 
-**Status:** proposal, not started (2026-11-24). Needs the maintainer's approval before work begins: it changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model).
+**Status:** approved by the maintainer on 2026-11-24, with the decisions below. Phase 1 is next. It changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model), so update that section as each phase ships.
+
+## Decisions (2026-11-24)
+
+1. **Remote browser UI and GPU sharing are two separate switches, both off by default.** GPU sharing comes first.
+   - **"Share this GPU with my other Consoles"**: Console-to-Console with machine keys only. No web page is exposed.
+   - **"Allow signing in from other computers"**: the full web UI, with the owner password.
+   - Use case: OMAN runs as a closed-lid Linux server, and the owner manages it from another PC.
+   - Dangerous routes stay local-only in both modes (Phase 1, item 6).
+2. **One owner password for now.** Store it as a users list with a single `owner` entry, so named users can be added later without a migration. No roles or user management yet. Machine keys identify each machine and can be revoked one by one.
+3. **Downloads depend on who asks:**
+   - **The owner, signed in from a browser:** may download models.
+   - **A machine key (another Console):** may not download by default. It can only use models already on the machine.
+   - Each key has a setting, **"May download models here"**, off by default. Even when it's on, downloads come only from the Hugging Face catalog (never an arbitrary URL), within a disk-space limit set by the owner.
+4. **Never turn on sharing on a machine that does other critical work**, such as the owner's live trading server. The docs and the Settings text should say that sharing is for machines dedicated to DFlash or for personal PCs.
 
 ## Why
 
@@ -35,15 +49,20 @@ Sign-in comes **before** any network access. Every phase can ship on its own.
    - **CSRF:** every POST/PUT/DELETE from a remote session needs a token. Also check `Origin`, since a cookie alone isn't enough.
    - **Rate limit:** wrong passwords slow down, then lock for a few minutes.
 4. **Machine keys.**
-   - Settings → Security lists keys: create, name, revoke.
+   - Settings → Security lists keys: create, name, revoke, plus the **"May download models here"** setting for each key (off by default, see Decision 3).
    - Keys are random 256-bit values, stored hashed.
+   - A key works only on the GPU-sharing routes (load, unload, inference, status) and never opens a browser session.
    - The OpenAI gateway (`:8001`) accepts `Authorization: Bearer <key>` from other machines, just like OpenAI.
 5. **Check the `api_token` that remote nodes already send.** The middleware enforces it for non-loopback requests.
 6. **Dangerous routes stay local-only even after sign-in, unless enabled one by one:** `/api/shutdown`, `/api/fs/*` (file browsing), config import/export, engine install/uninstall, and anything that runs a program.
 
 ### Phase 2: "Share this Console on my local network"
 
-1. **Setting:** Settings → Network → *Allow other computers on this network*, off by default. Turning it on asks for the owner password if none is set yet.
+1. **Settings:** Settings → Network has two switches, both off by default (Decision 1):
+   - *Share this GPU with my other Consoles*
+   - *Allow signing in from other computers*
+
+   Turning either one on asks for the owner password if none is set yet. With only GPU sharing on, a non-loopback request without a machine key gets 401, including the web UI pages.
 2. **Bind:** the Console listens on `127.0.0.1` plus the private LAN address(es) (192.168.x, 10.x, 172.16–31.x), never on public addresses.
    - It refuses requests whose source address isn't loopback or private.
    - Today the start commands are hard-coded to `127.0.0.1` (CLI, `server.ps1`, `server.sh`, Electron). They will read the host from the config instead.
@@ -89,9 +108,6 @@ Requirements before any internet exposure:
 - Rate limit on sign-in.
 - The bind only includes private addresses; a public source address is refused.
 - Pairing: wrong code, expired code, a code used twice.
-
-## Open questions for the maintainer
-
-1. Should the browser UI ever be reachable remotely, or only Console-to-Console GPU sharing? Allowing only the second is a much smaller attack surface.
-2. One owner password, or named users?
-3. Should a shared Console ever allow model downloads triggered from another machine?
+- A machine key can't open a browser session or reach routes other than GPU sharing.
+- A machine key can't start a download unless its "May download models here" setting is on. Even then, a non-catalog URL is refused, and so is a download over the disk limit.
+- The owner, signed in remotely, can start a catalog download.
