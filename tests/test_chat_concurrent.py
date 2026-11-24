@@ -84,15 +84,6 @@ def test_ensure_ready_does_not_synthesize_readiness_while_generating(monkeypatch
     assert exc.value.detail['reason'] == 'model_not_loaded'
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        'BUG: after the status reports the model loaded, _ensure_server_ready_for_chat probes '
-        'once more and JIT-loads when that probe is empty (engine busy). It retries only the '
-        'status, not the probe. This test used to pass only on a developer config that had '
-        "another engine with the same model (the 'loaded elsewhere' branch)."
-    ),
-)
 def test_ensure_ready_retries_busy_probe_before_jit(monkeypatch):
     server = _idle_server()
     empty = {
@@ -134,6 +125,43 @@ def test_ensure_ready_retries_busy_probe_before_jit(monkeypatch):
     assert load_calls == []
     assert live['loaded_models'] == ['gemma-4-12b-it-qat']
     assert calls['n'] >= 3
+
+
+def test_ensure_ready_still_loads_when_the_model_is_really_gone(monkeypatch):
+    """The status says loaded but every probe is empty: retry, then JIT-load."""
+    from api import app as app_module
+
+    server = _idle_server()
+    loaded = {
+        'status': 'loaded',
+        'loaded_models': ['gemma-4-12b-it-qat'],
+        'active_model_id': 'gemma-4-12b-it-qat',
+    }
+    load_calls: list[str] = []
+    probes = {'before_load': 0}
+
+    def _probe(api_url):
+        if load_calls:
+            return ['gemma-4-12b-it-qat'], [], True, None, True
+        probes['before_load'] += 1
+        return [], [], True, None, True
+
+    monkeypatch.setattr('core.runtime.build_server_status', lambda srv, cfg=None, **kwargs: dict(loaded))
+    monkeypatch.setattr('core.runtime.probe_runtime_state', _probe)
+    monkeypatch.setattr('core.inference_stats.is_proxy_generating', lambda sid: False)
+    monkeypatch.setattr('core.memory_guardrails.assess_load', lambda srv, cfg=None, **kwargs: {'level': 'ok'})
+    monkeypatch.setattr(
+        'api.app.load_server_checkpoint',
+        lambda srv, cfg=None, **kwargs: load_calls.append('x') or {'success': True},
+    )
+    monkeypatch.setattr('time.sleep', lambda *_a, **_k: None)
+    _patch_listener(monkeypatch)
+
+    _ensure_server_ready_for_chat('gemma-12b-ar', server, {'servers': [server]})
+    assert load_calls == ['x']
+    # The fast path probes once, then the busy-probe retries run in full
+    # (the old code probed only once more before loading).
+    assert probes['before_load'] >= 1 + app_module._CHAT_BUSY_PROBE_ATTEMPTS
 
 
 def test_chat_server_gate_serializes_waiters():
