@@ -22,7 +22,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.298
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.299
 
 ## Download (Windows)
 
@@ -172,8 +172,12 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.298)
+### Recent improvements (v0.3.299)
 
+- **Sign-in and machine keys** — **Settings → Sign-in & keys** sets an owner password and per-computer machine keys. On one PC nothing changes, and the Console still listens only on this PC. A request relayed by a reverse proxy on this PC (`tailscale serve`, nginx, cloudflared) now needs sign-in. Shutdown, file browsing, config import and export, and engine install only work on the Console's own PC
+- **Linux** — the Console runs on Linux: one-step `install-linux.sh`, llama-server, vLLM, Transformers and speech runtimes, plus a working stats bar and catalog. Starting the Console no longer stops other programs' ports. See [Linux](./docs/LINUX-CLI.md)
+- **Lighter when idle** — far fewer background checks while the app is idle or hidden, and the page no longer reloads after one slow health check
+- **Fixes** — Hugging Face catalog search error, install progress no longer jumps to 87%, Qwen3 thinking shown apart from the answer with vLLM, `pip install dflash-console` includes the OpenAI gateway again, Windows startup registered only once
 - **Models page** — the name column follows the cards on screen, so one long name lower in the list no longer hides Load. Names that still do not fit use a second line in place of the target line, and the card stays the same height. Load and Unload stay visible while you resize or open the runtime panel.
 - **Windows sign-in** — with **Start minimized to tray** on, the app now goes straight to the tray at sign-in: no splash or window flashes on screen, and update prompts wait until you open it from the tray
 - **In-app update** — the setup window appears immediately, installs in place even when the install path has spaces, asks for administrator rights when needed, and no longer leaves the unpacked package behind in the temp folder

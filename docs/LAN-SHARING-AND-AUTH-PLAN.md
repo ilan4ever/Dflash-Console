@@ -1,6 +1,6 @@
 # Plan: sign-in, pairing, and sharing on the local network
 
-**Status:** approved by the maintainer on 2026-11-24, with the decisions below. **Phase 1 is built** (PR #21, branch `feat/auth-phase1`; see "Phase 1 as built" below); the Console still listens only on loopback. Phase 2 is next. Each phase changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model), so update that section as it ships.
+**Status:** approved by the maintainer on 2026-11-24, with the decisions below. **Phase 1 shipped in v0.3.299** (PR #21; see "Phase 1 as built" below); the Console still listens only on loopback. Phase 2 is next. Each phase changes the security model in [ARCHITECTURE.md](./ARCHITECTURE.md#security-model), so update that section as it ships.
 
 ## Decisions (2026-11-24)
 
