@@ -281,6 +281,9 @@ class TransformersRuntimeAdapter:
         popen_kwargs: dict[str, Any] = {'cwd': str(TF_BUNDLE)}
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        else:
+            # _terminate() stops it with os.killpg(pid): that needs its own process group.
+            popen_kwargs['start_new_session'] = True
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = TF_LOG.open('a', encoding='utf-8')
         popen_kwargs['stdout'] = log_file

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT, suggest_runtime_port
-from core.platform_paths import venv_python
+from core.platform_paths import venv_cuda_lib_env, venv_python
 from core.runtimes.base import EXECUTION_MODE_SERVER, MODALITY_SPEECH_TO_TEXT, RUNTIME_FASTER_WHISPER
 
 FW_BUNDLE = ROOT / 'runtimes' / 'faster-whisper'
@@ -300,6 +300,14 @@ class FasterWhisperRuntimeAdapter:
         popen_kwargs: dict[str, Any] = {'cwd': str(FW_BUNDLE)}
         if sys.platform == 'win32':
             popen_kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        else:
+            # _terminate() stops it with os.killpg(pid): that needs its own process group.
+            popen_kwargs['start_new_session'] = True
+            # CTranslate2 dlopens cuBLAS/cuDNN; on Linux they come from the venv's
+            # nvidia-* pip wheels, which the loader only finds via LD_LIBRARY_PATH.
+            env = venv_cuda_lib_env(FW_BUNDLE / 'venv')
+            if env is not None:
+                popen_kwargs['env'] = env
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_file = FW_LOG.open('a', encoding='utf-8')
         popen_kwargs['stdout'] = log_file
