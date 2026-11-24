@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -873,9 +874,19 @@ def suggest_runtime_port(*, cfg: dict[str, Any] | None = None) -> int:
     return candidate
 
 
+def _running_under_pytest() -> bool:
+    """True anywhere in a pytest process: during a test and between tests.
+
+    PYTEST_CURRENT_TEST is unset between tests, so a background thread that a
+    test started could still save its fake config over the real config.json
+    (it replaced a developer's config on 2026-11-24).
+    """
+    return bool(os.environ.get('PYTEST_CURRENT_TEST')) or 'pytest' in sys.modules
+
+
 def save_config(cfg: dict[str, Any]) -> None:
     validate_config(cfg)
-    if os.environ.get('PYTEST_CURRENT_TEST'):
+    if _running_under_pytest():
         default_cfg = (ROOT / 'config.json').resolve()
         try:
             if CONFIG_PATH.resolve() == default_cfg:
