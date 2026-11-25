@@ -255,6 +255,15 @@ select {
   display: none;
 }
 
+/* Downloading or installing in the background: a quiet pulse, no button. */
+.df-app-update-notice.is-working .df-app-update-notice-dot {
+  animation: df-app-update-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes df-app-update-pulse {
+  50% { opacity: 0.35; }
+}
+
 .lm-status-feed {
   flex: 0 0 auto;
   width: min(420px, 38vw);

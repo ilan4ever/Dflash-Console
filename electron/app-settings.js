@@ -69,6 +69,9 @@ function resolveStartupExe() {
   // runs the app from %TEMP%\7z... and registering that path makes Windows
   // launch a stale temp copy at every login (duplicate instances, repeated
   // update prompts after install). Prefer the real installed executable.
+  // Side-by-side installs: the launcher keeps one path across updates.
+  const launcher = String(process.env.DFLASH_LAUNCHER_PATH || '').trim();
+  if (launcher && fs.existsSync(launcher)) return launcher;
   const currentExe = app.getPath('exe') || '';
   const tempDirs = [process.env.TEMP, process.env.TMP]
     .map((dir) => String(dir || '').toLowerCase())
@@ -93,7 +96,7 @@ const STARTUP_VALUE = 'DFlash Console';
 
 function applyWindowsStartup(enabled) {
   if (process.platform !== 'win32') return true;
-  const exe = enabled ? resolveStartupExe() : (app.getPath('exe') || '');
+  const exe = (enabled ? resolveStartupExe() : (resolveStartupExe() || app.getPath('exe'))) || '';
   if (enabled && (!exe || !fs.existsSync(exe))) {
     console.error('Cannot enable Windows startup: installed executable was not found.');
     return false;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -6,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using DFlashConsoleLayout;
 using Microsoft.Win32;
 
 namespace DFlashConsoleSetup
@@ -18,6 +20,13 @@ namespace DFlashConsoleSetup
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             string[] args = Environment.GetCommandLineArgs();
+            if (SetupForm.HasArg(args, "/Prepare"))
+            {
+                // Windowless: the running app prepares the next version in
+                // the background (side-by-side updates).
+                Environment.Exit(PrepareMode.Run(args));
+                return;
+            }
             if (SetupForm.HasArg(args, "/Uninstall") && SetupForm.RelocateUninstallerIfNeeded(args))
             {
                 return;
@@ -264,7 +273,7 @@ namespace DFlashConsoleSetup
             };
         }
 
-        private static string ResolvePayloadRoot(string uiRoot)
+        internal static string ResolvePayloadRoot(string uiRoot)
         {
             string[] candidates = new string[]
             {
@@ -532,7 +541,7 @@ namespace DFlashConsoleSetup
             }
         }
 
-        private static string GetArgValue(string[] args, string prefix)
+        internal static string GetArgValue(string[] args, string prefix)
         {
             if (args == null || string.IsNullOrEmpty(prefix)) return "";
             foreach (string raw in args)
@@ -727,16 +736,27 @@ namespace DFlashConsoleSetup
                     Directory.CreateDirectory(_destRoot);
                 }
 
+                // Side-by-side layout: each version gets its own app-<version>
+                // folder and the launcher takes the old exe path. A fresh folder
+                // holds no file the closing app could still lock.
+                string launcherSrc = Path.Combine(_payloadRoot, "resources", "launcher", AppLayout.ExeName);
+                if (!File.Exists(launcherSrc))
+                {
+                    throw new Exception("Installer package is incomplete (launcher missing).");
+                }
+                string appDir = AppLayout.AppDir(_destRoot, _version);
+                string previousVersion = AppLayout.ReadPointer(_destRoot, AppLayout.CurrentFile);
+
                 SetStatus("Copying program files…\nThis can take a minute on first install.");
                 SetProgress(15, true);
 
-                int rc = await Task.Run(() => CopyProgramFiles(_payloadRoot, _destRoot));
+                int rc = await Task.Run(() => CopyProgramFiles(_payloadRoot, appDir));
                 if (rc >= 8)
                 {
                     // Offer Retry: the package stays unpacked, so a second try
                     // only repeats the copy once the app has really closed.
                     _canRetryCopy = true;
-                    string destExe0 = Path.Combine(_destRoot, "DFlash Console.exe");
+                    string destExe0 = Path.Combine(appDir, AppLayout.ExeName);
                     string inUse = InstallFileLocks.IsWritable(destExe0)
                         ? "Some program files are still in use."
                         : "DFlash Console.exe is still in use.";
@@ -744,9 +764,39 @@ namespace DFlashConsoleSetup
                         inUse + " (code " + rc + ")\n"
                         + "Close DFlash Console, including its tray icon, then click Retry.");
                 }
+                try { File.WriteAllText(Path.Combine(appDir, "install-version.txt"), _version); } catch { }
+                AppLayout.ClearMarkers(_destRoot, _version);
+
+                SetStatus("Installing the launcher…");
+                string launcherDest = Path.Combine(_destRoot, AppLayout.ExeName);
+                bool launcherOk = await Task.Run(() => InstallLauncher(launcherSrc, launcherDest));
+                if (!launcherOk)
+                {
+                    _canRetryCopy = true;
+                    throw new Exception(
+                        "DFlash Console.exe is still in use.\n"
+                        + "Close DFlash Console, including its tray icon, then click Retry.");
+                }
+
+                // An install from before side-by-side updates kept the app's
+                // files directly in the root. app-<version> replaces them.
+                List<string> leftovers = await Task.Run(() => AppLayout.RemoveFlatInstall(_destRoot, appDir));
+                if (leftovers.Count > 0)
+                {
+                    AppendSetupLog("Could not remove old program files: " + string.Join(", ", leftovers.ToArray()));
+                }
+
+                if (previousVersion != _version && AppLayout.IsUsable(_destRoot, previousVersion))
+                {
+                    AppLayout.WritePointer(_destRoot, AppLayout.PreviousFile, previousVersion);
+                }
+                AppLayout.WritePointer(_destRoot, AppLayout.CurrentFile, _version);
+                try { File.Delete(Path.Combine(_destRoot, AppLayout.RolledBackFile)); } catch { }
+                string keepPrevious = AppLayout.ReadPointer(_destRoot, AppLayout.PreviousFile);
+                await Task.Run(() => AppLayout.RemoveOldVersions(_destRoot, _version, keepPrevious));
 
                 SetStatus("Setting folder access…");
-                await Task.Run(() => ApplyInstallPermissions(_destRoot, _perMachine));
+                await Task.Run(() => ApplyInstallPermissions(_destRoot, appDir, _perMachine));
 
                 try
                 {
@@ -754,8 +804,8 @@ namespace DFlashConsoleSetup
                 }
                 catch { }
 
-                string destExe = Path.Combine(_destRoot, "DFlash Console.exe");
-                if (!File.Exists(destExe))
+                string destExe = launcherDest;
+                if (!File.Exists(destExe) || !File.Exists(Path.Combine(appDir, AppLayout.ExeName)))
                 {
                     throw new Exception("Installation finished but DFlash Console.exe was not found.");
                 }
@@ -778,7 +828,7 @@ namespace DFlashConsoleSetup
                 SetStatus("Preparing Console data folder…\nCopying runtime files for first run.");
                 SetProgress(55, true);
                 bool configExisted = ConsoleConfigExisted();
-                string dataRoot = await Task.Run(() => BootstrapDataRoot(_destRoot));
+                string dataRoot = await Task.Run(() => BootstrapDataRoot(appDir));
                 bool firstRun = !configExisted && string.IsNullOrEmpty(_packagePath);
                 _firstRunLaunch = firstRun;
 
@@ -836,6 +886,36 @@ namespace DFlashConsoleSetup
         /// Copy the program files, waiting for files the closing app still
         /// holds. Up to three attempts; returns the last robocopy code.
         /// </summary>
+        /// <summary>
+        /// Put the launcher at the root exe path. During a migration that file
+        /// is the old app's exe, which the closing app may still hold briefly.
+        /// </summary>
+        private static bool InstallLauncher(string launcherSrc, string launcherDest)
+        {
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                InstallFileLocks.WaitUntilWritable(
+                    launcherDest,
+                    attempt == 1 ? 30000 : 15000,
+                    () => KillOtherConsoleProcesses(0),
+                    5000);
+                try
+                {
+                    string temp = launcherDest + ".new";
+                    File.Copy(launcherSrc, temp, true);
+                    if (File.Exists(launcherDest)) File.Delete(launcherDest);
+                    File.Move(temp, launcherDest);
+                    return true;
+                }
+                catch
+                {
+                    KillOtherConsoleProcesses(0);
+                    System.Threading.Thread.Sleep(2000);
+                }
+            }
+            return false;
+        }
+
         private static int CopyProgramFiles(string src, string dst)
         {
             string destExe = Path.Combine(dst, "DFlash Console.exe");
@@ -864,7 +944,7 @@ namespace DFlashConsoleSetup
         /// can be appended after the payload, so the trailer is searched near
         /// the end of the file instead of being assumed to sit at EOF.
         /// </summary>
-        private static bool TryReadPayloadTrailer(string exePath, out long offset, out long length)
+        internal static bool TryReadPayloadTrailer(string exePath, out long offset, out long length)
         {
             offset = 0;
             length = 0;
@@ -1069,7 +1149,7 @@ namespace DFlashConsoleSetup
             }
         }
 
-        private static void ExtractPackage(string packagePath, string extractRoot)
+        internal static void ExtractPackage(string packagePath, string extractRoot)
         {
             string sevenZip = ResolveSevenZipExe();
             if (string.IsNullOrEmpty(sevenZip))
@@ -1134,6 +1214,17 @@ namespace DFlashConsoleSetup
                     + " args=" + string.Join(" ", _args ?? new string[0])
                     + Environment.NewLine;
                 File.AppendAllText(Path.Combine(Path.GetTempPath(), "dflash-setup-ui.log"), line);
+            }
+            catch { }
+        }
+
+        internal static void AppendSetupLog(string message)
+        {
+            try
+            {
+                File.AppendAllText(
+                    Path.Combine(Path.GetTempPath(), "dflash-setup-ui.log"),
+                    DateTime.Now.ToString("o") + " " + message + Environment.NewLine);
             }
             catch { }
         }
@@ -1483,17 +1574,22 @@ namespace DFlashConsoleSetup
         private Process LaunchInstalledApp(bool firstRun)
         {
             if (_appLaunchStarted) return null;
-            string destExe = Path.Combine(_destRoot, "DFlash Console.exe");
+            // Start the installed version directly, not through the launcher:
+            // the launcher exits at once, and this window waits for the app's.
+            string appDir = AppLayout.AppDir(_destRoot, _version);
+            string destExe = Path.Combine(appDir, AppLayout.ExeName);
             if (!File.Exists(destExe)) return null;
             try
             {
-                Process started = Process.Start(new ProcessStartInfo
+                ProcessStartInfo psi = new ProcessStartInfo
                 {
                     FileName = destExe,
-                    WorkingDirectory = _destRoot,
+                    WorkingDirectory = appDir,
                     Arguments = firstRun ? "--dflash-post-install" : "--dflash-post-update",
-                    UseShellExecute = true
-                });
+                    UseShellExecute = false
+                };
+                psi.EnvironmentVariables["DFLASH_LAUNCHER_PATH"] = Path.Combine(_destRoot, AppLayout.ExeName);
+                Process started = Process.Start(psi);
                 _appLaunchStarted = true;
                 return started;
             }
@@ -1702,12 +1798,12 @@ namespace DFlashConsoleSetup
             return paths.ToArray();
         }
 
-        private static void ApplyInstallPermissions(string programRoot, bool shared)
+        private static void ApplyInstallPermissions(string programRoot, string appDir, bool shared)
         {
-            string script = Path.Combine(programRoot, "resources", "console-runtime", "scripts", "set-install-permissions.ps1");
+            string script = Path.Combine(appDir, "resources", "console-runtime", "scripts", "set-install-permissions.ps1");
             if (!File.Exists(script))
             {
-                script = Path.Combine(programRoot, "scripts", "set-install-permissions.ps1");
+                script = Path.Combine(appDir, "scripts", "set-install-permissions.ps1");
             }
             if (!File.Exists(script))
             {

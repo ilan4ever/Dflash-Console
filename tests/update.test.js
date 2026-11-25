@@ -115,7 +115,8 @@ test('hides the running app while the installer takes over', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
   assert.match(main, /function prepareWindowForInstall\(\)/);
   assert.match(main, /mainWindow\.hide\(\)/);
-  assert.equal((main.match(/prepareWindowForInstall\(\);\s*\n\s*setTimeout\(\(\) => app\.quit\(\), 100\);/g) || []).length, 2);
+  // Two full-setup handoffs and the side-by-side "Restart to update".
+  assert.equal((main.match(/prepareWindowForInstall\(\);\s*\n\s*setTimeout\(\(\) => app\.quit\(\), 100\);/g) || []).length, 3);
 });
 
 test('supports public and authenticated HTTPS update configurations', () => {

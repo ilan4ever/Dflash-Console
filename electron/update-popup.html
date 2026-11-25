@@ -139,6 +139,8 @@
       const params = new URLSearchParams(window.location.search);
       const version = String(params.get('version') || '').trim();
       const notes = String(params.get('notes') || '').trim();
+      // restart=1: the new version is already installed beside this one.
+      const restartOnly = params.get('restart') === '1';
       const api = window.DFlashDesktop;
 
       const card = document.getElementById('card');
@@ -154,6 +156,10 @@
       const headerOnlyBtn = document.getElementById('headerOnlyBtn');
 
       if (version) title.textContent = 'Version ' + version + ' is ready';
+      if (restartOnly) {
+        message.textContent = 'Restart to finish. It takes a few seconds; loaded models reload afterwards.';
+        installBtn.textContent = 'Restart to update';
+      }
       if (notes) {
         notesEl.textContent = notes;
         notesEl.hidden = false;

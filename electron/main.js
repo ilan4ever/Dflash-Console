@@ -18,6 +18,7 @@ const {
   shouldSuppressAutomaticUpdateCheck,
 } = require('./update-lifecycle');
 const { registerContextMenus } = require('./context-menu');
+const sideBySide = require('./side-by-side');
 
 const DEFAULT_PORT = 8900;
 const UI_HOST = '127.0.0.1';
@@ -37,6 +38,12 @@ let booting = false;
 let updateService = null;
 let lastAutomaticUpdateCheckAt = 0;
 let lastBackgroundDownloadFailureAt = 0;
+// Side-by-side install (docs/plans/side-by-side-updates.md): null for the old
+// flat install, a portable copy or the developer checkout.
+let appLayout = null;
+let preparePromise = null;
+let sideBySideFailedFor = '';
+let startedOkMarked = false;
 let updatePopupWindow = null;
 let updatePromptDeferred = false;
 let updatePopupShownFor = '';
@@ -386,11 +393,11 @@ async function checkAndDownloadUpdate() {
     postInstallSetupActive,
   })) return;
   const status = updateService.getStatus();
+  if (status.state === 'downloading' || status.state === 'preparing' || status.state === 'installing') return;
   if (status.ready) {
     announceUpdateReady(status.manifest);
     return;
   }
-  if (status.state === 'downloading' || status.state === 'installing') return;
   if (Date.now() - lastAutomaticUpdateCheckAt < 60 * 1000) return;
   lastAutomaticUpdateCheckAt = Date.now();
   const manifest = await updateService.checkForUpdate();
@@ -406,7 +413,121 @@ async function checkAndDownloadUpdate() {
     throw error;
   }
   lastBackgroundDownloadFailureAt = 0;
+  // Then install it into its own folder while this version keeps running.
+  await prepareSideBySide(manifest);
   announceUpdateReady(manifest);
+}
+
+function initAppLayout() {
+  if (!app.isPackaged || process.platform !== 'win32') return null;
+  const layout = sideBySide.detectLayout(process.execPath);
+  // Start with Windows and taskbar pins must name the launcher, never a
+  // versioned folder that a later update removes.
+  if (layout) process.env.DFLASH_LAUNCHER_PATH = layout.launcherPath;
+  return layout;
+}
+
+// What the setup window relaunches after a full install: the launcher when
+// there is one, so the install root (not app-<version>) is updated.
+function updateRelaunchPath() {
+  return appLayout ? appLayout.launcherPath : process.execPath;
+}
+
+/**
+ * Install the downloaded version into app-<version> next to the running one
+ * and point the launcher at it. Returns true when a restart is all that is
+ * left. On any failure the full setup window stays the way to install.
+ */
+async function prepareSideBySide(manifest) {
+  if (!appLayout || !updateService) return false;
+  const version = String(manifest?.version || '').trim();
+  if (!version || version === appLayout.version || sideBySideFailedFor === version) return false;
+  const restartReady = {
+    manifest,
+    ready: true,
+    restartToUpdate: true,
+    error: '',
+    message: `DFlash Console ${version} is installed. Restart to finish.`,
+  };
+  if (sideBySide.pendingVersion(appLayout) === version) {
+    updateService.status('ready', restartReady);
+    return true;
+  }
+  if (!sideBySide.canPrepareInPlace(appLayout)) return false;
+  if (!preparePromise) {
+    preparePromise = (async () => {
+      const staged = updateService.getStatus();
+      updateService.status('preparing', {
+        manifest,
+        ready: false,
+        message: `Installing DFlash Console ${version} in the background…`,
+      });
+      try {
+        await sideBySide.prepareVersion(appLayout, {
+          installerPath: staged.installerPath,
+          version,
+          runPrepare: sideBySide.runSetupPrepare,
+        });
+        sideBySide.updateLauncher(appLayout, version);
+        sideBySide.switchTo(appLayout, version);
+        backupSettingsFor(version);
+        updateService.status('ready', restartReady);
+        return true;
+      } catch (error) {
+        sideBySideFailedFor = version;
+        console.error(`Side-by-side update failed; the full setup will install ${version}:`, error);
+        updateService.status('ready', {
+          manifest,
+          ready: true,
+          restartToUpdate: false,
+          error: '',
+          message: `DFlash Console ${version} is ready to install.`,
+        });
+        return false;
+      }
+    })().finally(() => {
+      preparePromise = null;
+    });
+  }
+  return preparePromise;
+}
+
+function backupSettingsFor(version) {
+  try {
+    sideBySide.backupSettings(repoRoot(), version);
+  } catch (error) {
+    console.error('Could not back up settings before the update:', error);
+  }
+}
+
+// "Restart to update": the new version is already installed; quit normally
+// and let the launcher start it.
+function restartIntoPreparedVersion() {
+  const version = sideBySide.pendingVersion(appLayout);
+  if (!version) return false;
+  backupSettingsFor(version);
+  updateService?.status('installing', { message: `Restarting into DFlash Console ${version}…` });
+  app.relaunch({ execPath: appLayout.launcherPath, args: ['--dflash-post-update'] });
+  prepareWindowForInstall();
+  setTimeout(() => app.quit(), 100);
+  return true;
+}
+
+// The launcher counts starts until a version proves it works. Call once the
+// window shows the Console UI from its own backend.
+function markThisVersionStarted() {
+  if (!appLayout || startedOkMarked) return;
+  startedOkMarked = true;
+  try {
+    sideBySide.markStartedOk(appLayout);
+  } catch (error) {
+    console.error('Could not record a good start:', error);
+  }
+  setTimeout(() => {
+    if (preparePromise) return;
+    sideBySide.removePartials(appLayout.root);
+    sideBySide.removeOldVersions(appLayout);
+  }, 60 * 1000);
 }
 
 // The header notice in the app follows update:status on its own. The pop-up
@@ -494,8 +615,9 @@ function showUpdatePopup(manifest) {
   updatePopupWindow.on('closed', () => {
     updatePopupWindow = null;
   });
+  const restart = updateService?.getStatus().restartToUpdate ? '1' : '0';
   updatePopupWindow.loadFile(path.join(__dirname, 'update-popup.html'), {
-    query: { version, notes },
+    query: { version, notes, restart },
   });
   placeUpdatePopup(UPDATE_POPUP_MIN_HEIGHT);
   updatePopupWindow.once('ready-to-show', () => {
@@ -527,14 +649,19 @@ function placeUpdatePopup(contentHeight) {
 function registerUpdatePopupIpc() {
   ipcMain.handle('update-popup:install', async () => {
     if (!updateService) throw new Error('Automatic updates are not configured for this build.');
+    if (restartIntoPreparedVersion()) return updateService.getStatus();
     const status = updateService.getStatus();
     let installerPath = status.ready && status.installerPath ? status.installerPath : null;
     if (!installerPath) {
       installerPath = await updateService.stageUpdate();
     }
+    const manifest = updateService.getStatus().manifest;
+    if (manifest && await prepareSideBySide(manifest) && restartIntoPreparedVersion()) {
+      return updateService.getStatus();
+    }
     await updateService.launchInstaller(installerPath, {
       processId: process.pid,
-      relaunchPath: process.execPath,
+      relaunchPath: updateRelaunchPath(),
       relaunchArguments: [],
       onReady: async () => {
         prepareWindowForInstall();
@@ -746,6 +873,8 @@ function registerAppSettingsIpc() {
   ipcMain.handle('update:download', async () => {
     if (!updateService) throw new Error('Automatic updates are not configured for this build.');
     const stagedPath = await updateService.stageUpdate();
+    const manifest = updateService.getStatus().manifest;
+    if (manifest) await prepareSideBySide(manifest);
     return { ...updateService.getStatus(), stagedPath, ready: true };
   });
 
@@ -757,7 +886,7 @@ function registerAppSettingsIpc() {
     }
     await updateService.launchInstaller(status.installerPath, {
       processId: process.pid,
-      relaunchPath: process.execPath,
+      relaunchPath: updateRelaunchPath(),
       relaunchArguments: [],
       onReady: async () => {
         prepareWindowForInstall();
@@ -1388,6 +1517,18 @@ async function createWindow() {
     },
   });
 
+  if (appLayout) {
+    // A window pinned to the taskbar must reopen through the launcher, not
+    // through app-<version>, which a later update removes.
+    mainWindow.setAppDetails({
+      appId: 'com.dflash.console',
+      relaunchCommand: `"${appLayout.launcherPath}"`,
+      relaunchDisplayName: 'DFlash Console',
+      appIconPath: appLayout.launcherPath,
+      appIconIndex: 0,
+    });
+  }
+
   mainWindow.once('ready-to-show', () => {
     closeSplashWindow();
     if (shouldShowMainWindowOnReady()) {
@@ -1400,6 +1541,7 @@ async function createWindow() {
     uiZoomReady = false;
   });
   mainWindow.webContents.on('did-finish-load', () => {
+    if (/^http:/i.test(mainWindow?.webContents.getURL() || '')) markThisVersionStarted();
     applyStoredUiZoom();
     setTimeout(() => {
       uiZoomReady = true;
@@ -1567,6 +1709,15 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    appLayout = initAppLayout();
+    if (appLayout && fs.existsSync(path.join(appLayout.root, sideBySide.ROLLED_BACK_FILE))) {
+      try {
+        const from = sideBySide.restoreAfterRollback(appLayout, repoRoot());
+        if (from) console.error(`DFlash Console ${from} did not start; back on ${appLayout.version}.`);
+      } catch (error) {
+        console.error('Could not restore settings after going back a version:', error);
+      }
+    }
     installMediaPermissions();
     registerContextMenus(app);
     syncPostInstallWelcomeFlag();
@@ -1612,6 +1763,8 @@ if (!gotLock) {
   app.on('before-quit', (event) => {
     isQuitting = true;
     closeUpdatePopup();
+    const nextVersion = sideBySide.pendingVersion(appLayout);
+    if (nextVersion) backupSettingsFor(nextVersion);
     if (startedByApp && spawnedServer) {
       // Own this server: wait for it to stop (graceful shutdown, then kill
       // fallback) before Electron fully exits so closing the app really
