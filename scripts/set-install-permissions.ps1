@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Path,
     [ValidateSet('data', 'program')][string]$Kind = 'data',
     [switch]$Shared,
-    [switch]$Recurse
+    [switch]$Recurse,
+    # Walk every file even when the folder already looks fine.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,8 +52,43 @@ function Get-CurrentUserSid {
     return $account.Value
 }
 
-Set-MediumIntegrity -Target $Path
+function Test-LowIntegrity([string]$Target) {
+    $listing = (& icacls.exe $Target 2>$null | Out-String)
+    return $listing -match 'Low Mandatory Level'
+}
+
+function Test-UserCanModify([string]$Target, [string]$Sid) {
+    try { $acl = Get-Acl -LiteralPath $Target } catch { return $false }
+    $modify = [System.Security.AccessControl.FileSystemRights]::Modify
+    foreach ($rule in $acl.Access) {
+        if ($rule.AccessControlType -ne 'Allow') { continue }
+        try {
+            $ruleSid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        } catch { continue }
+        if ($ruleSid -eq $Sid -and (($rule.FileSystemRights -band $modify) -eq $modify)) { return $true }
+    }
+    return $false
+}
+
 $userSid = Get-CurrentUserSid
+
+# The full walk below re-stamps every file (engine environments hold hundreds
+# of thousands), which made each update take minutes. It is a repair: run it
+# only when the folder or one of its top-level folders is still restricted,
+# or the user cannot modify it. -Force always walks.
+if ($Recurse -and $Kind -eq 'data' -and -not $Force) {
+    $targets = @($Path) + @(
+        Get-ChildItem -LiteralPath $Path -Force -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'models' } |
+            ForEach-Object { $_.FullName }
+    )
+    $restricted = @($targets | Where-Object { Test-LowIntegrity $_ })
+    if ($restricted.Count -eq 0 -and (Test-UserCanModify $Path $userSid)) {
+        $Recurse = $false
+    }
+}
+
+Set-MediumIntegrity -Target $Path
 if ($Kind -eq 'program' -and $Shared) {
     # Everyone can run the program. Only an administrator can change it.
     Grant-Access -Target $Path -Ace '*S-1-5-32-545:(OI)(CI)RX'
