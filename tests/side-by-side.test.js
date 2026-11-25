@@ -182,6 +182,12 @@ test('after a rollback the settings from before the failed version come back', (
     assert.equal(fs.readFileSync(path.join(data, 'auth.json'), 'utf8'), '{"keys":1}');
     assert.equal(fs.existsSync(path.join(root, sbs.ROLLED_BACK_FILE)), false);
     assert.equal(sbs.restoreAfterRollback(layout, data), '', 'only once');
+    // Cleanup later deletes app-0.3.301 and its "bad" marker; the version is
+    // still remembered so the next update check does not install it again.
+    assert.equal(sbs.isSkippedVersion(layout, '0.3.301'), true);
+    assert.equal(sbs.isSkippedVersion(layout, '0.3.302'), false);
+    sbs.addSkippedVersion(root, '0.3.301');
+    assert.deepEqual(sbs.readSkippedVersions(root), ['0.3.301'], 'listed once');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });
@@ -191,7 +197,7 @@ test('after a rollback the settings from before the failed version come back', (
 // ---------------------------------------------------------- wiring (source)
 
 test('the app wires prepare, restart, good-start and rollback in order', () => {
-  const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8');
+  const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
   const check = main.slice(main.indexOf('async function checkAndDownloadUpdate()'));
   const stageAt = check.indexOf('await updateService.stageUpdate(manifest)');
   const prepareAt = check.indexOf('await prepareSideBySide(manifest)');
@@ -316,6 +322,62 @@ test('the real launcher stops counting once the app marked a good start', window
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('the real launcher goes back by itself when a new version exits with an error', { ...windowsOnly, timeout: 120000 }, () => {
+  const root = tempDir('dflash-launcher-');
+  const build = tempDir('dflash-fake-app-');
+  try {
+    fs.copyFileSync(buildLauncher(), path.join(root, sbs.EXE_NAME));
+    // Fake apps: one exits with code 7 at once, the other records that it ran.
+    const source = path.join(build, 'FakeApp.cs');
+    fs.writeFileSync(source, [
+      'using System; using System.IO;',
+      'static class FakeApp { static int Main() {',
+      '  string dir = AppDomain.CurrentDomain.BaseDirectory;',
+      '  if (File.Exists(Path.Combine(dir, "fail-me"))) return 7;',
+      '  File.AppendAllText(Path.Combine(dir, "ran.txt"), "ran\\n");',
+      '  return 0; } }',
+    ].join('\n'));
+    const fakeExe = path.join(build, 'FakeApp.exe');
+    compile(fakeExe, [source]);
+    makeApp(root, '0.3.300');
+    makeApp(root, '0.3.301');
+    for (const version of ['0.3.300', '0.3.301']) {
+      fs.copyFileSync(fakeExe, path.join(sbs.appDir(root, version), sbs.EXE_NAME));
+    }
+    fs.writeFileSync(path.join(sbs.appDir(root, '0.3.300'), sbs.STARTED_OK_FILE), 'x');
+    fs.writeFileSync(path.join(sbs.appDir(root, '0.3.301'), 'fail-me'), 'x');
+    sbs.writePointer(root, sbs.PREVIOUS_FILE, '0.3.300');
+    sbs.writePointer(root, sbs.CURRENT_FILE, '0.3.301');
+
+    // One click, as the user would: no dry run.
+    const run = spawnSync(path.join(root, sbs.EXE_NAME), [], { encoding: 'utf8', timeout: 90000 });
+    assert.equal(run.status, 0, 'the previous version was started');
+    assert.equal(sbs.readPointer(root, sbs.CURRENT_FILE), '0.3.300');
+    assert.equal(fs.readFileSync(path.join(root, sbs.ROLLED_BACK_FILE), 'utf8').trim(), '0.3.301');
+    assert.ok(fs.existsSync(path.join(sbs.appDir(root, '0.3.301'), sbs.BAD_FILE)));
+    assert.ok(fs.existsSync(path.join(sbs.appDir(root, '0.3.300'), 'ran.txt')), 'the good version runs');
+    const log = fs.readFileSync(path.join(root, 'launcher.log'), 'utf8');
+    assert.equal((log.match(/exited with code 7 before it was ready/g) || []).length, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(build, { recursive: true, force: true });
+  }
+});
+
+test('after a rollback the app tells the user and skips that version', () => {
+  const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(main, /rolledBackFrom = from;/);
+  assert.match(main, /showRollbackNotice\(\);\n  \} catch \(err\) \{/, 'shown once the window is up');
+  const check = main.slice(main.indexOf('async function checkAndDownloadUpdate()'));
+  assert.ok(
+    check.indexOf('sideBySide.isSkippedVersion(appLayout, manifest.version)')
+      < check.indexOf('await updateService.stageUpdate(manifest)'),
+    'a skipped version is not even downloaded',
+  );
+  const prepare = main.slice(main.indexOf('async function prepareSideBySide('));
+  assert.match(prepare.slice(0, 800), /isSkippedVersion\(appLayout, version\)\) return false/);
 });
 
 // ------------------------------------------------------ setup.exe /Prepare

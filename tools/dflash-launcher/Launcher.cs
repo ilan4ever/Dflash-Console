@@ -14,6 +14,10 @@ namespace DFlashConsoleLauncher
     /// </summary>
     internal static class Launcher
     {
+        // How long the launcher watches a version that has not started well yet.
+        // The first start of a new version can be slow (runtime copy, Python).
+        private const int WatchMilliseconds = 10 * 60 * 1000;
+
         [STAThread]
         private static int Main()
         {
@@ -21,6 +25,23 @@ namespace DFlashConsoleLauncher
             string[] args = Environment.GetCommandLineArgs();
             string passThrough = JoinArguments(args, 1);
 
+            // A version on probation that exits with an error before its good-start
+            // marker is chosen again at once: the second failure rolls back and
+            // starts the previous version. Before, the app vanished and the user
+            // had to open it twice more before the rollback happened.
+            int result = 1;
+            for (int round = 0; round <= AppLayout.MaxFailedStarts; round++)
+            {
+                bool failedEarly;
+                result = LaunchOnce(root, passThrough, out failedEarly);
+                if (!failedEarly) return result;
+            }
+            return result;
+        }
+
+        private static int LaunchOnce(string root, string passThrough, out bool failedEarly)
+        {
+            failedEarly = false;
             AppLayout.LaunchChoice choice;
             try
             {
@@ -72,7 +93,17 @@ namespace DFlashConsoleLauncher
                     UseShellExecute = false
                 };
                 psi.EnvironmentVariables["DFLASH_LAUNCHER_PATH"] = Path.Combine(root, AppLayout.ExeName);
-                Process.Start(psi);
+                using (Process app = Process.Start(psi))
+                {
+                    if (!choice.CountedAttempt || app == null) return 0;
+                    int code;
+                    if (ExitedBeforeGoodStart(root, choice.Version, app, out code))
+                    {
+                        Log(root, "version " + choice.Version + " exited with code " + code + " before it was ready");
+                        failedEarly = true;
+                        return 1;
+                    }
+                }
                 return 0;
             }
             catch (Exception ex)
@@ -85,6 +116,28 @@ namespace DFlashConsoleLauncher
                     MessageBoxIcon.Error);
                 return 1;
             }
+        }
+
+        /// <summary>
+        /// Watch a version on probation. True when it exits with an error before
+        /// writing started-ok. Exit code 0 is a normal quit or a hand-off to a copy
+        /// that is already running, and does not count as a failed start.
+        /// </summary>
+        private static bool ExitedBeforeGoodStart(string root, string version, Process app, out int exitCode)
+        {
+            exitCode = 0;
+            DateTime until = DateTime.UtcNow.AddMilliseconds(WatchMilliseconds);
+            while (DateTime.UtcNow < until)
+            {
+                if (AppLayout.HasStartedOk(root, version)) return false;
+                if (app.WaitForExit(500))
+                {
+                    if (AppLayout.HasStartedOk(root, version)) return false;
+                    exitCode = app.ExitCode;
+                    return exitCode != 0;
+                }
+            }
+            return false;
         }
 
         /// <summary>True when that version's app is already running (a second launch only hands off).</summary>

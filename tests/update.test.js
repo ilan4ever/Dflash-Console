@@ -334,7 +334,8 @@ test('a failed download can be retried', () => withStagingDir(async (stagingDir)
 }));
 
 function readSource(...parts) {
-  return fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8');
+  // Normalized: a Windows checkout with core.autocrlf has CRLF line endings.
+  return fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8').replace(/\r\n/g, '\n');
 }
 
 test('updates download in the background before anyone is asked', () => {

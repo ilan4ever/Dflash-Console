@@ -23,6 +23,7 @@ const ROLLED_BACK_FILE = 'rolled-back.txt';
 const STARTED_OK_FILE = 'started-ok';
 const ATTEMPTS_FILE = 'launch-attempts';
 const BAD_FILE = 'bad';
+const SKIPPED_FILE = 'skipped-versions.txt';
 const APP_DIR_PREFIX = 'app-';
 const PARTIAL_SUFFIX = '.partial';
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
@@ -294,11 +295,43 @@ function restoreAfterRollback(layout, dataRoot) {
       if (fs.existsSync(saved)) fs.copyFileSync(saved, path.join(dataRoot, name));
     }
   }
+  if (isValidVersion(from)) addSkippedVersion(layout.root, from);
   fs.rmSync(marker, { force: true });
   return isValidVersion(from) ? from : '';
 }
 
+// Versions that would not start on this PC. Cleanup deletes their folder (and
+// its "bad" marker), so without this list the next update check downloaded
+// the same version again and the app failed twice more (end-to-end test).
+// The full setup is still allowed: that is the user's own choice.
+function readSkippedVersions(root) {
+  try {
+    return fs.readFileSync(path.join(root, SKIPPED_FILE), 'utf8')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(isValidVersion);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function addSkippedVersion(root, version) {
+  if (!isValidVersion(version)) return;
+  const known = readSkippedVersions(root);
+  if (known.includes(version)) return;
+  writeTextAtomic(path.join(root, SKIPPED_FILE), `${[...known, version].join('\n')}\n`);
+}
+
+function isSkippedVersion(layout, version) {
+  if (!layout) return false;
+  return readSkippedVersions(layout.root).includes(String(version || '').trim());
+}
+
 module.exports = {
+  SKIPPED_FILE,
+  addSkippedVersion,
+  isSkippedVersion,
+  readSkippedVersions,
   EXE_NAME,
   CURRENT_FILE,
   PREVIOUS_FILE,

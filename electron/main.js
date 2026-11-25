@@ -44,6 +44,26 @@ let appLayout = null;
 let preparePromise = null;
 let sideBySideFailedFor = '';
 let startedOkMarked = false;
+// The version the launcher went back from at this start, if any.
+let rolledBackFrom = '';
+
+// Tell the user once, after the window is up, instead of only logging it: the
+// app had closed by itself while the new version failed.
+function showRollbackNotice() {
+  if (!rolledBackFrom) return;
+  const from = rolledBackFrom;
+  rolledBackFrom = '';
+  const options = {
+    type: 'warning',
+    title: 'DFlash Console',
+    message: `DFlash Console ${from} could not start on this PC.`,
+    detail: `You are back on version ${app.getVersion()}, with your settings as they were before the update. `
+      + `${from} will not be installed automatically again. To try it anyway, use "Use the full setup" in Settings → Desktop app.`,
+    buttons: ['OK'],
+  };
+  const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null;
+  void (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)).catch(() => {});
+}
 let updatePopupWindow = null;
 let updatePromptDeferred = false;
 let updatePopupShownFor = '';
@@ -402,6 +422,16 @@ async function checkAndDownloadUpdate() {
   lastAutomaticUpdateCheckAt = Date.now();
   const manifest = await updateService.checkForUpdate();
   if (!manifest) return;
+  // A version that already failed to start here is not installed again on its
+  // own. The full setup (Settings) stays available as the user's own choice.
+  if (appLayout && sideBySide.isSkippedVersion(appLayout, manifest.version)) {
+    updateService.status('error', {
+      manifest,
+      ready: false,
+      error: `DFlash Console ${manifest.version} did not start on this PC, so it is not installed automatically. Use the full setup to try it again.`,
+    });
+    return;
+  }
   // Download and verify the installer quietly first, so "Upgrade now" starts
   // the install at once instead of making the user wait for the download.
   // After a failed download, wait before fetching the whole file again.
@@ -442,6 +472,7 @@ async function prepareSideBySide(manifest) {
   if (!appLayout || !updateService) return false;
   const version = String(manifest?.version || '').trim();
   if (!version || version === appLayout.version || sideBySideFailedFor === version) return false;
+  if (sideBySide.isSkippedVersion(appLayout, version)) return false;
   const restartReady = {
     manifest,
     ready: true,
@@ -1644,6 +1675,7 @@ async function boot() {
     } else if (shouldShowMainWindowOnReady()) {
       showMainWindow({ bringToFront: !isStartupLaunch() });
     }
+    showRollbackNotice();
   } catch (err) {
     closeSplashWindow();
     dialog.showErrorBox('DFlash Console', String(err && err.message ? err.message : err));
@@ -1713,7 +1745,10 @@ if (!gotLock) {
     if (appLayout && fs.existsSync(path.join(appLayout.root, sideBySide.ROLLED_BACK_FILE))) {
       try {
         const from = sideBySide.restoreAfterRollback(appLayout, repoRoot());
-        if (from) console.error(`DFlash Console ${from} did not start; back on ${appLayout.version}.`);
+        if (from) {
+          rolledBackFrom = from;
+          console.error(`DFlash Console ${from} did not start; back on ${appLayout.version}.`);
+        }
       } catch (error) {
         console.error('Could not restore settings after going back a version:', error);
       }
