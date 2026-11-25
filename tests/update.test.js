@@ -196,9 +196,11 @@ test('owns the ready prompt in the dark renderer instead of native Electron dial
 
   assert.doesNotMatch(main, /promptInstallUpdate|DFlash Console update ready/);
   assert.match(settings, /desktopUpdateModal/);
-  assert.match(settings, /updatePromptVersion/);
-  assert.match(settings, /localStorage\.setItem\(UPDATE_PROMPT_VERSION_KEY, version\)/);
   assert.match(index, /id="desktopUpdateModal"/);
+  // The in-app details dialog opens only from the header notice. The pop-up
+  // window is the only thing that may appear on its own.
+  assert.doesNotMatch(settings, /maybeShowUpdatePrompt|UPDATE_PROMPT_VERSION_KEY/);
+  assert.match(settings, /appUpdateNoticeInfo'\)\?\.addEventListener\('click', openUpdateDetails\)/);
 });
 
 test('suppresses automatic update prompts during the installer relaunch handoff', () => {
@@ -238,4 +240,149 @@ test('Windows sign-in launch honors "Start minimized to tray"', () => {
   assert.match(main, /startedHiddenInTray = shouldStartHiddenInTray\(\);/);
   // Update prompts wait for the user to open the window from the tray.
   assert.match(main, /pendingUpdateManifest/);
+});
+
+function downloadFixture() {
+  const payload = Buffer.from('dflash-setup-payload-for-tests');
+  return {
+    payload,
+    manifest: {
+      ...manifest(),
+      sizeBytes: payload.length,
+      sha512: crypto.createHash('sha512').update(payload).digest('hex'),
+      signature: 'not-checked-by-download',
+    },
+  };
+}
+
+function fakeDownloadFetch(payload, calls) {
+  return async () => {
+    calls.push(Date.now());
+    // Give a second caller time to arrive while this download is running.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return {
+      ok: true,
+      status: 200,
+      body: (async function* body() {
+        yield payload.subarray(0, 8);
+        yield payload.subarray(8);
+      })(),
+    };
+  };
+}
+
+async function withStagingDir(run) {
+  const stagingDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'dflash-update-test-'));
+  try {
+    await run(stagingDir);
+  } finally {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+  }
+}
+
+test('background download, header and Settings share one download', () => withStagingDir(async (stagingDir) => {
+  const { payload, manifest: target } = downloadFixture();
+  const calls = [];
+  const states = [];
+  const service = new UpdateService({
+    manifestUrl: 'https://updates.example.test/latest.json',
+    stagingDir,
+    fetch: fakeDownloadFetch(payload, calls),
+    onStatus: (status) => states.push(status.state),
+  });
+  const [first, second] = await Promise.all([service.stageUpdate(target), service.stageUpdate(target)]);
+  assert.equal(calls.length, 1, 'the installer is fetched once');
+  assert.equal(first, second);
+  assert.deepEqual(await fs.promises.readFile(first), payload);
+  assert.equal(service.getStatus().ready, true);
+  assert.equal(states.at(-1), 'ready');
+  // A later call finds the verified file and does not download again.
+  assert.equal(await service.stageUpdate(target), first);
+  assert.equal(calls.length, 1);
+}));
+
+test('a download cut off by quitting the app does not block the next one', () => withStagingDir(async (stagingDir) => {
+  const { payload, manifest: target } = downloadFixture();
+  const partPath = path.join(stagingDir, `.${target.fileName}.part`);
+  await fs.promises.writeFile(partPath, 'half a file');
+  const service = new UpdateService({
+    manifestUrl: 'https://updates.example.test/latest.json',
+    stagingDir,
+    fetch: fakeDownloadFetch(payload, []),
+  });
+  const staged = await service.stageUpdate(target);
+  assert.deepEqual(await fs.promises.readFile(staged), payload);
+  assert.equal(fs.existsSync(partPath), false);
+}));
+
+test('a failed download can be retried', () => withStagingDir(async (stagingDir) => {
+  const { payload, manifest: target } = downloadFixture();
+  let attempt = 0;
+  const service = new UpdateService({
+    manifestUrl: 'https://updates.example.test/latest.json',
+    stagingDir,
+    fetch: async () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, status: 503, body: null };
+      return { ok: true, status: 200, body: (async function* body() { yield payload; })() };
+    },
+  });
+  await assert.rejects(service.stageUpdate(target), /503/);
+  const staged = await service.stageUpdate(target);
+  assert.deepEqual(await fs.promises.readFile(staged), payload);
+}));
+
+function readSource(...parts) {
+  return fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8');
+}
+
+test('updates download in the background before anyone is asked', () => {
+  const main = readSource('electron', 'main.js');
+  const start = main.indexOf('async function checkAndDownloadUpdate()');
+  const body = main.slice(start, main.indexOf('\n}\n', start));
+  const stageAt = body.indexOf('await updateService.stageUpdate(manifest)');
+  const announceAt = body.lastIndexOf('announceUpdateReady(manifest)');
+  assert.ok(stageAt > 0, 'the automatic check downloads the installer');
+  assert.ok(announceAt > stageAt, 'the user hears about the update only once it is downloaded');
+  assert.doesNotMatch(body, /showUpdatePopup\(/, 'the pop-up is shown only through announceUpdateReady');
+  assert.match(body, /UPDATE_DOWNLOAD_RETRY_MS/, 'a failed download is not fetched again every minute');
+});
+
+test('the user can keep update news in the header only', () => {
+  const main = readSource('electron', 'main.js');
+  const index = readSource('static', 'index.html');
+  const settings = readSource('static', 'js', 'app-settings-live.js');
+  const popup = readSource('electron', 'update-popup.html');
+  const announce = main.slice(main.indexOf('function announceUpdateReady('));
+  assert.match(announce.slice(0, 300), /updateNotice === 'header'\) return;/);
+  // A tray start keeps its pending prompt, and that prompt obeys the setting.
+  assert.match(main, /pendingUpdateManifest = null;\s*\n\s*announceUpdateReady\(manifest\);/);
+  assert.match(index, /id="appSettingsUpdateNotice"/);
+  assert.match(index, /<option value="header">Header notice only<\/option>/);
+  assert.match(index, /id="appUpdateNotice"/);
+  assert.match(index, /id="appUpdateNoticeInstall"[^>]*>Upgrade now</);
+  assert.match(settings, /savePatch\(\{ updateNotice:/);
+  assert.match(settings, /api\.installUpdateNow\(\)/);
+  assert.match(popup, /setAppSettings\(\{ updateNotice: 'header' \}\)/);
+});
+
+test('the update notice setting only takes known values', () => {
+  const { DEFAULTS, normalizeUpdateNotice } = require('../electron/app-settings');
+  assert.equal(DEFAULTS.updateNotice, 'popup');
+  assert.equal(normalizeUpdateNotice('header'), 'header');
+  assert.equal(normalizeUpdateNotice('popup'), 'popup');
+  assert.equal(normalizeUpdateNotice('banner'), 'popup');
+  assert.equal(normalizeUpdateNotice(undefined), 'popup');
+});
+
+test('the update pop-up is a small corner card, not a 500x460 window', () => {
+  const main = readSource('electron', 'main.js');
+  const width = Number(main.match(/const UPDATE_POPUP_WIDTH = (\d+);/)?.[1]);
+  const maxHeight = Number(main.match(/const UPDATE_POPUP_MAX_HEIGHT = (\d+);/)?.[1]);
+  assert.ok(width > 0 && width <= 0.75 * 500, `width ${width}`);
+  assert.ok(maxHeight > 0 && maxHeight <= 0.8 * 460, `max height ${maxHeight}`);
+  assert.doesNotMatch(main, /width: 500,\s*\n\s*height: 460/);
+  assert.match(main, /frame: false/);
+  assert.match(main, /ipcMain\.handle\('update-popup:fit'/);
+  assert.match(main, /event\.sender !== updatePopupWindow\.webContents/);
 });

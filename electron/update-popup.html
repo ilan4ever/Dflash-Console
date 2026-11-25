@@ -7,131 +7,131 @@
   <title>DFlash Console update</title>
   <style>
     :root {
-      --bg: #0b0f14;
-      --panel: #121a24;
-      --border: #223042;
+      --bg: #0d141d;
+      --border: #24364a;
       --text: #e8eef6;
       --muted: #8aa2c0;
       --accent: #2dd4bf;
       --accent-hover: #2ee6cf;
       --accent-text: #06231f;
-      --danger: #f87171;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; overflow: hidden; scrollbar-width: none; -ms-overflow-style: none; }
-    /* This dialog never shows scrollbars. If one is ever forced, keep it dark. */
-    ::-webkit-scrollbar { width: 10px; height: 10px; }
-    ::-webkit-scrollbar-track { background: #0b0f14; }
-    ::-webkit-scrollbar-thumb { background: #2a3a52; border-radius: 999px; }
-    ::-webkit-scrollbar-thumb:hover { background: #33465f; }
-    html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    html, body { overflow: hidden; scrollbar-width: none; }
+    ::-webkit-scrollbar { display: none; width: 0; height: 0; }
     body {
       background: var(--bg);
       color: var(--text);
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
       user-select: none;
       -webkit-user-select: none;
     }
+    /* The window has no frame: this card is the whole window. */
     .card {
-      width: 100%;
-      background: linear-gradient(180deg, #101a26 0%, #0b1017 100%);
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 22px 24px;
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+      border-top: 3px solid var(--accent);
+      padding: 12px 14px 12px 16px;
     }
-    .brand {
+    .top {
       display: flex;
       align-items: center;
-      gap: 10px;
-      font-weight: 600;
-      letter-spacing: 0.4px;
-      font-size: 13px;
-      color: var(--accent);
-      text-transform: uppercase;
+      gap: 8px;
+      -webkit-app-region: drag;
     }
+    .brand {
+      flex: 1;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .close {
+      -webkit-app-region: no-drag;
+      width: 22px;
+      height: 22px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 22px;
+      cursor: pointer;
+    }
+    .close:hover { background: #1c2836; color: var(--text); }
     h1 {
-      margin-top: 14px;
-      font-size: 19px;
+      margin-top: 6px;
+      font-size: 16px;
       line-height: 1.3;
       font-weight: 600;
     }
-    .msg { margin-top: 8px; color: var(--text); font-size: 14px; line-height: 1.5; }
+    .msg { margin-top: 3px; color: var(--muted); font-size: 13px; line-height: 1.45; }
     .notes {
-      margin-top: 12px;
-      padding: 10px 12px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      margin-top: 8px;
+      padding: 6px 9px;
+      border-left: 2px solid var(--border);
       color: var(--muted);
       font-size: 12px;
-      line-height: 1.5;
-      max-height: 150px;
+      line-height: 1.45;
+      max-height: 54px;
       overflow-y: auto;
-      scrollbar-width: none;
-      -ms-overflow-style: none;
+      white-space: pre-line;
       user-select: text;
       -webkit-user-select: text;
     }
-    .notes::-webkit-scrollbar { display: none; width: 0; height: 0; }
-    .progress-wrap { display: none; margin-top: 14px; }
-    .progress-wrap.visible { display: block; }
-    .progress-track {
-      height: 6px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 999px;
-      overflow: hidden;
+    .progress { display: none; margin-top: 8px; }
+    .progress.visible { display: block; }
+    .track { height: 4px; background: rgba(255, 255, 255, 0.08); border-radius: 999px; overflow: hidden; }
+    .fill { height: 100%; width: 0%; background: var(--accent); transition: width 0.2s ease; }
+    .progress-label { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .actions { margin-top: 12px; display: flex; align-items: center; gap: 8px; }
+    .quiet {
+      margin-right: auto;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 11px;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+      padding: 0;
     }
-    .progress-fill {
-      height: 100%;
-      width: 0%;
-      background: var(--accent);
-      border-radius: 999px;
-      transition: width 0.2s ease;
-    }
-    .progress-label { margin-top: 6px; color: var(--muted); font-size: 12px; }
-    .actions { margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end; }
-    button {
+    .quiet:hover { color: var(--text); }
+    button.btn {
       font: inherit;
       font-size: 13px;
       font-weight: 600;
-      padding: 9px 16px;
-      border-radius: 8px;
+      padding: 6px 14px;
+      border-radius: 7px;
       border: 1px solid var(--border);
       background: #1a2432;
       color: var(--text);
       cursor: pointer;
     }
-    button:hover { background: #223044; }
-    button.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--accent-text);
-    }
-    button.primary:hover { background: var(--accent-hover); }
+    button.btn:hover { background: #223044; }
+    button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+    button.btn.primary:hover { background: var(--accent-hover); }
     button:disabled { opacity: 0.55; cursor: default; }
-    .hint { margin-top: 12px; color: var(--muted); font-size: 11px; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="brand">⚡ DFlash Console</div>
-    <h1 id="title">A new version is available</h1>
-    <p class="msg" id="message">DFlash Console is ready to update.</p>
+  <div class="card" id="card">
+    <div class="top">
+      <div class="brand">⚡ DFlash Console</div>
+      <button class="close" id="closeBtn" title="Later" aria-label="Later">✕</button>
+    </div>
+    <h1 id="title">Update ready</h1>
+    <p class="msg" id="message">Downloaded and verified. The app closes, installs it, and reopens.</p>
     <div class="notes" id="notes" hidden></div>
-    <div class="progress-wrap" id="progressWrap">
-      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
-      <div class="progress-label" id="progressLabel">Downloading…</div>
+    <div class="progress" id="progress">
+      <div class="track"><div class="fill" id="progressFill"></div></div>
+      <div class="progress-label" id="progressLabel"></div>
     </div>
     <div class="actions">
-      <button id="laterBtn">Later</button>
-      <button id="installBtn" class="primary">Install now</button>
+      <button class="quiet" id="headerOnlyBtn" title="Stop showing this window; the app header still shows ready updates">Header only from now on</button>
+      <button class="btn" id="laterBtn">Later</button>
+      <button class="btn primary" id="installBtn">Upgrade now</button>
     </div>
-    <p class="hint" id="hint">Choosing “Later” will remind you again the next time DFlash Console starts.</p>
   </div>
 
   <script>
@@ -141,72 +141,92 @@
       const notes = String(params.get('notes') || '').trim();
       const api = window.DFlashDesktop;
 
+      const card = document.getElementById('card');
       const title = document.getElementById('title');
       const message = document.getElementById('message');
       const notesEl = document.getElementById('notes');
-      const progressWrap = document.getElementById('progressWrap');
+      const progress = document.getElementById('progress');
       const progressFill = document.getElementById('progressFill');
       const progressLabel = document.getElementById('progressLabel');
       const installBtn = document.getElementById('installBtn');
       const laterBtn = document.getElementById('laterBtn');
+      const closeBtn = document.getElementById('closeBtn');
+      const headerOnlyBtn = document.getElementById('headerOnlyBtn');
 
-      if (version) {
-        title.textContent = 'DFlash Console ' + version + ' is available';
-        message.textContent = 'A new version of DFlash Console is ready. Install it now, or choose Later to be reminded next time the app starts.';
-      }
+      if (version) title.textContent = 'Version ' + version + ' is ready';
       if (notes) {
         notesEl.textContent = notes;
         notesEl.hidden = false;
       }
 
+      // The window starts hidden and takes the height of this card.
+      function fit() {
+        if (api && api.fitUpdatePopup) {
+          api.fitUpdatePopup(Math.ceil(card.getBoundingClientRect().height)).catch(() => {});
+        }
+      }
+      fit();
+
+      function setBusy(busy) {
+        installBtn.disabled = busy;
+        laterBtn.disabled = busy;
+        closeBtn.disabled = busy;
+        headerOnlyBtn.disabled = busy;
+      }
+
       function setProgress(percentage, label) {
-        progressWrap.classList.add('visible');
+        const wasHidden = !progress.classList.contains('visible');
+        progress.classList.add('visible');
         progressFill.style.width = Math.max(0, Math.min(100, percentage || 0)) + '%';
-        if (label) progressLabel.textContent = label;
+        progressLabel.textContent = label || '';
+        if (wasHidden) fit();
       }
 
       if (api && api.onUpdateStatus) {
         api.onUpdateStatus((status) => {
           if (!status) return;
           if (status.state === 'downloading') {
+            // Only when the background download had not finished yet.
             const pct = Number(status.percentage || (
               status.totalBytes ? (Number(status.receivedBytes || 0) / Number(status.totalBytes)) * 100 : 0
             ));
             setProgress(pct, 'Downloading… ' + Math.round(Math.max(0, Math.min(100, pct))) + '%');
-            installBtn.disabled = true;
-            laterBtn.disabled = true;
+            setBusy(true);
           } else if (status.state === 'installing') {
-            setProgress(100, 'Installing… DFlash Console will restart automatically.');
-            installBtn.disabled = true;
-            laterBtn.disabled = true;
-          } else if (status.state === 'ready') {
-            setProgress(100, 'Downloaded. Click Install now to finish.');
-            installBtn.disabled = false;
-            laterBtn.disabled = false;
+            setProgress(100, 'Installing… DFlash Console reopens by itself.');
+            setBusy(true);
           }
         });
       }
 
-      installBtn.addEventListener('click', async () => {
-        installBtn.disabled = true;
-        laterBtn.disabled = true;
-        try {
-          if (api && api.installUpdateNow) {
-            await api.installUpdateNow();
-          } else {
-            installBtn.textContent = 'Installing…';
-          }
-        } catch (err) {
-          message.textContent = 'Install failed: ' + (err && err.message ? err.message : 'unknown error');
-          installBtn.disabled = false;
-          laterBtn.disabled = false;
-        }
-      });
-
-      laterBtn.addEventListener('click', () => {
+      function later() {
         try {
           if (api && api.deferUpdate) api.deferUpdate();
         } catch (_err) { /* best-effort */ }
+      }
+
+      installBtn.addEventListener('click', async () => {
+        setBusy(true);
+        try {
+          if (api && api.installUpdateNow) await api.installUpdateNow();
+        } catch (err) {
+          const reason = String(err && err.message ? err.message : 'unknown error')
+            .replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '');
+          message.textContent = 'Could not start the install: ' + reason;
+          setBusy(false);
+          fit();
+        }
+      });
+      laterBtn.addEventListener('click', later);
+      closeBtn.addEventListener('click', later);
+      headerOnlyBtn.addEventListener('click', async () => {
+        try {
+          if (api && api.setAppSettings) await api.setAppSettings({ updateNotice: 'header' });
+        } catch (_err) { /* the header notice still shows the update */ }
+        later();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !laterBtn.disabled) later();
       });
     })();
   </script>
