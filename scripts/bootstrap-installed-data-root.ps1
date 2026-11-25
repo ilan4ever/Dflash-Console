@@ -72,7 +72,10 @@ if (-not (Test-Path -LiteralPath $configPath)) {
             $config[$prop] = $template.$prop
         }
     }
-    ($config | ConvertTo-Json -Depth 8) + "`n" | Set-Content -LiteralPath $configPath -Encoding UTF8
+    # No byte-order mark: Windows PowerShell 5.1 (used when PowerShell 7 is not
+    # installed) adds one with Set-Content -Encoding UTF8, and Python's json
+    # reader then rejects the file.
+    [System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 8) + "`n", (New-Object System.Text.UTF8Encoding $false))
 }
 
 $permissions = Join-Path $PSScriptRoot 'set-install-permissions.ps1'
