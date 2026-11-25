@@ -219,6 +219,22 @@ test('suppresses automatic update prompts during the installer relaunch handoff'
   assert.equal(shouldSuppressAutomaticUpdateCheck({ argv: ['electron'] }), false);
 });
 
+test('the quiet period after an install ends, whatever the flags say', () => {
+  const { POST_INSTALL_QUIET_MS } = require('../electron/update-lifecycle');
+  const stuck = {
+    argv: ['electron', '--dflash-post-update'],
+    postInstallWelcomeActive: true,
+    postInstallSetupActive: true,
+  };
+  assert.equal(shouldSuppressAutomaticUpdateCheck({ ...stuck, uptimeMs: 60 * 1000 }), true);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({ ...stuck, uptimeMs: POST_INSTALL_QUIET_MS }), false);
+  assert.equal(shouldSuppressAutomaticUpdateCheck({ ...stuck, uptimeMs: POST_INSTALL_QUIET_MS * 6 }), false);
+  const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
+  assert.equal((main.match(/uptimeMs: process\.uptime\(\) \* 1000/g) || []).length, 2);
+  // A normal start (no post-install argument) clears a leftover welcome flag.
+  assert.match(main, /else if \(loadAppSettings\(\)\.postInstallWelcome\) \{[\s\S]{0,400}saveAppSettings\(\{ postInstallWelcome: false \}\)/);
+});
+
 test('wires the post-install guard into both automatic check and popup paths', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.js'), 'utf8');
   assert.equal((main.match(/shouldSuppressAutomaticUpdateCheck\(\{/g) || []).length, 2);

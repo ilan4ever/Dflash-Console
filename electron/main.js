@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipcMain } = require('electron');
 const path = require('path');
@@ -56,6 +56,11 @@ function syncPostInstallWelcomeFlag() {
     saveAppSettings({ postInstallSetup: true, postInstallWelcome: false });
   } else if (hasPostInstallLaunchArg()) {
     saveAppSettings({ postInstallWelcome: true, postInstallSetup: false });
+  } else if (loadAppSettings().postInstallWelcome) {
+    // A normal start: the moment right after an update has passed. Without
+    // this the flag outlived quitting from the tray and kept the automatic
+    // update check off (and the Models view forced) at every later start.
+    saveAppSettings({ postInstallWelcome: false });
   }
   const settings = loadAppSettings();
   postInstallWelcomeActive = Boolean(settings.postInstallWelcome);
@@ -378,6 +383,7 @@ async function checkAndDownloadUpdate() {
     argv: process.argv,
     postInstallWelcomeActive,
     postInstallSetupActive,
+    uptimeMs: process.uptime() * 1000,
   })) return;
   const status = updateService.getStatus();
   if (status.ready) {
@@ -427,6 +433,7 @@ function showUpdatePopup(manifest) {
     argv: process.argv,
     postInstallWelcomeActive,
     postInstallSetupActive,
+    uptimeMs: process.uptime() * 1000,
   })) return;
   const version = String(manifest.version || '').trim();
   if (!version || version === updatePopupShownFor) return;

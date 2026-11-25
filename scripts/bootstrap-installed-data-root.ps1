@@ -82,6 +82,9 @@ $permissions = Join-Path $PSScriptRoot 'set-install-permissions.ps1'
 if (-not (Test-Path -LiteralPath $permissions)) {
     throw "Installer permission script is missing: $permissions"
 }
-& $permissions -Path $DataRoot -Kind data -Recurse
+# Only the items copied above (plus the folder itself, which new files inherit).
+# A full walk also covered .venv and runtimes\ and made every setup-based
+# update wait minutes.
+& $permissions -Path $DataRoot -Kind data -Recurse -Only (($items + @('models', 'logs')) -join ',')
 
 Write-Output $DataRoot

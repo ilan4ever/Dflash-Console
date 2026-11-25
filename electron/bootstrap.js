@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -142,14 +142,50 @@ function ensureInstallPermissions(destRoot) {
   if (process.platform !== 'win32') return;
   const script = path.join(destRoot, 'scripts', 'set-install-permissions.ps1');
   if (!fs.existsSync(script)) return;
+  // Only the runtime items this function just copied. The folder itself is
+  // set too, and new files inherit from it. Walking the whole data root also
+  // walked .venv and runtimes\ (tens of thousands of files), which hit the
+  // 2-minute timeout on every first start of a new version.
   const result = spawnSync(
     'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Path', destRoot, '-Kind', 'data', '-Recurse'],
+    [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+      '-Path', destRoot, '-Kind', 'data', '-Recurse', '-Only', RUNTIME_ITEMS.join(','),
+    ],
     { windowsHide: true, timeout: 120000 },
   );
   if (result.status !== 0) {
     const detail = `${result.stderr || result.stdout || ''}`.trim();
     console.error(`Could not set Console folder access.${detail ? ` ${detail}` : ''}`);
+  }
+  repairWholeDataRootOnce(destRoot, script);
+}
+
+// Installs older than 0.3.298 can have a restricted .venv that only a walk of
+// the whole data root repairs. Do that walk once, in the background so the
+// app does not wait for it, and remember that it finished.
+const FULL_ACCESS_STAMP = '.install-access-full';
+
+function repairWholeDataRootOnce(destRoot, script) {
+  const stamp = path.join(destRoot, FULL_ACCESS_STAMP);
+  if (fs.existsSync(stamp)) return;
+  try {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Path', destRoot, '-Kind', 'data', '-Recurse'],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    child.on('exit', (code) => {
+      if (code !== 0) return;
+      try {
+        fs.writeFileSync(stamp, `${new Date().toISOString()}\n`, 'utf8');
+      } catch (_err) {
+        // Try again at the next refresh.
+      }
+    });
+    child.on('error', () => {});
+  } catch (_err) {
+    // Best effort: the quick pass above already covered the new files.
   }
 }
 

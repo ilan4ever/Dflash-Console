@@ -6,7 +6,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Path,
     [ValidateSet('data', 'program')][string]$Kind = 'data',
     [switch]$Shared,
-    [switch]$Recurse
+    [switch]$Recurse,
+    # Comma-separated child names. With -Recurse, only these children are
+    # walked. The app and setup pass the runtime items they just copied: the
+    # Python environments (.venv, runtimes) hold tens of thousands of files,
+    # were set when they were created, and walking them took over 2 minutes.
+    [string]$Only = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +68,10 @@ if ($Kind -eq 'program' -and $Shared) {
 
 if ($Recurse) {
     $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+    $onlyNames = @($Only -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($onlyNames.Count -gt 0) {
+        $children = @($children | Where-Object { $onlyNames -contains $_.Name })
+    }
     foreach ($child in $children) {
         # Weight files stay as they are. New downloads inherit this folder.
         if ($child.PSIsContainer -and $child.Name -eq 'models') {
