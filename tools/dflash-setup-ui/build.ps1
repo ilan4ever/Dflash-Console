@@ -60,6 +60,8 @@ $compilerArgs += @(
     (Join-Path $srcDir "SetupForm.cs"),
     (Join-Path $srcDir "InstallFileLocks.cs"),
     (Join-Path $srcDir "UninstallOptionsForm.cs"),
+    (Join-Path $srcDir "AppLayout.cs"),
+    (Join-Path $srcDir "PrepareMode.cs"),
     "$versionCs"
 )
 & $csc @compilerArgs

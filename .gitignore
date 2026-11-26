@@ -55,6 +55,7 @@ runtimes/*
 tools/dflash-setup-ui/SetupVersion.cs
 tools/dflash-setup-ui/bin/
 tools/dflash-setup-ui/bin_payload/
+tools/dflash-launcher/bin/
 
 # Python package build
 dist-pypi/

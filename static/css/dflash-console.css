@@ -194,6 +194,76 @@ select {
   display: none;
 }
 
+/* Desktop app update, downloaded in the background and ready to install. */
+.df-app-update-notice {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: stretch;
+  margin-right: 8px;
+  border: 1px solid rgba(61, 143, 111, 0.6);
+  border-radius: 999px;
+  background: rgba(61, 143, 111, 0.14);
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.df-app-update-notice.hidden {
+  display: none;
+}
+
+.df-app-update-notice button {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.df-app-update-notice-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #b7e4cf;
+  background: transparent;
+}
+
+.df-app-update-notice-info:hover {
+  background: rgba(61, 143, 111, 0.16);
+}
+
+.df-app-update-notice-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5fd3a3;
+  box-shadow: 0 0 0 3px rgba(95, 211, 163, 0.18);
+}
+
+.df-app-update-notice-go {
+  color: #04150f;
+  background: #5fd3a3;
+}
+
+.df-app-update-notice-go:hover:not(:disabled) {
+  background: #7ae0b6;
+}
+
+.df-app-update-notice-go.hidden {
+  display: none;
+}
+
+/* Downloading or installing in the background: a quiet pulse, no button. */
+.df-app-update-notice.is-working .df-app-update-notice-dot {
+  animation: df-app-update-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes df-app-update-pulse {
+  50% { opacity: 0.35; }
+}
+
 .lm-status-feed {
   flex: 0 0 auto;
   width: min(420px, 38vw);
@@ -3356,6 +3426,12 @@ body.lm-resizing-logs {
   text-transform: uppercase;
 }
 
+.df-update-notes {
+  white-space: pre-line;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 .df-update-badge {
   display: inline-flex;
   align-items: center;
@@ -3497,6 +3573,18 @@ body.lm-resizing-logs {
 
 .lm-settings-nav-section.hidden {
   display: none;
+}
+
+/* Keep the count beside the label: inline, it wrapped onto its own line. */
+.lm-settings-nav-item:not(.hidden):has(> .lm-settings-nav-badge:not(.hidden)) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lm-settings-nav-item:has(> .lm-settings-nav-badge:not(.hidden)) > .lm-settings-nav-badge {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .lm-settings-nav-badge {

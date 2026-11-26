@@ -16,6 +16,8 @@ const STATUS = Object.freeze({
   CHECKING: 'checking',
   AVAILABLE: 'available',
   DOWNLOADING: 'downloading',
+  // Installing into its own folder beside the running version.
+  PREPARING: 'preparing',
   READY: 'ready',
   INSTALLING: 'installing',
   UP_TO_DATE: 'up-to-date',
@@ -56,6 +58,7 @@ class UpdateService {
     this.helperPath = options.helperPath || path.join(__dirname, 'update-helper.ps1');
     this.stagingDir = this.config.stagingDir || path.join(os.tmpdir(), 'DFlash-Console-updates');
     this.manifest = null;
+    this.stagePromise = null;
     this.statusValue = {
       state: 'idle',
       currentVersion: this.currentVersion || '',
@@ -143,6 +146,9 @@ class UpdateService {
     });
     if (!response.ok || !response.body) throw new Error(`Update download failed (${response.status})`);
     this.status(STATUS.DOWNLOADING, { manifest, receivedBytes: 0, totalBytes: manifest.sizeBytes });
+    // A download cut off by quitting the app leaves its .part file behind.
+    // Only one download runs at a time (stageUpdate), so it is safe to drop.
+    await fs.promises.rm(tempPath, { force: true });
     const file = fs.createWriteStream(tempPath, { flags: 'wx' });
     let receivedBytes = 0;
     try {
@@ -209,7 +215,18 @@ class UpdateService {
     return stagedPath;
   }
 
-  async stageUpdate(manifest) {
+  // The background download, the header notice and Settings can all ask for
+  // the installer. They share one download instead of racing on the same file.
+  stageUpdate(manifest) {
+    if (!this.stagePromise) {
+      this.stagePromise = this.stageUpdateOnce(manifest).finally(() => {
+        this.stagePromise = null;
+      });
+    }
+    return this.stagePromise;
+  }
+
+  async stageUpdateOnce(manifest) {
     const target = manifest || this.manifest || await this.checkForUpdate();
     if (!target) throw new Error('No newer DFlash Console release is available.');
     const resumed = await this.resumeStagedUpdate(target);

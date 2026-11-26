@@ -17,7 +17,7 @@
         <div class="df-brand-text">
           <div class="df-brand-title-row">
             <span class="df-brand-title">DFlash Console</span>
-            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.300</span>
+            <span class="df-app-version" id="dfAppVersion" title="DFlash Console version">v0.3.301</span>
           </div>
         </div>
       </div>
@@ -100,6 +100,13 @@
       <div class="lm-sysbar-row">
         <div class="lm-sysbar-track" id="sysbarTrack" aria-live="polite"></div>
         <div class="lm-sysbar-spacer" aria-hidden="true"></div>
+        <div class="df-app-update-notice hidden" id="appUpdateNotice" role="status" aria-live="polite">
+          <button type="button" class="df-app-update-notice-info" id="appUpdateNoticeInfo" title="Show what is in this update">
+            <span class="df-app-update-notice-dot" aria-hidden="true"></span>
+            <span id="appUpdateNoticeText">Update ready</span>
+          </button>
+          <button type="button" class="df-app-update-notice-go" id="appUpdateNoticeInstall" title="Close DFlash Console, install the update, and reopen">Upgrade now</button>
+        </div>
         <div class="lm-server-link-badge developer hidden" id="devServerBadge" role="status" title="Developer build — served from the git checkout">Developer</div>
         <div class="lm-server-link-badge starting" id="serverLinkBadge" role="status" aria-live="polite" title="Starting the Console API and checking engine services…">Starting…</div>
         <button type="button" class="lm-model-updates-badge hidden" id="modelUpdatesBadge" aria-live="polite" title="Open models with a newer Hugging Face version ready to install"></button>
@@ -557,7 +564,7 @@ try {
               </article>
               <article class="df-about-meta-card">
                 <span class="df-about-meta-label">Version</span>
-                <strong id="dfAboutVersion">v0.3.300</strong>
+                <strong id="dfAboutVersion">v0.3.301</strong>
                 <span>Current Console release</span>
               </article>
               <article class="df-about-meta-card">
@@ -876,6 +883,13 @@ try {
                     <div><strong>Check for updates automatically</strong><p class="lm-setting-desc">Allow DFlash Console to check periodically. You can always check manually below.</p></div>
                     <label class="lm-toggle small"><input type="checkbox" id="appSettingsAllowAutomaticUpdates" checked><span class="lm-toggle-track"></span></label>
                   </div>
+                  <div class="lm-setting-row">
+                    <div><strong>When an update is ready</strong><p class="lm-setting-desc">New versions download in the background. The header always shows an “Upgrade now” notice; the pop-up is optional.</p></div>
+                    <select class="lm-select" id="appSettingsUpdateNotice" aria-label="How to announce a downloaded update">
+                      <option value="popup">Pop-up and header notice</option>
+                      <option value="header">Header notice only</option>
+                    </select>
+                  </div>
                 </section>
                 <section class="lm-settings-section">
                   <div class="lm-settings-section-head">
@@ -915,6 +929,7 @@ try {
                   <button class="lm-btn ghost small" type="button" id="appUpdateCheckBtn">Check for updates</button>
                   <button class="lm-btn ghost small hidden" type="button" id="appUpdateDownloadBtn">Download update</button>
                   <button class="lm-btn primary small hidden" type="button" id="appUpdateInstallBtn">Install update</button>
+                  <button class="lm-btn ghost small hidden" type="button" id="appUpdateFullSetupBtn" title="Close DFlash Console and install with the setup window instead">Use the full setup</button>
                 </div>
               </section>
               </div>
@@ -2128,15 +2143,14 @@ try {
             <div class="df-update-kicker">DFlash Console update</div>
             <h2 id="desktopUpdateTitle">A new version is ready</h2>
           </div>
-          <span class="df-update-badge" aria-hidden="true">↗</span>
         </div>
         <div class="df-update-body">
           <p id="desktopUpdateMessage">The update has been downloaded and verified.</p>
-          <p class="lm-setting-desc" id="desktopUpdateNotes">DFlash Console will close briefly and reopen after installation.</p>
+          <p class="lm-setting-desc df-update-notes" id="desktopUpdateNotes">DFlash Console will close briefly and reopen after installation.</p>
         </div>
         <div class="lm-modal-footer df-update-footer">
           <button class="lm-btn ghost" type="button" id="desktopUpdateLater">Later</button>
-          <button class="lm-btn df-btn-accent" type="button" id="desktopUpdateInstall">Install update</button>
+          <button class="lm-btn df-btn-accent" type="button" id="desktopUpdateInstall">Upgrade now</button>
         </div>
       </div>
     </div>

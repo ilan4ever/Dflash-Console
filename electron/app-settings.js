@@ -12,6 +12,9 @@ const DEFAULTS = {
   showSplashOnStartup: true,
   notifyOnEngineReady: false,
   allowAutomaticUpdates: true,
+  // How a downloaded update is announced: 'popup' shows a small window and
+  // the header notice; 'header' shows only the notice in the app header.
+  updateNotice: 'popup',
   uiZoomFactor: 1,
   postInstallWelcome: false,
   postInstallSetup: false,
@@ -23,11 +26,18 @@ function settingsPath() {
   return path.join(app.getPath('userData'), 'app-settings.json');
 }
 
+const UPDATE_NOTICE_MODES = ['popup', 'header'];
+
+function normalizeUpdateNotice(value) {
+  return UPDATE_NOTICE_MODES.includes(value) ? value : DEFAULTS.updateNotice;
+}
+
 function loadAppSettings() {
   if (cached) return { ...cached };
   try {
     const parsed = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
     cached = { ...DEFAULTS, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    cached.updateNotice = normalizeUpdateNotice(cached.updateNotice);
   } catch (_err) {
     cached = { ...DEFAULTS };
   }
@@ -40,6 +50,7 @@ function saveAppSettings(patch) {
   if (!next.minimizeToTray) {
     next.startMinimized = false;
   }
+  next.updateNotice = normalizeUpdateNotice(next.updateNotice);
   const startupRequested = Boolean(next.startWithWindows);
   const startupRegistered = applyWindowsStartup(startupRequested);
   if (startupRequested && !startupRegistered) {
@@ -58,6 +69,9 @@ function resolveStartupExe() {
   // runs the app from %TEMP%\7z... and registering that path makes Windows
   // launch a stale temp copy at every login (duplicate instances, repeated
   // update prompts after install). Prefer the real installed executable.
+  // Side-by-side installs: the launcher keeps one path across updates.
+  const launcher = String(process.env.DFLASH_LAUNCHER_PATH || '').trim();
+  if (launcher && fs.existsSync(launcher)) return launcher;
   const currentExe = app.getPath('exe') || '';
   const tempDirs = [process.env.TEMP, process.env.TMP]
     .map((dir) => String(dir || '').toLowerCase())
@@ -88,7 +102,7 @@ function applyWindowsStartup(enabled) {
   // DFlash Console did not start (2026-11-26). Only the installed app manages
   // Windows startup; in the developer copy the setting stays off.
   if (!app.isPackaged) return !enabled;
-  const exe = enabled ? resolveStartupExe() : (app.getPath('exe') || '');
+  const exe = (enabled ? resolveStartupExe() : (resolveStartupExe() || app.getPath('exe'))) || '';
   if (enabled && (!exe || !fs.existsSync(exe))) {
     console.error('Cannot enable Windows startup: installed executable was not found.');
     return false;
@@ -209,6 +223,7 @@ function syncStartupRegistration() {
 
 module.exports = {
   DEFAULTS,
+  normalizeUpdateNotice,
   loadAppSettings,
   saveAppSettings,
   syncStartupRegistration,

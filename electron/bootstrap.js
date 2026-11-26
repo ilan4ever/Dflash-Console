@@ -195,7 +195,7 @@ function repairWholeDataRootOnce(destRoot, script) {
     // try/finally: a script that throws ends the whole command otherwise, and
     // the "running" marker would hold off the retry for 15 minutes.
     const command = '$ok = $false; '
-      + `try { $LASTEXITCODE = 0; & ${psQuote(script)} -Path ${psQuote(destRoot)} -Kind data -Recurse; `
+      + `try { $LASTEXITCODE = 0; & ${psQuote(script)} -Path ${psQuote(destRoot)} -Kind data -Recurse -Force; `
       + '$ok = $? -and ($LASTEXITCODE -eq 0) } '
       + `finally { if ($ok) { Set-Content -LiteralPath ${psQuote(stamp)} -Value (Get-Date -Format o) }; `
       + `Remove-Item -LiteralPath ${psQuote(running)} -Force -ErrorAction SilentlyContinue }`;
