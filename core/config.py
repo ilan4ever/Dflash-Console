@@ -756,7 +756,10 @@ def _inherit_legacy_api_providers(data: dict[str, Any]) -> None:
 def load_config() -> dict[str, Any]:
     if not CONFIG_PATH.is_file():
         return {'ui_port': 8900, 'gateway_port': DEFAULT_GATEWAY_PORT, 'dflash_root': str(ROOT), 'servers': []}
-    with CONFIG_PATH.open(encoding='utf-8') as fh:
+    # utf-8-sig also accepts a byte-order mark. Windows PowerShell 5.1 wrote one
+    # into config.json on fresh installs (setup before 0.3.301), which made
+    # every API call fail with "Unexpected UTF-8 BOM".
+    with CONFIG_PATH.open(encoding='utf-8-sig') as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError('config.json must be a JSON object')

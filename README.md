@@ -22,7 +22,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.300
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.301
 
 ## Download (Windows)
 
@@ -172,7 +172,9 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.300)
+### Recent improvements (v0.3.301)
+
+- **First start after a fresh install** — on PCs without PowerShell 7, the installer wrote `config.json` in a form the Console could not read, and the server did not start. The installer now writes it correctly, and the Console reads a file written the old way
 
 - **In-app update** — no longer fails with "File copy failed (code 11)" when the old app takes a few seconds to close; the installer waits for it, and offers **Retry** if files are still in use
 - **Sign-in and machine keys** — **Settings → Sign-in & keys** sets an owner password and per-computer machine keys. On one PC nothing changes, and the Console still listens only on this PC. A request relayed by a reverse proxy on this PC (`tailscale serve`, nginx, cloudflared) now needs sign-in. Shutdown, file browsing, config import and export, and engine install only work on the Console's own PC
