@@ -101,9 +101,16 @@
     const state = String(status?.state || 'idle');
     const available = Boolean(status?.updateAvailable || status?.manifest);
     const ready = Boolean(status?.ready || state === 'ready');
+    const skipped = isSkipped(status);
     if (title) {
       title.textContent = state === 'checking'
         ? 'Checking for updates…'
+        : skipped && state === 'error'
+          ? `Version ${updateVersion(status)} did not start on this PC`
+        : state === 'preparing'
+          ? `Installing version ${status.latestVersion || 'new'} in the background…`
+        : ready && restartOnly(status)
+          ? `Version ${status.latestVersion || 'new'} is installed`
         : ready
           ? `Version ${status.latestVersion || 'new'} is ready`
           : available
@@ -122,9 +129,13 @@
         ? `${Math.round(percentage)}%`
         : '';
     }
-    if (check) check.disabled = state === 'checking' || state === 'downloading' || state === 'installing';
-    download?.classList.toggle('hidden', !available || ready || state === 'downloading');
+    if (check) check.disabled = ['checking', 'downloading', 'preparing', 'installing'].includes(state);
+    download?.classList.toggle('hidden', !available || ready || skipped || state === 'downloading' || state === 'preparing');
     install?.classList.toggle('hidden', !ready);
+    if (install) install.textContent = restartOnly(status) ? 'Restart to update' : 'Install update';
+    // A way out if the fast path ever misbehaves, and the only way to try a
+    // version that failed here again (the rollback notice points to it).
+    el('appUpdateFullSetupBtn')?.classList.toggle('hidden', !((ready && restartOnly(status)) || skipped));
     renderUpdateNotice(status);
   }
 
@@ -139,24 +150,56 @@
 
   // Header notice: the installer was downloaded and verified in the
   // background, so "Upgrade now" starts the install straight away.
+  function downloadPercent(status) {
+    const pct = Number(status?.percentage || (
+      status?.totalBytes ? (Number(status.receivedBytes || 0) / Number(status.totalBytes)) * 100 : 0
+    ));
+    return Math.round(Math.max(0, Math.min(100, pct)));
+  }
+
+  // The new version is already installed beside this one: a restart is all
+  // that is left (side-by-side updates).
+  function restartOnly(status) {
+    return Boolean(status?.restartToUpdate);
+  }
+
+  // A version that rolled back on this PC is not installed on its own; only the
+  // full setup, the user's own choice, installs it.
+  function isSkipped(status) {
+    const version = updateVersion(status);
+    return Boolean(version && !status?.ready && String(status?.skippedVersion || '') === version);
+  }
+
+  // Header notice. Every stage shows here and nothing opens by itself:
+  // downloading → installing in the background → ready.
   function renderUpdateNotice(status) {
     const notice = el('appUpdateNotice');
     if (!notice) return;
     const state = String(status?.state || '');
     const installing = state === 'installing' || installStarting;
-    const ready = Boolean(status?.ready || state === 'ready');
-    notice.classList.toggle('hidden', !(ready || installing));
+    const downloading = state === 'downloading';
+    const preparing = state === 'preparing';
+    const ready = !downloading && !preparing && Boolean(status?.ready || state === 'ready');
+    notice.classList.toggle('hidden', !(ready || installing || downloading || preparing));
+    notice.classList.toggle('is-working', downloading || preparing || installing);
     const text = el('appUpdateNoticeText');
     const version = updateVersion(status);
     if (text) {
-      text.textContent = installing
-        ? 'Installing update…'
-        : version ? `Version ${version} ready` : 'Update ready';
+      if (installing) {
+        text.textContent = restartOnly(status) ? 'Restarting…' : 'Installing update…';
+      } else if (downloading) {
+        text.textContent = `Downloading update · ${downloadPercent(status)}%`;
+      } else if (preparing) {
+        text.textContent = 'Installing update…';
+      } else {
+        text.textContent = version ? `Version ${version} ready` : 'Update ready';
+      }
     }
     const go = el('appUpdateNoticeInstall');
     if (go) {
-      go.disabled = installing;
-      go.classList.toggle('hidden', installing);
+      go.textContent = restartOnly(status) ? 'Restart to update' : 'Upgrade now';
+      go.disabled = installing || !ready;
+      go.classList.toggle('hidden', installing || !ready);
     }
   }
 
@@ -178,7 +221,13 @@
     const notes = el('desktopUpdateNotes');
     const title = el('desktopUpdateTitle');
     if (title) title.textContent = version ? `Version ${version} is ready` : 'A new version is ready';
-    if (message) message.textContent = 'Downloaded and verified. DFlash Console closes, installs it, and reopens.';
+    if (message) {
+      message.textContent = restartOnly(status)
+        ? 'Installed in the background. Restart to finish; it takes a few seconds and loaded models reload afterwards.'
+        : 'Downloaded and verified. DFlash Console closes, installs it, and reopens.';
+    }
+    const confirm = el('desktopUpdateInstall');
+    if (confirm) confirm.textContent = restartOnly(status) ? 'Restart to update' : 'Upgrade now';
     if (notes) notes.textContent = status.releaseNotes || '';
     notes?.classList.toggle('hidden', !status.releaseNotes);
     el('desktopUpdateModal')?.classList.remove('is-busy');
@@ -275,8 +324,14 @@
         renderUpdateStatus({ ...(updateStatus || {}), state: 'error', error: err?.message || 'Update download failed.' });
       }
     });
-    el('appUpdateInstallBtn')?.addEventListener('click', async () => {
+    el('appUpdateInstallBtn')?.addEventListener('click', () => void installNow());
+    el('appUpdateFullSetupBtn')?.addEventListener('click', async () => {
       try {
+        // A skipped version was never downloaded: fetch it first.
+        if (isSkipped(updateStatus)) {
+          renderUpdateStatus({ ...(updateStatus || {}), state: 'downloading' });
+          renderUpdateStatus(await desktop()?.downloadUpdate?.());
+        }
         await desktop()?.installUpdate?.();
       } catch (err) {
         renderUpdateStatus({ ...(updateStatus || {}), state: 'error', error: err?.message || 'Update installation failed.' });

@@ -59,6 +59,16 @@ if (Test-Path $SetupStage) { Remove-Item -LiteralPath $SetupStage -Recurse -Forc
 $AppStage = Join-Path $SetupStage 'app'
 New-Item -ItemType Directory -Path $AppStage -Force | Out-Null
 Copy-Item -Path (Join-Path $Unpacked '*') -Destination $AppStage -Recurse -Force
+# The launcher takes the install root's DFlash Console.exe path and starts the
+# current app-<version> folder (side-by-side updates). It travels inside the
+# app so a background update can also bring a newer launcher.
+$launcherExe = & (Join-Path $Root 'tools\dflash-launcher\build.ps1') | Select-Object -Last 1
+if (-not $launcherExe -or -not (Test-Path -LiteralPath $launcherExe)) {
+    throw 'The DFlash Console launcher was not built'
+}
+$launcherStage = Join-Path $AppStage 'resources\launcher'
+New-Item -ItemType Directory -Path $launcherStage -Force | Out-Null
+Copy-Item -LiteralPath $launcherExe -Destination (Join-Path $launcherStage 'DFlash Console.exe') -Force
 # Kept inside the package so older update helpers can still find and run it.
 Copy-Item $setupUiExe (Join-Path $SetupStage 'setup.exe') -Force
 Set-Content -Path (Join-Path $SetupStage 'install-version.txt') -Value $Version -Encoding ASCII -NoNewline

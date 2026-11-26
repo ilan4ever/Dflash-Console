@@ -255,6 +255,15 @@ select {
   display: none;
 }
 
+/* Downloading or installing in the background: a quiet pulse, no button. */
+.df-app-update-notice.is-working .df-app-update-notice-dot {
+  animation: df-app-update-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes df-app-update-pulse {
+  50% { opacity: 0.35; }
+}
+
 .lm-status-feed {
   flex: 0 0 auto;
   width: min(420px, 38vw);
@@ -3564,6 +3573,18 @@ body.lm-resizing-logs {
 
 .lm-settings-nav-section.hidden {
   display: none;
+}
+
+/* Keep the count beside the label: inline, it wrapped onto its own line. */
+.lm-settings-nav-item:not(.hidden):has(> .lm-settings-nav-badge:not(.hidden)) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lm-settings-nav-item:has(> .lm-settings-nav-badge:not(.hidden)) > .lm-settings-nav-badge {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .lm-settings-nav-badge {

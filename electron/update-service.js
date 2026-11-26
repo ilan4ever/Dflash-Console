@@ -16,6 +16,8 @@ const STATUS = Object.freeze({
   CHECKING: 'checking',
   AVAILABLE: 'available',
   DOWNLOADING: 'downloading',
+  // Installing into its own folder beside the running version.
+  PREPARING: 'preparing',
   READY: 'ready',
   INSTALLING: 'installing',
   UP_TO_DATE: 'up-to-date',
