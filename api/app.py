@@ -83,6 +83,11 @@ _STATUS_CACHE_TTL = 20.0
 _STATUS_FAST_TTL = 2.0
 _STATUS_FAST_WINDOW = 30.0
 _LAST_ENGINE_MUTATION_AT = 0.0
+# Chat readiness: when the status lists the model but /v1/models comes back
+# empty (engine busy with another client), ask again this often before a JIT
+# load. At most ~0.75 s extra when the model really is gone.
+_CHAT_BUSY_PROBE_ATTEMPTS = 4
+_CHAT_BUSY_PROBE_DELAY_SECONDS = 0.25
 
 
 def _status_ttl() -> float:
@@ -4443,9 +4448,19 @@ def _ensure_server_ready_for_chat(
         if live.get('loaded_models'):
             from core.runtime import probe_runtime_state
 
-            loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
-                str(server.get('api_url') or '')
-            )
+            # The status already lists the model. An empty probe now usually
+            # means llama-server is busy answering another client, so ask a few
+            # more times before treating the engine as idle: a JIT load here
+            # would reload a model that is already on the GPU.
+            loaded_now: list[str] = []
+            for attempt in range(_CHAT_BUSY_PROBE_ATTEMPTS):
+                loaded_now, _loading_now, _router_now, _progress_now, _fetch_ok = probe_runtime_state(
+                    str(server.get('api_url') or '')
+                )
+                if loaded_now:
+                    break
+                if attempt + 1 < _CHAT_BUSY_PROBE_ATTEMPTS:
+                    time.sleep(_CHAT_BUSY_PROBE_DELAY_SECONDS)
             if loaded_now:
                 live = {
                     **live,
