@@ -25,17 +25,30 @@ fi
 chmod +x run.sh server.sh scripts/*.sh
 ./scripts/setup-linux-dev.sh
 
-# 3. Launcher in the app menu and on the desktop
+# 3. App icon, installed into the user's icon theme as "dflash-console"
+ICON_BASE="$HOME/.local/share/icons/hicolor"
+for size in 256 64; do
+  mkdir -p "$ICON_BASE/${size}x${size}/apps"
+  cp "$ROOT/static/icons/dflash-console-${size}.png" "$ICON_BASE/${size}x${size}/apps/dflash-console.png"
+done
+gtk-update-icon-cache -q -t "$ICON_BASE" 2>/dev/null || true
+
+# 4. Launcher in the app menu and on the desktop.
+# open-linux-ui.sh starts the server only when it is not running (with the
+# dflash-console user service if there is one), then opens an app window.
+# StartupWMClass matches that window (Chrome names an --app window after the
+# host), so the taskbar shows it under this launcher's icon.
 LAUNCHER="$HOME/.local/share/applications/dflash-console.desktop"
 mkdir -p "$(dirname "$LAUNCHER")"
-ICON="$ROOT/static/favicon.ico"; [[ -f "$ICON" ]] || ICON="utilities-terminal"
 cat > "$LAUNCHER" <<EOF
 [Desktop Entry]
 Type=Application
 Name=DFlash Console
-Comment=Start DFlash Console and open it in the browser
-Exec=bash -c '"$ROOT/server.sh" --restart >/dev/null 2>&1; for i in \$(seq 1 40); do curl -sf http://127.0.0.1:8900/api/health >/dev/null && break; sleep 0.5; done; xdg-open http://127.0.0.1:8900/'
-Icon=$ICON
+Comment=Run local AI models
+Exec="$ROOT/scripts/open-linux-ui.sh"
+Icon=dflash-console
+StartupWMClass=127.0.0.1
+StartupNotify=true
 Terminal=false
 Categories=Development;
 EOF
