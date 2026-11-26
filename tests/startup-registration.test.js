@@ -12,15 +12,16 @@ const path = require('path');
 const Module = require('module');
 const childProcess = require('child_process');
 
-function loadAppSettingsWith(fakeApp) {
+function loadAppSettingsWith(fakeApp, { regOutput = () => '' } = {}) {
   const calls = { loginItems: [], reg: [] };
   fakeApp.setLoginItemSettings = (options) => calls.loginItems.push(options);
   const originalLoad = Module._load;
   const originalExec = childProcess.execFileSync;
   // app-settings.js reads execFileSync when it loads, so swap it first.
   childProcess.execFileSync = (file, args) => {
-    calls.reg.push([file, ...(args || [])].join(' '));
-    return '';
+    const line = [file, ...(args || [])].join(' ');
+    calls.reg.push(line);
+    return regOutput(line);
   };
   Module._load = function load(request, parent, isMain) {
     if (request === 'electron') return { app: fakeApp };
@@ -56,4 +57,28 @@ test('the developer copy leaves Windows startup alone', { skip: process.platform
   } finally {
     fs.rmSync(userData, { recursive: true, force: true });
   }
+});
+
+test('Settings trusts the Run entry, unless Task Manager switched it off', { skip: process.platform !== 'win32' }, () => {
+  // Electron's executableWillLaunchAtLogin stays false until Task Manager has
+  // written a StartupApproved record, so a working entry read as "needs
+  // attention" (production test, 2026-11-26).
+  const exe = process.execPath;
+  const fakeApp = {
+    isPackaged: true,
+    getPath: () => exe,
+    getLoginItemSettings: () => ({ openAtLogin: true, executableWillLaunchAtLogin: false, launchItems: [] }),
+  };
+  let approved = '';
+  const { settings } = loadAppSettingsWith(fakeApp, {
+    regOutput: (line) => (line.includes('StartupApproved') ? approved : ''),
+  });
+  assert.equal(settings.startupRegistrationState(), true, 'no Task Manager record: active');
+  approved = '    com.dflash.console    REG_BINARY    020000000000000000000000';
+  assert.equal(settings.startupRegistrationState(), true, 'enabled in Task Manager');
+  approved = '    com.dflash.console    REG_BINARY    030000006A1F7A6C2B5BDB01';
+  assert.equal(settings.startupRegistrationState(), false, 'disabled in Task Manager');
+  fakeApp.getLoginItemSettings = () => ({ openAtLogin: false, executableWillLaunchAtLogin: false });
+  approved = '';
+  assert.equal(settings.startupRegistrationState(), false, 'no Run entry');
 });
