@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -106,6 +106,10 @@ function ensureRuntimeTree(destRoot, resourcesPath) {
     path.join(destRoot, 'runtime-bundles', 'transformers', 'server.py'),
   );
   if (isConsoleRoot(destRoot) && installedVersion === bundledVersion && runtimeComplete && bundlesComplete) {
+    // A walk cut off before it finished runs again at the next start, not
+    // only at the next runtime refresh.
+    const script = path.join(destRoot, 'scripts', 'set-install-permissions.ps1');
+    if (process.platform === 'win32' && fs.existsSync(script)) repairWholeDataRootOnce(destRoot, script);
     return destRoot;
   }
 
@@ -142,14 +146,70 @@ function ensureInstallPermissions(destRoot) {
   if (process.platform !== 'win32') return;
   const script = path.join(destRoot, 'scripts', 'set-install-permissions.ps1');
   if (!fs.existsSync(script)) return;
+  // Only the runtime items this function just copied. The folder itself is
+  // set too, and new files inherit from it. Walking the whole data root also
+  // walked .venv and runtimes\ (tens of thousands of files), which hit the
+  // 2-minute timeout on every first start of a new version.
   const result = spawnSync(
     'powershell.exe',
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Path', destRoot, '-Kind', 'data', '-Recurse'],
+    [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+      '-Path', destRoot, '-Kind', 'data', '-Recurse', '-Only', RUNTIME_ITEMS.join(','),
+    ],
     { windowsHide: true, timeout: 120000 },
   );
   if (result.status !== 0) {
     const detail = `${result.stderr || result.stdout || ''}`.trim();
     console.error(`Could not set Console folder access.${detail ? ` ${detail}` : ''}`);
+  }
+  repairWholeDataRootOnce(destRoot, script);
+}
+
+// Installs older than 0.3.298 can have a restricted .venv that only a walk of
+// the whole data root repairs. Do that walk once, in the background so the
+// app does not wait for it, and remember that it finished.
+const FULL_ACCESS_STAMP = '.install-access-full';
+
+// The walk took 104 s on OMAN, and the app wrote its "done" stamp only if it
+// was still open when the walk ended (end-to-end test). The walk now writes
+// the stamp itself when it succeeds, and is retried at each start
+// until then. A walk started in the last 15 minutes is left to finish.
+const FULL_ACCESS_RUNNING = '.install-access-full.running';
+const FULL_ACCESS_RETRY_MS = 15 * 60 * 1000;
+
+function psQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function repairWholeDataRootOnce(destRoot, script) {
+  const stamp = path.join(destRoot, FULL_ACCESS_STAMP);
+  if (fs.existsSync(stamp)) return false;
+  const running = path.join(destRoot, FULL_ACCESS_RUNNING);
+  try {
+    if (Date.now() - fs.statSync(running).mtimeMs < FULL_ACCESS_RETRY_MS) return false;
+  } catch (_err) {
+    // No walk is running.
+  }
+  try {
+    fs.writeFileSync(running, `${new Date().toISOString()}\n`, 'utf8');
+    // try/finally: a script that throws ends the whole command otherwise, and
+    // the "running" marker would hold off the retry for 15 minutes.
+    const command = '$ok = $false; '
+      + `try { $LASTEXITCODE = 0; & ${psQuote(script)} -Path ${psQuote(destRoot)} -Kind data -Recurse -Force; `
+      + '$ok = $? -and ($LASTEXITCODE -eq 0) } '
+      + `finally { if ($ok) { Set-Content -LiteralPath ${psQuote(stamp)} -Value (Get-Date -Format o) }; `
+      + `Remove-Item -LiteralPath ${psQuote(running)} -Force -ErrorAction SilentlyContinue }`;
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      { windowsHide: true, stdio: 'ignore' },
+    );
+    child.on('error', () => {});
+    child.unref();
+    return true;
+  } catch (_err) {
+    // Best effort: the quick pass above already covered the new files.
+    return false;
   }
 }
 
@@ -165,4 +225,5 @@ module.exports = {
   bundledRuntimePath,
   bundledRuntimeVersion,
   ensureRuntimeTree,
+  repairWholeDataRootOnce,
 };

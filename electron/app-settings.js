@@ -96,6 +96,12 @@ const STARTUP_VALUE = 'DFlash Console';
 
 function applyWindowsStartup(enabled) {
   if (process.platform !== 'win32') return true;
+  // The developer copy (run from a checkout) shares the Windows app ID
+  // com.dflash.console with the installed app. Its own "Start with Windows:
+  // off" deleted the installed app's startup entry, so after the next restart
+  // DFlash Console did not start (2026-11-26). Only the installed app manages
+  // Windows startup; in the developer copy the setting stays off.
+  if (!app.isPackaged) return !enabled;
   const exe = (enabled ? resolveStartupExe() : (resolveStartupExe() || app.getPath('exe'))) || '';
   if (enabled && (!exe || !fs.existsSync(exe))) {
     console.error('Cannot enable Windows startup: installed executable was not found.');
@@ -158,6 +164,28 @@ function applyWindowsStartup(enabled) {
   return applied;
 }
 
+// Electron names its Run value after the app's AppUserModelId.
+const LOGIN_ITEM_NAME = 'com.dflash.console';
+
+/**
+ * True when Task Manager (Startup apps) has switched the entry off. Its
+ * StartupApproved record is binary; an odd first byte means disabled, and a
+ * missing record means enabled.
+ */
+function disabledInTaskManager(valueName) {
+  try {
+    const output = execFileSync(
+      'reg',
+      ['query', STARTUP_APPROVED_KEY, '/v', valueName],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' },
+    );
+    const match = String(output).match(/REG_BINARY\s+([0-9A-Fa-f]{2})/);
+    return Boolean(match) && (parseInt(match[1], 16) % 2 === 1);
+  } catch (_err) {
+    return false;
+  }
+}
+
 function startupRegistrationState() {
   if (process.platform !== 'win32') return false;
   const exe = resolveStartupExe();
@@ -166,11 +194,13 @@ function startupRegistrationState() {
     const login = typeof app.getLoginItemSettings === 'function'
       ? app.getLoginItemSettings({ path: exe, args: STARTUP_ARGS })
       : null;
-    if (login && Object.prototype.hasOwnProperty.call(login, 'executableWillLaunchAtLogin')) {
-      return Boolean(login.executableWillLaunchAtLogin);
-    }
+    // executableWillLaunchAtLogin stays false until Task Manager has written a
+    // StartupApproved record, which a fresh registration does not have, so
+    // Settings said "needs attention" while startup worked (production test,
+    // 2026-11-26). openAtLogin reads the Run entry; Task Manager can still
+    // switch it off, so check that record separately.
     if (login && Object.prototype.hasOwnProperty.call(login, 'openAtLogin')) {
-      return Boolean(login.openAtLogin);
+      return Boolean(login.openAtLogin) && !disabledInTaskManager(LOGIN_ITEM_NAME);
     }
   } catch (_err) {
     // Fall through to the registry probe for older Electron builds.

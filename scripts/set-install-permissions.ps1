@@ -7,6 +7,11 @@ param(
     [ValidateSet('data', 'program')][string]$Kind = 'data',
     [switch]$Shared,
     [switch]$Recurse,
+    # Comma-separated child names. With -Recurse, only these children are
+    # walked. The app and setup pass the runtime items they just copied: the
+    # Python environments (.venv, runtimes) hold tens of thousands of files,
+    # were set when they were created, and walking them took over 2 minutes.
+    [string]$Only = '',
     # Walk every file even when the folder already looks fine.
     [switch]$Force
 )
@@ -75,8 +80,9 @@ $userSid = Get-CurrentUserSid
 # The full walk below re-stamps every file (engine environments hold hundreds
 # of thousands), which made each update take minutes. It is a repair: run it
 # only when the folder or one of its top-level folders is still restricted,
-# or the user cannot modify it. -Force always walks.
-if ($Recurse -and $Kind -eq 'data' -and -not $Force) {
+# or the user cannot modify it. -Force always walks, and an -Only walk always
+# covers the items it names (they were just copied).
+if ($Recurse -and $Kind -eq 'data' -and -not $Force -and -not $Only.Trim()) {
     $targets = @($Path) + @(
         Get-ChildItem -LiteralPath $Path -Force -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ne 'models' } |
@@ -100,6 +106,10 @@ if ($Kind -eq 'program' -and $Shared) {
 
 if ($Recurse) {
     $children = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+    $onlyNames = @($Only -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($onlyNames.Count -gt 0) {
+        $children = @($children | Where-Object { $onlyNames -contains $_.Name })
+    }
     foreach ($child in $children) {
         # Weight files stay as they are. New downloads inherit this folder.
         if ($child.PSIsContainer -and $child.Name -eq 'models') {
