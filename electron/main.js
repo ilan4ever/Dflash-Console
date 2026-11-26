@@ -401,6 +401,20 @@ function flushPendingUpdatePrompt() {
   }
 }
 
+// A version that rolled back on this PC: say so instead of "is available", for
+// the automatic check and the "Check for updates" button alike (production
+// test: the button offered it like any other version).
+function markIfSkipped(manifest) {
+  if (!appLayout || !manifest || !sideBySide.isSkippedVersion(appLayout, manifest.version)) return false;
+  updateService.status('error', {
+    manifest,
+    ready: false,
+    skippedVersion: manifest.version,
+    error: `DFlash Console ${manifest.version} did not start on this PC, so it is not installed automatically. Use the full setup to try it again.`,
+  });
+  return true;
+}
+
 async function checkAndDownloadUpdate() {
   if (!updateService || loadAppSettings().allowAutomaticUpdates === false) return;
   // The setup UI relaunches the freshly installed app with a post-install
@@ -424,15 +438,7 @@ async function checkAndDownloadUpdate() {
   if (!manifest) return;
   // A version that already failed to start here is not installed again on its
   // own. The full setup (Settings) stays available as the user's own choice.
-  if (appLayout && sideBySide.isSkippedVersion(appLayout, manifest.version)) {
-    updateService.status('error', {
-      manifest,
-      ready: false,
-      skippedVersion: manifest.version,
-      error: `DFlash Console ${manifest.version} did not start on this PC, so it is not installed automatically. Use the full setup to try it again.`,
-    });
-    return;
-  }
+  if (markIfSkipped(manifest)) return;
   // Download and verify the installer quietly first, so "Upgrade now" starts
   // the install at once instead of making the user wait for the download.
   // After a failed download, wait before fetching the whole file again.
@@ -898,7 +904,7 @@ function registerAppSettingsIpc() {
         message: 'Automatic updates are not configured for this build.',
       };
     }
-    await updateService.checkForUpdate();
+    markIfSkipped(await updateService.checkForUpdate());
     return updateService.getStatus();
   });
 

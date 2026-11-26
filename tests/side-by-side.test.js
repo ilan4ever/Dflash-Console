@@ -424,10 +424,14 @@ test('after a rollback the app tells the user and skips that version', () => {
   assert.match(main, /showRollbackNotice\(\);\n  \} catch \(err\) \{/, 'shown once the window is up');
   const check = main.slice(main.indexOf('async function checkAndDownloadUpdate()'));
   assert.ok(
-    check.indexOf('sideBySide.isSkippedVersion(appLayout, manifest.version)')
-      < check.indexOf('await updateService.stageUpdate(manifest)'),
+    check.indexOf('if (markIfSkipped(manifest)) return;') > 0
+      && check.indexOf('if (markIfSkipped(manifest)) return;') < check.indexOf('await updateService.stageUpdate(manifest)'),
     'a skipped version is not even downloaded',
   );
+  assert.ok(main.includes('if (!appLayout || !manifest || !sideBySide.isSkippedVersion(appLayout, manifest.version)) return false;'));
+  // The "Check for updates" button names it the same way (production test).
+  const manual = main.slice(main.indexOf("ipcMain.handle('update:check'"));
+  assert.match(manual.slice(0, 600), /markIfSkipped\(await updateService\.checkForUpdate\(\)\)/);
   const prepare = main.slice(main.indexOf('async function prepareSideBySide('));
   assert.match(prepare.slice(0, 800), /isSkippedVersion\(appLayout, version\)\) return false/);
 });
