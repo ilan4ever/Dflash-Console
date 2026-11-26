@@ -1,6 +1,6 @@
 ﻿'use strict';
 
-const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, session, shell, dialog, Menu, Tray, nativeImage, ipcMain, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -36,6 +36,7 @@ let isQuitting = false;
 let booting = false;
 let updateService = null;
 let lastAutomaticUpdateCheckAt = 0;
+let lastBackgroundDownloadFailureAt = 0;
 let updatePopupWindow = null;
 let updatePromptDeferred = false;
 let updatePopupShownFor = '';
@@ -45,6 +46,11 @@ let startedHiddenInTray = false;
 let pendingUpdateManifest = null;
 
 const POST_INSTALL_SETUP_ARG = '--dflash-post-install';
+const UPDATE_DOWNLOAD_RETRY_MS = 30 * 60 * 1000;
+const UPDATE_POPUP_WIDTH = 360;
+const UPDATE_POPUP_MIN_HEIGHT = 150;
+const UPDATE_POPUP_MAX_HEIGHT = 360;
+const UPDATE_POPUP_MARGIN = 16;
 const STARTUP_LAUNCH_ARG = '--dflash-startup';
 
 function hasPostInstallSetupArg() {
@@ -381,17 +387,34 @@ async function checkAndDownloadUpdate() {
   })) return;
   const status = updateService.getStatus();
   if (status.ready) {
+    announceUpdateReady(status.manifest);
     return;
   }
   if (status.state === 'downloading' || status.state === 'installing') return;
   if (Date.now() - lastAutomaticUpdateCheckAt < 60 * 1000) return;
   lastAutomaticUpdateCheckAt = Date.now();
   const manifest = await updateService.checkForUpdate();
-  if (manifest) {
-    // Ask first via an always-on-top popup: Install now, or Later (remind again
-    // at the next app start). No silent background download.
-    showUpdatePopup(manifest);
+  if (!manifest) return;
+  // Download and verify the installer quietly first, so "Upgrade now" starts
+  // the install at once instead of making the user wait for the download.
+  // After a failed download, wait before fetching the whole file again.
+  if (Date.now() - lastBackgroundDownloadFailureAt < UPDATE_DOWNLOAD_RETRY_MS) return;
+  try {
+    await updateService.stageUpdate(manifest);
+  } catch (error) {
+    lastBackgroundDownloadFailureAt = Date.now();
+    throw error;
   }
+  lastBackgroundDownloadFailureAt = 0;
+  announceUpdateReady(manifest);
+}
+
+// The header notice in the app follows update:status on its own. The pop-up
+// is extra, and the user can turn it off (Settings → Desktop app).
+function announceUpdateReady(manifest) {
+  if (!manifest) return;
+  if (loadAppSettings().updateNotice === 'header') return;
+  showUpdatePopup(manifest);
 }
 
 function closeUpdatePopup() {
@@ -439,16 +462,16 @@ function showUpdatePopup(manifest) {
   updatePopupShownFor = version;
   const notes = String(manifest.releaseNotes || '').trim();
 
-  if (updatePopupWindow && !updatePopupWindow.isDestroyed()) {
-    updatePopupWindow.webContents.send('update-popup:show', { version, notes });
-    updatePopupWindow.show();
-    updatePopupWindow.focus();
-    return;
-  }
+  // A pop-up for an older version may still be open: replace it.
+  closeUpdatePopup();
 
+  // A small frameless card in the corner of the screen, like a notification.
+  // The page reports its real height (update-popup:fit) before it is shown.
   updatePopupWindow = new BrowserWindow({
-    width: 500,
-    height: 460,
+    width: UPDATE_POPUP_WIDTH,
+    height: UPDATE_POPUP_MIN_HEIGHT,
+    useContentSize: true,
+    frame: false,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -474,11 +497,31 @@ function showUpdatePopup(manifest) {
   updatePopupWindow.loadFile(path.join(__dirname, 'update-popup.html'), {
     query: { version, notes },
   });
+  placeUpdatePopup(UPDATE_POPUP_MIN_HEIGHT);
   updatePopupWindow.once('ready-to-show', () => {
     if (!updatePopupWindow || updatePopupWindow.isDestroyed()) return;
     updatePopupWindow.show();
     updatePopupWindow.focus();
   });
+}
+
+// Bottom-right corner of the screen the app window is on.
+function placeUpdatePopup(contentHeight) {
+  if (!updatePopupWindow || updatePopupWindow.isDestroyed()) return;
+  const height = Math.round(Math.min(
+    UPDATE_POPUP_MAX_HEIGHT,
+    Math.max(UPDATE_POPUP_MIN_HEIGHT, Number(contentHeight) || UPDATE_POPUP_MIN_HEIGHT),
+  ));
+  updatePopupWindow.setContentSize(UPDATE_POPUP_WIDTH, height);
+  const anchor = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()
+    ? screen.getDisplayMatching(mainWindow.getBounds())
+    : screen.getPrimaryDisplay();
+  const area = anchor.workArea;
+  const [width, outerHeight] = updatePopupWindow.getSize();
+  updatePopupWindow.setPosition(
+    Math.round(area.x + area.width - width - UPDATE_POPUP_MARGIN),
+    Math.round(area.y + area.height - outerHeight - UPDATE_POPUP_MARGIN),
+  );
 }
 
 function registerUpdatePopupIpc() {
@@ -499,6 +542,13 @@ function registerUpdatePopupIpc() {
       },
     });
     return updateService.getStatus();
+  });
+
+  ipcMain.handle('update-popup:fit', (event, height) => {
+    if (!updatePopupWindow || updatePopupWindow.isDestroyed()) return false;
+    if (event.sender !== updatePopupWindow.webContents) return false;
+    placeUpdatePopup(height);
+    return true;
   });
 
   ipcMain.handle('update-popup:later', () => {
@@ -552,7 +602,7 @@ function showMainWindow({ bringToFront = false } = {}) {
   if (pendingUpdateManifest) {
     const manifest = pendingUpdateManifest;
     pendingUpdateManifest = null;
-    showUpdatePopup(manifest);
+    announceUpdateReady(manifest);
   }
 }
 

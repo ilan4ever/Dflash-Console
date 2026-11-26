@@ -12,6 +12,9 @@ const DEFAULTS = {
   showSplashOnStartup: true,
   notifyOnEngineReady: false,
   allowAutomaticUpdates: true,
+  // How a downloaded update is announced: 'popup' shows a small window and
+  // the header notice; 'header' shows only the notice in the app header.
+  updateNotice: 'popup',
   uiZoomFactor: 1,
   postInstallWelcome: false,
   postInstallSetup: false,
@@ -23,11 +26,18 @@ function settingsPath() {
   return path.join(app.getPath('userData'), 'app-settings.json');
 }
 
+const UPDATE_NOTICE_MODES = ['popup', 'header'];
+
+function normalizeUpdateNotice(value) {
+  return UPDATE_NOTICE_MODES.includes(value) ? value : DEFAULTS.updateNotice;
+}
+
 function loadAppSettings() {
   if (cached) return { ...cached };
   try {
     const parsed = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
     cached = { ...DEFAULTS, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    cached.updateNotice = normalizeUpdateNotice(cached.updateNotice);
   } catch (_err) {
     cached = { ...DEFAULTS };
   }
@@ -40,6 +50,7 @@ function saveAppSettings(patch) {
   if (!next.minimizeToTray) {
     next.startMinimized = false;
   }
+  next.updateNotice = normalizeUpdateNotice(next.updateNotice);
   const startupRequested = Boolean(next.startWithWindows);
   const startupRegistered = applyWindowsStartup(startupRequested);
   if (startupRequested && !startupRegistered) {
@@ -179,6 +190,7 @@ function syncStartupRegistration() {
 
 module.exports = {
   DEFAULTS,
+  normalizeUpdateNotice,
   loadAppSettings,
   saveAppSettings,
   syncStartupRegistration,

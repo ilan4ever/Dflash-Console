@@ -6,14 +6,7 @@
   let saving = false;
   let current = null;
   let updateStatus = null;
-  const UPDATE_PROMPT_VERSION_KEY = 'dflashConsole.updatePromptVersion';
-  let updatePromptVersion = (() => {
-    try {
-      return localStorage.getItem(UPDATE_PROMPT_VERSION_KEY) || '';
-    } catch {
-      return '';
-    }
-  })();
+  let installStarting = false;
 
   function el(id) {
     return document.getElementById(id);
@@ -49,6 +42,9 @@
     setChecked('appSettingsShowSplash', data.showSplashOnStartup);
     setChecked('appSettingsStartWithWindows', data.startWithWindows);
     setChecked('appSettingsAllowAutomaticUpdates', data.allowAutomaticUpdates !== false);
+    if (el('appSettingsUpdateNotice')) {
+      el('appSettingsUpdateNotice').value = data.updateNotice === 'header' ? 'header' : 'popup';
+    }
     const startupStatus = el('appSettingsStartupStatus');
     if (startupStatus) {
       startupStatus.textContent = data.startWithWindows
@@ -129,7 +125,39 @@
     if (check) check.disabled = state === 'checking' || state === 'downloading' || state === 'installing';
     download?.classList.toggle('hidden', !available || ready || state === 'downloading');
     install?.classList.toggle('hidden', !ready);
-    maybeShowUpdatePrompt(status);
+    renderUpdateNotice(status);
+  }
+
+  // Electron prefixes IPC errors with "Error invoking remote method '…': Error:".
+  function plainError(err) {
+    return String(err?.message || '').replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '');
+  }
+
+  function updateVersion(status) {
+    return String(status?.latestVersion || status?.manifest?.version || '').trim();
+  }
+
+  // Header notice: the installer was downloaded and verified in the
+  // background, so "Upgrade now" starts the install straight away.
+  function renderUpdateNotice(status) {
+    const notice = el('appUpdateNotice');
+    if (!notice) return;
+    const state = String(status?.state || '');
+    const installing = state === 'installing' || installStarting;
+    const ready = Boolean(status?.ready || state === 'ready');
+    notice.classList.toggle('hidden', !(ready || installing));
+    const text = el('appUpdateNoticeText');
+    const version = updateVersion(status);
+    if (text) {
+      text.textContent = installing
+        ? 'Installing update…'
+        : version ? `Version ${version} ready` : 'Update ready';
+    }
+    const go = el('appUpdateNoticeInstall');
+    if (go) {
+      go.disabled = installing;
+      go.classList.toggle('hidden', installing);
+    }
   }
 
   function setUpdatePromptOpen(open) {
@@ -140,25 +168,41 @@
     document.body.classList.toggle('modal-open', Boolean(open));
   }
 
-  function maybeShowUpdatePrompt(status) {
+  // Opened from the header notice, never on its own: the separate pop-up
+  // window (if the user keeps it on) is the only thing that appears by itself.
+  function openUpdateDetails() {
+    const status = updateStatus;
     if (!status?.ready) return;
-    const version = String(status.latestVersion || status.manifest?.version || '').trim();
-    const modal = el('desktopUpdateModal');
-    if (!version || !modal || updatePromptVersion === version) return;
-    updatePromptVersion = version;
-    try {
-      localStorage.setItem(UPDATE_PROMPT_VERSION_KEY, version);
-    } catch {
-      /* The in-memory guard still prevents repeated prompts in this session. */
-    }
+    const version = updateVersion(status);
     const message = el('desktopUpdateMessage');
     const notes = el('desktopUpdateNotes');
-    if (message) message.textContent = `DFlash Console ${version} has finished downloading and passed integrity checks.`;
-    if (notes) notes.textContent = status.releaseNotes
-      || 'DFlash Console will close briefly and reopen after installation.';
-    modal.classList.remove('is-busy');
+    const title = el('desktopUpdateTitle');
+    if (title) title.textContent = version ? `Version ${version} is ready` : 'A new version is ready';
+    if (message) message.textContent = 'Downloaded and verified. DFlash Console closes, installs it, and reopens.';
+    if (notes) notes.textContent = status.releaseNotes || '';
+    notes?.classList.toggle('hidden', !status.releaseNotes);
+    el('desktopUpdateModal')?.classList.remove('is-busy');
+    el('desktopUpdateInstall')?.removeAttribute('disabled');
     setUpdatePromptOpen(true);
     el('desktopUpdateInstall')?.focus();
+  }
+
+  async function installNow() {
+    const api = desktop();
+    if (!api?.installUpdateNow || installStarting) return;
+    installStarting = true;
+    renderUpdateNotice(updateStatus);
+    el('desktopUpdateInstall')?.setAttribute('disabled', 'disabled');
+    el('desktopUpdateModal')?.classList.add('is-busy');
+    try {
+      await api.installUpdateNow();
+    } catch (err) {
+      installStarting = false;
+      renderUpdateNotice(updateStatus);
+      el('desktopUpdateModal')?.classList.remove('is-busy');
+      el('desktopUpdateInstall')?.removeAttribute('disabled');
+      toast?.(plainError(err) || 'The update could not be started. Try again from Settings → Desktop app.', 'error');
+    }
   }
 
   async function checkForUpdate() {
@@ -238,22 +282,13 @@
         renderUpdateStatus({ ...(updateStatus || {}), state: 'error', error: err?.message || 'Update installation failed.' });
       }
     });
-    el('desktopUpdateLater')?.addEventListener('click', () => setUpdatePromptOpen(false));
-    el('desktopUpdateInstall')?.addEventListener('click', async () => {
-      const button = el('desktopUpdateInstall');
-      const notes = el('desktopUpdateNotes');
-      button?.setAttribute('disabled', 'disabled');
-      el('desktopUpdateModal')?.classList.add('is-busy');
-      if (notes) notes.textContent = 'Preparing the installer… DFlash Console will close and reopen shortly.';
-      try {
-        await desktop()?.installUpdate?.();
-        setUpdatePromptOpen(false);
-      } catch (err) {
-        el('desktopUpdateModal')?.classList.remove('is-busy');
-        button?.removeAttribute('disabled');
-        if (notes) notes.textContent = err?.message || 'The update could not be started. Try again from Settings → App.';
-      }
+    el('appSettingsUpdateNotice')?.addEventListener('change', (event) => {
+      void savePatch({ updateNotice: event.target.value === 'header' ? 'header' : 'popup' });
     });
+    el('appUpdateNoticeInfo')?.addEventListener('click', openUpdateDetails);
+    el('appUpdateNoticeInstall')?.addEventListener('click', () => void installNow());
+    el('desktopUpdateLater')?.addEventListener('click', () => setUpdatePromptOpen(false));
+    el('desktopUpdateInstall')?.addEventListener('click', () => void installNow());
     desktop()?.onUpdateStatus?.(renderUpdateStatus);
   }
 
