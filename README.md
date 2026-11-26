@@ -22,7 +22,7 @@ Loading a model on that GPU runs it on the other computer. If the file is not
 there yet, it is downloaded there first. Short steps:
 [docs/SHARE-A-GPU.md](./docs/SHARE-A-GPU.md).
 
-**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.301
+**Developer:** ILAN AVIV · **UI:** [http://127.0.0.1:8900/](http://127.0.0.1:8900/) · **Version:** v0.3.302
 
 ## Download (Windows)
 
@@ -172,7 +172,13 @@ Typical first session:
 3. For a DFlash GGUF, right-click and **Find and attach draft** if you want speculative decoding.
 4. Chat in the **Playground**, or point any OpenAI client at `http://127.0.0.1:8001/v1` with optional `X-DFlash-Client: YourApp` so **Engines** shows who is using each model.
 
-### Recent improvements (v0.3.301)
+### Recent improvements (v0.3.302)
+
+- **Updates in the background** — a new version downloads and installs next to the running one while you keep working; **Restart to update** switches to it in under a minute. Updating to this version still uses the setup window once; the updates after it install in the background
+- **Safe rollback** — if a new version does not start, the Console goes back to the previous version by itself, tells you, and does not offer that version again. One older version is kept as a fallback
+- **Faster first start after an update** — no more 2-minute wait while folder access was reset on every file, and the setup no longer rewrites access on large engine folders that are already fine
+- **Start with Windows** — Settings no longer says the startup entry needs attention when it works
+- **Linux** — the menu, desktop and taskbar show the DFlash icon, and the Console opens in its own window
 
 - **First start after a fresh install** — on PCs without PowerShell 7, the installer wrote `config.json` in a form the Console could not read, and the server did not start. The installer now writes it correctly, and the Console reads a file written the old way
 
