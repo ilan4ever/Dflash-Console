@@ -82,6 +82,12 @@ const STARTUP_VALUE = 'DFlash Console';
 
 function applyWindowsStartup(enabled) {
   if (process.platform !== 'win32') return true;
+  // The developer copy (run from a checkout) shares the Windows app ID
+  // com.dflash.console with the installed app. Its own "Start with Windows:
+  // off" deleted the installed app's startup entry, so after the next restart
+  // DFlash Console did not start (2026-11-26). Only the installed app manages
+  // Windows startup; in the developer copy the setting stays off.
+  if (!app.isPackaged) return !enabled;
   const exe = enabled ? resolveStartupExe() : (app.getPath('exe') || '');
   if (enabled && (!exe || !fs.existsSync(exe))) {
     console.error('Cannot enable Windows startup: installed executable was not found.');
