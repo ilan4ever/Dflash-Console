@@ -296,8 +296,30 @@ function restoreAfterRollback(layout, dataRoot) {
     }
   }
   if (isValidVersion(from)) addSkippedVersion(layout.root, from);
+  keepOlderFallback(layout);
   fs.rmSync(marker, { force: true });
   return isValidVersion(from) ? from : '';
+}
+
+/**
+ * After a rollback current.txt and previous.txt both name the running version,
+ * so the cleanup deleted the last older version and nothing was left to go
+ * back to (end-to-end test). Point previous.txt at the newest older version
+ * that has started well on this PC, if one is still there.
+ */
+function keepOlderFallback(layout) {
+  const previous = readPointer(layout.root, PREVIOUS_FILE);
+  if (previous && previous !== layout.version && isUsable(layout.root, previous)) return previous;
+  const skipped = readSkippedVersions(layout.root);
+  const candidates = installedVersions(layout.root)
+    .filter((version) => compareVersions(version, layout.version) < 0)
+    .filter((version) => !skipped.includes(version))
+    .filter((version) => isUsable(layout.root, version))
+    .filter((version) => fs.existsSync(path.join(appDir(layout.root, version), STARTED_OK_FILE)));
+  const fallback = candidates[candidates.length - 1] || '';
+  if (fallback) writePointer(layout.root, PREVIOUS_FILE, fallback);
+  else fs.rmSync(path.join(layout.root, PREVIOUS_FILE), { force: true });
+  return fallback;
 }
 
 // Versions that would not start on this PC. Cleanup deletes their folder (and
@@ -346,6 +368,7 @@ module.exports = {
   installedVersions,
   isUsable,
   isValidVersion,
+  keepOlderFallback,
   markStartedOk,
   pendingVersion,
   prepareVersion,

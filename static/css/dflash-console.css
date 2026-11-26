@@ -3575,6 +3575,18 @@ body.lm-resizing-logs {
   display: none;
 }
 
+/* Keep the count beside the label: inline, it wrapped onto its own line. */
+.lm-settings-nav-item:not(.hidden):has(> .lm-settings-nav-badge:not(.hidden)) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lm-settings-nav-item:has(> .lm-settings-nav-badge:not(.hidden)) > .lm-settings-nav-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .lm-settings-nav-badge {
   display: inline-flex;
   align-items: center;

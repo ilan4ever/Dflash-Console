@@ -101,9 +101,12 @@
     const state = String(status?.state || 'idle');
     const available = Boolean(status?.updateAvailable || status?.manifest);
     const ready = Boolean(status?.ready || state === 'ready');
+    const skipped = isSkipped(status);
     if (title) {
       title.textContent = state === 'checking'
         ? 'Checking for updates…'
+        : skipped && state === 'error'
+          ? `Version ${updateVersion(status)} did not start on this PC`
         : state === 'preparing'
           ? `Installing version ${status.latestVersion || 'new'} in the background…`
         : ready && restartOnly(status)
@@ -127,11 +130,12 @@
         : '';
     }
     if (check) check.disabled = ['checking', 'downloading', 'preparing', 'installing'].includes(state);
-    download?.classList.toggle('hidden', !available || ready || state === 'downloading' || state === 'preparing');
+    download?.classList.toggle('hidden', !available || ready || skipped || state === 'downloading' || state === 'preparing');
     install?.classList.toggle('hidden', !ready);
     if (install) install.textContent = restartOnly(status) ? 'Restart to update' : 'Install update';
-    // A way out if the fast path ever misbehaves: run the full setup window.
-    el('appUpdateFullSetupBtn')?.classList.toggle('hidden', !(ready && restartOnly(status)));
+    // A way out if the fast path ever misbehaves, and the only way to try a
+    // version that failed here again (the rollback notice points to it).
+    el('appUpdateFullSetupBtn')?.classList.toggle('hidden', !((ready && restartOnly(status)) || skipped));
     renderUpdateNotice(status);
   }
 
@@ -157,6 +161,13 @@
   // that is left (side-by-side updates).
   function restartOnly(status) {
     return Boolean(status?.restartToUpdate);
+  }
+
+  // A version that rolled back on this PC is not installed on its own; only the
+  // full setup, the user's own choice, installs it.
+  function isSkipped(status) {
+    const version = updateVersion(status);
+    return Boolean(version && !status?.ready && String(status?.skippedVersion || '') === version);
   }
 
   // Header notice. Every stage shows here and nothing opens by itself:
@@ -316,6 +327,11 @@
     el('appUpdateInstallBtn')?.addEventListener('click', () => void installNow());
     el('appUpdateFullSetupBtn')?.addEventListener('click', async () => {
       try {
+        // A skipped version was never downloaded: fetch it first.
+        if (isSkipped(updateStatus)) {
+          renderUpdateStatus({ ...(updateStatus || {}), state: 'downloading' });
+          renderUpdateStatus(await desktop()?.downloadUpdate?.());
+        }
         await desktop()?.installUpdate?.();
       } catch (err) {
         renderUpdateStatus({ ...(updateStatus || {}), state: 'error', error: err?.message || 'Update installation failed.' });

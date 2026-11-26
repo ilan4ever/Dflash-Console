@@ -194,7 +194,59 @@ test('after a rollback the settings from before the failed version come back', (
   }
 });
 
+test('after a rollback an older good version is still kept to go back to', () => {
+  // 0.3.299 → 0.3.300 → 0.3.301 failed. The launcher wrote current = 0.3.300
+  // and left previous = 0.3.300, so cleanup used to delete 0.3.299 as well.
+  const { root, layout } = makeRoot('0.3.300');
+  try {
+    makeApp(root, '0.3.298');
+    makeApp(root, '0.3.299');
+    makeApp(root, '0.3.301');
+    for (const version of ['0.3.298', '0.3.299', '0.3.300']) {
+      fs.writeFileSync(path.join(sbs.appDir(root, version), sbs.STARTED_OK_FILE), 'ok');
+    }
+    fs.writeFileSync(path.join(sbs.appDir(root, '0.3.301'), sbs.BAD_FILE), 'did not start');
+    sbs.writePointer(root, sbs.PREVIOUS_FILE, '0.3.300');
+    fs.writeFileSync(path.join(root, sbs.ROLLED_BACK_FILE), '0.3.301');
+
+    assert.equal(sbs.restoreAfterRollback(layout, ''), '0.3.301');
+    assert.equal(sbs.readPointer(root, sbs.PREVIOUS_FILE), '0.3.299', 'the newest older version that started');
+    sbs.removeOldVersions(layout);
+    assert.deepEqual(sbs.installedVersions(root), ['0.3.299', '0.3.300']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('after a rollback with no older version, previous.txt does not name the running one', () => {
+  const { root, layout } = makeRoot('0.3.300');
+  try {
+    makeApp(root, '0.3.301');
+    sbs.writePointer(root, sbs.PREVIOUS_FILE, '0.3.300');
+    fs.writeFileSync(path.join(root, sbs.ROLLED_BACK_FILE), '0.3.301');
+    sbs.restoreAfterRollback(layout, '');
+    assert.equal(sbs.readPointer(root, sbs.PREVIOUS_FILE), '');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------- wiring (source)
+
+test('Settings names a skipped version and offers only the full setup', () => {
+  const ui = fs.readFileSync(path.join(repo, 'static', 'js', 'app-settings-live.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(ui, /did not start on this PC/);
+  assert.match(ui, /download\?\.classList\.toggle\('hidden', [^;]*skipped/, 'no "Download update" for it');
+  assert.match(ui, /appUpdateFullSetupBtn'\)\?\.classList\.toggle\('hidden', [^;]*skipped/, 'the full setup is offered');
+  const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8');
+  assert.match(main, /skippedVersion: manifest\.version/);
+});
+
+test('the server logs the app writes are capped', () => {
+  const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8');
+  assert.match(main, /openSync\(rotatedLogPath\(logDir, 'console-server\.log'\), 'a'\)/);
+  assert.match(main, /openSync\(rotatedLogPath\(logDir, 'console-server\.err\.log'\), 'a'\)/);
+});
 
 test('the app wires prepare, restart, good-start and rollback in order', () => {
   const main = fs.readFileSync(path.join(repo, 'electron', 'main.js'), 'utf8').replace(/\r\n/g, '\n');

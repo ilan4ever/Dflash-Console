@@ -89,3 +89,21 @@ def test_ensure_setup_libraries_keeps_selected_hf_cache(tmp_path: Path, monkeypa
     # GGUF folders stay the download default.
     defaults = [row for row in libraries if row.get('download_default')]
     assert defaults and str(defaults[0].get('path') or '') != str(hf_cache.resolve())
+
+
+def test_hf_cache_is_listed_once_not_also_as_its_hub_folder(tmp_path: Path):
+    from core.setup import _drop_hub_duplicates, _merge_candidate
+
+    cache = tmp_path / '.cache' / 'huggingface'
+    store: dict = {}
+    _merge_candidate(store, {'path': str(cache), 'model_type': 'hub', 'model_count': 10})
+    _merge_candidate(store, {'path': str(cache / 'hub'), 'model_type': 'hub', 'model_count': 10})
+    # A model folder inside the cache is a different entry and stays.
+    _merge_candidate(store, {'path': str(cache / 'hub' / 'models--a--b'), 'model_type': 'embeddings', 'model_count': 2})
+    # A 'hub' folder whose parent is not listed stays too.
+    _merge_candidate(store, {'path': str(tmp_path / 'other' / 'hub'), 'model_type': 'hub', 'model_count': 3})
+
+    _drop_hub_duplicates(store)
+
+    paths = sorted(Path(row['path']).relative_to(tmp_path).as_posix() for row in store.values())
+    assert paths == ['.cache/huggingface', '.cache/huggingface/hub/models--a--b', 'other/hub']

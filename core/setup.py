@@ -68,6 +68,19 @@ def _merge_candidate(
         store[key] = row
 
 
+def _drop_hub_duplicates(store: dict[str, dict[str, Any]]) -> None:
+    """A Hugging Face cache was listed twice: as the cache folder and as its own
+    'hub' folder, with the same models. Keep the cache folder."""
+    for key, row in list(store.items()):
+        path = Path(str(row.get('path') or ''))
+        if path.name.lower() != 'hub' or row.get('model_type') != 'hub':
+            continue
+        parent = store.get(_norm_path_key(path.parent))
+        if parent and parent.get('model_type') == 'hub' \
+                and int(parent.get('model_count') or 0) >= int(row.get('model_count') or 0):
+            del store[key]
+
+
 def scan_setup_candidates(*, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     config = cfg or load_config()
     merged: dict[str, dict[str, Any]] = {}
@@ -123,6 +136,7 @@ def scan_setup_candidates(*, cfg: dict[str, Any] | None = None) -> list[dict[str
             'exists': True,
         })
 
+    _drop_hub_duplicates(merged)
     rows = sorted(
         merged.values(),
         key=lambda row: (

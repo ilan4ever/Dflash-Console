@@ -428,6 +428,7 @@ async function checkAndDownloadUpdate() {
     updateService.status('error', {
       manifest,
       ready: false,
+      skippedVersion: manifest.version,
       error: `DFlash Console ${manifest.version} did not start on this PC, so it is not installed automatically. Use the full setup to try it again.`,
     });
     return;
@@ -1116,6 +1117,24 @@ function findPowerShellShell() {
   );
 }
 
+// server.ps1 rotates these logs, but the app appended to them without limit: a
+// start that failed on every request wrote 3 MB of tracebacks in 2 minutes
+// (end-to-end test). Keep one older copy, like server.ps1's first backup.
+const SERVER_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+function rotatedLogPath(logDir, name) {
+  const file = path.join(logDir, name);
+  try {
+    if (fs.statSync(file).size >= SERVER_LOG_MAX_BYTES) {
+      fs.rmSync(`${file}.1`, { force: true });
+      fs.renameSync(file, `${file}.1`);
+    }
+  } catch (_err) {
+    // Missing or in use: append to it as before.
+  }
+  return file;
+}
+
 function startConsoleServer(port = DEFAULT_PORT) {
   const root = repoRoot();
   if (!root) {
@@ -1144,8 +1163,8 @@ function startConsoleServer(port = DEFAULT_PORT) {
   let outFd = null;
   let errFd = null;
   try {
-    outFd = fs.openSync(path.join(logDir, 'console-server.log'), 'a');
-    errFd = fs.openSync(path.join(logDir, 'console-server.err.log'), 'a');
+    outFd = fs.openSync(rotatedLogPath(logDir, 'console-server.log'), 'a');
+    errFd = fs.openSync(rotatedLogPath(logDir, 'console-server.err.log'), 'a');
   } catch (_err) {
     outFd = null;
     errFd = null;
